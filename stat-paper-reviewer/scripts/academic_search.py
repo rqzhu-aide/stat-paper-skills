@@ -32,10 +32,9 @@ Usage:
     # By exact author ID (skip name resolution)
     python3 academic_search.py --author-id OPENALEX_AUTHOR_ID
 
-Pass --api-key or set OPENALEX_API_KEY. Optionally pass --mailto or set
-OPENALEX_MAILTO or CROSSREF_MAILTO; the contact parameter is otherwise omitted.
-Queries and filters are sent to OpenAlex over HTTPS. Do not submit confidential
-manuscript text or personal identifiers that are unnecessary for the search.
+Pass --api-key or set OPENALEX_API_KEY. Queries and filters are sent to
+OpenAlex over HTTPS. Do not submit confidential manuscript text or personal
+identifiers that are unnecessary for the search.
 
 Output: JSON records with publication metadata, status fields, and abstract text.
 Per-source failures (HTTP 429 rate-limit, timeouts, network errors) are reported
@@ -54,18 +53,15 @@ import urllib.error
 
 OPENALEX_API = "https://api.openalex.org/works"
 AUTHORS_API = "https://api.openalex.org/authors"
-# Optional OpenAlex polite-pool contact. Do not embed a project or personal address.
-MAILTO: str | None = None
 API_KEY: str | None = None
 
 
-def _add_credentials(params: dict) -> dict:
-    """Add required authentication and an optional caller-supplied contact."""
+def _add_api_key(params: dict) -> dict:
+    """Add the required OpenAlex API key without mutating the caller's dict."""
     if not API_KEY:
         raise RuntimeError("OpenAlex API key is required")
+    params = dict(params)
     params["api_key"] = API_KEY
-    if MAILTO:
-        params["mailto"] = MAILTO
     return params
 
 
@@ -110,7 +106,7 @@ def _candidate_summary(results: list[dict]) -> list[dict]:
 
 
 def fetch_author_candidates(name: str, per_page: int = 50) -> list[dict]:
-    params = _add_credentials({"search": name, "per_page": min(per_page, 100)})
+    params = _add_api_key({"search": name, "per_page": min(per_page, 100)})
     url = f"{AUTHORS_API}?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=30) as resp:
@@ -159,7 +155,7 @@ def resolve_by_orcid(orcid: str) -> dict | None:
     # records carry; reject it so it can't resolve to whoever holds that junk tag.
     if set(oid) <= {"0", "-"}:
         return None
-    params = _add_credentials({"filter": f"orcid:{oid}"})
+    params = _add_api_key({"filter": f"orcid:{oid}"})
     url = f"{AUTHORS_API}?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=30) as resp:
@@ -196,7 +192,7 @@ def search(query: str | None = None, limit: int = 10, year_from: int | None = No
     rerank = bool(query) and sort != "relevance_score"
     per_page = min(max(limit * 5, limit), 100) if rerank else min(limit, 50)
 
-    params = _add_credentials({"per_page": per_page})
+    params = _add_api_key({"per_page": per_page})
     if query:
         params["search"] = query
     if not rerank:
@@ -305,18 +301,12 @@ def main():
     parser.add_argument("--relevance-floor", type=float, default=0.0,
                         help="Optional minimum relevance as a fraction of the top score "
                              "before local re-ranking; 0 disables filtering (default)")
-    parser.add_argument("--mailto", default=None,
-                        help="Contact email for the OpenAlex polite pool "
-                              "(falls back to OPENALEX_MAILTO / CROSSREF_MAILTO env)")
     parser.add_argument("--api-key", default=None,
                         help="OpenAlex API key (falls back to OPENALEX_API_KEY env)")
     parser.add_argument("--compact", action="store_true", help="Compact output (one line per paper)")
     args = parser.parse_args()
 
-    # Resolve an optional contact without embedding a project or personal identity.
-    global MAILTO, API_KEY
-    MAILTO = (args.mailto or os.environ.get("OPENALEX_MAILTO")
-              or os.environ.get("CROSSREF_MAILTO") or None)
+    global API_KEY
     API_KEY = args.api_key or os.environ.get("OPENALEX_API_KEY") or None
     if not API_KEY:
         parser.error("OpenAlex requires an API key; pass --api-key or set OPENALEX_API_KEY")

@@ -7,8 +7,16 @@ Two independent, complementary Codex skills for statistics and machine-learning 
 | `stat-paper-writing` | Claim-preserving drafting, restructuring, writing audits, and polishing |
 | `stat-paper-reviewer` | Sequential first-reader review with publication-backed novelty and citation checks |
 
-Install either skill independently, or install both as a bundle, by copying the corresponding folders into your Codex skills directory.
-External literature verification needs network access; the bundled OpenAlex fallback requires a [free API key](https://openalex.org/settings/api).
+## Install
+
+Copy either complete skill folder, or both folders, into your Codex skills directory. Keep each folder's `agents`, `references`, `scripts`, and license files together. The usual destination is `$CODEX_HOME/skills/`, or `~/.codex/skills/` when `CODEX_HOME` is unset.
+
+Example invocations:
+
+- `Use $stat-paper-writing to restructure this methods section without changing its mathematical claims.`
+- `Use $stat-paper-reviewer to review this manuscript as a critical first-time statistical reader.`
+
+External literature verification needs network access. The reviewer's bundled OpenAlex fallback also requires a [free API key](https://openalex.org/settings/api), preferably supplied through the `OPENALEX_API_KEY` environment variable.
 
 ## Sources and licenses
 

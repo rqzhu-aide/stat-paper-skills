@@ -78,7 +78,7 @@ python scripts/academic_search.py "method application" --year-from 2020 --limit 
 
 Set `OPENALEX_API_KEY` in the environment before running these commands so the key does not enter shell history. If environment configuration is unavailable, use `--api-key`. Use `python scripts/academic_search.py --help` for all options. The script queries OpenAlex and returns title, DOI, authors, date, venue, work and source types, version when supplied, retraction and open-access flags, citations, abstract text when available, and OpenAlex ID.
 
-The request sends the API key, search terms, and any author, affiliation, ORCID, or contact filters to OpenAlex over HTTPS. Do not submit confidential manuscript prose or unnecessary personal identifiers. A contact email is optional and is omitted unless supplied through `--mailto`, `OPENALEX_MAILTO`, or `CROSSREF_MAILTO`.
+The request sends the API key, search terms, and any author, affiliation, or ORCID filters to OpenAlex over HTTPS. Do not submit confidential manuscript prose or unnecessary personal identifiers.
 
 Name-based author resolution is heuristic and selects one record without merging similar identities. Inspect `--list-authors`, then use an exact OpenAlex author ID or ORCID for any decisive author-specific search.
 

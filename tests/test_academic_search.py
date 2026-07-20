@@ -35,7 +35,18 @@ class AcademicSearchTests(unittest.TestCase):
     def setUp(self):
         self.module = load_module()
         self.module.API_KEY = "test-key"
-        self.module.MAILTO = None
+
+    def test_api_key_is_required_and_input_params_are_not_mutated(self):
+        self.module.API_KEY = None
+        params = {"search": "query"}
+        with self.assertRaisesRegex(RuntimeError, "API key is required"):
+            self.module._add_api_key(params)
+        self.assertEqual(params, {"search": "query"})
+
+        self.module.API_KEY = "test-key"
+        enriched = self.module._add_api_key(params)
+        self.assertEqual(enriched["api_key"], "test-key")
+        self.assertEqual(params, {"search": "query"})
 
     def test_name_resolution_never_merges_records(self):
         candidates = [
