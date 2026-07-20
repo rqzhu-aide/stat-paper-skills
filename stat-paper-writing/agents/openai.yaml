@@ -1,0 +1,4 @@
+interface:
+  display_name: "Statistical Paper Writing"
+  short_description: "Claim-safe statistical paper drafting and revision"
+  default_prompt: "Use $stat-paper-writing to draft, revise, or polish this statistical manuscript with only the guidance needed for the affected section, while preserving its mathematical claims and voice."
