@@ -1,2 +1,7 @@
+/resources/
+/stat-paper-proofcheck/
+/.agents/
+/.codex/
+
 __pycache__/
 *.py[cod]

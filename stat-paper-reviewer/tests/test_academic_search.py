@@ -5,8 +5,8 @@ from pathlib import Path
 from unittest import mock
 
 
-REPO = Path(__file__).resolve().parents[1]
-SCRIPT = REPO / "stat-paper-reviewer" / "scripts" / "academic_search.py"
+SKILL_ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = SKILL_ROOT / "scripts" / "academic_search.py"
 
 
 def load_module():
