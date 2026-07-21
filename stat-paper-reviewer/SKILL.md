@@ -1,5 +1,7 @@
 ---
 name: stat-paper-reviewer
+metadata:
+  version: "1.0"
 description: Review, evaluate, and stress-test statistics, machine learning, econometrics, biostatistics, causal inference, and theory-and-methods manuscripts as a critical first-time reader moving sequentially through the paper. Use for full or focused referee-style reviews, pre-submission readiness checks, likely reviewer objections, source-backed novelty and citation assessment, assumption and theorem-story audits, empirical-validation critiques, venue positioning, or prioritized revision memos. Verify central novelty claims against the paper's cited references and real publications with the bundled literature-verification workflow when literature assessment is in scope. Diagnose and prioritize rather than silently rewriting the manuscript.
 ---
 

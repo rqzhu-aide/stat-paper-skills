@@ -2,10 +2,10 @@
 
 Two independent, complementary Codex skills for statistics and machine-learning manuscripts.
 
-| Skill | Purpose |
-|---|---|
-| `stat-paper-writing` | Claim-preserving drafting, restructuring, writing audits, and polishing |
-| `stat-paper-reviewer` | Sequential first-reader review with publication-backed novelty and citation checks |
+| Skill | Version | Purpose |
+|---|---|---|
+| `stat-paper-writing` | v1.0 | Claim-preserving drafting, restructuring, writing audits, and polishing |
+| `stat-paper-reviewer` | v1.0 | Sequential first-reader review with publication-backed novelty and citation checks |
 
 ## Install
 

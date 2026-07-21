@@ -1,5 +1,7 @@
 ---
 name: stat-paper-writing
+metadata:
+  version: "1.0"
 description: Author-side drafting, restructuring, writing audits, and claim-preserving polishing for statistics, machine learning, econometrics, biostatistics, causal inference, and computational statistics papers. Use to write or revise manuscript sections, improve mathematical exposition and argument order, audit notation and terminology, strengthen paragraph flow and scholarly English, coordinate main text with supplements, or perform quick, section-level, or full writing audits. Load only the references required by the requested section and failure. Referee-style evaluation, publication-backed novelty assessment, and pre-submission decision advice are outside this skill's author-side role.
 ---
 
