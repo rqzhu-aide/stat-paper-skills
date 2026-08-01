@@ -4,8 +4,8 @@ Two independent, complementary Codex skills for statistics and machine-learning 
 
 | Skill | Version | Purpose |
 |---|---|---|
-| `stat-paper-writing` | v1.0 | Claim-preserving drafting, restructuring, writing audits, and polishing |
-| `stat-paper-reviewer` | v1.0 | Sequential first-reader review with publication-backed novelty and citation checks |
+| `stat-paper-writing` | v1.0 | Claim-preserving drafting, restructuring, polishing, and statistical-register repair |
+| `stat-paper-reviewer` | v1.0 | Sequential review with novelty checks and a cautious AI-shaped prose alarm |
 
 ## Install
 
@@ -15,8 +15,13 @@ Example invocations:
 
 - `Use $stat-paper-writing to restructure this methods section without changing its mathematical claims.`
 - `Use $stat-paper-reviewer to review this manuscript as a critical first-time statistical reader.`
+- `Use $stat-paper-reviewer to assess whether recurrent patterned prose weakens claim traceability, without inferring authorship.`
 
 External literature verification needs network access. The reviewer's bundled OpenAlex fallback also requires a [free API key](https://openalex.org/settings/api), preferably supplied through the `OPENALEX_API_KEY` environment variable.
+
+## Requests for both review and revision
+
+Treat review and revision as two independently authorized stages. Complete the referee diagnosis first with `stat-paper-reviewer`; if manuscript revision is also requested, use `stat-paper-writing` afterward against the supplied manuscript and bounded findings. The reviewer does not draft or edit manuscript text, and the writer does not make referee judgments. A request for only one stage does not authorize the other.
 
 ## Related resources
 

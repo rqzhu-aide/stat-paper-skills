@@ -1,19 +1,21 @@
-# Statistical Wording and Register Audit
+# Statistical Wording and Register
 
 ## Contents
 
 - [Purpose and register](#purpose)
-- [Terminology ledger](#build-a-terminology-ledger)
 - [Sentence-level audit](#sentence-level-audit)
+- [Agency and property ownership](#check-agency-and-property-ownership)
 - [Software-manual prose](#diagnose-software-manual-prose)
+- [Generic or machine-smoothed prose](#repair-generic-or-machine-smoothed-prose)
+- [Implementation language](#keep-implementation-language-in-its-proper-place)
 - [Tone and claim calibration](#check-tone-and-claim-calibration)
-- [Whole-manuscript validation](#audit-the-full-manuscript)
+- [Final validation](#typography-and-final-validation)
 
 ## Purpose
 
-Use this guide for sentence-level polishing, terminology audits, or whole-manuscript wording revisions. The preferred register is statistical machine learning, mathematics, and the relevant domain science. Preserve legitimate implementation language when the text actually describes code, software, hardware, or reproduction instructions.
+Use this guide for local sentence or paragraph polishing when terminology, evidence verbs, tone, or disciplinary register is the main issue. The preferred register is statistical machine learning, mathematics, and the relevant domain science. Preserve legitimate implementation language when the text actually describes code, software, hardware, or reproduction instructions.
 
-The goal is not to make every sentence more formal. The goal is to name each object and claim in the language that best matches its mathematical type, statistical role, and scientific interpretation.
+The goal is not to make every sentence more formal. Name each object and claim in language that matches its mathematical type, statistical role, and scientific interpretation. For manuscript-wide terminology normalization or conventional-name questions, use [terminology-audit.md](terminology-audit.md).
 
 ## Establish the register
 
@@ -37,29 +39,30 @@ Avoid replacing a precise relation with a metaphor such as "drives," "powers," "
 
 Name the population, measured variables, intervention or exposure, outcome, sampling design, scientific quantity, and uncertainty in vocabulary familiar to the application field. Interpret results only to the extent supported by the design. Avoid product, deployment, or workflow narratives when the scientific question concerns estimation, prediction, association, or decision-making.
 
-## Build a terminology ledger
-
-For a multi-section audit, record:
-
-| Object | Mathematical type | Canonical term | Symbol | Acceptable local variant | Variants to revise |
-|---|---|---|---|---|---|
-
-Assign one canonical term to each central object. Permit a local variant only when the section changes the object's role or level, such as population risk versus empirical risk, oracle estimator versus feasible estimator, or scientific outcome versus coded response.
-
-Do not force distinct objects to share one term merely for verbal consistency. Do not give one object several names for stylistic variety.
-
 ## Sentence-level audit
 
-For each sentence, apply this sequence:
+For each sentence:
 
 1. Identify its job: definition, assumption, construction, formal claim, empirical observation, interpretation, limitation, transition, or implementation detail.
 2. Identify the type of every central noun: target, data object, distribution, function, estimator, criterion, operator, theorem, numerical approximation, scientific variable, or software object.
 3. Check whether the principal verb states the actual relation.
 4. Replace any term whose register conflicts with the sentence's job or the object's type.
-5. Preserve qualifiers that determine scope, including population, empirical, oracle, feasible, approximate, conditional, and asymptotic.
-6. Check the revised sentence against the surrounding notation, claims, and terminology ledger.
+5. Preserve qualifiers that determine scope, including population, empirical, oracle, feasible, approximate, conditional, pointwise, uniform, finite-sample, and asymptotic.
+6. Check the revision against surrounding notation and terminology.
 
-If the correct replacement would change the estimand, theorem, algorithm, empirical claim, or scientific interpretation, stop and flag it for author review.
+If the correct replacement would change the estimand, formal statement, algorithm, empirical claim, or scientific interpretation, stop and flag it for author review.
+
+## Check agency and property ownership
+
+Natural wording must preserve who acts and which object has a statistical property.
+
+- Attribute bias, variance, consistency, and sampling instability to the estimator, estimator sequence, procedure, or sampling law that has the property. Attribute realized estimation error to the realized estimate. Do not transfer either type of property automatically to the estimand.
+- Distinguish the estimand, the estimator as a random rule, its realized estimate, and the realized error of that estimate.
+- Name the procedure or analyst action when observations are used to fit, select, tune, or construct an object. Data do not perform those actions by themselves.
+- Do not describe storage, printing, display, or repository status as a statistical property. Name the errors, coefficients, fitted sequence, benchmark, or other scientific object instead.
+- In a simulation, identify a true parameter or oracle value as known because the data-generating mechanism supplies it. Do not extend that status to a real-data analysis.
+
+Conventional shorthand such as "the data suggest" or "the model predicts" may remain when the agency and statistical meaning are unambiguous. Respect the stated conditioning regime: an estimand may itself be random or data-adaptive.
 
 ## Diagnose software-manual prose
 
@@ -76,50 +79,53 @@ Treat the following as context-sensitive warning signs when they describe statis
 | engine, machinery, bridge, or stack | What mechanism or dependency is asserted? | representation, argument, construction, collection, or the exact relation |
 | ground truth | Is the reference exact, simulated, estimated, or numerically approximated? | true parameter, data-generating value, oracle quantity, reference value, or Monte Carlo benchmark |
 | generalization metric | Which population or held-out criterion is used? | risk, held-out loss, prediction error, calibration error, or the exact metric |
+| fixture, checked-in object, or hidden check | Is this example data, an archived artifact, or a validation calculation? | name the data, artifact, calculation, or omit the internal state |
+| algorithm, numerical, fitting, or function contract | Is this a definition, fitting procedure, calculation rule, or convention? | state the steps, formula, or convention directly |
+| production code, package, or pipeline | Is deployment relevant, or is this the implementation used in the study? | implementation, analysis code, fitted procedure, or literal deployment description |
+| stored or checked reference, stored result, or printed coefficient | What statistical object is represented? | reference value, benchmark, estimate, prediction error, coefficient, or fitted path |
+| population-standardize | Which centering and scaling quantities are used, and where are they estimated? | state the centering and scaling formula and its data source |
 
-These terms are not categorically forbidden. Keep them when they literally describe software, a neural-network architecture, or an established field term. Revise them when they obscure the statistical object or make prose read like user documentation.
+These terms are not categorically forbidden. Keep them when they literally describe software, a neural-network architecture, or an established field term. Treat lexical warnings only as candidates for contextual review. A term can be correct in an API name, software paper, reproduction appendix, deployment study, or established technical phrase.
+
+## Repair generic or machine-smoothed prose
+
+Fluent prose can remain statistically empty. Review passages that repeatedly:
+
+- announce sections or recap claims without advancing the argument;
+- use abstract containers such as framework, paradigm, mechanism, or landscape where the exact target, estimator, result, or comparison should appear;
+- rotate synonyms for one object;
+- use interchangeable significance, robustness, or generality language without naming the evidence and scope;
+- repeat one paragraph skeleton across different scientific jobs;
+- replace a logical dependency with generic transitions.
+
+Repair the content, not the surface signature. Recover the exact object, relation, evidence, and boundary. Remove metacommentary that contributes no scientific content. Do not add specificity the manuscript does not support, and do not standardize every paragraph into the same cadence.
 
 ## Keep implementation language in its proper place
 
-In the main text, describe the statistical construction, information used, returned estimator, governing dimensions, and conditions under which the procedure is valid.
+In the main text, describe the statistical construction, information used, returned estimator, governing dimensions, and stated validity conditions.
 
 In an algorithm, name inputs and outputs precisely, but connect them to the statistical objects already defined. Use imperative steps only inside pseudocode or explicit reproduction instructions.
 
-In an appendix or supplement, retain software versions, function arguments, storage choices, hardware, stopping rules, and file organization when needed for reproduction. Do not let these details replace the mathematical description of the procedure.
+In an appendix or supplement, retain software versions, function arguments, storage choices, hardware, stopping rules, and file organization when needed for reproduction. Do not let these details replace the mathematical description.
+
+When a convention changes the estimator, target, comparison, or reproducibility, state the operation directly. Relevant examples include when a split is made, which observations determine centering or scaling, the loss and penalty normalization, tie-breaking, matrix orientation, and consequential randomization.
 
 ## Check tone and claim calibration
 
 Revise language that is:
 
 - promotional, such as "powerful," "seamless," "state-of-the-art," or "unlocks," unless a precise comparison supports it;
-- defensive or reviewer-facing, such as "we emphasize that this is not a limitation" or "to address a possible concern";
+- defensive or reviewer-facing, such as "we emphasize that this is not a limitation";
 - vague about evidence, such as "works well," "is robust," or "captures uncertainty" without a defined criterion and scope;
 - stronger than the result, such as "guarantees" for an empirical pattern or "validates" for an illustrative application;
-- weaker than needed because of excessive hedging around a proved identity or theorem.
+- weaker than needed because of excessive hedging around a stated identity or theorem.
 
-Use calibrated alternatives: proves, establishes under the stated assumptions, suggests in the reported settings, is consistent with, improves the specified criterion, or remains unresolved.
-
-## Audit the full manuscript
-
-After sentence-level edits, check all occurrences of each canonical term in:
-
-- title, abstract, keywords, and introduction;
-- method, algorithms, assumptions, theorems, and proofs;
-- simulations, applications, captions, legends, tables, and footnotes;
-- discussion, appendices, supplementary files, and notation tables.
-
-Check especially that:
-
-- population, oracle, feasible, empirical, and numerical objects remain distinct;
-- a scientific variable is not renamed as a software field or data column in the main argument;
-- a finite Monte Carlo benchmark is not called exact truth;
-- an empirical diagnostic is not called a theorem-backed guarantee;
-- implementation terminology does not migrate into mathematical statements;
-- domain interpretation remains conditional on the sampling and identification assumptions;
-- terminology changes do not alter labels, citations, numerical values, equations, or cross-references.
+Use only alternatives supported by the manuscript or author-supplied material: proves, establishes under the stated assumptions, suggests in the reported settings, is consistent with, improves the specified criterion, or remains unresolved. Do not upgrade a statement to **proves** or **establishes** merely because it appears as a theorem or has a proof. In editor-authored clean proof prose, never use or retain "this proves the theorem," "this completes the proof," "completes the proof," "hence proves," or an equivalent completion claim. Use the exact nonvalidating sentence "This is the stated conclusion." only when the closure is demonstrably rhetorical; otherwise keep the supplied closure outside the proposed clean revision and report **Unverified dependency:**.
 
 ## Typography and final validation
 
-Preserve the manuscript's or stated venue's punctuation and typographic conventions consistently. Correct malformed punctuation, but do not impose a private house style unless the user requests it.
+Preserve the manuscript's or stated venue's punctuation and typographic conventions. Correct malformed punctuation, but do not impose a private house style unless requested.
 
-When editable source and a suitable toolchain are available, compile or render the affected material and inspect the output. Otherwise inspect the supplied format directly and state the validation limit. Search again for rejected terminology variants. Report any remaining phrase whose correction requires scientific, mathematical, or domain-specific judgment rather than silently guessing.
+Compare source and revision for changes in object type, logical direction, scope, evidence level, uncertainty, numerical values, citations, labels, and cross-references. If the supplied format can be compiled or rendered, inspect the affected passage. Otherwise state the validation limit.
+
+As a final pass, ask of every generic or software-oriented noun: who acts, on what statistical object, by what operation, with what evidence, and under what scope? Retain the term only when it is literal, defined, and useful.

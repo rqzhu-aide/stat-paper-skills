@@ -1,4 +1,4 @@
 interface:
   display_name: "Statistical Paper Reviewer"
-  short_description: "Critical source-backed statistical paper reviews"
-  default_prompt: "Use $stat-paper-reviewer to read this manuscript sequentially as a first-time critical reviewer and prioritize evidence-backed revisions, adding publication-backed novelty checks only when they are in scope."
+  short_description: "Referee-style statistical diagnosis and readiness review"
+  default_prompt: "Use $stat-paper-reviewer to assess this manuscript as a first-time critical reviewer, prioritize evidence-backed objections, and provide edit specifications without rewriting the paper."

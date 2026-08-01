@@ -2,11 +2,13 @@
 
 ## Job of the section
 
-Turn a reader question into a precise formal result. The statement should identify its regime, assumptions, conclusion, and scope without carrying proof machinery or implementation commentary.
+Turn a reader question into a clearly presented formal result. The statement should identify its regime, assumptions, conclusion, and scope without carrying proof machinery or implementation commentary.
 
-## Classify the result
+This guide checks wording and consistency, not whether the statement is mathematically true or whether its assumptions are sufficient.
 
-Determine its job before writing:
+## Classify the stated result
+
+Determine its declared job before editing:
 
 - definition or identification;
 - exact identity;
@@ -24,10 +26,10 @@ Do not describe a computational limit as statistical consistency.
 
 Before a central result, state:
 
-1. the question it answers;
+1. the question it is said to answer;
 2. why that question matters for the method;
-3. the conceptual role of the main assumptions;
-4. the conclusion in ordinary statistical language.
+3. the described role of the main assumptions;
+4. the written conclusion in ordinary statistical language.
 
 Do not begin an unfamiliar result with a dense block of notation.
 
@@ -35,48 +37,44 @@ Do not begin an unfamiliar result with a dense block of notation.
 
 Include:
 
-- probability model, parameter space, or conditioning regime;
-- objects to which the result applies;
-- assumptions required for this conclusion;
-- exact mathematical conclusion;
+- probability model, parameter space, or conditioning regime stated by the manuscript;
+- objects to which the result is said to apply;
+- assumptions named for the conclusion;
+- exact written mathematical conclusion;
 - quantifiers, probability level, convergence mode, or uniformity scope;
-- constants and their dependencies when relevant.
+- constants and their stated dependencies when relevant.
 
-Exclude extended interpretation, tuning advice, proof-specific notation, and variants that are not part of the central claim.
+Exclude extended interpretation, tuning advice, proof-specific notation, and variants that are not part of the central statement.
 
-## Explain assumptions by role
+## Explain assumptions by declared role
 
-Group assumptions as:
+Use the manuscript's supplied account to distinguish:
 
 - **scientific or identifying:** defines what can be learned;
-- **statistical:** controls bias, variance, concentration, or asymptotics;
-- **computational:** ensures an optimization or approximation can be obtained;
-- **proof-dependent regularity:** supports the available proof but is not claimed to be intrinsic to the method.
+- **statistical:** is said to control bias, variance, concentration, or asymptotics;
+- **computational:** is said to ensure an optimization or approximation can be obtained;
+- **proof-dependent regularity:** appears only in the supplied formal development.
 
-Say whether assumptions are standard, strong, verifiable, or used only for one step. Do not call them mild without support.
+Do not determine that a role is mathematically correct or that an assumption is necessary. Check that labels, scopes, and described roles are consistent across the statement and surrounding prose. Do not call assumptions mild, standard, or verifiable without supplied support.
+
+If surrounding prose attributes a stronger relation to an assumption than the displayed statement supplies, remove that relation from the clean revision and disclose the correction. The material-change note must name the removed relation and state that it is not supplied or implied by the displayed assumption; do not silently replace it with the narrower statement.
 
 ## Post-result interpretation
 
 Use three moves:
 
-1. **Translation:** Explain the conclusion without restating the display.
-2. **Consequence:** State what estimator, design choice, or next result it enables.
-3. **Boundary:** State what it does not establish.
+1. **Translation:** Explain the written conclusion without restating the display.
+2. **Consequence:** State what estimator, design choice, or next result the manuscript says it enables.
+3. **Boundary:** State what the written result does not establish.
 
-Build visible theorem dependencies. Demote two-line algebra to prose and move technical intermediate lemmas to the proof appendix.
-
-## If a presentation mode is needed
-
-- **Compact and direct:** Use a short preflight, minimal statement notation, and one precise consequence.
-- **Explanatory and intuition-led:** Use a mechanism-preserving regime, assumption perturbation, or decomposition to clarify the question and assumption roles before the statement, then interpret the operative term afterward.
-- **Formal and structure-led:** Emphasize scopes, quantifiers, dependency order, and exact distinctions among result types.
-- **Evidence-led and comparative:** Frame the result around the observable claim it supports and explain which experiment or comparison probes its implications.
+Make declared theorem dependencies visible. Move technical intermediate statements to the proof appendix when their role is documentary and the main result remains understandable.
 
 ## Review checklist
 
-- Does the result have a clear job?
-- Are all stated assumptions used, and are their roles and status clear?
-- Is the target finite-sample, asymptotic, conditional, or computational?
-- Does it apply to the implemented estimator or only an oracle?
-- Does the stated relation to prior results agree with the manuscript and supplied sources, with external verification needs explicitly flagged?
+- Does the result have a clear declared job?
+- Are assumption labels, roles, and scopes stated consistently?
+- Is the target finite-sample, asymptotic, conditional, pointwise, uniform, or computational?
+- Does surrounding prose refer to the same oracle or feasible object as the statement?
+- Does the stated relation to prior results agree with the manuscript and supplied sources?
 - Does the interpretation include both consequence and boundary?
+- Are any questions that require mathematical validation or external source support marked **Unverified dependency**?

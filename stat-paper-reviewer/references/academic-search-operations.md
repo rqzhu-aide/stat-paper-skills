@@ -1,5 +1,16 @@
 # Academic Search Operations
 
+## Contents
+
+- [Purpose](#purpose)
+- [1. Define the search boundary](#1-define-the-search-boundary)
+- [2. Prefer structured scholarly evidence](#2-prefer-structured-scholarly-evidence)
+- [3. Apply evidence ceilings](#3-apply-evidence-ceilings)
+- [4. Verify the manuscript's own citations first](#4-verify-the-manuscripts-own-citations-first)
+- [5. Search for uncited close work](#5-search-for-uncited-close-work)
+- [6. Use the bundled fallback when needed](#6-use-the-bundled-fallback-when-needed)
+- [7. Compare and stop responsibly](#7-compare-and-stop-responsibly)
+
 ## Purpose
 
 Use this workflow to verify claim-bearing references and assess whether a manuscript's central novelty claim survives comparison with real publications. Perform it after the sequential first-reader pass so external knowledge does not overwrite the original reading record.
@@ -33,7 +44,18 @@ Use the best available sources for the domain:
 
 Prefer primary and structured records. Use general web search to locate official records or full text, not as the sole basis for a strong bibliographic or novelty conclusion. Do not rely on search snippets.
 
-## 3. Verify the manuscript's own citations first
+## 3. Apply evidence ceilings
+
+Match every conclusion to the strongest material actually inspected:
+
+- **Metadata:** verifies bibliographic existence, identifiers, venue, and recorded dates only.
+- **Abstract:** identifies possible relevance and coarse scope, but normally cannot establish fine distinctions in assumptions, theorem scope, algorithm details, or empirical design.
+- **Decisive content:** supports a bounded substantive comparison only after the relevant method, theorem, assumptions, experiment, or result has been inspected.
+- **Documented search neighborhood:** supports a bounded novelty judgment only after the applicable query families and close citation neighborhood have been examined.
+
+If only metadata or abstracts are available for a decisive distinction, mark that distinction provisional or unassessed. Failure to find close work is negative search evidence, not proof of firstness.
+
+## 4. Verify the manuscript's own citations first
 
 For each central claim-bearing citation:
 
@@ -50,7 +72,7 @@ Keep three questions distinct:
 - Does it contain evidence relevant to the attached statement?
 - How closely does it overlap with the manuscript's claimed contribution?
 
-## 4. Search for uncited close work
+## 5. Search for uncited close work
 
 Decompose each novelty claim into the target, statistical regime, construction, assumptions, guarantee, computational property, and application. Build several compact searches rather than one broad query:
 
@@ -64,7 +86,7 @@ Search terminology from both the manuscript and the closest verified references.
 
 Deduplicate by DOI first, then by PMID or arXiv ID, then by normalized title, year, and first author. Treat preprints and later peer-reviewed versions as linked versions, not automatically as separate intellectual contributions.
 
-## 5. Use the bundled fallback when needed
+## 6. Use the bundled fallback when needed
 
 If no scholarly search interface is available, run the bundled standard-library script from this skill folder:
 
@@ -86,10 +108,12 @@ When re-ranking a text query by citation count or publication date, the script f
 
 The fallback is for discovery. For every candidate that changes the novelty judgment, verify the DOI, publisher, PubMed, arXiv, or official proceedings record and inspect enough content to support the comparison. If network access is unavailable, report that external verification was not performed and keep the novelty conclusion provisional.
 
-## 6. Compare and stop responsibly
+## 7. Compare and stop responsibly
 
 Build the comparison matrix specified in [novelty-verification.md](novelty-verification.md). Separate peer-reviewed publications, conference papers, and preprints. Record relevant version chronology when priority matters.
 
-Stop when new queries repeatedly return the same close neighborhood and no new candidate changes the comparison. Do not claim an exhaustive search unless database coverage, query breadth, and screening justify it.
+When priority matters, compare the earliest public version that contains the overlapping substance, not merely the later journal or conference date. State the manuscript reference date used for comparison and classify chronology as earlier, concurrent, later, or indeterminate when the record does not resolve it.
+
+Stop only after the applicable decomposed query families have been searched and two materially different query refinements or citation-neighborhood passes add no candidate that changes the comparison. Do not claim an exhaustive search unless database coverage, query breadth, and screening justify it.
 
 For decisive publications, report a DOI, PMID, arXiv ID, or direct official link. State which publications were already cited, what was verified from full text, and what remains based only on metadata or abstract evidence.

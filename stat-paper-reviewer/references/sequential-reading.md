@@ -46,6 +46,6 @@ Do not reproduce the entire reading trace. Report only sequence failures that ma
 - earliest location;
 - information missing at that point;
 - whether and where it is resolved later;
-- concrete relocation, preflight, or transition fix.
+- a concrete edit specification for relocation, preflight explanation, or transition function.
 
 Preserve this first-reader record after conducting literature searches or repeated readings.

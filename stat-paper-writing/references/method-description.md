@@ -2,7 +2,7 @@
 
 ## Job of the section
 
-Explain what is constructed, why each component is needed, what information it uses, and how the implemented procedure relates to the statistical target.
+Explain what is constructed, why each component is needed, what information it uses, and how the described procedure relates to the statistical target.
 
 ## Diagnose the current draft
 
@@ -23,14 +23,14 @@ Use the following order when applicable:
 1. **Target:** Define the estimand, prediction, decision, or output.
 2. **Available information:** State the data, fitted objects, nuisance estimates, and randomness used.
 3. **Oracle or baseline:** Give the exact or familiar construction that clarifies the goal.
-4. **Obstacle:** Explain why the oracle or baseline is unavailable or inadequate.
-5. **Construction:** Introduce the minimum new object that repairs the obstacle.
+4. **Obstacle:** Explain why the manuscript says the oracle or baseline is unavailable or inadequate.
+5. **Construction:** Introduce the minimum new object that addresses the stated obstacle.
 6. **Formula or algorithm:** State the feasible procedure.
-7. **Interpretation:** Explain the role, sign, units, and effect of each component.
-8. **Operation:** State tuning, complexity, invariances, safeguards, and failure conditions.
-9. **Boundary:** Clarify what is exact, approximate, heuristic, or optional.
+7. **Interpretation:** Explain the role, sign, units, and stated effect of each component.
+8. **Operation:** State tuning, complexity, invariances, safeguards, and failure conditions supplied by the manuscript.
+9. **Boundary:** Clarify what is described as exact, approximate, heuristic, or optional.
 
-Where useful, interpret a central construction at two distinct levels, such as statistical plus geometric, probabilistic, computational, or decision-level. Do not force multiple interpretations or replace a precise mechanism with analogy.
+Where useful, retain two distinct interpretations of a central construction only when both are already present in the manuscript or supplied by the author, such as statistical plus geometric, probabilistic, computational, or decision-level. Do not invent a second interpretation, force multiple interpretations, or replace a precise mechanism with analogy. If an unsupplied interpretation might help, present it as an explicit proposal outside clean manuscript prose and request author confirmation.
 
 ## Move from local to global
 
@@ -48,28 +48,30 @@ Use separate notation and prose for:
 - asymptotic approximation;
 - finite-computation implementation.
 
-State which theorem applies to which layer. Trace information flow when validity depends on sample splitting, cross-fitting, withheld outcomes, reused fitted objects, or algorithmic randomness.
+State which formal result the manuscript associates with each layer. Describe information flow when the manuscript uses sample splitting, cross-fitting, withheld outcomes, reused fitted objects, or algorithmic randomness. Do not infer an unstated validity guarantee.
+
+When supplied material explicitly classifies paired objects as oracle and feasible, state both classifications directly before discussing how the objects are constructed or used. A true-nuisance definition or cross-fitted construction supports the supplied classification, but does not replace its explicit role name.
 
 ## Algorithms
 
-Before pseudocode, state inputs, outputs, target, and stored quantities. Present steps in execution order. Afterward, explain complexity, initialization, stopping, numerical safeguards, and cases where the algorithm cannot return a valid result.
+Before pseudocode, state inputs, outputs, target, and stored quantities. Present steps in execution order. Afterward, report supplied complexity, initialization, stopping, numerical safeguards, and failure conditions.
 
 Keep the statistical construction in the main text. Put software-specific indexing, storage, and extensive safeguards in the appendix.
 
-## If a presentation mode is needed
+Compare formulas, pseudocode, and prose for the same named inputs, operations, tuning choices, and returned object. This is a documentary consistency check, not a determination that code implements the estimator.
 
-- **Compact and direct:** State target, key construction, estimator, and implementation contract with minimal detours.
-- **Explanatory and intuition-led:** Begin with the unavailable quantity or failure, trace the decisive dependence path, objective term, or information constraint in a nondegenerate regime, then formalize the construction.
-- **Formal and structure-led:** Define objects, sigma-fields, conditioning regimes, parameter spaces, and exact versus approximate layers precisely.
-- **Evidence-led and comparative:** Explain the method through the claims later tested, including which component should improve which metric or behavior.
+When these representations conflict, do not infer authority from formality, detail, order, or convention. Record the mismatch, label the unresolved authority **Unverified dependency**, and request author confirmation before changing one representation to match another. A conditional edit may state what would change under each author-confirmed choice, but do not silently choose an objective, algorithm, or returned object.
+
+When a claimed computational property, such as closed form, exactness, convergence, complexity, or implementation equivalence, is not established by the supplied artifacts, label its truth **Unverified dependency**. Do not remove, narrow, affirm, or deny the claim without author confirmation. A conditional alternative may show how the prose would change under each author-confirmed status, but keep it outside completed manuscript text.
 
 ## Review checklist
 
 - What is the target?
 - What information is observed and reused?
 - What is newly fitted or randomized?
-- Why is every term and normalization present?
-- Which choices are necessary and which are convenient?
-- Does the algorithm implement the stated estimator?
-- What happens in a diagnostic boundary or limiting regime?
+- Is the stated role of every term and normalization clear?
+- Which choices are described as necessary and which as convenient?
+- Do the formula, pseudocode, and prose name the same inputs, operations, outputs, and tuning choices?
+- What happens in a stated boundary or limiting regime?
 - Are cost and failure conditions explicit?
+- Are claims about uninspected code behavior marked **Unverified dependency**?

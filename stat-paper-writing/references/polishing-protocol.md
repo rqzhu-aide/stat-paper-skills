@@ -41,21 +41,17 @@ Protect:
 - uncertainty, modality, and causal status;
 - numerical values, units, citations, labels, and cross-references.
 
+Literal form is part of this protection. Unless notation normalization is explicitly authorized, preserve the exact source token or macro rather than substituting a mathematically equivalent typographic form.
+
 If a clearer sentence would require changing one of these items, flag the issue for author judgment rather than hiding the change inside a polish.
+
+An explicitly unsupported promotional or evidentiary qualifier is different from a protected scientific object or conclusion. In a bounded polishing request, remove such a qualifier when its removal leaves a complete supported sentence and does not alter an estimand, causal interpretation, formal statement, numerical finding, or algorithm. Disclose the removal. Do not retain an unsupported guarantee in clean prose merely because establishing it would require additional evidence.
 
 ## 3. Revise in passes
 
-### Pass A: Information order
+Revise from fine to coarse after the diagnostic checks. A later paragraph-level move must not override a protected local distinction.
 
-Place the reader's question, claim, or obstacle before dense detail. Move from familiar context to the new object. Keep the grammatical subject close to the main verb. Introduce notation when it becomes useful rather than far in advance.
-
-Use paragraph order such as:
-
-`question -> claim -> support -> interpretation -> boundary`
-
-Do not impose this pattern mechanically. Retain the existing order when it already makes the dependency clear.
-
-### Pass B: Sentence structure
+### Pass A: Sentence structure
 
 - Give each sentence one controlling assertion, with subordinate clauses serving that assertion.
 - Repair unclear pronouns and demonstratives such as "this" when several antecedents are possible.
@@ -66,6 +62,12 @@ Do not impose this pattern mechanically. Retain the existing order when it alrea
 - Combine choppy fragments when they answer one question.
 - Split a sentence when its logical scope becomes ambiguous, not merely because it is long.
 
+### Pass B: Economy and register
+
+Remove words that do not change meaning, evidence, or navigation. Prefer precise statistical and mathematical verbs. Read [wording-register.md](wording-register.md) only when terminology, tone, evidence verbs, or software-manual register are in scope.
+
+Do not erase a distinctive but professional authorial voice. Do not rewrite an already clear sentence only to make it resemble a generic journal style.
+
 ### Pass C: Cohesion and emphasis
 
 - Keep one canonical term for each object.
@@ -74,12 +76,15 @@ Do not impose this pattern mechanically. Retain the existing order when it alrea
 - Use explicit contrasts for oracle versus feasible, population versus empirical, and exact versus approximate objects.
 - Make transitions state intellectual dependency rather than announce the next section.
 
-### Pass D: Economy and register
+### Pass D: Paragraph information order
 
-Remove words that do not change meaning, evidence, or navigation. Prefer precise statistical and mathematical verbs. Read [wording-register.md](wording-register.md) only when terminology, tone, evidence verbs, or software-manual register are in scope.
+Place the reader's question, claim, or obstacle before dense detail. Move from familiar context to the new object. Keep the grammatical subject close to the main verb. Introduce notation when it becomes useful rather than far in advance.
 
-Do not erase a distinctive but professional authorial voice. Do not rewrite an already clear sentence only to make it resemble a generic journal style.
+Use paragraph order such as:
 
+question -> claim -> support -> interpretation -> boundary
+
+Do not impose this pattern mechanically. Retain the existing order when it already makes the dependency clear.
 ## 4. Statistical prose mechanics
 
 ### Definitions
@@ -90,16 +95,20 @@ State why the object is needed before or immediately after defining it. Keep the
 
 Preserve who assumes what, under which probability law or regime, and for which result. Replace "mild" or "standard" with an interpretation when those descriptions are not justified.
 
+A supplied diagnosis that an assumption is absent does not authorize inserting that assumption into the revision, including in an "if" clause. Keep the missing condition outside clean manuscript prose under the exact label **Unverified dependency:**. Do not substitute a support-gap or author-query label. Do not label the unsupported original claim as polished, revised, clean, suggested, or manuscript-ready prose. If no supported clean wording remains, state that no safe clean revision is available and quote the original only as diagnostic source text outside clean prose. Do not silently weaken, delete, or recast the affected claim. If author-supplied material directly supports a narrower associational, predictive, or descriptive statement, offer it as a proposed replacement that requires author approval rather than as a completed clean edit. Otherwise, do not manufacture a replacement claim.
+
 ### Results
 
-Use a precise verb for the evidence level:
+Use a precise verb only when the manuscript's stated result or author-supplied material supports that evidence level:
 
-- **proves** or **establishes under the stated assumptions** for a formal result;
-- **shows in the reported settings** for a numerical result;
-- **suggests** or **is consistent with** for an empirical pattern;
-- **conjectures** or **motivates** for an unproved mechanism.
+- preserve **proves** or **establishes under the stated assumptions** in theorem-result exposition when the manuscript already assigns that status to the formal result, but not as an editorial endorsement that a supplied proof step completes the proof;
+- use **shows in the reported settings** for a supplied numerical result;
+- use **suggests** or **is consistent with** for a supplied empirical pattern;
+- use **conjectures** or **motivates** for a mechanism presented as unproved.
 
-Do not change "may," "can," "typically," or "under Assumption 2" without checking whether the stronger statement is supported.
+Do not upgrade **states**, **claims**, or **asserts** to **proves** or **establishes** merely because the text contains a theorem environment or a proof. Do not change "may," "can," "typically," or "under Assumption 2" without documentary support for the stronger statement.
+
+In editor-authored clean proof prose, never use or retain "this proves the theorem," "this completes the proof," "completes the proof," "hence proves," or an equivalent proof-completion claim. When supplied textual evidence makes clear that the sentence is only rhetorical closure and its removal changes no mathematical claim, replace it with the exact nonvalidating sentence "This is the stated conclusion." Otherwise, leave the supplied source sentence unchanged, keep it outside any proposed clean revision, and report **Unverified dependency:**. Do not substitute another completion claim such as "This is the claimed conclusion and completes the proof."
 
 ### Comparisons
 

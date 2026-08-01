@@ -2,7 +2,7 @@
 
 ## Job of the section
 
-Explain what the paper changes in statistical understanding or practice, how strongly the evidence supports that change, where it stops, and what follows next.
+Explain what the paper changes in statistical understanding or practice, how strongly the supplied results support that change, where it stops, and what follows next.
 
 ## Diagnose the current draft
 
@@ -12,7 +12,7 @@ Look for:
 - a generic paragraph claiming broad impact;
 - limitations detached from the claims they weaken;
 - future work listed without connection to unresolved mechanisms;
-- practical recommendations stronger than the theory or experiments support;
+- practical recommendations stronger than the formal statements or experiments;
 - no distinction between conceptual and practical contribution.
 
 ## Core architecture
@@ -20,11 +20,11 @@ Look for:
 Use these functions:
 
 1. **Main understanding:** State the central statistical lesson, not only the method name.
-2. **Practical capability:** Explain what analysis, decision, or computation is now possible.
-3. **Evidence strength:** Distinguish what is proved, simulated, observed, or conjectured.
-4. **Use conditions:** State when the method is most informative or appropriate.
+2. **Practical capability:** Explain what analysis, decision, or computation is now possible according to the supplied material.
+3. **Evidence strength:** Distinguish what is stated formally, simulated, observed, or conjectured.
+4. **Use conditions:** State when the method is described as most informative or appropriate.
 5. **Limitations by mechanism:** Identify which link weakens and how conclusions change.
-6. **Transferability:** Separate components that transfer directly from those needing a new target, nuisance model, algorithm, or proof.
+6. **Transferability:** Separate components that transfer directly from those needing a new target, nuisance model, algorithm, or formal result.
 7. **Next question:** Derive future work from a concrete unresolved issue.
 
 ## Limitations
@@ -32,30 +32,23 @@ Use these functions:
 Attach each limitation to a claim. Useful forms include:
 
 - the target omits a component relevant in some settings;
-- the theorem applies to an oracle rather than the feasible procedure;
-- robustness is demonstrated only over a limited perturbation set;
+- the stated theorem concerns an oracle rather than the feasible procedure;
+- robustness is reported only over a limited perturbation set;
 - computation scales poorly in a governing dimension;
 - interpretation is associational rather than causal;
 - the empirical study cannot distinguish two mechanisms.
 
-State direction when known: conservative, anti-conservative, unstable, unidentified, or computationally prohibitive.
+State direction only when supplied: conservative, anti-conservative, unstable, unidentified, or computationally prohibitive.
 
 ## Future work
 
-For each extension, state what new ingredient is required. Avoid saying only that the method could be extended to more models or data.
-
-## If a presentation mode is needed
-
-- **Compact and direct:** Give the main lesson, practical condition, strongest limitation, and next step without retelling results.
-- **Explanatory and intuition-led:** Return to the motivating tension and synthesize which mechanism, dependence path, or tradeoff the paper has clarified.
-- **Formal and structure-led:** Separate proved scope, unproved extensions, assumption-sensitive claims, and open theoretical links.
-- **Evidence-led and comparative:** Summarize what the comparisons establish, where results are uncertain, and what decision changes under the evidence.
+For each extension, state what new ingredient the manuscript identifies as required. Avoid saying only that the method could be extended to more models or data.
 
 ## Review checklist
 
 - Does the discussion add synthesis rather than summary?
 - Are conceptual and practical contributions distinguished?
 - Is every limitation connected to a central claim?
-- Are recommendations calibrated to the evidence?
+- Are recommendations calibrated to supplied evidence?
 - Does future work identify the missing mathematical, computational, or empirical ingredient?
-- Is the selected mode consistent with the paper's depth and audience?
+- Does the discussion preserve the theorem scopes and empirical boundaries stated earlier?

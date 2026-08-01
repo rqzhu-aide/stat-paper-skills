@@ -12,6 +12,8 @@ Keep it subordinate to the statistical review. Broad interest cannot compensate 
 
 Ask whether the main scientific or methodological conclusion is genuinely distinct from close work. When originality is part of the requested assessment, apply [novelty-verification.md](novelty-verification.md). Treat novelty as provisional unless the relevant literature and the manuscript's central citations have been checked.
 
+If no external comparison was performed, assess only how clearly the manuscript presents its claimed distinction. Mark actual originality unassessed and do not assign it a numerical score.
+
 ### Scientific importance
 
 Distinguish:
@@ -31,6 +33,14 @@ Do not broaden the audience by listing fields without showing the connection.
 ### Immediate and longer-term implications
 
 Separate implications demonstrated by the manuscript from plausible future influence. A potentially far-reaching technique is not yet a demonstrated broad scientific result.
+
+If scores are requested, keep demonstrated broad significance separate from plausible future reach.
+
+### Venue fit
+
+When a named-venue score is requested, first verify that the criteria are current and official, whether they were supplied by the user or obtained from the venue. Record the authoritative source and access date. If current official criteria cannot be verified, do not assign a venue-fit score; provide a qualitative general fit assessment and label its boundary.
+
+Apply [scoring-rubric.md](scoring-rubric.md) to any requested scores. Broad interest, readability, or projected influence cannot compensate for an unestablished technical case.
 
 ### Readability for nonspecialists
 

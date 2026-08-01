@@ -18,13 +18,13 @@ Check:
 - whether the paper defines a meaningful statistical, inferential, predictive, computational, or interpretive target;
 - whether the gap is a missing capability rather than only an asserted absence of prior papers;
 - whether an identity, estimator, algorithm, theorem, and application are presented as a dependency chain rather than competing contributions;
-- whether novelty is located precisely in the target, representation, observability, computation, guarantee, evidence, or interpretation;
+- whether the claimed distinction is located precisely in the target, representation, observability, computation, guarantee, evidence, or interpretation;
 - whether the closest cited literature is described fairly and the claimed distinction is supported;
-- whether external search identifies a closer publication that the manuscript omits or distinguishes incorrectly.
+- when actual novelty is in scope, whether external search identifies a closer publication that the manuscript omits or distinguishes incorrectly.
 
 Flag a contribution-identity problem when the paper contains several technically valid pieces but no clear organizing statistical principle.
 
-Do not declare a novelty claim established without adequate literature evidence. Use [novelty-verification.md](novelty-verification.md) when novelty is in scope, and state what remains unsearched or unavailable.
+Distinguish clarity of the manuscript's positioning from actual novelty. Use [novelty-verification.md](novelty-verification.md) for any actual novelty, originality, or priority judgment or score. Without external comparison, assess positioning only and label substantive novelty unassessed.
 
 ## 2. Statistical target and method
 
@@ -76,8 +76,8 @@ Separate theorem exposition from proof verification. An unclear proof is not aut
 
 Map each central claim to its visible support:
 
-| Claim | Required support | Evidence shown | Gap |
-|---|---|---|---|
+| Claim | Provenance | Support status | Required support | Evidence shown | Gap |
+|---|---|---|---|---|---|
 
 Evaluate:
 
@@ -107,9 +107,13 @@ Assess whether the reader can recover:
 
 Judge these questions first in manuscript order. Record delayed definitions or explanations at the point where the reader first needs them, even if later text eventually resolves the issue. Use [sequential-reading.md](sequential-reading.md) for a full first-reader pass.
 
-Flag software-manual prose when it obscures statistical objects. Flag unexplained jargon, formula-first exposition, unranked contribution lists, disconnected theorem catalogues, and result-by-result narration.
+Treat software-manual prose, unexplained jargon, formula-first exposition, unranked contribution lists, disconnected theorem catalogues, and result-by-result narration as findings only when they materially obscure a statistical object, consequential claim, dependency, evidentiary interpretation, reproducibility requirement, or paper-level contribution.
 
-Do not turn reviewer comments into comprehensive copyediting. Give examples only when they reveal a recurring problem or clarify the required revision.
+Also notice whether fluent prose repeatedly loses the exact statistical object, action, evidence, or boundary; drifts across sections; retains drafting residue; or repeats one rhetorical shell without advancing the argument. These are claim-traceability problems before they are questions about writing provenance. When the user requests an AI-writing assessment, or a recurrent pattern survives cross-section reconstruction, apply [ai-writing-alarm.md](ai-writing-alarm.md). Do not infer authorship from surface style.
+
+Report exposition problems only when they materially affect comprehension of a consequential claim, claim traceability, validity assessment, evidentiary interpretation, reproducibility, professional readiness, or reviewer confidence. Omit isolated style preferences and pure copyediting even when the user asks for detailed language comments. Do not include an otherwise clear sentence merely because it is awkward, redundant, inelegant, or wordy.
+
+Give an edit specification rather than replacement prose. State the affected location, intended effect, content that must change, and any scientific or verification dependency.
 
 ## 6. Priority synthesis
 
@@ -120,11 +124,11 @@ Rank issues in this order unless the manuscript justifies another order:
 3. assumptions and theorem-method alignment;
 4. evidence for the headline claim;
 5. application meaning and practical calibration;
-6. exposition, navigation, and local polish.
+6. consequential exposition, navigation, and reproducibility.
 
 For each high-priority issue, distinguish the remedy:
 
-- **Rewrite:** the necessary content exists but is poorly expressed or organized.
+- **Rewrite:** the necessary content exists but its presentation must change; specify the affected content without drafting it.
 - **Reanalysis:** existing data or results need another analysis or comparison.
 - **New evidence:** an experiment, dataset, control, sensitivity study, or benchmark is missing.
 - **New theory:** the formal support required by the central claim is absent.

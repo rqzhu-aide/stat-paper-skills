@@ -1,75 +1,75 @@
-# Theoretical Proof Guidance
+# Proof Presentation Guidance
 
 ## Job of the section
 
-Make the logical mechanism verifiable. A proof should show why the result follows, where assumptions enter, and how intermediate claims depend on one another.
+Make the supplied proof exposition navigable and document how the manuscript says the result follows, where assumptions enter, and how named intermediate statements depend on one another.
 
-Separate exposition review from correctness verification. Do not report a proof as verified unless every nontrivial step, dependency, and assumption use has been checked.
+This is a presentation-only review. Preserve hypotheses, quantifiers, domains, conclusions, equations, proof steps, stochastic orders, and logical direction. Do not certify validity, completeness, or correctness. Do not add a missing mathematical justification. If clearer exposition would require changing mathematical content, identify the exact conflict and leave it for author judgment.
 
-## Start with a dependency map
+## Start with a declared dependency map
 
 For a proof section or appendix, record:
 
-| Result | Direct dependencies | Main device | Assumptions used |
+| Result | Stated direct dependencies | Stated main device | Assumptions cited |
 |---|---|---|---|
 
-Order proofs by main-text theorem order unless a shared technical foundation makes dependency order clearer.
+Use only dependencies stated in the manuscript or unambiguous from its labels and cross-references. Do not infer a missing dependency from subject-matter expectations.
+
+Order proofs by main-text theorem order unless a shared technical foundation makes the declared dependency order clearer.
 
 ## Proof roadmap
 
-Begin a substantial proof with:
+Begin a substantial proof with the manuscript's stated:
 
-1. the central decomposition, coupling, reduction, or contradiction;
-2. the intermediate claims required;
-3. the point at which the main assumptions enter;
-4. the step containing the main difficulty.
+1. central decomposition, coupling, reduction, or contradiction;
+2. intermediate claims;
+3. points at which named assumptions enter;
+4. step described as the main difficulty.
 
-This roadmap should explain strategy, not repeat the theorem.
+The roadmap should explain strategy without asserting that the argument is valid or repeating the theorem.
 
 ## Proof body
 
-Give each block a mathematical purpose, such as:
+Give each block a clear declared purpose, such as:
 
-- establish identification or orthogonality;
+- establish an identification or orthogonality statement;
 - control a bias or remainder;
-- verify a regularity or measurability condition;
-- derive concentration or a stochastic order;
-- transfer an oracle result to a feasible estimator;
-- apply a limit theorem;
+- state a regularity or measurability condition;
+- derive a concentration statement or stochastic order;
+- transfer a stated oracle result to a feasible estimator;
+- invoke a named limit theorem;
 - construct a counterexample or lower bound.
 
-Keep notation local. State conditioning and randomness explicitly. When exchanging limits, expectations, derivatives, or integrals, name the justification when it is not immediate.
+Keep notation local. State conditioning and randomness explicitly when they are already determined by the manuscript. When the proof exchanges limits, expectations, derivatives, or integrals, name the justification if the manuscript supplies one. If it does not, flag the missing exposition as **Unverified dependency** rather than supplying a theorem or argument.
+
+Remove rhetorical shortcuts such as "clearly," "obviously," or "it is easy to see" when they replace explanation. Do not compensate by inventing a derivation.
+
+In editor-authored clean proof prose, never use or retain "this proves the theorem," "this completes the proof," "completes the proof," "hence proves," or an equivalent proof-completion claim. When supplied textual evidence makes clear that the sentence is only rhetorical closure and its removal changes no mathematical claim, replace it with the exact nonvalidating sentence "This is the stated conclusion." Otherwise, leave the supplied source sentence unchanged, keep it outside any proposed clean revision, and report **Unverified dependency:**. Do not substitute another completion claim such as "This is the claimed conclusion and completes the proof."
 
 ## Lemmas
 
-Place a lemma near its first use when it is local. Group lemmas only when several proofs reuse them. Do not promote routine algebra to a formal result.
+Place a lemma near its first declared use when it is local. Group lemmas only when several proofs visibly cite them. Do not promote routine algebra to a formal result merely for presentation.
 
-Separate method assumptions from conditions introduced only to prove a lemma.
+Keep method assumptions distinct from conditions introduced only in a lemma. Preserve their labels and stated scopes.
 
 ## Main text versus appendix
 
 Keep in the main text:
 
 - the proof idea needed to understand the method;
-- the main decomposition or geometric argument;
-- the role of central assumptions;
+- the stated main decomposition or geometric argument;
+- the described role of central assumptions;
 - a boundary example when it changes interpretation.
 
-Move routine algebra, repeated bounds, technical concentration, and auxiliary lemmas to the appendix. See [appendix-architecture.md](appendix-architecture.md) for the full supplement structure.
+Move routine algebra, repeated bounds, technical concentration details, and auxiliary lemmas to the appendix when the dependency chain and cross-references remain clear. See [appendix-architecture.md](appendix-architecture.md).
 
-## If a presentation mode is needed
+## Presentation checklist
 
-- **Compact and direct:** Use a short roadmap, combine routine steps, and retain all nontrivial justifications.
-- **Explanatory and intuition-led:** Expose the invariant, decomposition, geometry, coupling, or conditioning argument in a stripped but nondegenerate regime before the general derivation. Do not remove the interaction that makes the proof difficult.
-- **Formal and structure-led:** Expose dependencies, scopes, constants, conditioning, and assumption use step by step.
-- **Evidence-led and comparative:** Use only when the proof explains a testable mechanism or comparison; connect the proved term to the later empirical diagnostic without inserting results into the proof.
-
-## Review checklist
-
-- Can the proof strategy be stated in two or three sentences?
-- Does every intermediate result have a dependency role?
-- Are all assumptions used where claimed?
-- Are probability spaces, conditioning, and convergence operations clear?
-- Does the final step match the theorem statement exactly?
-- Has any unproved intuition been presented as a formal implication?
-- Is the main text sufficient to understand why the theorem supports the method?
+- Can the stated proof strategy be summarized in two or three sentences?
+- Does every named intermediate result have a visible reference and declared role?
+- Are assumption labels and described roles consistent across the theorem, roadmap, and proof?
+- Are probability spaces, conditioning, and convergence terms introduced consistently?
+- Does the final paragraph refer to the same written conclusion, rate, and scope as the theorem statement?
+- Has any heuristic or intuition been presented as a formal implication?
+- Is the main text sufficient to understand why the manuscript says the theorem supports the method?
+- Does the output avoid any judgment about proof validity?

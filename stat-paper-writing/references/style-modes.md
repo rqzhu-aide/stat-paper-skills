@@ -40,14 +40,14 @@ Choose the mode that fixes the dominant reader problem. Do not choose the most e
 
 ### Tie-breaking
 
-When several modes appear useful, use this priority:
+When several modes appear useful, use this tie-breaking order:
 
 1. Resolve ambiguity about the target, assumptions, scope, or mathematical claim.
 2. Repair missing conceptual understanding.
 3. Connect claims to adequate evidence.
 4. Compress only after the necessary logic and support are present.
 
-This priority determines what to repair first, not the permanent mode of the section.
+This order determines what to repair first, not the permanent mode of the section.
 
 ## Compact and direct
 
@@ -83,7 +83,7 @@ Use when statistically trained readers need the structural mechanism before dens
 
 Assume graduate-level statistical maturity unless the manuscript specifies another audience. Explain the paper-specific difficulty, not standard background that the intended reader already knows.
 
-Choose an example or intuition that preserves the mechanism being explained. Prefer, in order:
+Choose an example or intuition that preserves the mechanism being explained. Use only a regime, decomposition, interpretation, or numerical illustration already present in the manuscript or supplied by the author. If a new one might help, describe it as an explicit proposal outside clean manuscript prose and request author confirmation before inserting it. Prefer, in order:
 
 1. a limiting or boundary regime in which the key term becomes visible;
 2. two nearby regimes that differ in one assumption, dependence path, or information constraint;
@@ -133,7 +133,7 @@ Use when correctness depends on careful scopes, conditioning, identification, th
 - State quantifiers, conditioning, and convergence modes.
 - Separate method assumptions from proof-only conditions.
 - Use explicit dependency transitions.
-- Distinguish necessary, sufficient, and convenient conditions.
+- Preserve and clarify the manuscript's stated classification of conditions as necessary, sufficient, or convenient; do not infer those roles.
 
 ### Risk
 
@@ -163,7 +163,7 @@ Use when the manuscript's contribution is judged through accuracy, robustness, c
 
 ### Risk
 
-Do not let empirical organization replace method explanation. The reader must still know what changed and why the comparison is fair.
+Do not let empirical organization replace method explanation. The reader must still know what changed and which supplied design features establish the stated comparison basis. Do not judge fairness beyond the documented design.
 
 ## Combining modes
 

@@ -40,19 +40,25 @@ Use a compact matrix for the manuscript and the closest verified publications:
 | Work | Status and date | Target/regime | Main construction | Assumptions | Guarantee | Evidence/application | Overlap and distinction | Cited? |
 |---|---|---|---|---|---|---|---|---|
 
-Compare the intellectual contribution rather than surface vocabulary. Determine whether the manuscript's contribution is:
+Compare the intellectual contribution rather than surface vocabulary. Report separate, nonexclusive fields:
 
-- supported as stated;
-- real but narrower than stated;
-- primarily a new combination, implementation, proof, extension, or interpretation;
-- anticipated by cited work;
-- challenged by an uncited close publication;
-- not assessable from available evidence.
+- **Evidence coverage:** decisive full text inspected, abstract-limited, metadata-only, or not assessed.
+- **Overlap status:** distinction supported relative to the verified comparison set; narrower than claimed; anticipated by cited work; challenged by uncited close work; or indeterminate.
+- **Contribution form:** new target, construction, guarantee, evidence, application, combination, implementation, proof, extension, or interpretation.
+- **Citation status:** cited and distinguished fairly; cited but distinguished inadequately; found independently and uncited; or not assessable.
 
-Prefer a precise narrower claim over unsupported "first," "unique," or "no existing method" language.
+When no closer publication is identified, say:
+
+> No closer work was identified within the documented search boundary.
+
+Do not translate this result into proof that the paper is first, unique, or globally novel. Prefer a precise narrower claim over unsupported "first," "unique," or "no existing method" language.
 
 ## 4. Report a bounded conclusion
 
-Report the exact claim assessed, manuscript citations verified, closest external publications, substantive comparison, whether decisive publications were cited, sources and query concepts, search date, access limits, and calibrated conclusion.
+Report the exact claim assessed, manuscript citations verified, closest external publications, substantive comparison, evidence-coverage level, sources and query concepts, search date, access limits, and calibrated conclusion. Give every decisive publication's verified DOI, PMID, arXiv ID, or direct official link. When external verification is unavailable or excluded, classify supplied items as packet-only comparators rather than verified decisive publications, retain their supplied identifiers with an explicit `not independently verified` label, and keep substantive novelty provisional or unassessed within the packet boundary. State citation status explicitly. Use `cited by the manuscript`, `found independently and uncited` for independently discovered work, or `supplied in the packet and uncited` for an uncited packet-only comparator; do not leave the status implicit.
+
+Keep verification status separate from discovery and citation status. If a packet says that a work was found independently and is uncited, preserve `found independently and uncited` even when the reviewer cannot independently verify the record. Do not reclassify its discovery channel merely because the record was relayed in an offline packet.
+
+For each decisive comparator, expose both axes as explicit fields: `Verification status:` and `Discovery/citation status:`. Do not let chronology or the word `uncited` stand in for the supplied discovery status.
 
 Keep first-reader and literature judgments separate. The sequential pass asks whether the manuscript makes its novelty case clearly when encountered. The search pass asks whether that case survives comparison with real publications.
