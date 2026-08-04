@@ -1,0 +1,238 @@
+# Proof-System Audit
+
+## 1. Build the inventory
+
+Index every formal statement, definition, assumption, named event, important equation, proof range, label, and external theorem citation. Record exact locations and parser limitations. Snapshot every file in the static LaTeX include closure. Reconcile the generated inventory against custom theorem environments, macros, generated content, and the rendered document before marking it reviewed.
+
+Review proof associations in the parser's precedence order: explicit named
+proof headers, strict navigation-only forwarding proofs, then physical
+adjacency. Treat a forwarding association marked `review_required` as
+unconfirmed until its target and bounded proof region agree with the rendered
+source. Record a `proof_association` override for that confirmation. Use a
+`proof_location` override only for a genuine parser miss, reviewed replacement,
+or explicit rejection. A manual unit binds its reviewed inventory record with
+`reviewed_unit_sha256`. To reject a parser proof candidate, set the reviewed
+proof to null and the reviewed association to status `rejected`, method
+`reviewed_rejection`, the same target, and an empty evidence-occurrence list.
+Source-lock and rescan any changed span, reject overlaps, and reconcile its
+exact reference occurrences, dependencies, and citations. Do not carry parser
+evidence over from the old span.
+
+Treat parser-generated internal-dependency candidates as advisory evidence that
+must be reconciled, not as declared dependency uses. Candidates may come from
+owned proof references, references in the formal statement, or a reference to a
+uniquely labeled display-math block in a safely bounded unowned proof
+derivation. For the last case, trace the bounded cross-reference path in the
+source. Do not promote a reference across a heading, formal statement, owned
+proof, duplicate label, ambiguous label, cycle, or unbounded source region.
+
+Reconcile `cross_reference_reviews` one-to-one with the current broken-reference
+and duplicate-label records. Orphan labels do not require review rows. Copy each
+anomaly's `kind`, `key`, and exact `locations`; then record `status` as
+`passed`, `defect`, or `inconclusive`, with substantive `evidence`, valid
+`affected_units`, and canonical `issue_ids`. Do not retain a row for an anomaly
+that no longer exists or omit a newly detected anomaly.
+
+For each formal result, record:
+
+- statement and scope;
+- explicit and inherited assumptions;
+- direct dependencies;
+- downstream use sites;
+- constants, rates, domains, and probability level;
+- local-check status.
+
+Also review the method-interface trigger. Inventory each load-bearing estimated object only when it meets the trigger in `SKILL.md`. Do not turn every oracle nuisance or routine computation into a software audit.
+
+For `depth: full`, put every inventory unit with `proof_required: true` in
+`audit_scope.in_scope_units`. Do not exclude a proof-required result because its
+proof is absent or defective. Audit it and record the resulting gap, incorrect,
+or unclear status. Continue to classify every non-proof-required unit as either
+in scope or explicitly excluded.
+
+For `depth: focused`, set a nonempty ordered `audit_scope.target_units` list.
+Set `in_scope_units` to exactly those targets plus every transitive internal
+prerequisite reached from their result-use records. A focused scope is invalid
+if it omits a reachable prerequisite or includes an unrelated result.
+
+## 2. Build the canonical dependency record
+
+Use ledger `direct_dependencies` plus
+`audit/03_dependencies/DEPENDENCY_REGISTRY.json` as the machine-readable
+canonical record. Use `closure_contract_version: 2`. Treat the Markdown table
+and graph as reviewed views, not alternate records.
+
+Set the registry `review` object only after reviewing the complete current
+assembly. Record:
+
+- `status: reviewed`;
+- `source_snapshot_sha256` equal to the manifest source snapshot;
+- `inventory_sha256` equal to the current theorem inventory file hash;
+- `in_scope_units` equal to the manifest list exactly;
+- substantive `evidence` describing the review.
+
+Any mismatch makes the registry stale. Rebind and recheck it after the source
+snapshot, inventory, or scope changes.
+
+Record every direct internal dependency exactly once in `internal_uses`. Use one
+row per `(dependent_unit, use_id)` pair, with a `Dxxx` use ID that matches the
+dependent ledger. Each row must contain:
+
+- `dependent_unit`, `use_id`, and `dependency_id`;
+- the exact `dependency_conclusion_id` naming a `Cxxx` conclusion in the
+  referenced ledger;
+- `step_ids` equal to the exact invoking ledger-step set;
+- `needed_form` equal to the ledger direct-dependency value;
+- `dependency_conclusion` equal to that conclusion record's exact claim;
+- `dependency_contract_sha256` equal to the hash of that conclusion's locked
+  contract payload, including its applicability pointers;
+- the same substantive `compatibility_check` used by the ledger;
+- `compatibility_checks`, with exactly one row for each required aspect;
+- the mechanically derived `status` and all canonical `issue_ids`.
+
+Use these eight compatibility aspects exactly:
+
+1. `quantifiers_and_domains`
+2. `probability_model`
+3. `hypotheses`
+4. `definitions`
+5. `conclusion`
+6. `uniformity`
+7. `regime`
+8. `constant_dependencies`
+
+For each row, record `aspect`, `status`, substantive `evidence`, and
+`issue_ids`. Use only `passed`, `not_applicable`, `conditional`, `gap`,
+`incorrect`, `unclear`, or `unchecked`. Use `not_applicable` only with an exact
+paper-specific reason. Link every nonclean finding to the issue records required
+by its status. The use status must be the status derived from the referenced
+result's availability and this complete matrix, and it must match the direct
+ledger record.
+
+Derive internal availability from the named conclusion's own contract fidelity,
+argument status, statement status, and dependency closure. Do not borrow a
+stronger status from another conclusion, and do not let the unit-level weakest
+summary downgrade an independent conclusion. An established conclusion supplies
+`verified` only when its contract, argument, and dependency closure are each
+verified; any conditional component supplies at most `conditional`. A refuted
+conclusion supplies `incorrect`. A `not_established` conclusion supplies `gap`,
+including when the written argument is invalid but the conclusion is not
+refuted. An unclear or unassessed conclusion supplies `unclear` or `unchecked`,
+respectively. Never turn an invalid proof into a claim that the conclusion is
+false.
+
+Store each external theorem once in `external_results`, lock the inspected
+source evidence, and record every manuscript use separately. Apply the exact
+per-use rules in
+[external-result-verification.md](external-result-verification.md). Reconcile
+all internal and external use rows one-to-one with ledger direct dependencies,
+invoking steps, citation dispositions, needed forms, statuses, and issues.
+Reject unused or stale registry rows.
+
+Build the internal graph from the reviewed use rows. Draw arrows from each
+prerequisite to its dependent result. Reject unknown IDs, namespace collisions,
+self-dependencies, duplicate uses, cycles, stale obligation hashes, and status
+mismatches. Propagate every nonverified dependency status and every open or
+deferred load-bearing issue through the dependent closure. A downstream result
+cannot remain verified after a load-bearing prerequisite becomes conditional,
+gap, incorrect, unclear, or unchecked.
+
+Reconcile the parser's proof-level reference occurrences and citation lists
+against the registry and each ledger. Every reference occurrence has one exact
+disposition keyed by its parser `occurrence_id`, target, and command.
+Load-bearing formal-result occurrences must resolve through label ownership to
+an internal `Dxxx` use, including equation labels owned by another result. Load-bearing
+citations must resolve to external uses. Self-identification, navigation,
+local-step, obligation-context, and non-load-bearing occurrences require their
+specific evidence and links. Do not allow omission from a ledger or registry
+to erase a source-declared dependency, and do not create a self-edge from a
+header or navigation occurrence.
+## 3. Maintain cross-cutting ledgers
+
+Maintain only ledgers that the paper needs:
+
+- **Assumptions:** statement, scope, use sites, strength needed, sufficiency.
+- **Notation:** symbol, type, domain, first definition, later uses, drift.
+- **Constants and rates:** allowed dependencies, fixed or changing, propagation.
+- **Events:** definition, probability, conditioning, intersections, use sites.
+- **External results:** exact theorem, source version, assumptions, mapped use.
+- **Method interfaces:** population target, fitting laws, marginal relationships, evaluation sites, downstream uses, and separately scoped implementation evidence.
+
+Update ledgers during local checking. Do not build exhaustive tables that never affect verification.
+
+## 4. Check the critical path first
+
+Trace the main theorem backward to base assumptions. Prioritize the final assembly proof, highly reused lemmas, and results carrying probability, rates, optimization, or external-theorem dependence.
+
+If a critical dependency fails, mark downstream units blocked or conditional. Continue only when checking them can independently expose useful issues.
+
+## 5. Run the global consistency pass
+
+After local checks, complete `completion.global_consistency_pass.checks` with
+exactly these eight aspects:
+
+1. `source_resolution`
+2. `assumption_and_definition_propagation`
+3. `notation_domain_and_dimension`
+4. `constants_and_rates`
+5. `probability_events_and_conditioning`
+6. `quantifiers_uniformity_and_regime`
+7. `use_site_sufficiency`
+8. `issue_propagation`
+
+Each row contains `aspect`, `status`, substantive `evidence`, `affected_units`,
+and `issue_ids`. Use only `passed`, `not_applicable`, `defect`, or
+`inconclusive`. Keep the aspect set exact, without duplicates. A `defect` or
+`inconclusive` row must identify its affected in-scope units and canonical
+issues. Use `not_applicable` only when the evidence explains why the aspect is
+absent from the checked scope. A `no_defect_found` assessment requires every
+row to be `passed` or specifically `not_applicable`.
+
+Use the matrix to test statement versus proof conclusion, proof conclusion
+versus later use, assumption propagation, notation and measure stability,
+event intersections, failure-probability accumulation, hidden constants, rate
+composition, quantifier order, uniformity, finite-sample versus asymptotic
+scope, and issue propagation through the main chain. Keep method-interface
+consistency in its canonical registry while reflecting any load-bearing result
+impact in the relevant global rows.
+
+Local validity does not imply global sufficiency.
+
+## 6. Run the adversarial and independent passes
+
+Try boundary and degenerate cases, including zero variance, singular matrices, smallest sample size, dimension one, boundary parameters, nonunique optimizers, heavy tails, empty events, equality cases, and failed regularity.
+
+Remove or weaken each assumption and identify the first proof step that fails. Search for the smallest counterexample that distinguishes the claimed statement from the proved statement.
+
+Use [domain-risk-checks.md](domain-risk-checks.md) only for domains actually present.
+
+For the main theorem chain, highly reused lemmas, and units carrying an S0 or S1 concern, run a fresh-context challenger without exposing the primary verdict or proposed repair. Preserve the challenger artifact and reconcile disagreements. If a second pass is unavailable, disclose the audit as single-pass and do not claim independent confirmation.
+
+## 7. Apply completion gates
+
+A full audit is complete only when:
+
+- every proof-required inventory unit is in scope and has one current,
+  source-locked ledger;
+- every physical line is covered exactly once;
+- the closure registry is reviewed against the exact source snapshot, inventory
+  hash, and in-scope unit set;
+- every internal and external dependency use has one exact registry row, a
+  complete compatibility record, a derived status, and current evidence;
+- every internal use binds one exact dependency conclusion and current
+  per-conclusion contract hash;
+- every conclusion has one exact support closure and dependency-use set;
+- cycles, stale contract hashes, unused records, and status mismatches are
+  absent;
+- the exact global consistency matrix is complete;
+- every open or deferred load-bearing issue is propagated to the exact affected
+  result set;
+- every critical unit has a reconciled independent challenger record;
+- canonical issue and method-interface consistency passes;
+- `PROGRESS.json` exactly matches the source snapshot, scope, unit statuses, and
+  open S0 and S1 issue set;
+- the final report exactly reconciles canonical unit, dependency, issue, scope,
+  and protocol fields;
+- checked and unchecked scope is explicit.
+
+Run `proofcheck.py finalize --root <audit-root>` after completing the final report and progress state. A passing result means the declared non-formal audit records passed the mechanical closure checks. It does not certify kernel-checked mathematical truth.
