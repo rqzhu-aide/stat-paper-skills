@@ -151,20 +151,28 @@ python scripts/proofcheck.py ledger-check proofcheck-audit/audit/04_local_checks
 
 The local validator checks source coverage, hashes, record closure, exact links, statuses, and internal consistency. It does not establish mathematical truth or audit-wide dependency closure. Fix the record or downgrade the claim. Do not edit validator output to conceal a failure.
 
-Keep `ISSUE_LOG.json` as the only issue-definition source. Propagate every open or deferred load-bearing issue through the exact dependent closure. At source changes, session boundaries, or handoff, update and check the state described in [state-and-reporting.md](references/state-and-reporting.md):
+After every completed ledger, at every session boundary, and before handoff, write a deterministic checkpoint. Choose exactly one active-unit option and state the specific next action:
+
+```bash
+python scripts/proofcheck.py checkpoint --root proofcheck-audit --active-unit <unit-id> --next-action "<specific action>"
+python scripts/proofcheck.py checkpoint --root proofcheck-audit --clear-active-unit --next-action "<specific action>"
+```
+
+Keep `ISSUE_LOG.json` as the only issue-definition source. Propagate every open or deferred load-bearing issue through the exact dependent closure. At source changes, session boundaries, or handoff, refresh the issue summary, checkpoint the current state, and inspect it as described in [state-and-reporting.md](references/state-and-reporting.md):
 
 ```bash
 python scripts/proofcheck.py issues --root proofcheck-audit --write-summary
 python scripts/proofcheck.py status --root proofcheck-audit
 ```
 
-Use the `status` preflight to identify remaining gate errors. Do not trust stale source, evidence, registry, progress, or finalization hashes.
+Use the concise, work-in-progress-aware `status` preflight to identify the current state and next action. Add `--verbose` when full gate diagnostics are needed. Concise output does not weaken strict validation. Do not trust stale source, evidence, registry, progress, or finalization hashes.
 
 ### 8. Finalize and report
 
-After scope, ledgers, dependencies, issues, global checks, progress, and critical challenges are complete, run:
+After scope, ledgers, dependencies, issues, global checks, progress, and critical challenges are complete, write the final checkpoint and run:
 
 ```bash
+python scripts/proofcheck.py checkpoint --root proofcheck-audit --clear-active-unit --next-action "Run final issue reconciliation and finalization."
 python scripts/proofcheck.py issues --root proofcheck-audit --write-summary --final
 python scripts/proofcheck.py finalize --root proofcheck-audit
 ```

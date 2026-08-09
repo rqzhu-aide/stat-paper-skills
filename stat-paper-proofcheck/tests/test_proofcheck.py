@@ -1768,6 +1768,250 @@ class FinalizationTests(unittest.TestCase):
         errors, _ = proofcheck.check_ledger_data(ledger_path, True)
         self.assertEqual([], errors)
 
+    def test_checkpoint_derives_partitions_and_preserves_resume_fields(self) -> None:
+        complete_path = self.make_complete_audit()
+        complete = read_json(complete_path)
+        ledger_dir = complete_path.parent
+
+        conditional = json.loads(json.dumps(complete))
+        conditional["unit_id"] = "lem:conditional"
+        conditional_step = self.mark_s003_conditional(conditional)
+        conditional_step["side_conditions"] = [
+            {
+                "id": "SC001",
+                "generated_by": "M001",
+                "condition": "Assume x lies in the required support.",
+                "status": "open",
+            }
+        ]
+        conditional_step["conditions"] = [
+            {
+                "kind": "side_condition",
+                "reference": "SC001",
+                "condition": "Validity is conditional on the stated support condition.",
+            }
+        ]
+        write_json(ledger_dir / "lem-conditional.ledger.json", conditional)
+
+        for unit_id, filename in (
+            ("lem:active", "lem-active.ledger.json"),
+            ("lem:not-started", "lem-not-started.ledger.json"),
+        ):
+            with contextlib.redirect_stdout(io.StringIO()):
+                proofcheck.cmd_extract(
+                    argparse.Namespace(
+                        file=self.paper,
+                        start=2,
+                        end=7,
+                        statement_file=self.paper,
+                        statement_start=2,
+                        statement_end=4,
+                        separate_statement_reason=None,
+                        unit_id=unit_id,
+                        output=ledger_dir / filename,
+                        force=False,
+                    )
+                )
+        active_path = ledger_dir / "lem-active.ledger.json"
+        active = read_json(active_path)
+        active["obligation"] = json.loads(json.dumps(complete["obligation"]))
+        active["steps"] = [
+            {
+                "id": "S001",
+                "lines": [2, 2],
+                "kind": "other",
+                "status": "non_substantive",
+                "issue_ids": [],
+            }
+        ]
+        write_json(active_path, active)
+        not_started_path = ledger_dir / "lem-not-started.ledger.json"
+        not_started = read_json(not_started_path)
+        not_started["obligation"] = json.loads(
+            json.dumps(complete["obligation"])
+        )
+        write_json(not_started_path, not_started)
+
+        unit_ids = [
+            "lem:main",
+            "lem:conditional",
+            "lem:active",
+            "lem:not-started",
+        ]
+        inventory_path = (
+            self.audit / "audit" / "01_index" / "theorem_inventory.json"
+        )
+        inventory = read_json(inventory_path)
+        discovered = inventory["units"][0]
+        for unit_id in unit_ids[1:]:
+            added = json.loads(json.dumps(discovered))
+            added["id"] = unit_id
+            added["label"] = unit_id
+            added["proof_association"]["target"] = unit_id
+            inventory["units"].append(added)
+        write_json(inventory_path, inventory)
+
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["audit_scope"]["in_scope_units"] = unit_ids
+        write_json(manifest_path, manifest)
+
+        next_action = "Continue the atomic ledger for lem:active from source line 3."
+        checkpoint_output = io.StringIO()
+        with contextlib.redirect_stdout(checkpoint_output):
+            status = proofcheck.cmd_checkpoint(
+                argparse.Namespace(
+                    root=self.audit,
+                    active_unit="lem:active",
+                    clear_active_unit=False,
+                    next_action=next_action,
+                )
+            )
+
+        progress = read_json(self.audit / "PROGRESS.json")
+        self.assertEqual(0, status)
+        self.assertEqual("lem:active", progress["active_unit"])
+        self.assertEqual(next_action, progress["next_action"])
+        self.assertEqual(4, progress["current_pass"])
+        self.assertCountEqual(
+            ["lem:main", "lem:conditional"], progress["completed_units"]
+        )
+        self.assertCountEqual(
+            ["lem:conditional"], progress["conditional_units"]
+        )
+        self.assertCountEqual(["lem:active"], progress["in_progress_units"])
+        self.assertCountEqual(
+            ["lem:not-started"], progress["not_started_units"]
+        )
+
+    def test_checkpoint_and_verbose_status_are_registered_in_the_cli(self) -> None:
+        parser = proofcheck.build_parser()
+        checkpoint = parser.parse_args(
+            [
+                "checkpoint",
+                "--root",
+                str(self.audit),
+                "--active-unit",
+                "lem:main",
+                "--next-action",
+                "Continue lem:main.",
+            ]
+        )
+        status = parser.parse_args(
+            ["status", "--root", str(self.audit), "--verbose"]
+        )
+
+        self.assertIs(proofcheck.cmd_checkpoint, checkpoint.func)
+        self.assertEqual("lem:main", checkpoint.active_unit)
+        self.assertFalse(checkpoint.clear_active_unit)
+        self.assertTrue(status.verbose)
+
+    def test_early_checkpoints_derive_passes_one_two_and_three(self) -> None:
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        observed_passes = []
+        for expected_pass, transition in (
+            (1, "scaffolded"),
+            (2, "scope_reviewed"),
+            (3, "map_reviewed"),
+        ):
+            if transition == "scope_reviewed":
+                manifest = read_json(manifest_path)
+                manifest["audit_scope"].update(
+                    {
+                        "status": "reviewed",
+                        "depth": "focused",
+                        "in_scope_units": ["lem:main"],
+                        "target_units": ["lem:main"],
+                        "critical_units": ["lem:main"],
+                    }
+                )
+                write_json(manifest_path, manifest)
+            elif transition == "map_reviewed":
+                manifest = read_json(manifest_path)
+                manifest["completion"]["inventory_reviewed"] = True
+                manifest["completion"]["parser_warnings_reviewed"] = True
+                write_json(manifest_path, manifest)
+            with contextlib.redirect_stdout(io.StringIO()):
+                proofcheck.cmd_checkpoint(
+                    argparse.Namespace(
+                        root=self.audit,
+                        active_unit="lem:main",
+                        clear_active_unit=False,
+                        next_action=(
+                            f"Continue the canonical work required for pass {expected_pass}."
+                        ),
+                    )
+                )
+            observed_passes.append(
+                read_json(self.audit / "PROGRESS.json")["current_pass"]
+            )
+
+        self.assertEqual([1, 2, 3], observed_passes)
+
+    def test_partially_normalized_ledger_cannot_advance_past_pass_three(
+        self,
+    ) -> None:
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["audit_scope"].update(
+            {
+                "status": "reviewed",
+                "depth": "focused",
+                "in_scope_units": ["lem:main"],
+                "target_units": ["lem:main"],
+                "critical_units": ["lem:main"],
+            }
+        )
+        manifest["completion"]["inventory_reviewed"] = True
+        manifest["completion"]["parser_warnings_reviewed"] = True
+        write_json(manifest_path, manifest)
+
+        ledger_path = (
+            self.audit / "audit" / "04_local_checks" / "lem-main.ledger.json"
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            proofcheck.cmd_extract(
+                argparse.Namespace(
+                    file=self.paper,
+                    start=2,
+                    end=7,
+                    statement_file=self.paper,
+                    statement_start=2,
+                    statement_end=4,
+                    separate_statement_reason=None,
+                    unit_id="lem:main",
+                    output=ledger_path,
+                    force=False,
+                )
+            )
+        ledger = read_json(ledger_path)
+        ledger["obligation"]["quantifier_scope"] = "For every real x."
+        ledger["obligation"]["conclusion"] = "x equals x"
+        ledger["steps"] = [
+            {
+                "id": "S001",
+                "lines": [2, 2],
+                "kind": "other",
+                "status": "non_substantive",
+                "issue_ids": [],
+            }
+        ]
+        write_json(ledger_path, ledger)
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            proofcheck.cmd_checkpoint(
+                argparse.Namespace(
+                    root=self.audit,
+                    active_unit="lem:main",
+                    clear_active_unit=False,
+                    next_action="Finish normalizing every field of the locked obligation.",
+                )
+            )
+
+        progress = read_json(self.audit / "PROGRESS.json")
+        self.assertEqual(3, progress["current_pass"])
+        self.assertCountEqual(["lem:main"], progress["in_progress_units"])
+
     def test_duplicate_step_dependency_fails(self) -> None:
         ledger_path = self.make_complete_audit()
         ledger = read_json(ledger_path)
@@ -3888,6 +4132,158 @@ class FinalizationTests(unittest.TestCase):
             proofcheck.resolve_stored_path(span["file"], ledger_path.parent),
         )
 
+    def test_extract_reports_skeleton_state_and_next_action(self) -> None:
+        ledger_path = self.base / "skeleton.ledger.json"
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            status = proofcheck.cmd_extract(
+                argparse.Namespace(
+                    file=self.paper,
+                    start=2,
+                    end=7,
+                    statement_file=self.paper,
+                    statement_start=2,
+                    statement_end=4,
+                    separate_statement_reason=None,
+                    unit_id="lem:skeleton",
+                    output=ledger_path,
+                    force=False,
+                )
+            )
+        payload = json.loads(output.getvalue())
+
+        self.assertEqual(0, status)
+        self.assertEqual("source_locked_skeleton", payload["artifact_state"])
+        self.assertIn("next_action", payload)
+        self.assertTrue(payload["next_action"].strip())
+        self.assertIn("obligation", payload["next_action"].lower())
+        self.assertIn("step", payload["next_action"].lower())
+
+    def test_skeleton_coverage_diagnostics_are_grouped_and_bounded(self) -> None:
+        source = self.base / "long-proof.tex"
+        source.write_text(
+            "\n".join(f"Proof source line {line}." for line in range(1, 161))
+            + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        ledger_path = self.base / "long-proof.ledger.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            proofcheck.cmd_extract(
+                argparse.Namespace(
+                    file=source,
+                    start=1,
+                    end=160,
+                    statement_file=None,
+                    statement_start=None,
+                    statement_end=None,
+                    separate_statement_reason="Statement location is not yet recorded.",
+                    unit_id="lem:long-skeleton",
+                    output=ledger_path,
+                    force=False,
+                )
+            )
+
+        errors, _ = proofcheck.check_ledger_data(ledger_path, False)
+        uncovered = [
+            error for error in errors if "Uncovered source line" in error
+        ]
+
+        self.assertEqual(1, len(uncovered), errors)
+        self.assertIn("1-160", uncovered[0])
+        self.assertLess(len(errors), 50, errors)
+
+    def test_locked_source_mismatch_reports_expected_actual_and_first_difference(
+        self,
+    ) -> None:
+        source = self.base / "exact-source.tex"
+        source.write_text(
+            "Alpha.\nBeta.\nGamma.\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        ledger_path = self.base / "exact-source.ledger.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            proofcheck.cmd_extract(
+                argparse.Namespace(
+                    file=source,
+                    start=1,
+                    end=3,
+                    statement_file=None,
+                    statement_start=None,
+                    statement_end=None,
+                    separate_statement_reason="Statement location is not yet recorded.",
+                    unit_id="lem:exact-source",
+                    output=ledger_path,
+                    force=False,
+                )
+            )
+        source.write_text(
+            "Alpha.\nChanged beta.\nGamma.\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        errors, _ = proofcheck.check_ledger_data(ledger_path, False)
+        mismatches = [
+            error for error in errors if "Locked source mismatch" in error
+        ]
+
+        self.assertEqual(1, len(mismatches), errors)
+        message = mismatches[0]
+        self.assertIn("source_lines", message)
+        self.assertIn("expected=", message)
+        self.assertIn("actual=", message)
+        self.assertIn("first difference", message.replace("_", " ").lower())
+        self.assertIn("Beta.", message)
+        self.assertIn("Changed beta.", message)
+
+    def test_late_exact_mismatch_reports_bounded_context_around_difference(
+        self,
+    ) -> None:
+        prefix = "shared-prefix-" + "a" * 220
+        expected_tail = "EXPECTED_DIFFERING_SUBSTRING"
+        actual_tail = "ACTUAL_DIFFERING_SUBSTRING"
+        suffix = "-shared-suffix-" + "z" * 220
+        source = self.base / "late-exact-source.tex"
+        source.write_text(
+            prefix + expected_tail + suffix + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        ledger_path = self.base / "late-exact-source.ledger.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            proofcheck.cmd_extract(
+                argparse.Namespace(
+                    file=source,
+                    start=1,
+                    end=1,
+                    statement_file=None,
+                    statement_start=None,
+                    statement_end=None,
+                    separate_statement_reason="Statement location is not yet recorded.",
+                    unit_id="lem:late-exact-source",
+                    output=ledger_path,
+                    force=False,
+                )
+            )
+        source.write_text(
+            prefix + actual_tail + suffix + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        errors, _ = proofcheck.check_ledger_data(ledger_path, False)
+        message = next(
+            error for error in errors if "Locked source mismatch" in error
+        )
+
+        self.assertIn(expected_tail, message)
+        self.assertIn(actual_tail, message)
+        self.assertIn("first difference at character", message)
+        self.assertLess(len(message), 500)
+        self.assertNotIn("a" * 180, message)
+
     def test_unbraced_input_is_included_in_source_closure(self) -> None:
         root = self.base / "unbraced.tex"
         child = self.base / "child.tex"
@@ -4965,6 +5361,387 @@ class FinalizationTests(unittest.TestCase):
         self.assertEqual("not_applicable", payload["finalization"]["freshness"])
         self.assertFalse(payload["finalization"]["usable_finalization"])
 
+    def test_status_exposes_a_healthy_checkpointed_work_in_progress(self) -> None:
+        ledger_path = (
+            self.audit / "audit" / "04_local_checks" / "lem-main.ledger.json"
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            proofcheck.cmd_extract(
+                argparse.Namespace(
+                    file=self.paper,
+                    start=2,
+                    end=7,
+                    statement_file=self.paper,
+                    statement_start=2,
+                    statement_end=4,
+                    separate_statement_reason=None,
+                    unit_id="lem:main",
+                    output=ledger_path,
+                    force=False,
+                )
+            )
+        next_action = "Populate the obligation and first atomic step for lem:main."
+        with contextlib.redirect_stdout(io.StringIO()):
+            proofcheck.cmd_checkpoint(
+                argparse.Namespace(
+                    root=self.audit,
+                    active_unit="lem:main",
+                    clear_active_unit=False,
+                    next_action=next_action,
+                )
+            )
+
+        status_output = io.StringIO()
+        with contextlib.redirect_stdout(status_output):
+            status = proofcheck.cmd_status(
+                argparse.Namespace(
+                    root=self.audit,
+                    format="json",
+                    output=None,
+                    force=False,
+                    verbose=False,
+                )
+            )
+        payload = json.loads(status_output.getvalue())
+
+        self.assertEqual(0, status)
+        self.assertEqual("healthy_wip", payload["workflow_state"])
+        self.assertEqual("lem:main", payload["progress"]["active_unit"])
+        self.assertEqual(next_action, payload["progress"]["next_action"])
+        self.assertEqual([], payload["progress"]["drift"])
+        self.assertCountEqual(
+            ["lem:main"], payload["progress"]["not_started_units"]
+        )
+
+    def test_status_marks_stale_checkpoint_as_malformed_or_stale(self) -> None:
+        progress_path = self.audit / "PROGRESS.json"
+        progress = read_json(progress_path)
+        progress["source_snapshot_sha256"] = "0" * 64
+        write_json(progress_path, progress)
+
+        status_output = io.StringIO()
+        with contextlib.redirect_stdout(status_output):
+            status = proofcheck.cmd_status(
+                argparse.Namespace(
+                    root=self.audit,
+                    format="json",
+                    output=None,
+                    force=False,
+                    verbose=False,
+                )
+            )
+        payload = json.loads(status_output.getvalue())
+
+        self.assertEqual(1, status)
+        self.assertEqual("malformed_or_stale", payload["workflow_state"])
+        self.assertTrue(payload["progress"]["drift"])
+        self.assertIn(
+            "source_snapshot_sha256",
+            json.dumps(payload["progress"]["drift"]),
+        )
+
+    def test_status_reconciles_stale_partition_and_completed_active_unit(
+        self,
+    ) -> None:
+        complete_path = self.make_complete_audit()
+        pending_path = complete_path.with_name("lem-pending.ledger.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            proofcheck.cmd_extract(
+                argparse.Namespace(
+                    file=self.paper,
+                    start=2,
+                    end=7,
+                    statement_file=self.paper,
+                    statement_start=2,
+                    statement_end=4,
+                    separate_statement_reason=None,
+                    unit_id="lem:pending",
+                    output=pending_path,
+                    force=False,
+                )
+            )
+
+        inventory_path = (
+            self.audit / "audit" / "01_index" / "theorem_inventory.json"
+        )
+        inventory = read_json(inventory_path)
+        pending_unit = json.loads(json.dumps(inventory["units"][0]))
+        pending_unit["id"] = "lem:pending"
+        pending_unit["label"] = "lem:pending"
+        pending_unit["proof_association"]["target"] = "lem:pending"
+        inventory["units"].append(pending_unit)
+        write_json(inventory_path, inventory)
+
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["audit_scope"]["in_scope_units"] = [
+            "lem:main",
+            "lem:pending",
+        ]
+        write_json(manifest_path, manifest)
+
+        progress_path = self.audit / "PROGRESS.json"
+        progress = read_json(progress_path)
+        progress["completed_units"] = []
+        progress["active_unit"] = "lem:main"
+        write_json(progress_path, progress)
+
+        status_output = io.StringIO()
+        with contextlib.redirect_stdout(status_output):
+            status = proofcheck.cmd_status(
+                argparse.Namespace(
+                    root=self.audit,
+                    format="json",
+                    output=None,
+                    force=False,
+                    verbose=False,
+                )
+            )
+        payload = json.loads(status_output.getvalue())
+        drift = "\n".join(payload["progress"]["drift"])
+
+        self.assertEqual(1, status)
+        self.assertEqual("malformed_or_stale", payload["workflow_state"])
+        self.assertIn("completed_units:", drift)
+        self.assertIn("active_unit is already completed", drift)
+        self.assertCountEqual(
+            ["lem:main"], payload["progress"]["completed_units"]
+        )
+        self.assertCountEqual(
+            ["lem:pending"], payload["progress"]["not_started_units"]
+        )
+
+    def test_source_drift_blocks_checkpoint_and_marks_status_malformed(self) -> None:
+        progress_path = self.audit / "PROGRESS.json"
+        original_progress = read_json(progress_path)
+        self.paper.write_text(
+            self.paper.read_text(encoding="utf-8") + "% changed after scaffold\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        with self.assertRaisesRegex(ValueError, "Source drift"):
+            proofcheck.cmd_checkpoint(
+                argparse.Namespace(
+                    root=self.audit,
+                    active_unit="lem:main",
+                    clear_active_unit=False,
+                    next_action="Reconcile the changed source before continuing.",
+                )
+            )
+
+        self.assertEqual(original_progress, read_json(progress_path))
+        status_output = io.StringIO()
+        with contextlib.redirect_stdout(status_output):
+            status = proofcheck.cmd_status(
+                argparse.Namespace(
+                    root=self.audit,
+                    format="json",
+                    output=None,
+                    force=False,
+                    verbose=False,
+                )
+            )
+        payload = json.loads(status_output.getvalue())
+
+        self.assertEqual(1, status)
+        self.assertEqual("malformed_or_stale", payload["workflow_state"])
+        self.assertIn("Source drift", json.dumps(payload))
+
+    def test_status_marks_a_complete_preflight_as_finalizable(self) -> None:
+        self.make_complete_audit()
+        status_output = io.StringIO()
+        with contextlib.redirect_stdout(status_output):
+            status = proofcheck.cmd_status(
+                argparse.Namespace(
+                    root=self.audit,
+                    format="json",
+                    output=None,
+                    force=False,
+                    verbose=False,
+                )
+            )
+        payload = json.loads(status_output.getvalue())
+
+        self.assertEqual(0, status)
+        self.assertEqual("finalizable", payload["workflow_state"])
+        self.assertEqual([], payload["progress"]["drift"])
+        self.assertCountEqual(
+            ["lem:main"], payload["progress"]["completed_units"]
+        )
+
+    def test_checkpoint_migrates_legacy_progress_without_in_progress_units(
+        self,
+    ) -> None:
+        self.make_complete_audit()
+        progress_path = self.audit / "PROGRESS.json"
+        progress = read_json(progress_path)
+        progress.pop("in_progress_units")
+        write_json(progress_path, progress)
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            status = proofcheck.cmd_checkpoint(
+                argparse.Namespace(
+                    root=self.audit,
+                    active_unit=None,
+                    clear_active_unit=True,
+                    next_action=(
+                        "Audit complete; rerun finalization after any artifact change."
+                    ),
+                )
+            )
+
+        migrated = read_json(progress_path)
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+        self.assertEqual(0, status)
+        self.assertEqual([], migrated["in_progress_units"])
+        self.assertEqual("complete", migrated["status"])
+        self.assertEqual([], errors)
+
+    def test_checkpoint_stages_new_next_action_before_completion_gate(self) -> None:
+        self.make_complete_audit()
+        progress_path = self.audit / "PROGRESS.json"
+        progress = read_json(progress_path)
+        progress["next_action"] = "TBD"
+        write_json(progress_path, progress)
+        replacement = (
+            "Audit complete; rerun finalization after any source or artifact change."
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            status = proofcheck.cmd_checkpoint(
+                argparse.Namespace(
+                    root=self.audit,
+                    active_unit=None,
+                    clear_active_unit=True,
+                    next_action=replacement,
+                )
+            )
+
+        updated = read_json(progress_path)
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+        self.assertEqual(0, status)
+        self.assertEqual(replacement, updated["next_action"])
+        self.assertEqual(8, updated["current_pass"])
+        self.assertEqual("complete", updated["status"])
+        self.assertEqual([], errors)
+
+    def test_checkpoint_rejects_an_already_completed_active_unit(self) -> None:
+        self.make_complete_audit()
+        progress_path = self.audit / "PROGRESS.json"
+        original = read_json(progress_path)
+
+        with self.assertRaisesRegex(ValueError, "active unit is already completed"):
+            proofcheck.cmd_checkpoint(
+                argparse.Namespace(
+                    root=self.audit,
+                    active_unit="lem:main",
+                    clear_active_unit=False,
+                    next_action="Continue work on a unit that is already complete.",
+                )
+            )
+
+        self.assertEqual(original, read_json(progress_path))
+
+    def test_checkpoint_derives_passes_five_through_eight(self) -> None:
+        self.make_complete_audit()
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        progress_path = self.audit / "PROGRESS.json"
+
+        def checkpoint(next_action: str) -> tuple[int, str]:
+            with contextlib.redirect_stdout(io.StringIO()):
+                proofcheck.cmd_checkpoint(
+                    argparse.Namespace(
+                        root=self.audit,
+                        active_unit=None,
+                        clear_active_unit=True,
+                        next_action=next_action,
+                    )
+                )
+            progress = read_json(progress_path)
+            return progress["current_pass"], progress["status"]
+
+        manifest = read_json(manifest_path)
+        manifest["completion"]["dependency_registry_reviewed"] = False
+        write_json(manifest_path, manifest)
+        pass_five = checkpoint("Complete the remaining system-level reviews.")
+
+        manifest = read_json(manifest_path)
+        manifest["completion"]["dependency_registry_reviewed"] = True
+        manifest["audit_scope"]["critical_units"] = []
+        write_json(manifest_path, manifest)
+        pass_six = checkpoint("Complete the independent critical-path challenge.")
+
+        manifest = read_json(manifest_path)
+        manifest["audit_scope"]["critical_units"] = ["lem:main"]
+        manifest["completion"]["final_report_ready"] = False
+        write_json(manifest_path, manifest)
+        pass_seven = checkpoint("Finish and reconcile the final report.")
+
+        manifest = read_json(manifest_path)
+        manifest["completion"]["final_report_ready"] = True
+        write_json(manifest_path, manifest)
+        pass_eight = checkpoint(
+            "Audit complete; rerun finalization after any source or artifact change."
+        )
+
+        self.assertEqual([5, 6, 7, 8], [
+            pass_five[0],
+            pass_six[0],
+            pass_seven[0],
+            pass_eight[0],
+        ])
+        self.assertEqual(
+            ["in_progress", "in_progress", "in_progress", "complete"],
+            [pass_five[1], pass_six[1], pass_seven[1], pass_eight[1]],
+        )
+
+    def test_checkpoint_does_not_claim_completion_when_strict_gates_fail(
+        self,
+    ) -> None:
+        self.make_complete_audit()
+        report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
+        report = report_path.read_text(encoding="utf-8").replace(
+            "Overall assessment code: no_defect_found",
+            "Overall assessment code: defects_found",
+        )
+        report_path.write_text(report, encoding="utf-8", newline="\n")
+        progress_path = self.audit / "PROGRESS.json"
+        progress = read_json(progress_path)
+        progress["status"] = "in_progress"
+        progress["current_pass"] = 7
+        write_json(progress_path, progress)
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            checkpoint_status = proofcheck.cmd_checkpoint(
+                argparse.Namespace(
+                    root=self.audit,
+                    active_unit=None,
+                    clear_active_unit=True,
+                    next_action="Correct the final report assessment before finalization.",
+                )
+            )
+        checkpoint = read_json(progress_path)
+
+        status_output = io.StringIO()
+        with contextlib.redirect_stdout(status_output):
+            status = proofcheck.cmd_status(
+                argparse.Namespace(
+                    root=self.audit,
+                    format="json",
+                    output=None,
+                    force=False,
+                    verbose=False,
+                )
+            )
+        payload = json.loads(status_output.getvalue())
+
+        self.assertEqual(0, checkpoint_status)
+        self.assertNotEqual("complete", checkpoint["status"])
+        self.assertEqual(1, status)
+        self.assertEqual("malformed_or_stale", payload["workflow_state"])
+        self.assertIn("Final report assessment disagrees", json.dumps(payload))
+
     def test_failed_finalization_record_makes_status_nonzero(self) -> None:
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
             io.StringIO()
@@ -5049,7 +5826,7 @@ class FinalizationTests(unittest.TestCase):
             freshness,
         )
 
-    def test_markdown_status_prints_failed_record_gate_errors(self) -> None:
+    def test_markdown_status_keeps_key_gate_error_when_bounded(self) -> None:
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
             io.StringIO()
         ):
@@ -5065,11 +5842,15 @@ class FinalizationTests(unittest.TestCase):
                     format="markdown",
                     output=None,
                     force=False,
+                    verbose=False,
                 )
             )
 
+        markdown = status_output.getvalue()
         self.assertEqual(1, status)
-        self.assertIn("at least one proof-unit ledger", status_output.getvalue())
+        self.assertIn("at least one proof-unit ledger", markdown)
+        self.assertIn("additional errors omitted; rerun status --verbose", markdown)
+        self.assertLessEqual(len(markdown.splitlines()), 80)
 
     def test_explicit_missing_local_package_emits_warning(self) -> None:
         root = self.base / "missing-package.tex"

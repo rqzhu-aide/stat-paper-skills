@@ -408,6 +408,64 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def consecutive_ranges(values: Iterable[int]) -> list[tuple[int, int]]:
+    ordered = sorted(set(values))
+    if not ordered:
+        return []
+    ranges: list[tuple[int, int]] = []
+    start = previous = ordered[0]
+    for value in ordered[1:]:
+        if value == previous + 1:
+            previous = value
+            continue
+        ranges.append((start, previous))
+        start = previous = value
+    ranges.append((start, previous))
+    return ranges
+
+
+def compact_json_value(value: Any, limit: int = 180) -> str:
+    rendered = json.dumps(value, ensure_ascii=False)
+    if len(rendered) <= limit:
+        return rendered
+    return rendered[: limit - 3] + "..."
+
+
+def exact_mismatch_context(text: str, index: int, radius: int = 72) -> str:
+    start = max(0, index - radius)
+    end = min(len(text), index + radius + 1)
+    context = text[start:end]
+    if start:
+        context = "..." + context
+    if end < len(text):
+        context += "..."
+    return json.dumps(context, ensure_ascii=False)
+
+
+def exact_mismatch_detail(expected: Any, actual: Any) -> str:
+    expected_text = expected if isinstance(expected, str) else str(expected)
+    actual_text = actual if isinstance(actual, str) else str(actual)
+    shared = min(len(expected_text), len(actual_text))
+    index = next(
+        (
+            offset
+            for offset in range(shared)
+            if expected_text[offset] != actual_text[offset]
+        ),
+        shared,
+    )
+    prefix = expected_text[:index]
+    line = prefix.count("\n") + 1
+    last_newline = prefix.rfind("\n")
+    column = index + 1 if last_newline < 0 else index - last_newline
+    return (
+        f"first difference at character {index + 1} "
+        f"(line {line}, column {column}); "
+        f"expected={exact_mismatch_context(expected_text, index)}; "
+        f"actual={exact_mismatch_context(actual_text, index)}"
+    )
+
+
 def protocol_identity() -> dict[str, Any]:
     return {
         "skill_name": SKILL_NAME,
@@ -3107,16 +3165,20 @@ def cmd_scaffold(args: argparse.Namespace) -> int:
         "schema_version": SCHEMA_VERSION,
         "paper_file": paper_value,
         "source_snapshot_sha256": manifest["source_snapshot"]["sha256"],
-        "status": "bootstrap",
-        "current_pass": 0,
+        "status": "in_progress",
+        "current_pass": 1,
         "active_unit": None,
         "completed_units": [],
         "conditional_units": [],
+        "in_progress_units": [],
         "blocked_units": {},
         "not_started_units": [unit["id"] for unit in inventory["units"]],
         "open_high_priority_issues": [],
         "source_or_parser_limits": [],
-        "next_action": "Review CHECK_PLAN.md and build the proof-unit inventory.",
+        "next_action": (
+            "Review CHECK_PLAN.md, confirm the source closure, and establish "
+            "audited targets, scope, and depth."
+        ),
         "updated_utc": utc_now(),
     }
     issue_log = {"schema_version": SCHEMA_VERSION, "issues": []}
@@ -3355,6 +3417,12 @@ def cmd_extract(args: argparse.Namespace) -> int:
                 "unit_id": args.unit_id,
                 "source_range": f"{args.start}-{args.end}",
                 "physical_lines": len(selected),
+                "artifact_state": "source_locked_skeleton",
+                "finalizable": False,
+                "next_action": (
+                    "Complete the normalized obligation, partition every source "
+                    "line into checked steps, and run ledger-check --final."
+                ),
             },
             indent=2,
         )
@@ -3968,7 +4036,8 @@ def validate_premise_uses(
             elif isinstance(resolved, str) and premise.get("claim") != resolved:
                 errors.append(
                     f"{item_prefix}.claim must exactly match its string-valued "
-                    "obligation premise"
+                    "obligation premise; "
+                    + exact_mismatch_detail(resolved, premise.get("claim"))
                 )
 
             anchor = origin.get("anchor")
@@ -4020,7 +4089,10 @@ def validate_premise_uses(
                 if final and premise.get("claim") != dependency.get("needed_form"):
                     errors.append(
                         f"{item_prefix}.claim must exactly match dependency "
-                        f"{reference} needed_form"
+                        f"{reference} needed_form; "
+                        + exact_mismatch_detail(
+                            dependency.get("needed_form"), premise.get("claim")
+                        )
                     )
                 prior_claim = prior_step_claims.get(reference)
                 if final and not is_nonempty_string(prior_claim):
@@ -4031,7 +4103,10 @@ def validate_premise_uses(
                 elif final and dependency.get("needed_form") != prior_claim:
                     errors.append(
                         f"{item_prefix} dependency {reference} needed_form must "
-                        "exactly match the prior step restatement"
+                        "exactly match the prior step restatement; "
+                        + exact_mismatch_detail(
+                            prior_claim, dependency.get("needed_form")
+                        )
                     )
             if reference not in prior_step_statuses:
                 errors.append(
@@ -4075,7 +4150,10 @@ def validate_premise_uses(
                 if final and premise.get("claim") != dependency.get("needed_form"):
                     errors.append(
                         f"{item_prefix}.claim must exactly match dependency "
-                        f"{reference} needed_form"
+                        f"{reference} needed_form; "
+                        + exact_mismatch_detail(
+                            dependency.get("needed_form"), premise.get("claim")
+                        )
                     )
 
     return premises, used_dependencies
@@ -4296,7 +4374,8 @@ def validate_inference_record(
             final_move = moves[-1] if isinstance(moves[-1], dict) else {}
             if final_move.get("claim") != restatement:
                 errors.append(
-                    f"{prefix}: final inference claim must exactly match restatement"
+                    f"{prefix}: final inference claim must exactly match restatement; "
+                    + exact_mismatch_detail(restatement, final_move.get("claim"))
                 )
         elif final:
             errors.append(f"{prefix}: inferential step needs at least one move")
@@ -4692,10 +4771,15 @@ def check_ledger_data(
             if current_selected and offset < len(current_selected):
                 current_text = current_selected[offset]
                 if text != current_text:
-                    errors.append(f"Locked source mismatch at line {line_number}")
+                    errors.append(
+                        f"source_lines[{offset + 1}].text: Locked source mismatch "
+                        f"at line {line_number}; " + exact_mismatch_detail(text, current_text)
+                    )
 
     obligation = ledger.get("obligation")
+    obligation_error_start = len(errors)
     normalization_statuses = validate_obligation(obligation, ledger_path, final, errors)
+    obligation_ready = len(errors) == obligation_error_start
     obligation_statement_spans: list[dict[str, Any]] = []
     obligation_context_spans: list[dict[str, Any]] = []
     if isinstance(obligation, dict):
@@ -5196,11 +5280,19 @@ def check_ledger_data(
         errors.append("Step dependency cycle: " + " -> ".join(cycle))
 
     if valid_range:
+        uncovered = [
+            line_number
+            for line_number in range(start, end + 1)
+            if not coverage.get(line_number, [])
+        ]
+        for first, last in consecutive_ranges(uncovered):
+            if first == last:
+                errors.append(f"Uncovered source line: {first}")
+            else:
+                errors.append(f"Uncovered source lines: {first}-{last}")
         for line_number in range(start, end + 1):
             owners = coverage.get(line_number, [])
-            if not owners:
-                errors.append(f"Uncovered source line: {line_number}")
-            elif len(owners) > 1:
+            if len(owners) > 1:
                 errors.append(
                     f"Multiply covered source line {line_number}: {', '.join(owners)}"
                 )
@@ -5726,7 +5818,8 @@ def check_ledger_data(
             and move.get("claim") != claim
         ):
             errors.append(
-                f"{prefix} support move must exactly match conclusion {conclusion_id}"
+                f"{prefix} support move must exactly match conclusion {conclusion_id}; "
+                + exact_mismatch_detail(claim, move.get("claim"))
             )
         if result_statement_status == "refuted":
             failure = move.get("failure")
@@ -5740,7 +5833,8 @@ def check_ledger_data(
                 )
             elif failure.get("target") != claim:
                 errors.append(
-                    f"{prefix}: refutation target must exactly match {conclusion_id}"
+                    f"{prefix}: refutation target must exactly match {conclusion_id}; "
+                    + exact_mismatch_detail(claim, failure.get("target"))
                 )
         statement_to_step_statuses = {
             "established": {"verified"},
@@ -6079,6 +6173,7 @@ def check_ledger_data(
             if isinstance(obligation, dict)
             else None
         ),
+        "obligation_ready": obligation_ready,
         "expected_unit_status": expected_status,
         "declared_unit_status": declared_status,
         "issue_references": sorted(issue_references),
@@ -8075,7 +8170,9 @@ def finalization_record_path(
     return canonical, errors
 
 
-def check_audit_finalization(root: Path) -> tuple[list[str], dict[str, Any]]:
+def check_audit_finalization(
+    root: Path, *, progress_override: dict[str, Any] | None = None
+) -> tuple[list[str], dict[str, Any]]:
     root = root.resolve()
     errors: list[str] = []
     manifest_path = root / "AUDIT_MANIFEST.json"
@@ -10092,8 +10189,12 @@ def check_audit_finalization(root: Path) -> tuple[list[str], dict[str, Any]]:
                     f"{unit_id}:{link.get('step_id')} has a failure status but only resolved issues"
                 )
 
-    progress_path = root / "PROGRESS.json"
-    progress, progress_errors = load_json_object(progress_path, "progress state")
+    if progress_override is None:
+        progress_path = root / "PROGRESS.json"
+        progress, progress_errors = load_json_object(progress_path, "progress state")
+    else:
+        progress = progress_override
+        progress_errors = []
     errors.extend(progress_errors)
     if not progress_errors:
         if progress.get("schema_version") != SCHEMA_VERSION:
@@ -10132,6 +10233,8 @@ def check_audit_finalization(root: Path) -> tuple[list[str], dict[str, Any]]:
             )
         if progress.get("blocked_units") != {}:
             errors.append("PROGRESS.json blocked_units must be empty at finalization")
+        if progress.get("in_progress_units", []) != []:
+            errors.append("PROGRESS.json in_progress_units must be empty at finalization")
         if progress.get("not_started_units") != []:
             errors.append("PROGRESS.json not_started_units must be empty at finalization")
         expected_high_priority = sorted(
@@ -10580,12 +10683,609 @@ def check_finalization_freshness(root: Path) -> dict[str, Any]:
     return result
 
 
+FATAL_LEDGER_ERROR_MARKERS = (
+    "Cannot read ledger",
+    "Ledger root must be an object",
+    "Missing source object",
+    "Invalid source specification",
+    "Unsupported ledger schema_version",
+    "Unsupported evidence_contract_version",
+    "Source file not found",
+    "Source drift:",
+    "Source now has only",
+    "Invalid locked text or hash",
+    "Locked source mismatch",
+    "source_lines must contain exactly",
+)
+
+
+def is_fatal_ledger_error(error: str) -> bool:
+    return any(marker in error for marker in FATAL_LEDGER_ERROR_MARKERS)
+
+
+def progress_scope_units(
+    root: Path, manifest: dict[str, Any], errors: list[str]
+) -> list[str]:
+    scope = manifest.get("audit_scope")
+    if isinstance(scope, dict) and scope.get("status") == "reviewed":
+        values = scope.get("in_scope_units")
+        if (
+            isinstance(values, list)
+            and values
+            and all(is_nonempty_string(value) for value in values)
+            and len(values) == len(set(values))
+        ):
+            return list(values)
+        errors.append("Reviewed audit scope needs unique nonempty in_scope_units")
+        return []
+
+    inventory_value = manifest.get("inventory_file")
+    if not is_nonempty_string(inventory_value):
+        errors.append("Manifest inventory_file must be a path")
+        return []
+    inventory_path = resolve_stored_path(inventory_value, root)
+    inventory, inventory_errors = load_json_object(
+        inventory_path, "proof-unit inventory"
+    )
+    errors.extend(inventory_errors)
+    if inventory_errors:
+        return []
+    units = inventory.get("units")
+    if not isinstance(units, list):
+        errors.append("Proof-unit inventory must contain a units list")
+        return []
+    unit_ids = [
+        unit.get("id")
+        for unit in units
+        if isinstance(unit, dict) and is_nonempty_string(unit.get("id"))
+    ]
+    if len(unit_ids) != len(units) or len(unit_ids) != len(set(unit_ids)):
+        errors.append("Proof-unit inventory needs unique nonempty unit IDs")
+        return []
+    return unit_ids
+
+
+def validated_blocked_units(
+    recorded_progress: dict[str, Any],
+    scope_units: list[str],
+    errors: list[str],
+) -> dict[str, Any]:
+    blocked = recorded_progress.get("blocked_units", {})
+    if not isinstance(blocked, dict):
+        errors.append("PROGRESS.json blocked_units must be an object")
+        return {}
+    scope_set = set(scope_units)
+    for unit_id, reason in blocked.items():
+        if unit_id not in scope_set:
+            errors.append(f"PROGRESS.json blocked unit is outside scope: {unit_id}")
+        if not (
+            is_substantive_string(reason)
+            or (
+                isinstance(reason, dict)
+                and is_substantive_string(reason.get("reason"))
+            )
+        ):
+            errors.append(
+                f"PROGRESS.json blocked unit {unit_id} needs a substantive reason"
+            )
+    return dict(blocked)
+
+
+def source_snapshot_freshness_errors(
+    root: Path, manifest: dict[str, Any]
+) -> list[str]:
+    root = root.resolve()
+    errors: list[str] = []
+    paper_value = manifest.get("paper_file")
+    paper = (
+        resolve_stored_path(paper_value, root)
+        if is_nonempty_string(paper_value)
+        else root / "__missing_paper__"
+    )
+    if not paper.is_file():
+        errors.append(f"Paper source not found: {paper}")
+
+    snapshot = manifest.get("source_snapshot")
+    recorded_files: dict[Path, str] = {}
+    recorded_rows: list[dict[str, str]] = []
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("files"), list):
+        errors.append("Manifest source_snapshot.files must be a list")
+    else:
+        for index, record in enumerate(snapshot["files"], 1):
+            prefix = f"source_snapshot.files[{index}]"
+            if not isinstance(record, dict):
+                errors.append(f"{prefix} must be an object")
+                continue
+            file_value = record.get("file")
+            digest = record.get("sha256")
+            if not is_nonempty_string(file_value) or not is_nonempty_string(digest):
+                errors.append(f"{prefix} needs nonempty file and sha256 values")
+                continue
+            path = resolve_stored_path(file_value, root)
+            if path in recorded_files:
+                errors.append(f"Duplicate source snapshot entry: {path}")
+            recorded_files[path] = digest
+            recorded_rows.append({"file": file_value, "sha256": digest})
+        snapshot_id = snapshot.get("sha256")
+        if (
+            not is_nonempty_string(snapshot_id)
+            or snapshot_id != canonical_sha256(recorded_rows)
+        ):
+            errors.append("Manifest source_snapshot.sha256 is missing or inconsistent")
+
+    additional_files, fls_path, project_root, recorded_outside = (
+        parse_manifest_source_discovery(manifest, root, errors)
+    )
+    current_files: list[Path] = []
+    if paper.is_file():
+        closure = discover_source_closure(
+            paper,
+            additional_files=additional_files,
+            fls_file=fls_path,
+            project_root=project_root or paper.parent,
+        )
+        current_files = closure["files"]
+        if closure["outside_project_inputs"] != recorded_outside:
+            errors.append(
+                "source_discovery.fls.outside_project_inputs does not match "
+                "the current recorder trace"
+            )
+
+    if set(recorded_files) != set(current_files):
+        missing = sorted(str(path) for path in set(current_files) - set(recorded_files))
+        stale = sorted(str(path) for path in set(recorded_files) - set(current_files))
+        if missing:
+            errors.append("Source closure has new or unrecorded files: " + ", ".join(missing))
+        if stale:
+            errors.append("Source closure no longer contains: " + ", ".join(stale))
+    for path, digest in recorded_files.items():
+        if not path.is_file():
+            errors.append(f"Snapshotted source file not found: {path}")
+        elif sha256_file(path) != digest:
+            errors.append(f"Source drift in included file: {path}")
+    return list(dict.fromkeys(errors))
+
+
+def critical_challenges_complete(
+    manifest: dict[str, Any], summaries_by_id: dict[str, dict[str, Any]]
+) -> bool:
+    scope = manifest.get("audit_scope")
+    critical = scope.get("critical_units") if isinstance(scope, dict) else None
+    if not isinstance(critical, list) or not critical:
+        return False
+    for unit_id in critical:
+        summary = summaries_by_id.get(unit_id)
+        check = summary.get("independent_check") if isinstance(summary, dict) else None
+        if (
+            not isinstance(check, dict)
+            or check.get("required") is not True
+            or check.get("status") not in {"agreed", "resolved"}
+        ):
+            return False
+    return True
+
+
+def derived_current_pass(
+    manifest: dict[str, Any],
+    scope_units: list[str],
+    normalized_units: list[str],
+    incomplete_units: list[str],
+    blocked_units: dict[str, Any],
+    summaries_by_id: dict[str, dict[str, Any]],
+) -> int:
+    scope = manifest.get("audit_scope")
+    if not isinstance(scope, dict):
+        return 0
+    if scope.get("status") != "reviewed":
+        return 1
+
+    completion = manifest.get("completion")
+    if (
+        not isinstance(completion, dict)
+        or completion.get("inventory_reviewed") is not True
+        or completion.get("parser_warnings_reviewed") is not True
+    ):
+        return 2
+    if set(scope_units) - set(normalized_units):
+        return 3
+    if incomplete_units or blocked_units:
+        return 4
+
+    global_pass = completion.get("global_consistency_pass")
+    adversarial_pass = completion.get("adversarial_pass")
+    completed_passes = {"completed", "completed_with_findings", "not_applicable"}
+    if (
+        completion.get("dependency_registry_reviewed") is not True
+        or completion.get("method_interface_registry_reviewed") is not True
+        or not isinstance(global_pass, dict)
+        or global_pass.get("status") not in completed_passes
+        or not isinstance(adversarial_pass, dict)
+        or adversarial_pass.get("status") not in completed_passes
+    ):
+        return 5
+    if not critical_challenges_complete(manifest, summaries_by_id):
+        return 6
+    if completion.get("final_report_ready") is not True:
+        return 7
+    return 8
+
+
+def derive_progress_records(
+    root: Path,
+    manifest: dict[str, Any],
+    recorded_progress: dict[str, Any],
+    issues: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[str]]:
+    errors: list[str] = []
+    errors.extend(source_snapshot_freshness_errors(root, manifest))
+    scope_units = progress_scope_units(root, manifest, errors)
+    blocked_units = validated_blocked_units(recorded_progress, scope_units, errors)
+    scope_set = set(scope_units)
+
+    summaries_by_id: dict[str, dict[str, Any]] = {}
+    stages: dict[str, str] = {}
+    fatal_ledger_errors: list[str] = []
+    for ledger_path in sorted(root.rglob("*.ledger.json")):
+        ledger_errors, summary = check_ledger_data(ledger_path, True)
+        if not summary:
+            fatal_ledger_errors.extend(
+                f"{ledger_path}: {error}" for error in ledger_errors
+            )
+            continue
+        unit_id = summary.get("unit_id")
+        if not is_nonempty_string(unit_id):
+            fatal_ledger_errors.append(f"{ledger_path}: ledger has no valid unit_id")
+            continue
+        if unit_id in summaries_by_id:
+            fatal_ledger_errors.append(f"Duplicate ledger unit_id: {unit_id}")
+            continue
+        summaries_by_id[unit_id] = summary
+        fatal_ledger_errors.extend(
+            f"{ledger_path}: {error}"
+            for error in ledger_errors
+            if is_fatal_ledger_error(error)
+        )
+        if not ledger_errors and summary.get("declared_unit_status") != "not_checked":
+            stages[unit_id] = "completed"
+        elif (
+            summary.get("steps") == 0
+            and summary.get("declared_unit_status") == "not_checked"
+        ):
+            stages[unit_id] = "not_started"
+        else:
+            stages[unit_id] = "in_progress"
+
+    if (
+        isinstance(manifest.get("audit_scope"), dict)
+        and manifest["audit_scope"].get("status") == "reviewed"
+    ):
+        extra_units = set(summaries_by_id) - scope_set
+        if extra_units:
+            errors.append(
+                "Ledgers exist outside reviewed scope: "
+                + ", ".join(sorted(extra_units))
+            )
+
+    completed_units: list[str] = []
+    conditional_units: list[str] = []
+    in_progress_units: list[str] = []
+    not_started_units: list[str] = []
+    for unit_id in scope_units:
+        if unit_id in blocked_units:
+            continue
+        stage = stages.get(unit_id, "not_started")
+        if stage == "completed":
+            completed_units.append(unit_id)
+            if (
+                summaries_by_id[unit_id].get("declared_unit_status")
+                == "conditionally_verified"
+            ):
+                conditional_units.append(unit_id)
+        elif stage == "in_progress":
+            in_progress_units.append(unit_id)
+        else:
+            not_started_units.append(unit_id)
+
+    conditional_units.sort()
+    normalized_units = [
+        unit_id
+        for unit_id in scope_units
+        if summaries_by_id.get(unit_id, {}).get("obligation_ready") is True
+    ]
+    incomplete_units = in_progress_units + not_started_units
+    current_pass = derived_current_pass(
+        manifest,
+        scope_units,
+        normalized_units,
+        incomplete_units,
+        blocked_units,
+        summaries_by_id,
+    )
+    completion = manifest.get("completion")
+    final_report_ready = (
+        isinstance(completion, dict)
+        and completion.get("final_report_ready") is True
+    )
+    active_unit = recorded_progress.get("active_unit")
+    ready_for_completion = (
+        current_pass == 8
+        and final_report_ready
+        and not incomplete_units
+        and not blocked_units
+        and active_unit is None
+    )
+    source_snapshot = manifest.get("source_snapshot")
+    source_snapshot_sha256 = (
+        source_snapshot.get("sha256") if isinstance(source_snapshot, dict) else None
+    )
+    scope = manifest.get("audit_scope")
+    source_limits = (
+        scope.get("source_or_parser_limits", [])
+        if isinstance(scope, dict)
+        else []
+    )
+    open_high_priority = sorted(
+        issue.get("id")
+        for issue in issues
+        if isinstance(issue, dict)
+        and issue.get("status") in {"open", "deferred"}
+        and issue.get("severity") in {"S0", "S1"}
+        and is_nonempty_string(issue.get("id"))
+    )
+    completion_gate_errors: list[str] = []
+    if ready_for_completion and not errors and not fatal_ledger_errors:
+        candidate_progress = {
+            "schema_version": SCHEMA_VERSION,
+            "paper_file": manifest.get("paper_file"),
+            "source_snapshot_sha256": source_snapshot_sha256,
+            "status": "complete",
+            "current_pass": current_pass,
+            "active_unit": active_unit,
+            "completed_units": completed_units,
+            "conditional_units": conditional_units,
+            "in_progress_units": in_progress_units,
+            "blocked_units": blocked_units,
+            "not_started_units": not_started_units,
+            "open_high_priority_issues": open_high_priority,
+            "source_or_parser_limits": source_limits,
+            "next_action": recorded_progress.get("next_action"),
+            "updated_utc": recorded_progress.get("updated_utc"),
+        }
+        completion_gate_errors, _ = check_audit_finalization(
+            root, progress_override=candidate_progress
+        )
+        ready_for_completion = not completion_gate_errors
+    elif ready_for_completion:
+        ready_for_completion = False
+
+    expected_status = (
+        "complete"
+        if ready_for_completion
+        else "bootstrap"
+        if current_pass == 0
+        else "in_progress"
+    )
+    errors.extend(fatal_ledger_errors)
+    return (
+        {
+            "scope_units": scope_units,
+            "normalized_units": normalized_units,
+            "completed_units": completed_units,
+            "conditional_units": conditional_units,
+            "in_progress_units": in_progress_units,
+            "not_started_units": not_started_units,
+            "blocked_units": blocked_units,
+            "open_high_priority_issues": open_high_priority,
+            "source_or_parser_limits": source_limits,
+            "source_snapshot_sha256": source_snapshot_sha256,
+            "current_pass": current_pass,
+            "expected_status": expected_status,
+            "completion_gate_errors": completion_gate_errors,
+            "fatal_ledger_errors": fatal_ledger_errors,
+        },
+        errors,
+    )
+
+
+def progress_drift(
+    manifest: dict[str, Any],
+    recorded: dict[str, Any],
+    derived: dict[str, Any],
+) -> list[str]:
+    drift: list[str] = []
+    expected_values = {
+        "paper_file": manifest.get("paper_file"),
+        "source_snapshot_sha256": derived.get("source_snapshot_sha256"),
+        "status": derived.get("expected_status"),
+        "current_pass": derived.get("current_pass"),
+        "completed_units": derived.get("completed_units"),
+        "conditional_units": derived.get("conditional_units"),
+        "in_progress_units": derived.get("in_progress_units"),
+        "not_started_units": derived.get("not_started_units"),
+        "blocked_units": derived.get("blocked_units"),
+        "open_high_priority_issues": derived.get("open_high_priority_issues"),
+        "source_or_parser_limits": derived.get("source_or_parser_limits"),
+    }
+    if recorded.get("schema_version") != SCHEMA_VERSION:
+        drift.append(
+            f"schema_version: recorded={recorded.get('schema_version')!r}, "
+            f"expected={SCHEMA_VERSION!r}"
+        )
+    for field, expected in expected_values.items():
+        actual = (
+            []
+            if field == "in_progress_units" and field not in recorded
+            else recorded.get(field)
+        )
+        if actual != expected:
+            drift.append(
+                f"{field}: recorded={compact_json_value(actual)}, "
+                f"expected={compact_json_value(expected)}"
+            )
+    active_unit = recorded.get("active_unit")
+    if active_unit is not None and active_unit not in derived.get("scope_units", []):
+        drift.append(f"active_unit is outside scope: {active_unit!r}")
+    elif active_unit in derived.get("completed_units", []):
+        drift.append(f"active_unit is already completed: {active_unit!r}")
+    if not is_substantive_string(recorded.get("next_action")):
+        drift.append("next_action is missing or non-substantive")
+    return drift
+
+
+STATUS_PRIORITY_ERROR_MARKERS = (
+    "source drift",
+    "source closure",
+    "snapshotted source file",
+    "finalization requires at least one proof-unit ledger",
+    "in-scope units missing ledgers",
+    "progress.json",
+    "final report",
+    "dependency registry",
+    "issue_log.json",
+)
+
+
+def bounded_errors(
+    errors: list[str],
+    limit: int = 24,
+    preferred_markers: tuple[str, ...] = (),
+) -> tuple[list[str], int]:
+    if len(errors) <= limit:
+        return list(errors), 0
+    preferred_indices = [
+        index
+        for marker in preferred_markers
+        for index, error in enumerate(errors)
+        if marker in error.lower()
+    ]
+    selected_indices: list[int] = []
+    seen: set[int] = set()
+    for index in [*preferred_indices, *range(len(errors))]:
+        if index in seen:
+            continue
+        selected_indices.append(index)
+        seen.add(index)
+        if len(selected_indices) == limit:
+            break
+    visible = [errors[index] for index in selected_indices]
+    omitted = len(errors) - len(visible)
+    return (
+        [
+            *visible,
+            f"{omitted} additional errors omitted; rerun status --verbose.",
+        ],
+        omitted,
+    )
+
+
+def cmd_checkpoint(args: argparse.Namespace) -> int:
+    root = args.root.resolve()
+    manifest, manifest_errors = load_json_object(
+        root / "AUDIT_MANIFEST.json", "audit manifest"
+    )
+    if manifest_errors:
+        raise ValueError("; ".join(manifest_errors))
+    progress_path = root / "PROGRESS.json"
+    recorded, progress_errors = load_json_object(progress_path, "progress state")
+    if progress_errors:
+        raise ValueError("; ".join(progress_errors))
+    _, issues, issue_errors = load_issue_log(root)
+    if issue_errors:
+        raise ValueError("; ".join(issue_errors))
+
+    clear_active = bool(getattr(args, "clear_active_unit", False))
+    active_unit = getattr(args, "active_unit", None)
+    if clear_active:
+        active_unit = None
+    elif not is_nonempty_string(active_unit):
+        raise ValueError(
+            "checkpoint requires --active-unit UNIT or --clear-active-unit"
+        )
+    next_action = getattr(args, "next_action", None)
+    if not is_substantive_string(next_action):
+        raise ValueError("checkpoint --next-action must be substantive")
+    checkpoint_time = utc_now()
+
+    staged_record = dict(recorded)
+    staged_record["active_unit"] = active_unit
+    staged_record["next_action"] = next_action.strip()
+    staged_record["updated_utc"] = checkpoint_time
+    derived, derive_errors = derive_progress_records(
+        root, manifest, staged_record, issues
+    )
+    if derive_errors:
+        concise, omitted = bounded_errors(derive_errors, 8)
+        suffix = f"; {omitted} additional errors" if omitted else ""
+        raise ValueError("Cannot checkpoint: " + "; ".join(concise) + suffix)
+    if active_unit is not None and active_unit not in derived["scope_units"]:
+        raise ValueError(f"checkpoint active unit is outside scope: {active_unit}")
+    if active_unit is not None and active_unit in derived["completed_units"]:
+        raise ValueError(
+            f"checkpoint active unit is already completed: {active_unit}"
+        )
+
+    updated = dict(recorded)
+    updated.update(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "paper_file": manifest.get("paper_file"),
+            "source_snapshot_sha256": derived["source_snapshot_sha256"],
+            "status": derived["expected_status"],
+            "current_pass": derived["current_pass"],
+            "active_unit": active_unit,
+            "completed_units": derived["completed_units"],
+            "conditional_units": derived["conditional_units"],
+            "in_progress_units": derived["in_progress_units"],
+            "blocked_units": derived["blocked_units"],
+            "not_started_units": derived["not_started_units"],
+            "open_high_priority_issues": derived["open_high_priority_issues"],
+            "source_or_parser_limits": derived["source_or_parser_limits"],
+            "next_action": staged_record["next_action"],
+            "updated_utc": checkpoint_time,
+        }
+    )
+    progress_path.write_text(
+        json.dumps(updated, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    print(
+        json.dumps(
+            {
+                "audit_root": str(root),
+                "progress_file": str(progress_path),
+                "status": updated["status"],
+                "current_pass": updated["current_pass"],
+                "active_unit": updated["active_unit"],
+                "completed_units": updated["completed_units"],
+                "conditional_units": updated["conditional_units"],
+                "in_progress_units": updated["in_progress_units"],
+                "not_started_units": updated["not_started_units"],
+                "next_action": updated["next_action"],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
 def status_markdown(data: dict[str, Any]) -> str:
     finalization = data["finalization"]
+    progress = data["progress"]
     rows = [
         "# Proof-Check Status",
         "",
-        f"- Audit root: `{data['audit_root']}`",
+        f"- Audit root: {data['audit_root']}",
+        f"- Workflow state: {data['workflow_state']}",
+        f"- Active unit: {progress.get('active_unit') or 'none'}",
+        f"- Current pass: {progress.get('current_pass')}",
+        f"- Next action: {progress.get('next_action') or 'none'}",
+        f"- Normalized units: {len(progress.get('normalized_units', []))}",
+        f"- Completed units: {len(progress.get('completed_units', []))}",
+        f"- Conditional units: {len(progress.get('conditional_units', []))}",
+        f"- In-progress units: {len(progress.get('in_progress_units', []))}",
+        f"- Not-started units: {len(progress.get('not_started_units', []))}",
         f"- Ledgers: {data['ledgers']}",
         f"- Ledger validation errors: {data['ledger_errors']}",
         f"- Issues: {data['issues']}",
@@ -10605,9 +11305,25 @@ def status_markdown(data: dict[str, Any]) -> str:
         for status, count in sorted(data["unit_statuses"].items())
     )
     rows.append("")
+    if progress.get("drift"):
+        rows.extend(["## Checkpoint drift", ""])
+        rows.extend(f"- {item}" for item in progress["drift"])
+        rows.append("")
+    if progress.get("in_progress_units"):
+        rows.extend(["## In-progress units", ""])
+        rows.extend(f"- {unit_id}" for unit_id in progress["in_progress_units"])
+        rows.append("")
+    if progress.get("not_started_units"):
+        rows.extend(["## Not-started units", ""])
+        rows.extend(f"- {unit_id}" for unit_id in progress["not_started_units"])
+        rows.append("")
     if data["invalid_ledgers"]:
-        rows.extend(["## Invalid ledgers", ""])
-        rows.extend(f"- `{path}`" for path in data["invalid_ledgers"])
+        rows.extend(["## Ledgers requiring work", ""])
+        rows.extend(f"- {path}" for path in data["invalid_ledgers"])
+        rows.append("")
+    if data.get("structural_errors"):
+        rows.extend(["## Malformed or stale state", ""])
+        rows.extend(f"- {error}" for error in data["structural_errors"])
         rows.append("")
     if finalization["stale_reasons"]:
         rows.extend(["## Finalization problems", ""])
@@ -10622,15 +11338,45 @@ def status_markdown(data: dict[str, Any]) -> str:
         rows.extend(["## Changed audit artifacts", ""])
         for kind in ("added", "removed", "changed"):
             for path in changes[kind]:
-                rows.append(f"- {kind}: `{path}`")
+                rows.append(f"- {kind}: {path}")
         rows.append("")
     return "\n".join(rows)
 
 
 def cmd_status(args: argparse.Namespace) -> int:
     root = args.root.resolve()
-    errors, summaries, _ = audit_ledgers(root, False)
+    ledger_errors, summaries, _ = audit_ledgers(root, False)
     _, issues, issue_read_errors = load_issue_log(root)
+    manifest, manifest_errors = load_json_object(
+        root / "AUDIT_MANIFEST.json", "audit manifest"
+    )
+    recorded_progress, progress_read_errors = load_json_object(
+        root / "PROGRESS.json", "progress state"
+    )
+    structural_errors = [
+        *manifest_errors,
+        *progress_read_errors,
+        *issue_read_errors,
+    ]
+    if manifest_errors or progress_read_errors:
+        derived = {
+            "normalized_units": [],
+            "completed_units": [],
+            "conditional_units": [],
+            "in_progress_units": [],
+            "not_started_units": [],
+            "current_pass": None,
+            "completion_gate_errors": [],
+            "fatal_ledger_errors": [],
+        }
+        drift: list[str] = []
+    else:
+        derived, derive_errors = derive_progress_records(
+            root, manifest, recorded_progress, issues
+        )
+        structural_errors.extend(derive_errors)
+        drift = progress_drift(manifest, recorded_progress, derived)
+
     finalization = check_finalization_freshness(root)
     output = getattr(args, "output", None)
     if (
@@ -10642,19 +11388,74 @@ def cmd_status(args: argparse.Namespace) -> int:
             "Refusing to write status output inside an audit root that has "
             "a finalization record"
         )
+
+    finalization_view = dict(finalization)
+    full_gate_errors = list(finalization.get("current_gate_errors", []))
+    finalization_view["current_gate_error_count"] = len(full_gate_errors)
+    verbose = bool(getattr(args, "verbose", False))
+    if verbose:
+        finalization_view["current_gate_errors_omitted"] = 0
+    else:
+        visible_errors, omitted = bounded_errors(
+            full_gate_errors, preferred_markers=STATUS_PRIORITY_ERROR_MARKERS
+        )
+        finalization_view["current_gate_errors"] = visible_errors
+        finalization_view["current_gate_errors_omitted"] = omitted
+
+    malformed_or_stale = bool(
+        structural_errors
+        or drift
+        or derived.get("completion_gate_errors")
+        or (
+            finalization["record_status"] in {"failed", "invalid"}
+            or finalization["freshness"] in {"stale", "unknown"}
+        )
+    )
+    if malformed_or_stale:
+        workflow_state = "malformed_or_stale"
+    elif finalization["finalizable_now"]:
+        workflow_state = "finalizable"
+    else:
+        workflow_state = "healthy_wip"
+
     counts = Counter(
         summary.get("expected_unit_status", "unknown") for summary in summaries
     )
     invalid = [summary["ledger"] for summary in summaries if summary.get("errors")]
+    progress_view = {
+        "recorded_status": recorded_progress.get("status"),
+        "expected_status": derived.get("expected_status"),
+        "recorded_current_pass": recorded_progress.get("current_pass"),
+        "current_pass": derived.get("current_pass"),
+        "active_unit": recorded_progress.get("active_unit"),
+        "normalized_units": derived.get("normalized_units", []),
+        "completed_units": derived.get("completed_units", []),
+        "conditional_units": derived.get("conditional_units", []),
+        "in_progress_units": derived.get("in_progress_units", []),
+        "not_started_units": derived.get("not_started_units", []),
+        "blocked_units": derived.get("blocked_units", {}),
+        "next_action": recorded_progress.get("next_action"),
+        "drift": drift,
+        "completion_gate_error_count": len(derived.get("completion_gate_errors", [])),
+    }
+    visible_structural, structural_omitted = (
+        (list(structural_errors), 0)
+        if verbose
+        else bounded_errors(structural_errors, 12)
+    )
     result = {
         "audit_root": str(root),
+        "workflow_state": workflow_state,
+        "progress": progress_view,
         "ledgers": len(summaries),
-        "ledger_errors": len(errors),
+        "ledger_errors": len(ledger_errors),
         "invalid_ledgers": invalid,
         "unit_statuses": dict(counts),
         "issues": len(issues),
         "issue_log_errors": len(issue_read_errors),
-        "finalization": finalization,
+        "structural_errors": visible_structural,
+        "structural_errors_omitted": structural_omitted,
+        "finalization": finalization_view,
     }
     text = (
         status_markdown(result)
@@ -10662,15 +11463,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         else json.dumps(result, ensure_ascii=False, indent=2) + "\n"
     )
     write_or_print(text, output, getattr(args, "force", False))
-    finalization_failed = (
-        finalization["record_status"] in {"failed", "invalid"}
-        or finalization["freshness"] in {"stale", "unknown"}
-        or (
-            finalization["record_status"] != "missing"
-            and bool(finalization["current_gate_errors"])
-        )
-    )
-    return 1 if errors or issue_read_errors or finalization_failed else 0
+    return 1 if workflow_state == "malformed_or_stale" else 0
 
 
 def add_output_arguments(parser: argparse.ArgumentParser) -> None:
@@ -10752,6 +11545,22 @@ def build_parser() -> argparse.ArgumentParser:
     issues.add_argument("--final", action="store_true")
     issues.set_defaults(func=cmd_issues)
 
+    checkpoint = subparsers.add_parser(
+        "checkpoint", help="Synchronize canonical resumable audit progress"
+    )
+    checkpoint.add_argument("--root", type=Path, required=True)
+    active = checkpoint.add_mutually_exclusive_group(required=True)
+    active.add_argument("--active-unit")
+    active.add_argument(
+        "--clear-active-unit",
+        action="store_true",
+        help="Record that no proof unit is currently active",
+    )
+    checkpoint.add_argument(
+        "--next-action", required=True, help="Record one specific continuation action"
+    )
+    checkpoint.set_defaults(func=cmd_checkpoint)
+
     finalize = subparsers.add_parser(
         "finalize",
         help="Enforce audit scope, source, dependency, issue, and challenger closure",
@@ -10761,6 +11570,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     status = subparsers.add_parser("status", help="Summarize resumable audit state")
     status.add_argument("--root", type=Path, required=True)
+    status.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show every finalization-gate and structural diagnostic",
+    )
     add_output_arguments(status)
     status.set_defaults(func=cmd_status)
     return parser

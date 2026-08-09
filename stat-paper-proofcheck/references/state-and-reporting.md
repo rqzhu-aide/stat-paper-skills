@@ -63,22 +63,52 @@ scope, canonical issue log, global source-resolution row, and final report.
 
 ## Checkpoint contract
 
-At the end of every session or before a handoff, update `PROGRESS.json` with:
+After validating every completed ledger, at the end of every session, and
+before a handoff, write `PROGRESS.json` through the checkpoint command. Choose
+exactly one active-unit option and supply a specific next action:
 
-- `source_snapshot_sha256` equal to the current manifest snapshot;
-- the current pass and active unit;
-- completed, conditional, blocked, and not-started units;
-- open S0 and S1 issue IDs;
-- parser or source limitations;
-- the exact next action.
+```bash
+python scripts/proofcheck.py checkpoint --root <audit-root> --active-unit <unit-id> --next-action "<specific action>"
+python scripts/proofcheck.py checkpoint --root <audit-root> --clear-active-unit --next-action "<specific action>"
+```
 
-Keep state factual. Do not mark a unit complete merely because a draft ledger
-exists. At finalization, require `completed_units` to equal the in-scope set
-exactly, `conditional_units` to equal the exact set of ledgers with
-`unit_status: conditionally_verified`, `blocked_units` to be an empty object,
-`not_started_units` to be empty, and `open_high_priority_issues` to equal the
-sorted set of open or deferred S0 and S1 issue IDs. Reject duplicates, unknown
-IDs, missing IDs, and stale snapshot bindings.
+The command derives `current_pass`, the completed, in-progress, and not-started
+unit sets, and the conditional subset from canonical scope and ledger state. It
+keeps the active unit and next action explicit and preserves only validated
+blockers and source or parser limits. Do not hand-edit derived progress fields.
+
+Use these exact `current_pass` milestones:
+
+| Pass | Milestone |
+|---|---|
+| 0 | Reserved for pre-work or legacy bootstrap; a normal scaffold starts at pass 1. |
+| 1 | Establishing scope and source is underway. |
+| 2 | Scope and source are reviewed; proof-system mapping is incomplete. |
+| 3 | Proof-system mapping is reviewed, but at least one scoped obligation is not fully source-locked and normalized. |
+| 4 | All scoped obligations are normalized; local atomic checking is incomplete. |
+| 5 | All local ledgers are complete; dependency, method-interface, global, or adversarial checks are incomplete. |
+| 6 | Dependency, method-interface, global, and adversarial checks are complete; critical challenges are incomplete. |
+| 7 | Critical challenges are complete; the final report is not declared ready. |
+| 8 | The final report is declared ready; the strict candidate finalization gate alone controls `complete` versus `in_progress`. |
+
+The checkpoint refuses source-snapshot or include-closure drift rather than
+rewriting progress against stale source. On a successful checkpoint, it
+migrates a legacy progress record that lacks `in_progress_units` by writing the
+derived field. It rejects an active unit already present in the derived
+`completed_units` set. At pass 8, it places the newly supplied `next_action`
+into the candidate progress record
+before running the strict gate, so that gate validates the new value. If the
+gate fails, checkpoint records `status: in_progress`, never `complete`.
+
+Keep the explicit state factual. Do not mark a unit complete merely because a
+draft ledger exists. At finalization, require `completed_units` to equal the
+in-scope set exactly, `conditional_units` to equal the exact set of ledgers
+with `unit_status: conditionally_verified`, `blocked_units` to be an empty
+object, `in_progress_units` and `not_started_units` to be empty, and
+`open_high_priority_issues` to equal the sorted set of open or deferred S0 and
+S1 issue IDs. Reject duplicates, unknown IDs, missing IDs, and stale snapshot
+bindings.
+
 ## Resume contract
 
 On resumption:
@@ -90,6 +120,11 @@ On resumption:
    external source-evidence hashes.
 5. Read the active unit, its dependencies, and open issue records.
 6. Continue from the exact next action rather than repeating completed work.
+
+`status` is work-in-progress aware and concise by default. It distinguishes a
+healthy incomplete audit from stale or malformed state and from an audit that
+is finalizable now. Use `status --verbose` to show the full gate errors. Both
+modes apply the same strict validation and finalization gates.
 
 If source drift affects a checked unit, mark that unit stale and re-extract it. Preserve unaffected audit records. If the paper's theorem statement changes, re-evaluate downstream dependencies even when proof text is unchanged.
 
@@ -183,10 +218,11 @@ consistency matrix, issue-impact table, or result-status sections in the report;
 those remain canonical in the main-theorem table,
 `DEPENDENCY_REGISTRY.json`, manifest completion checks, and `ISSUE_LOG.json`.
 
-Before release, set `PROGRESS.json` status to `complete`, apply the exact progress
-partition rules above, and run:
+Before release, write the final derived progress state through `checkpoint`,
+then run the strict issue and finalization gates:
 
 ```bash
+python scripts/proofcheck.py checkpoint --root <audit-root> --clear-active-unit --next-action "Run final issue reconciliation and finalization."
 python scripts/proofcheck.py issues --root <audit-root> --write-summary --final
 python scripts/proofcheck.py finalize --root <audit-root>
 ```
@@ -197,10 +233,11 @@ audit-artifact manifest, audit-state hash, and validation errors. Treat that
 generated file as the persisted gate result.
 
 Before finalization, `proofcheck.py status --root <audit-root>` always runs the
-current gate as a preflight. It reports `preflight_status`, `finalizable_now`,
-and populated `current_gate_errors` even when `FINALIZATION.json` is missing.
-A missing record is a normal work-in-progress state and does not alone make the
-command fail.
+current gate as a preflight. Its default output gives a concise work-in-progress
+summary; add `--verbose` for the complete current gate errors. It reports
+`preflight_status` and `finalizable_now` even when `FINALIZATION.json` is
+missing. A missing record is a normal work-in-progress state and does not alone
+make the command fail.
 
 After finalization, `proofcheck.py status --root <audit-root>` recomputes artifact
 hashes and the full gate, including source files, external source-evidence
