@@ -56,7 +56,7 @@ List prerequisites before dependent results.
 
 ## Dependency-closure registry review
 
-- Closure contract version: 2
+- Closure contract version: 3
 - Review status:
 - Source snapshot SHA256:
 - Inventory SHA256:
@@ -133,6 +133,23 @@ Use a record only for a load-bearing estimated or implemented interface that mee
 | Interface | Population target | Fitting laws | Evaluation site | Downstream use | Estimator to target | Code to documentation | Code to target | Execution provenance | Issue IDs |
 |---|---|---|---|---|---|---|---|---|---|
 
+## Issue-resolution evidence preservation
+
+Before repairing an open or deferred issue, complete and finalize the
+unresolved audit, then run:
+
+```bash
+python "<skill-root>/scripts/proofcheck.py" archive-issue --root <audit-root> --issue-id I-001
+```
+
+Do not modify the source or canonical audit records before the archive
+succeeds. For a resolved issue, preserve the archived top-level
+`origin_ref` for identity, keep current contracts and propagation in
+`contract_refs` and `affected_results`, and place current provenance
+in `current_resolution`. Recheck the historical-current unit and
+dependency-use unions, record every retired use, run fresh issue-aware
+challenges, and reconcile every required report deliverable.
+
 ## Completion gates
 
 - [ ] Exact line coverage for every in-scope unit
@@ -142,7 +159,7 @@ Use a record only for a load-bearing estimated or implemented interface that mee
 - [ ] Every obligation premise resolves to one scalar string and its claim equals that string exactly
 - [ ] Every dependency is used and each dependency premise matches its `needed_form`
 - [ ] Every prior-step `needed_form` exactly equals the earlier step's restatement
-- [ ] Every result use has one `Dxxx` ID, every internal use names one `Cxxx` dependency conclusion, and each result record exactly mirrors `review.direct_dependencies`
+- [ ] Every result use has one audit-globally unique `Dxxx` ID, every internal use names one `Cxxx` dependency conclusion, and each result record exactly mirrors `review.direct_dependencies`
 - [ ] No declared dependency has status `not_applicable`
 - [ ] No substantive claim, check, or evidence field contains a bare absence or unresolved placeholder
 - [ ] Every normalized obligation field is free of unresolved placeholders; exact `unclear` has the matching `unclear` disposition
@@ -163,15 +180,29 @@ Use a record only for a load-bearing estimated or implemented interface that mee
 - [ ] Focused depth has nonempty target units and exact transitive dependency closure
 - [ ] Closure registry review matches the source snapshot, inventory hash, and exact scope
 - [ ] Internal uses are an exact one-to-one match to direct internal dependencies
-- [ ] Every internal use binds exact invoking steps, needed form, dependency conclusion, and obligation hash
+- [ ] Every internal use binds exact invoking steps, needed form, dependency conclusion, and conclusion contract SHA256
 - [ ] Every internal and external use has all eight compatibility aspects and a derived status
 - [ ] Every external use has exact citation keys, prerequisite maps, and current evidence spans
 - [ ] Broken references and duplicate labels have exact reviewed records
 - [ ] Dependency cycles, stale or unused records, and status mismatches are absent
 - [ ] Method-interface trigger and registry reviewed
 - [ ] Exact global consistency matrix and adversarial pass complete
-- [ ] Fresh-context challenge and reconciliation for every critical unit
+- [ ] Fresh-context challenge and reconciliation for every effective-critical unit, including every current unit promoted by an open, deferred, or resolved load-bearing S0 or S1 issue
+- [ ] Every locked source_lines row contains its exact line text and matching SHA256; every source_unit.source_sha256 matches the newline-joined text of its exact range
+- [ ] Every review.use_sites entry is one canonical file:line reference occurrence; every locked downstream use span, SHA256, and quote is exact
+- [ ] Every generated finding reproduces the canonical locked quote, exact premises, and recorded failure evidence without paraphrase
+- [ ] Downstream effects weaken dependency closure and proof support only to the level established; they do not refute a downstream conclusion without independent evidence
+- [ ] Every method-interface record reports both implementation inspection status and inspection_mode
+- [ ] Every critical challenge reports disagreements, resolution, artifact path, current artifact hash, and freshness fields
+- [ ] Every agreed challenge has identical challenger, reconciled, and final unit verdicts with no disagreements; every resolved challenge has a reconciled verdict equal to the final unit status, recorded disagreements, and substantive resolution
+- [ ] Every declared user-facing report exactly reconciles all canonical scalar metadata and semantic sections, including Computational evidence, using active Markdown without raw HTML
+- [ ] The final-report Declared external deliverables scalar and table exactly reconcile with manifest report_deliverables
 - [ ] Canonical issue finding status and affected-result propagation agree
+- [ ] Every resolved issue was archived before repair and has a hash-current `historical_origin` bound to a passed prior finalization
+- [ ] Every resolution archive has byte-exact manifest, issue-log, final-report, inventory, dependency-registry, method-interface-registry, and required-ledger members under `prior_artifacts`, and `prior_sources` exactly matches the prior source snapshot
+- [ ] Every archived ledger, method-interface, or global-check failure projection is recomputed from its sealed canonical origin record
+- [ ] Every resolved issue has a clean structured `current_resolution`, exact retired-use records, and complete historical-current recheck unions
+- [ ] Every resolved S0 or S1 issue remains in the fresh current challenges for all currently affected units
 - [ ] `PROGRESS.json` exactly reconciles scope, statuses, snapshot, and open S0/S1 issues
 - [ ] `proofcheck.py status` preflight reports `finalizable_now: true` and no current gate errors
 - [ ] Final report exactly reconciles canonical scope, unit, dependency, external, issue, and protocol fields

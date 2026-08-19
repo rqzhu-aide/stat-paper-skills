@@ -10,6 +10,23 @@ Keep three classes separate:
 
 Every strong judgment must cite exact manuscript lines, theorem or equation labels, pages, or verified external theorem locations.
 
+## Evidence specificity
+
+Evidence must identify the paper-specific claim, objects, premises, operation,
+source anchor, and observed success or failure relevant to that record. It
+cannot merely restate a status or generic checklist.
+
+Under evidence contract 4, final validation treats exact normalized wording
+repeated across at least four distinct, unrelated substantive steps as nonspecific when it
+appears in `checks.literal`, `checks.atomicity.evidence`, a move
+`justification`, or `checks.adversarial`. It also treats the same risk
+evidence reused across at least three distinct aspects within one step, or
+across at least four unrelated applicable-risk steps, as nonspecific. A
+paper-specific `not_applicable` row is excluded from the cross-step
+applicable-risk count, but not from the within-step cross-aspect check.
+Repetition below these thresholds is not positive evidence of specificity, and
+cosmetic wording changes do not make generic evidence adequate.
+
 ## Assurance boundary
 
 This protocol is non-formal. It can provide high assurance through exact source coverage, independent reconstruction, dependency closure, adversarial search, and a fresh critical-path challenge. It cannot provide the soundness guarantee of a small proof-assistant kernel.
@@ -17,9 +34,10 @@ This protocol is non-formal. It can provide high assurance through exact source 
 Mechanical validation establishes that source hashes, normalized-field
 dispositions, premise origins and active reference anchors, exact
 reference-occurrence dispositions, `Dxxx` dependency-use mirrors, atomic move
-links and reachability, structured failure and status links, risk dispositions,
-joint side-condition discharge, and per-conclusion support closures are present
-and internally consistent. Audit-wide validation also
+links and reachability, source-unit coverage and hashes, one-move inferential
+steps and their support roles, structured failure and status links, risk
+dispositions, joint side-condition discharge, and per-conclusion support
+closures are present and internally consistent. Audit-wide validation also
 establishes that the reviewed closure registry matches the current source
 snapshot, inventory, and scope; every direct dependency has one exact use
 record; obligation and external-evidence hashes are current; compatibility and
@@ -138,6 +156,13 @@ Severity measures consequence, not certainty or repair difficulty.
 
 S0 and S1 issues are load-bearing by definition. Any open or deferred S0 or S1 issue, and any lower-severity issue explicitly marked load-bearing, prevents a `no_defect_found` assessment.
 
+For challenge coverage, the effective critical set is the manifest
+`critical_units` union every in-scope unit in `affected_results` for an open,
+deferred, or resolved load-bearing S0 or S1 issue. A resolved severe issue
+continues to promote its current affected units so the repaired state receives
+a fresh issue-aware challenge. S2 and S3 issues do not promote units through
+this rule.
+
 ## Confidence
 
 - **high:** exact evidence plus reconstructed reasoning or a concrete counterexample.
@@ -154,13 +179,84 @@ Define each issue once in `audit/06_reports/ISSUE_LOG.json` with:
 - severity and confidence;
 - lifecycle `status`: `open`, `resolved`, or `deferred`;
 - `finding_status`: `defect`, `inconclusive`, or `resolved`;
-- exact location and root `affected_result`;
+- concise diagnostic `summary`, without repair language;
+- `origin_ref`, whose `kind` is `ledger_move`, `obligation_pointer`,
+  `dependency_use`, `interface_record`, or `global_check`, and whose
+  identifiers resolve one exact canonical record;
+- `contract_refs`, whose rows use `kind: conclusion`,
+  `obligation_pointer`, or `dependency_use` to identify the exact
+  mathematical statement, applicable assumptions, and scope;
+- `invalidation_kind`: `proof_gap`, `proof_invalid`,
+  `statement_refuted`, `dependency_mismatch`, `scope_inconclusive`, or
+  `presentation_only`;
+- root `affected_result`;
 - `affected_results`, equal to the exact dependency-propagated result set;
-- concise summary and evidence list;
-- downstream consequences;
-- possible repair, kept separate from the diagnosis;
+- a nonempty `suggested_changes` list, each with a source-locked
+  `target_ref`, `action`, exact `proposal`, `verification_status` equal to
+  `candidate` or `verified_sufficient`, and `required_rechecks`;
 - scope set to `unit` or `global`;
 - whether the issue is load-bearing.
+
+Do not create a second prose definition of the issue. Resolve source location,
+locked source quotation, normalized claim, assumptions, failed move, and
+downstream use sites from `origin_ref`, `contract_refs`, the ledgers, and the
+dependency registry. A missing assumption is an absent requirement, not a
+source quotation. Keep `invalidation_kind` separate from severity: severity
+measures consequence, while invalidation records what the finding does to the
+argument, statement, or dependency.
+
+Reconcile `invalidation_kind` with the component judgments. A `proof_gap`
+requires a gap and leaves the statement not established. A `proof_invalid`
+requires an invalid argument but does not refute the statement.
+`statement_refuted` requires the exact counterexample or contradiction
+standard above. A `dependency_mismatch` must appear in the named use status
+and dependent closure. A `scope_inconclusive` cannot support a definite defect
+claim. A `presentation_only` issue cannot weaken mathematical statuses or
+propagate beyond its root.
+
+Schema-5 issues retire the authored `location`, `evidence`,
+`downstream_consequences`, and `possible_repair` prose fields. They may be
+read only when inspecting a legacy record and cannot support current
+finalization. Exact evidence and downstream rows are derived from canonical
+references, and repairs live only in `suggested_changes`.
+
+For `origin_ref.kind: ledger_move`, record exact `unit_id`, `step_id`, and
+`move_id`. An `obligation_pointer` origin records `unit_id` and `pointer`;
+a `dependency_use` origin records `unit_id` and `use_id`; an
+`interface_record` origin records `interface_id`; and a `global_check`
+origin records its exact `aspect`. Interface and global origins also require a
+nonempty `evidence_spans` list of current locked source spans. Every interface
+span must be a canonical member of that interface record, and every global
+origin must link back from the named global check and name the root affected
+result. A conclusion contract reference records
+`unit_id` and `conclusion_id`; an obligation-pointer reference records
+`unit_id` and `pointer`; and a dependency-use reference records `unit_id`
+and `use_id`.
+Use the matching canonical registry or check identifier rather than a prose
+locator. For an open or deferred issue, a ledger-move origin links back through
+the owning step and, for a mathematical failure, the move's
+`failure.issue_id`. Dependency, interface, and global origins link back
+through the corresponding canonical `issue_ids`. Because an obligation
+pointer has no issue field, it instead connects through the exact matching
+obligation-pointer row in `contract_refs`. Every current contract
+reference must resolve under the current source snapshot. At least one contract
+reference must name `affected_result`. For an open or deferred
+ledger-move issue, the referenced root conclusion must contain the origin move
+in its exact backward support closure, or another root contract must be
+demonstrably used by that move. An obligation or dependency origin must repeat
+its exact pointer or `Dxxx` use in `contract_refs`. A
+`dependency_mismatch` requires the named direct use and its canonical effective
+status to be `gap` or `incorrect` for `finding_status: defect`, and `unclear`
+for `finding_status: inconclusive`. It cannot borrow a failure from a sibling
+use or promote uncertainty into a definite defect. A `statement_refuted` issue
+requires a backlinked counterexample or contradiction move. A
+`scope_inconclusive` issue requires `finding_status: inconclusive`.
+
+Each suggested-change `target_ref` uses `kind: source_span` with exact
+`file`, `start_line`, `end_line`, and `sha256`. Use `action` equal to
+`repair_step`, `strengthen_assumption`, `weaken_claim`,
+`correct_statement`, `repair_dependency`, `clarify_scope`, or
+`presentation_edit`.
 
 Use `finding_status: defect` when the evidence establishes a defect. Use
 `inconclusive` when an ambiguity, unchecked fact, or conditional finding blocks
@@ -168,6 +264,102 @@ a conclusion. Use `resolved` only with lifecycle `status: resolved` and the full
 resolution record. An open or deferred issue cannot have `finding_status:
 resolved`, and a resolved lifecycle record cannot retain a defect or
 inconclusive finding status.
+
+## Resolved-issue lifecycle
+
+Preserve the unresolved evidence before modifying anything that could erase or
+move the failure. Complete and finalize the unresolved audit, then run:
+
+```bash
+python "<skill-root>/scripts/proofcheck.py" archive-issue --root <audit-root> --issue-id I-001
+```
+
+The command requires a current passed finalization, accepts only an open or
+deferred issue, refuses to overwrite an existing archive, and writes
+`audit/06_reports/history/I-001-origin.json`. Run it before editing the
+paper, ledgers, dependency registry, contracts, challenges, or reports.
+
+The archive binds the byte-exact prior manifest, issue log, final report,
+affected ledgers, dependency registry, method-interface registry, inventory,
+and source files to the prior finalization and source snapshot. It preserves
+the old issue record, exact failure projection, prior contracts, and prior
+dependency closure.
+
+Every sealed member has exact `file`, `sha256`, and
+`content_base64` fields. The mandatory `prior_artifacts` object
+contains `manifest`, `issue_log`, `final_report`,
+`inventory`, `dependency_registry`, `method_interface_registry`, and the exact required
+`ledgers` list. Each decoded byte sequence must hash to its own digest and
+to the same file row in the prior finalization artifact manifest. The archived
+issue must be the exact member of the sealed issue log. The archived failure
+row must equal both the sealed prior final report row and the recomputation from
+the sealed ledger when the origin is a ledger move, the sealed
+method-interface registry when it is an interface record, or the sealed
+manifest global-consistency check when it is a global check.
+
+The `prior_sources` list uses the same sealed-member shape. Its decoded
+file set and hashes must equal the prior manifest's
+`source_snapshot.files` membership exactly, with no missing, extra, or
+duplicate source. Do not treat separately supplied hashes or live current files
+as substitutes for these byte-exact records.
+
+The compact `historical_origin` object in the current issue records:
+
+- `artifact` and its exact `sha256`;
+- the prior `source_snapshot_sha256`;
+- `required_units`;
+- `required_dependency_uses`;
+- `required_challenges`;
+- `required_report_deliverables`.
+
+Keep the issue's top-level `origin_ref` equal to the archived origin for
+identity, even when the old source object has been removed. Do not require that
+historical reference to resolve in the current ledger. Update
+`contract_refs` and `affected_results` to the current source and
+current dependency graph.
+
+Record the current repair under `current_resolution` with:
+
+- `disposition` equal to `repaired`, `replaced`, or
+  `removed`;
+- `current_ref` equal to the clean current canonical origin for a
+  repaired or replaced object, and null for a removed object;
+- substantive `mapping` from the archived failure to the current state;
+- current locked `evidence_spans`;
+- `verification_status: verified_sufficient`;
+- `required_rechecks` equal to the historical-current affected-unit
+  union;
+- `retired_dependency_uses` containing exactly every archived use absent
+  from the current closure, each with `use_id`,
+  `prior_edge_sha256`, substantive `reason`, and
+  `recheck_evidence`.
+
+A repaired or replaced `current_ref` must resolve to a clean current
+record and connect to a current contract or support closure on the root
+affected result. A removed disposition requires a null current reference and
+evidence that the archived origin no longer resolves. `removed` means
+that the failed move, dependency use, interface origin, or global origin was
+removed inside a retained and cleanly rechecked affected result. It does not
+mean that an entire theorem or audit unit can be deleted from scope. Retiring a
+whole result requires a separately scoped retirement audit.
+
+Also record a substantive `resolution` and `source_revision`, the
+current `source_snapshot_sha256`, substantive `recheck_evidence`,
+`rechecked_units`, `rechecked_dependency_uses`, and
+`reconciled_deliverables`. The rechecked units and dependency uses must
+equal their historical-current unions. A retired use remains in the recheck
+union and needs its retirement evidence.
+
+Remove the resolved issue ID from current proof-failure, dependency,
+interface, and global-check backlinks. Keep it in `covered_issue_ids` for
+every currently affected S0 or S1 unit, and run a fresh post-repair challenge
+against the current source and ledger. Do not reuse the archived challenge.
+
+In the generated report, preserve the archived failure location, quote,
+premises, rule, and failure evidence exactly. Resolve the mathematical
+contract, downstream propagation, relation statuses, severity effect, and
+recheck closure from current canonical records. The report must not rewrite the
+historical failure or present an old downstream edge as current.
 
 For an open or deferred load-bearing issue, start at `affected_result` and
 follow the reverse internal dependency graph. Set `affected_results` to the root
@@ -185,6 +377,8 @@ A method-interface issue also records:
 - the estimator-target status, implementation inspection status, both
   code-comparison verdicts, and execution-provenance status copied exactly from
   the interface record;
+- the implementation inspection mode resolved exactly from the canonical
+  interface record for reporting;
 - the evidence needed to resolve the finding.
 
 The generated issue summary preserves these fields. Every later report,
@@ -193,12 +387,13 @@ class, affected layer, affected result set, relation statuses, confidence, and
 inspection scope. Strengthen the claim only after new evidence is entered into
 the canonical records and revalidated.
 
-A resolved issue must also record the resolution, source revision,
-`source_snapshot_sha256`, `recheck_evidence`, and `rechecked_units`.
-`source_snapshot_sha256` must equal the current manifest snapshot, and
-`rechecked_units` must equal `affected_results`. Changing lifecycle status
-without rechecking the root and all affected downstream results is not
-resolution.
+A suggested change remains `candidate` unless its target is source locked and
+the revised source, root finding, and full historical-current closure have been
+rechecked. Use `verified_sufficient` only with the resolved-issue evidence
+above and completion of the full union recheck. Set
+`required_rechecks` to the exact sorted historical-current affected-unit
+union. A suggestion cannot lower severity, resolve an issue, or strengthen the
+verdict by itself.
 
 A resolved method-interface issue additionally needs a semantic contract
 containing the protected mathematical meaning, minimal authoritative supporting
@@ -212,6 +407,22 @@ Local ledgers reference issue IDs. They do not create competing descriptions.
 Dependency and external-use records reference the same canonical IDs. Generate
 `ISSUE_SUMMARY.md` with the bundled script so counts, severities, lifecycle
 states, finding states, and affected results come from the canonical log.
+
+Generate each final-report finding from the same record. The generated finding
+must show the exact failure location and locked quotation; the normalized
+statement, applicable assumptions, and scope; the failed move or other
+canonical origin, including its exact premises and recorded failure evidence;
+severity and current invalidation effect; one exact
+downstream location and source quotation for every propagation edge; and the
+structured suggested changes. If any reference or quotation cannot be resolved
+against the current snapshot, finalization must fail rather than substitute a
+paraphrase.
+
+For a dependency-use origin, always include the originating `Dxxx` row in the
+propagation table and resolved-issue recheck closure, even when the dependency
+itself lies outside `affected_results`. Then add every downstream edge reached
+through the affected-result closure.
+
 ## Verification burden
 
 "Verified" requires positive support. The following are insufficient:
@@ -239,4 +450,22 @@ Never promote evidence beyond the claim actually encoded.
 
 ## Independent critical-path evidence
 
-For critical results, require a challenger pass that does not see the primary verdict or proposed repair. Record the independence level as fresh-context same model, different model, or independent human. Preserve the primary verdict, challenger verdict, reconciled verdict, disagreements, resolution, and artifacts. Do not describe a same-context reread as independent.
+For every effective-critical result, require a challenger pass that does not see
+the primary verdict or proposed repair. Set `covered_issue_ids` to the sorted
+distinct open, deferred, or resolved load-bearing S0 or S1 issues whose
+`affected_results` contain that unit; use an empty list for a unit that is
+critical only by manifest declaration. For each covered issue, give the
+challenger the exact source-locked target and mathematical contract, then
+require an independent assessment of that target and its downstream relevance.
+Listing the issue ID without challenging its substance is not coverage. Record
+`source_snapshot_sha256`,
+`challenged_ledger_sha256` computed from the canonical ledger without
+`independent_check`, `challenge_artifact_sha256`, and `generated_utc`.
+Also preserve the independence level as fresh-context same model, different
+model, or independent human, together with the primary verdict, challenger
+verdict, reconciled verdict, disagreements, resolution, and artifact. A stale
+hash, missing or extra issue ID, or same-context reread cannot support
+independent confirmation. `agreed` requires identical challenger and reconciled
+verdicts equal to the final unit status, with no disagreements. `resolved`
+requires a reconciled verdict equal to the final unit status, at least one
+recorded disagreement, and a substantive resolution.

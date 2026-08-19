@@ -15,16 +15,24 @@
 ## Purpose
 
 Use this protocol for every detailed proof-unit audit. Its two central controls are complete source coverage and atomic mathematical verification records. Neither control substitutes for mathematical judgment, and neither provides formal soundness.
-Final verification requires `evidence_contract_version: 3`. A legacy ledger
-without conclusion-level support closure, exact occurrence dispositions, and
-structured premise and inference evidence may be inspected, but it cannot
-support a final verification claim.
+Final verification requires artifact schema `5` and
+`evidence_contract_version: 4`. A schema-4 or evidence-contract-3 ledger may
+be inspected, but it cannot support a current final verification claim until
+it is explicitly migrated and rechecked.
 
 ## 1. Lock the unit
 
-Identify the formal statement, full proof, exact source file or files, inclusive line ranges, dependencies, definitions, inherited assumptions, and later use sites. Generate a source-locked ledger with `scripts/proofcheck.py extract`, passing the exact statement file and range so its contract anchor is created automatically. If the proof ledger does not include the statement because it is distant or in another file, record a precise separate-statement reason.
+Identify the formal statement, full proof, exact source file or files, inclusive line ranges, dependencies, definitions, inherited assumptions, and later use sites. Generate a source-locked ledger with the bundled `proofcheck.py extract` command resolved from the directory containing `SKILL.md`, passing the exact statement file and range so its contract anchor is created automatically. If the proof ledger does not include the statement because it is distant or in another file, record a precise separate-statement reason.
 
 Include proof delimiters and intervening prose. Do not omit setup sentences, displayed-equation lines, "clearly" clauses, or the final conclusion. These locations often carry hidden scope changes.
+
+Treat the analyzer's proof region as canonical. Every automatic or reviewed
+proof span must match either a complete proof environment or one uniquely
+targeted named-heading region with a recognized boundary. Accept a replacement
+only through the existing hash-bound `reviewed_manual` override, with explicit
+boundary and target evidence in the override records. Rescan the complete
+replacement span and reconcile all references, dependencies, citations, and
+warnings. Do not trim or widen a proof span merely to simplify the ledger.
 
 ## 2. Normalize the proof obligation
 
@@ -81,9 +89,32 @@ A later definition does not make an earlier use well-formed. A later argument ma
 
 ## 4. Partition into atomic steps
 
-Assign every physical line to exactly one contiguous ledger step. A step may span several lines only when they form one continued sentence, display, definition, or inferential move.
+Partition source layout before reconstructing inference. Create
+`source_units`, each with:
 
-Split a row when any of the following changes:
+- a stable `Uxxx` `id`;
+- one inclusive `lines: [start, end]` range;
+- `kind` equal to `non_substantive`, `one_line`, `continued_sentence`, or
+  `continued_display`;
+- the exact `source_sha256`;
+- `partition_evidence` explaining the classification and, for a multiline
+  unit, the paper-specific reason the lines form one source unit.
+
+Every physical proof line must belong to exactly one source unit, with no gap
+or overlap. A multiline unit cannot cross a blank or comment-only separator.
+Use `continued_display` only for multiple lines lying inside one recognized
+display environment, and `continued_sentence` only for a genuine multiline
+sentence.
+Use `non_substantive` only for blank lines, full-line comments, and
+proof-environment delimiters. Do not use it for braces, prose, equation
+delimiters surrounding mathematics, labels, or "by standard arguments."
+
+Then create mathematical steps. Every schema-5 step references exactly one
+`source_unit_id`; final mode forbids `steps[].lines`. One source unit may
+support several ordered steps when its sentence or display contains several
+transitions, but every source unit must be represented by at least one step. A
+`non_substantive` source unit requires exactly one `non_substantive` wrapper
+step. Create a separate step whenever any of the following changes:
 
 - the premise or dependency;
 - the mathematical operation;
@@ -93,42 +124,38 @@ Split a row when any of the following changes:
 - asymptotic regime or hidden-constant scope;
 - conclusion or proof goal.
 
-Do not group several transitions merely because they occur in one display. Split
-the source range when possible. If one physical source unit contains an
-indivisible chain, use `source_indivisible_chain` and record every transition as
-an ordered inference move. Set `source_unit_kind` to `one_line`,
-`continued_sentence`, or `continued_display`, and explain in
-`partition_evidence` why the unit cannot be split without changing its source
-meaning. A multiline unit cannot cross a blank or comment-only separator. For a
-multiline indivisible unit, give every move an ordered `source_line_range`;
-together the ranges must represent every covered source line. A one-line unit
-does not require move-level source ranges.
-
-Use `non_substantive` only for blank lines, full-line comments, and proof-environment delimiters. Do not use it for braces, prose, equation delimiters surrounding mathematics, labels, or "by standard arguments."
+Each inferential step contains exactly one move and declares
+`support_role: derivation` or `support_role: reuse`. A reuse step exposes an
+already established fact and must have exactly one anchored premise whose claim
+equals its `restatement`; it cannot support a canonical conclusion. A
+derivation step must establish new content and cannot take a premise whose claim
+is exactly its own `restatement`.
 
 ## 5. Complete every substantive ledger row
 
 Record:
 
 1. `id`: unique step ID such as `S001`.
-2. `lines`: inclusive source range.
+2. `source_unit_id`: the exact `Uxxx` source unit containing the move.
 3. `kind`: statement, setup, definition, algebra, inequality, probability, limit, dependency, conclusion, or other.
 4. `goal`: the current local proof obligation.
 5. `restatement`: the exact mathematical claim in the row.
 6. `premise_uses`: each used fact, assumption, or definition, with a stable ID, exact claim, origin, and source-link evidence.
 7. `dependencies`: each dependency's kind, exact needed form, compatibility
    check, and status; every internal or external result use has a `Dxxx`
-   `use_id`, and every internal use names the exact dependency `Cxxx`
-   `conclusion_id`.
-8. `inference`: ordered atomic moves, their rules, premise IDs, earlier-move IDs, justifications, and the final conclusion move.
-9. `checks`: literal evidence, structured atomicity, and adversarial checks.
-10. `side_conditions`: every generated condition, its stable ID, status, and a
+   `use_id` unique across the whole audit, and every internal use names
+   the exact dependency `Cxxx` `conclusion_id`.
+8. `support_role`: `derivation` or `reuse` for an inferential step.
+9. `inference`: exactly one atomic move for an inferential step, with its
+   rule, premise IDs, earlier-move IDs, justification, and conclusion-move link.
+10. `checks`: literal evidence, structured atomicity, and adversarial checks.
+11. `side_conditions`: every generated condition, its stable ID, status, and a
     discharge with one or more premise or strictly earlier established-move
     sources, each source's contribution, the joint rule, and evidence.
-11. `risk_checks`: exactly one disposition for domain, dimension, sign, constant, rate, probability, quantifier, and limit.
-12. `conditions`: for a conditional step, an exact mapping to every open side condition, conditional or unchecked dependency, and open risk.
-13. `status`: the calibrated outcome.
-14. `issue_ids`: canonical IDs for any gap, incorrect, or unclear step.
+12. `risk_checks`: exactly one disposition for domain, dimension, sign, constant, rate, probability, quantifier, and limit.
+13. `conditions`: for a conditional step, an exact mapping to every open side condition, conditional or unchecked dependency, and open risk.
+14. `status`: the calibrated outcome.
+15. `issue_ids`: canonical IDs for any gap, incorrect, or unclear step.
 
 An obligation-origin premise must use a JSON Pointer that resolves to one
 concrete scalar string, such as `/hypotheses/0` or `/quantifier_scope`, and must
@@ -157,13 +184,12 @@ regime, constant, or genuinely established earlier result instead. Every
 declared dependency must be used by a premise, and every premise must be
 consumed by an inference move. Standard logical or algebraic rules belong in
 the move's `rule` and `justification`; do not invent an unanchored "standard
-fact" premise.
+fact" premise. Duplicate exact premise claims do not provide independent
+support.
 
 Use `non_inferential` only for statement, setup, or definition rows.
-Use `single_move` for one inference. Use `source_indivisible_chain` only when
-one physical source unit cannot be partitioned, and list every atomic move in
-order. Every `verified` or `conditionally_verified` inferential move must
-consume at least one premise or strictly earlier move.
+Every `verified` or `conditionally_verified` derivation must consume at least
+one premise or strictly earlier move.
 
 A move on a `gap`, `incorrect`, or `unclear` step may have no input only when it
 has a `failure` object with `kind`, `issue_id`, and paper-specific `evidence`.
@@ -215,6 +241,12 @@ unclear risk cannot be hidden inside a verified or conditional status. For a
 A `gap`, `incorrect`, or `unclear` step may retain an open secondary risk,
 but it cannot use that unresolved risk to upgrade its status.
 
+Evidence must identify the actual source claim, mathematical objects, premises,
+operation, and failure mode relevant to that record. Evidence contract 4 treats
+repeated stock evidence as nonspecific under the exact gates in
+[evidence-status-and-issues.md](evidence-status-and-issues.md). Do not use
+generic checklist prose or cosmetic wording changes in place of local evidence.
+
 The source text is evidence of what the paper says, not evidence that the step is valid.
 
 For the exact JSON field shape, inspect `assets/templates/AUDIT_RECORD_EXAMPLES.json` when filling the first ledger or issue record. Do not copy its placeholder facts into a paper audit.
@@ -235,13 +267,17 @@ locked anchor must contain the exact statically active
 directions. A self-reference is not automatically a dependency or harmless
 identification. An unresolved occurrence is incompatible with a verified unit.
 
-The local active-label gate is conservative and static. It masks common
-command and environment definition bodies, inline `\verb`, and common
-verbatim-like environments before checking a locked span. It still does not
-expand macro invocations or execute TeX. Unrecognized or dynamically generated
-definitions, verbatim constructs, and labels can evade static masking. Inspect
-them during global source-resolution review, and do not rely on the local
-active-label result alone.
+The structural TeX scan is conservative and position preserving. It masks
+comments, common command and environment definition bodies, inline `\verb`,
+common verbatim-like environments, and branches that are definitely inactive,
+such as the body of `\iffalse`. An unknown conditional, such as a project macro
+or engine test, remains visible as candidate structure and creates a
+review-required parser warning. It is never silently discarded. The stricter
+local active-label gate accepts only a label known statically to be active, so
+a label inside an unknown conditional cannot by itself certify a locked
+anchor. The parser still does not expand macro invocations or execute TeX.
+Inspect every unknown-conditional warning against the rendered or compiled
+source, and do not rely on static masking alone.
 
 Reconcile every supported citation command found in the proof, including common natbib and biblatex forms such as `\cite`, `\citep`, `\citet`, `\citealp`, `\citealt`, `\parencite`, `\textcite`, `\autocite`, `\footcite`, and `\smartcite`. Mark it `external_result` with a matching external direct dependency and proof step, `bibliographic_only` with evidence that it supplies no premise, or `unresolved`. Inspect every unsupported-citation parser warning manually. An unresolved citation is incompatible with a verified unit.
 
@@ -262,9 +298,9 @@ For every substantive row, ask:
 - Does the quantifier order match the theorem statement?
 - Does a cited result provide the exact needed conclusion under satisfied assumptions?
 
-Recompute algebra and rates. For a long calculation, preserve the source row,
-record its ordered atomic moves in `inference.moves`, and use a separate
-auxiliary calculation when needed.
+Recompute algebra and rates. For a long calculation, preserve the source unit
+and record its ordered atomic transitions as separate one-move steps referencing
+that unit. Use a separate auxiliary calculation when needed.
 
 For logical proof rules, also check variable freshness for universal introduction, the legality of existential witnesses, case exhaustiveness, induction base and step, the measure used in almost-sure claims, and that contradiction is reached from the exact negation of the goal. Every generated side condition must be discharged at an identified step or remain open.
 
@@ -308,10 +344,36 @@ locations with a range.
 
 ## 9. Enforce the coverage gate
 
-Run `ledger-check --final`. Resolve every uncovered line, overlap, stale hash,
-unsupported status, missing issue reference, and verdict mismatch. This command
-checks the local record and declared dependency statuses only. Its JSON output
-states that audit-wide dependency resolution was not performed. Run `finalize`
-on the audit root before making an audit-wide verification claim.
+Run `ledger-check --final`. Resolve every uncovered or multiply covered source
+line, stale or unrepresented source unit, missing or invalid source-unit
+reference, non-atomic inferential step, unsupported status, missing issue
+reference, and verdict mismatch. This command checks the local record and
+declared dependency statuses only. Its JSON output states that audit-wide
+dependency resolution was not performed. Run `finalize` on the audit root
+before making an audit-wide verification claim.
 
-For PDF-only input, create a UTF-8 numbered transcription for the exact page range and use that transcription as the hashed audit source. Visually compare every displayed equation and symbol against the rendered pages, record page and equation anchors in the contract, and manually build the reviewed inventory. State that LaTeX-level cross-reference, macro, include-closure, and source-authenticity checks were unavailable. Do not claim that the transcription hash authenticates the publisher PDF.
+For PDF-only input, create a UTF-8 numbered transcription for the exact page
+range and pass that text file as `--paper` with
+`--input-kind pdf_transcription`. Also pass the publisher PDF separately with
+`--publisher-pdf`; a raw `.pdf` is rejected as the line-audit source. Record
+the transcription hash and the separate publisher-PDF hash, byte size, and
+nonauthoritative original location under `input_provenance`. These records
+establish identity, not transcription accuracy.
+
+Visually compare every displayed equation and symbol against the rendered
+pages, record page and equation anchors in the contract, and manually build
+the reviewed inventory. At scaffold, set `--visual-review-status` only to
+`not_started` or `partial` and give specific `--visual-review-notes` for work
+already performed. Scaffold cannot assert completion because page anchors and
+completion time are not supplied through that command. After the actual visual
+comparison, update `input_provenance.visual_review.status` to `complete` and
+record a nonempty `reviewed_pages` string list, substantive `notes`, and a UTC
+`completed_utc` timestamp. An incomplete visual review or manual inventory
+keeps the audit nonfinal. State that LaTeX-level cross-reference, macro,
+include-closure, and source-authenticity checks were unavailable. Do not claim
+that either hash authenticates the transcription-to-PDF correspondence.
+
+For a relocatable PDF audit, use `--portable-sources`. Both the transcription
+and publisher PDF are copied into `audit/00_sources/` and hash locked there;
+move the complete audit directory and verify it with `status` and
+`delivery-check` after relocation.

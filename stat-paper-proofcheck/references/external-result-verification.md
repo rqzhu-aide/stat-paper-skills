@@ -5,7 +5,7 @@ is load-bearing.
 
 Store each external result once in
 `audit/03_dependencies/DEPENDENCY_REGISTRY.json`. Use
-`closure_contract_version: 2`. Lock the source record once, then record each
+`closure_contract_version: 3`. Lock the source record once, then record each
 manuscript use separately. Ledger rows and direct-dependency records refer to
 the external result's unique ID and to the exact `Dxxx` use ID.
 

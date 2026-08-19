@@ -10,12 +10,15 @@ It uses only the Python standard library.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import hashlib
 import json
 import os
 import re
 import shutil
 import sys
+import tempfile
 import unicodedata
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
@@ -23,10 +26,14 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-SCHEMA_VERSION = 4
-EVIDENCE_CONTRACT_VERSION = 3
+SCHEMA_VERSION = 5
+LEGACY_SCHEMA_VERSION = 4
+EVIDENCE_CONTRACT_VERSION = 4
+LEGACY_EVIDENCE_CONTRACT_VERSION = 3
 METHOD_INTERFACE_SCHEMA_VERSION = 1
-CLOSURE_CONTRACT_VERSION = 2
+CLOSURE_CONTRACT_VERSION = 3
+LEGACY_CLOSURE_CONTRACT_VERSION = 2
+RESOLUTION_ARCHIVE_SCHEMA_VERSION = 1
 SKILL_NAME = "stat-paper-proofcheck"
 SKILL_VERSION = "1.0"
 MAX_UNIT_LINES = 100_000
@@ -42,6 +49,9 @@ FORMAL_ENVIRONMENTS = {
 }
 TOKEN_RE = re.compile(r"\\(begin|end)\s*\{([^}]+)\}")
 NEW_THEOREM_RE = re.compile(r"\\newtheorem\*?\s*\{([^}]+)\}")
+DECLARE_THEOREM_RE = re.compile(
+    r"\\declaretheorem\*?(?![A-Za-z@])(?:\s*\[[^]]*\])*\s*\{([^}]+)\}"
+)
 INCLUDE_RE = re.compile(r"\\(?:input|include)\s*\{([^}]+)\}")
 UNBRACED_INPUT_RE = re.compile(r"\\input\s+([^\s%{}]+)")
 SUBFILE_RE = re.compile(r"\\subfile\s*\{([^}]+)\}")
@@ -61,14 +71,71 @@ INCLUSION_COMMAND_RE = re.compile(
 FLS_SOURCE_SUFFIXES = {".tex", ".sty", ".cls", ".ltx", ".def", ".cfg", ".clo"}
 LABEL_RE = re.compile(r"\\label\s*\{([^}]+)\}")
 TEX_CONDITIONAL_LABEL_RE = re.compile(
-    r"\\(?P<conditional>if[A-Za-z@]*)\b"
+    r"\\(?P<conditional>(?:if[A-Za-z@]*|If[A-Za-z@]*|@if[A-Za-z@]*|"
+    r"[A-Za-z@_]+_if(?:_[A-Za-z@_]+)*(?::[A-Za-z]+)?))"
+    r"(?![A-Za-z@_:])"
     r"|\\(?P<unless>unless)\b"
     r"|\\(?P<branch>else)\b"
     r"|\\(?P<end>fi)\b"
     r"|\\label\s*\{(?P<label>[^}]+)\}"
 )
-TEX_INLINE_VERB_RE = re.compile(
-    r"\\(?:verb|Verb)\*?(?P<delimiter>[^\sA-Za-z])"
+TEX_CONDITIONAL_RE = re.compile(
+    r"\\(?P<conditional>(?:if[A-Za-z@]*|If[A-Za-z@]*|@if[A-Za-z@]*|"
+    r"[A-Za-z@_]+_if(?:_[A-Za-z@_]+)*(?::[A-Za-z]+)?))"
+    r"(?![A-Za-z@_:])"
+    r"|\\(?P<unless>unless)\b"
+    r"|\\(?P<branch>else)\b"
+    r"|\\(?P<end>fi)\b"
+)
+ARGUMENT_CONDITIONAL_COMMANDS = {
+    "ifblank",
+    "ifboolexpr",
+    "ifcsmacro",
+    "ifcsdef",
+    "ifcsprotected",
+    "ifcsstring",
+    "ifcsundef",
+    "ifdef",
+    "ifdefempty",
+    "ifdefstring",
+    "ifdimcomp",
+    "ifnumequal",
+    "ifnumcomp",
+    "ifpatchable",
+    "ifstrempty",
+    "ifstrequal",
+    "ifthenelse",
+    "ifundef",
+}
+TEX_FI_CONDITIONAL_COMMANDS = {
+    "if",
+    "ifcase",
+    "ifcat",
+    "ifcsname",
+    "ifdefined",
+    "ifdim",
+    "ifeof",
+    "iffalse",
+    "iffontchar",
+    "ifhbox",
+    "ifhmode",
+    "ifincsname",
+    "ifinner",
+    "ifmmode",
+    "ifnum",
+    "ifodd",
+    "ifpdfabsdim",
+    "ifpdfabsnum",
+    "ifpdfprimitive",
+    "ifprimitive",
+    "iftrue",
+    "ifvbox",
+    "ifvmode",
+    "ifvoid",
+    "ifx",
+}
+TEX_INLINE_VERB_COMMAND_RE = re.compile(
+    r"\\(?P<command>verb|Verb|lstinline|mintinline)\*?(?![A-Za-z@])"
 )
 TEX_VERBATIM_BEGIN_RE = re.compile(
     r"\\begin\s*\{(?P<environment>"
@@ -77,7 +144,11 @@ TEX_VERBATIM_BEGIN_RE = re.compile(
 )
 TEX_DEFINITION_COMMAND_RE = re.compile(
     r"\\(?P<command>"
+    r"newif|let|"
+    r"@namedef|csdef|csedef|csgdef|csxdef|"
+    r"protected@edef|protected@xdef|"
     r"newcommand|renewcommand|providecommand|DeclareRobustCommand|"
+    r"newrobustcmd|renewrobustcmd|providerobustcmd|"
     r"newenvironment|renewenvironment|provideenvironment|"
     r"NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|"
     r"DeclareDocumentCommand|NewExpandableDocumentCommand|"
@@ -86,7 +157,7 @@ TEX_DEFINITION_COMMAND_RE = re.compile(
     r"RenewDocumentEnvironment|ProvideDocumentEnvironment|"
     r"DeclareDocumentEnvironment|DeclareMathOperator|"
     r"DeclarePairedDelimiter|DeclarePairedDelimiterX|"
-    r"DeclarePairedDelimiterXPP|newtheorem|renewtheorem|"
+    r"DeclarePairedDelimiterXPP|declaretheorem|newtheorem|renewtheorem|"
     r"cs_(?:new|set|gset)(?:_protected)?:[Nc]p?[nx]|"
     r"def|gdef|edef|xdef)\b\*?"
 )
@@ -95,6 +166,9 @@ TEX_NEW_COMMAND_DEFINITIONS = {
     "renewcommand",
     "providecommand",
     "DeclareRobustCommand",
+    "newrobustcmd",
+    "renewrobustcmd",
+    "providerobustcmd",
     "DeclareMathOperator",
 }
 TEX_NEW_ENVIRONMENT_DEFINITIONS = {
@@ -124,17 +198,102 @@ TEX_PAIRED_DELIMITER_DEFINITIONS = {
     "DeclarePairedDelimiterXPP": 5,
 }
 TEX_THEOREM_DEFINITIONS = {"newtheorem", "renewtheorem"}
-TEX_PRIMITIVE_DEFINITIONS = {"def", "gdef", "edef", "xdef"}
+TEX_OPTION_FIRST_THEOREM_DEFINITIONS = {"declaretheorem"}
+TEX_PRIMITIVE_DEFINITIONS = {
+    "def",
+    "gdef",
+    "edef",
+    "xdef",
+    "protected@edef",
+    "protected@xdef",
+}
+TEX_NAMED_GROUP_DEFINITIONS = {
+    "@namedef",
+    "csdef",
+    "csedef",
+    "csgdef",
+    "csxdef",
+}
+TEX_SIMPLE_CONDITIONAL_DEFINITIONS = {"newif"}
+TEX_ALIAS_DEFINITIONS = {"let"}
 REF_RE = re.compile(
-    r"\\(?:ref|eqref|autoref|pageref|cref|Cref)\*?\s*\{([^}]+)\}"
+    r"\\(?:ref|eqref|autoref|pageref|nameref|vref|Vref|cpageref|"
+    r"Cpageref|labelcref|labelcpageref|cref|Cref)\*?(?![A-Za-z@])"
+    r"\s*\{([^}]+)\}"
 )
+RANGE_REF_RE = re.compile(
+    r"\\(?:crefrange|Crefrange|cpagerefrange|Cpagerefrange|"
+    r"vrefrange|Vrefrange)\*?(?![A-Za-z@])\s*"
+    r"\{([^}]+)\}\s*\{([^}]+)\}"
+)
+SINGLE_REFERENCE_COMMANDS = {
+    "ref",
+    "eqref",
+    "autoref",
+    "pageref",
+    "nameref",
+    "vref",
+    "Vref",
+    "cpageref",
+    "Cpageref",
+    "labelcref",
+    "labelcpageref",
+    "cref",
+    "Cref",
+}
+RANGE_REFERENCE_COMMANDS = {
+    "crefrange",
+    "Crefrange",
+    "cpagerefrange",
+    "Cpagerefrange",
+    "vrefrange",
+    "Vrefrange",
+}
 REFERENCE_COMMAND_RE = re.compile(
-    r"\\(?P<command>ref|eqref|autoref|pageref|cref|Cref)\*?"
+    r"\\(?P<command>"
+    + "|".join(
+        re.escape(command)
+        for command in sorted(
+            SINGLE_REFERENCE_COMMANDS | RANGE_REFERENCE_COMMANDS,
+            key=lambda value: (-len(value), value),
+        )
+    )
+    + r")\*?(?![A-Za-z@])"
 )
-HYPERREF_COMMAND_RE = re.compile(r"\\(?P<command>hyperref)\*?")
-SECTION_COMMAND_RE = re.compile(
+HYPERREF_COMMAND_RE = re.compile(
+    r"\\(?P<command>hyperref)\*?(?![A-Za-z@])"
+)
+REF_LIKE_COMMAND_RE = re.compile(
+    r"\\(?P<command>[A-Za-z@]*ref[A-Za-z@]*)\*?(?![A-Za-z@])"
+)
+REFERENCE_CONFIGURATION_COMMANDS = {
+    "Crefmultiformat",
+    "Crefname",
+    "Crefformat",
+    "Crefrangeformat",
+    "Crefrangemultiformat",
+    "crefalias",
+    "crefdefaultlabelformat",
+    "crefformat",
+    "creflabelformat",
+    "creflastconjunction",
+    "creflastgroupconjunction",
+    "crefmiddleconjunction",
+    "crefmiddlegroupconjunction",
+    "crefmultiformat",
+    "crefname",
+    "crefpairconjunction",
+    "crefpairgroupconjunction",
+    "crefrangeconjunction",
+    "crefrangeformat",
+    "crefrangelabelformat",
+    "crefrangemultiformat",
+    "crefstripprefix",
+    "refstepcounter",
+}
+SECTION_COMMAND_START_RE = re.compile(
     r"\\(?P<command>part|chapter|section|subsection|subsubsection)"
-    r"\*?\s*\{(?P<title>[^}]*)\}"
+    r"\*?\s*\{"
 )
 DISPLAY_MATH_ENVIRONMENTS = {
     "align",
@@ -156,6 +315,7 @@ CITE_RE = re.compile(
 )
 CITATION_COMMAND_RE = re.compile(r"\\[A-Za-z]*cite[A-Za-z]*\*?")
 STEP_ID_RE = re.compile(r"S[0-9]{3}(?:\.[0-9]+)?$")
+SOURCE_UNIT_ID_RE = re.compile(r"U[0-9]{3}$")
 PREMISE_ID_RE = re.compile(r"P[0-9]{3}$")
 MOVE_ID_RE = re.compile(r"M[0-9]{3}$")
 SIDE_CONDITION_ID_RE = re.compile(r"SC[0-9]{3}$")
@@ -163,6 +323,7 @@ CONCLUSION_ID_RE = re.compile(r"C[0-9]{3}$")
 DEPENDENCY_USE_ID_RE = re.compile(r"D[0-9]{3}$")
 ISSUE_ID_RE = re.compile(r"I-[0-9]{3}$")
 INTERFACE_ID_RE = re.compile(r"MI-[0-9]{3}$")
+REPORT_DELIVERABLE_ID_RE = re.compile(r"R[0-9]{3}$")
 
 STEP_STATUSES = {
     "verified",
@@ -191,8 +352,40 @@ UNIT_STATUSES = {
     "not_checked",
 }
 ISSUE_SEVERITIES = {"S0", "S1", "S2", "S3"}
+ISSUE_SEVERITY_RANK = {"S0": 0, "S1": 1, "S2": 2, "S3": 3}
 ISSUE_CONFIDENCES = {"high", "medium", "low"}
 ISSUE_STATUSES = {"open", "resolved", "deferred"}
+ISSUE_ORIGIN_KINDS = {
+    "ledger_move",
+    "obligation_pointer",
+    "dependency_use",
+    "interface_record",
+    "global_check",
+}
+ISSUE_CONTRACT_REF_KINDS = {
+    "conclusion",
+    "obligation_pointer",
+    "dependency_use",
+}
+ISSUE_INVALIDATION_KINDS = {
+    "proof_gap",
+    "proof_invalid",
+    "statement_refuted",
+    "dependency_mismatch",
+    "scope_inconclusive",
+    "presentation_only",
+}
+SUGGESTED_CHANGE_ACTIONS = {
+    "repair_step",
+    "strengthen_assumption",
+    "weaken_claim",
+    "correct_statement",
+    "repair_dependency",
+    "clarify_scope",
+    "presentation_edit",
+}
+SUGGESTED_CHANGE_STATUSES = {"candidate", "verified_sufficient"}
+RESOLUTION_DISPOSITIONS = {"repaired", "replaced", "removed"}
 INTERFACE_KINDS = {
     "density_ratio",
     "regression",
@@ -275,6 +468,13 @@ ATOMICITY_STATUSES = {
     "single_move",
     "source_indivisible_chain",
 }
+SOURCE_UNIT_KINDS = {
+    "non_substantive",
+    "one_line",
+    "continued_sentence",
+    "continued_display",
+}
+SUPPORT_ROLES = {"derivation", "reuse"}
 RISK_ASPECTS = (
     "domain",
     "dimension",
@@ -496,14 +696,48 @@ def canonical_sha256(value: Any) -> str:
     return sha256_text(payload)
 
 
+SHA256_RE = re.compile(r"[0-9a-f]{64}$")
+
+
+def canonical_primary_ledger_sha256(ledger: dict[str, Any]) -> str:
+    """Hash primary audit evidence without self-referential challenger metadata."""
+    return canonical_sha256(
+        {
+            key: value
+            for key, value in ledger.items()
+            if key != "independent_check"
+        }
+    )
+
+
+def is_utc_timestamp(value: Any) -> bool:
+    if not is_nonempty_string(value):
+        return False
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None and parsed.utcoffset() == timezone.utc.utcoffset(parsed)
+
+
 def audit_state_manifest(root: Path, excluded: Path | None = None) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
         if excluded is not None and path.resolve() == excluded.resolve():
             continue
+        relative = path.relative_to(root)
+        if (
+            len(relative.parts) == 4
+            and relative.parts[:3] == ("audit", "06_reports", "history")
+            and re.fullmatch(
+                r"\.I-[0-9]{3}-origin\.json\.proofcheck\.(?:tmp|lock)",
+                relative.name,
+            )
+        ):
+            continue
         rows.append(
             {
-                "file": path.relative_to(root).as_posix(),
+                "file": relative.as_posix(),
                 "sha256": sha256_file(path),
             }
         )
@@ -514,24 +748,161 @@ def audit_state_sha256(root: Path, excluded: Path | None = None) -> str:
     return canonical_sha256(audit_state_manifest(root, excluded))
 
 
+def _unique_sibling_temp_path(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, raw_path = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".proofcheck.tmp", dir=str(path.parent)
+    )
+    os.close(descriptor)
+    return Path(raw_path)
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    path = Path(path)
+    temporary = _unique_sibling_temp_path(path)
+    try:
+        if temporary.is_symlink():
+            raise ValueError(f"Refusing a symlinked proofcheck temp file: {temporary}")
+        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def atomic_write_json(path: Path, value: Any) -> None:
+    atomic_write_text(path, json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+
+
+def transactional_write_texts(writes: list[tuple[Path, str]]) -> None:
+    """Replace a group of text files, restoring prior bytes on commit failure."""
+    entries: list[dict[str, Any]] = []
+    identities: set[str] = set()
+    try:
+        for raw_path, text in writes:
+            path = Path(raw_path)
+            identity = os.path.normcase(os.path.abspath(path))
+            if identity in identities:
+                raise ValueError(
+                    f"Transactional text destinations must be distinct: {path}"
+                )
+            identities.add(identity)
+            if path.is_symlink():
+                raise ValueError(
+                    f"Refusing a symlinked transactional destination: {path}"
+                )
+            if path.exists() and not path.is_file():
+                raise ValueError(
+                    f"Transactional text destination is not a file: {path}"
+                )
+
+            staged = _unique_sibling_temp_path(path)
+            entry: dict[str, Any] = {
+                "path": path,
+                "staged": staged,
+                "backup": None,
+                "existed": path.exists(),
+            }
+            entries.append(entry)
+            with staged.open("w", encoding="utf-8", newline="\n") as stream:
+                stream.write(text)
+                stream.flush()
+                os.fsync(stream.fileno())
+
+        for entry in entries:
+            if not entry["existed"]:
+                continue
+            path = entry["path"]
+            backup = _unique_sibling_temp_path(path)
+            entry["backup"] = backup
+            with path.open("rb") as source, backup.open("wb") as destination:
+                shutil.copyfileobj(source, destination, length=1024 * 1024)
+                destination.flush()
+                os.fsync(destination.fileno())
+
+        committed: list[dict[str, Any]] = []
+        try:
+            for entry in entries:
+                os.replace(entry["staged"], entry["path"])
+                committed.append(entry)
+        except BaseException as exc:
+            rollback_errors: list[str] = []
+            for entry in reversed(committed):
+                path = entry["path"]
+                try:
+                    if entry["existed"]:
+                        backup = entry["backup"]
+                        if not isinstance(backup, Path):
+                            raise OSError(
+                                f"Missing transactional backup for {path}"
+                            )
+                        os.replace(backup, path)
+                        entry["backup"] = None
+                    elif path.exists():
+                        path.unlink()
+                except OSError as rollback_exc:
+                    rollback_errors.append(f"{path}: {rollback_exc}")
+            if rollback_errors:
+                raise OSError(
+                    "Transactional text write failed and rollback was incomplete: "
+                    + "; ".join(rollback_errors)
+                ) from exc
+            raise
+    finally:
+        for entry in entries:
+            for key in ("staged", "backup"):
+                temporary = entry.get(key)
+                if isinstance(temporary, Path) and temporary.exists():
+                    temporary.unlink()
+
+
+def atomic_copy_file(source: Path, destination: Path) -> None:
+    temporary = _unique_sibling_temp_path(destination)
+    try:
+        with source.open("rb") as input_stream, temporary.open("wb") as output_stream:
+            shutil.copyfileobj(input_stream, output_stream, length=1024 * 1024)
+            output_stream.flush()
+            os.fsync(output_stream.fileno())
+        os.replace(temporary, destination)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+class TextArtifactReadError(UnicodeError):
+    """A text artifact could not be decoded or read exactly."""
+
+
 def read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8-sig")
+    try:
+        return path.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError) as exc:
+        raise TextArtifactReadError(
+            f"Unreadable UTF-8 text artifact {path}: {exc}"
+        ) from exc
 
 
 def read_lines(path: Path) -> list[str]:
     return read_text(path).splitlines()
 
 
+def is_unescaped_tex_percent(text: str, index: int) -> bool:
+    if index < 0 or index >= len(text) or text[index] != "%":
+        return False
+    backslashes = 0
+    cursor = index - 1
+    while cursor >= 0 and text[cursor] == "\\":
+        backslashes += 1
+        cursor -= 1
+    return backslashes % 2 == 0
+
+
 def strip_latex_comment(line: str) -> str:
     for index, char in enumerate(line):
-        if char != "%":
-            continue
-        backslashes = 0
-        cursor = index - 1
-        while cursor >= 0 and line[cursor] == "\\":
-            backslashes += 1
-            cursor -= 1
-        if backslashes % 2 == 0:
+        if char == "%" and is_unescaped_tex_percent(line, index):
             return line[:index]
     return line
 
@@ -544,8 +915,15 @@ def mask_tex_range(characters: list[str], start: int, end: int) -> None:
 
 def skip_tex_whitespace(text: str, start: int) -> int:
     cursor = start
-    while cursor < len(text) and text[cursor].isspace():
-        cursor += 1
+    while cursor < len(text):
+        if text[cursor].isspace():
+            cursor += 1
+            continue
+        if is_unescaped_tex_percent(text, cursor):
+            newline = text.find("\n", cursor)
+            cursor = len(text) if newline < 0 else newline + 1
+            continue
+        break
     return cursor
 
 
@@ -573,6 +951,14 @@ def consume_balanced_tex_group(
     cursor = start
     while cursor < len(text):
         char = text[cursor]
+        if is_unescaped_tex_percent(text, cursor):
+            newline = text.find("\n", cursor)
+            cursor = len(text) if newline < 0 else newline + 1
+            continue
+        inline_verb = inline_verbatim_end(text, cursor)
+        if inline_verb is not None:
+            cursor = inline_verb[0]
+            continue
         if (
             char == "\\"
             and cursor + 1 < len(text)
@@ -588,6 +974,48 @@ def consume_balanced_tex_group(
                 return cursor + 1
         cursor += 1
     return None
+
+
+def inline_verbatim_end(text: str, start: int) -> tuple[int, bool] | None:
+    """Return a common inline-verbatim span and whether it is terminated."""
+    match = TEX_INLINE_VERB_COMMAND_RE.match(text, start)
+    if match is None:
+        return None
+    command = match.group("command")
+    line_end = text.find("\n", match.end())
+    if line_end < 0:
+        line_end = len(text)
+    cursor = match.end()
+    if command in {"Verb", "lstinline", "mintinline"}:
+        cursor = skip_tex_whitespace(text, cursor)
+        if cursor < line_end and text[cursor] == "[":
+            options_end = consume_balanced_tex_group(text, cursor, "[", "]")
+            if options_end is None or options_end > line_end:
+                return line_end, False
+            cursor = skip_tex_whitespace(text, options_end)
+    if command == "mintinline":
+        if cursor >= line_end or text[cursor] != "{":
+            return line_end, False
+        language_end = consume_balanced_tex_group(text, cursor, "{", "}")
+        if language_end is None or language_end > line_end:
+            return line_end, False
+        cursor = skip_tex_whitespace(text, language_end)
+    if cursor >= line_end:
+        return line_end, False
+    if command == "mintinline" and text[cursor] == "{":
+        code_end = consume_balanced_tex_group(text, cursor, "{", "}")
+        if code_end is None or code_end > line_end:
+            return line_end, False
+        return code_end, True
+    delimiter = text[cursor]
+    if delimiter.isspace() or delimiter.isalpha():
+        return line_end, False
+    closing = text.find(delimiter, cursor + 1, line_end)
+    return (
+        (closing + 1, True)
+        if closing >= 0
+        else (line_end, False)
+    )
 
 
 def consume_tex_definition_target(text: str, start: int) -> int | None:
@@ -619,20 +1047,77 @@ def consume_tex_required_groups(
     return cursor
 
 
+def consume_tex_parameterized_definition_body(
+    text: str, start: int
+) -> int | None:
+    """Find and consume a TeX definition body after its target."""
+    cursor = start
+    while cursor < len(text):
+        if is_unescaped_tex_percent(text, cursor):
+            newline = text.find("\n", cursor)
+            cursor = len(text) if newline < 0 else newline + 1
+            continue
+        inline_verb = inline_verbatim_end(text, cursor)
+        if inline_verb is not None:
+            cursor = inline_verb[0]
+            continue
+        if (
+            text[cursor] == "#"
+            and cursor + 1 < len(text)
+            and (text[cursor + 1].isdigit() or text[cursor + 1] == "#")
+        ):
+            cursor += 2
+            continue
+        if text[cursor] == "{":
+            return consume_balanced_tex_group(text, cursor, "{", "}")
+        cursor += 1
+    return None
+
+
 def tex_definition_end(text: str, match: re.Match[str]) -> int | None:
     command = match.group("command")
     cursor = match.end()
-    if command in TEX_PRIMITIVE_DEFINITIONS or command.startswith("cs_"):
+    if command in TEX_SIMPLE_CONDITIONAL_DEFINITIONS:
+        cursor = skip_tex_whitespace(text, cursor)
+        return consume_tex_control_sequence(text, cursor)
+    if command in TEX_ALIAS_DEFINITIONS:
         cursor = skip_tex_whitespace(text, cursor)
         target_end = consume_tex_control_sequence(text, cursor)
         if target_end is None:
             return None
-        cursor = target_end
-        while cursor < len(text):
-            if text[cursor] == "{":
-                return consume_balanced_tex_group(text, cursor, "{", "}")
-            cursor += 1
-        return None
+        cursor = skip_tex_whitespace(text, target_end)
+        if cursor < len(text) and text[cursor] == "=":
+            cursor = skip_tex_whitespace(text, cursor + 1)
+        source_end = consume_tex_control_sequence(text, cursor)
+        return source_end if source_end is not None else min(len(text), cursor + 1)
+    if command in TEX_PRIMITIVE_DEFINITIONS or command.startswith("cs_"):
+        cursor = skip_tex_whitespace(text, cursor)
+        c_type = (
+            command.startswith("cs_")
+            and ":" in command
+            and command.split(":", 1)[1].startswith("c")
+        )
+        target_end = (
+            consume_balanced_tex_group(text, cursor, "{", "}")
+            if c_type
+            else consume_tex_control_sequence(text, cursor)
+        )
+        if target_end is None:
+            return None
+        return consume_tex_parameterized_definition_body(text, target_end)
+
+    if command in TEX_NAMED_GROUP_DEFINITIONS:
+        cursor = skip_tex_whitespace(text, cursor)
+        target_end = consume_balanced_tex_group(text, cursor, "{", "}")
+        if target_end is None:
+            return None
+        return consume_tex_parameterized_definition_body(text, target_end)
+
+    if command in TEX_OPTION_FIRST_THEOREM_DEFINITIONS:
+        cursor = consume_tex_optional_arguments(text, cursor)
+        if cursor is None:
+            return None
+        return consume_balanced_tex_group(text, cursor, "{", "}")
 
     target_end = consume_tex_definition_target(text, cursor)
     if target_end is None:
@@ -682,54 +1167,418 @@ def tex_definition_end(text: str, match: re.Match[str]) -> int | None:
     return None
 
 
-def mask_nonexecuting_tex(text: str) -> str:
+def mask_nonexecuting_tex(
+    text: str,
+    *,
+    preserve_theorem_declarations: bool = False,
+    warnings: list[str] | None = None,
+    source_name: str = "<source>",
+) -> str:
+    """Mask comments, definitions, and verbatim material in one lexical pass."""
     characters = list(text)
-    search_text = text
     cursor = 0
-    while match := TEX_VERBATIM_BEGIN_RE.search(search_text, cursor):
-        environment = match.group("environment")
-        end_re = re.compile(rf"\\end\s*\{{{re.escape(environment)}\}}")
-        end_match = end_re.search(search_text, match.end())
-        end = end_match.end() if end_match is not None else len(search_text)
-        mask_tex_range(characters, match.start(), end)
-        cursor = end
-
-    search_text = "".join(characters)
-    cursor = 0
-    while match := TEX_INLINE_VERB_RE.search(search_text, cursor):
-        delimiter = match.group("delimiter")
-        line_end = search_text.find("\n", match.end())
-        if line_end < 0:
-            line_end = len(search_text)
-        closing = search_text.find(delimiter, match.end(), line_end)
-        end = closing + 1 if closing >= 0 else line_end
-        mask_tex_range(characters, match.start(), end)
-        cursor = end
-
-    search_text = "".join(characters)
-    cursor = 0
-    while match := TEX_DEFINITION_COMMAND_RE.search(search_text, cursor):
-        end = tex_definition_end(search_text, match)
-        if end is None:
-            end = len(search_text)
-        mask_tex_range(characters, match.start(), end)
-        search_text = "".join(characters)
-        cursor = end
+    while cursor < len(text):
+        if is_unescaped_tex_percent(text, cursor):
+            newline = text.find("\n", cursor)
+            end = len(text) if newline < 0 else newline
+            mask_tex_range(characters, cursor, end)
+            cursor = end
+            continue
+        definition = TEX_DEFINITION_COMMAND_RE.match(text, cursor)
+        if definition is not None:
+            end = tex_definition_end(text, definition)
+            if end is None:
+                newline = text.find("\n", definition.end())
+                end = len(text) if newline < 0 else newline
+                if warnings is not None:
+                    line, column = source_line_column(text, definition.start())
+                    warning = (
+                        "Malformed TeX definition requires manual review: "
+                        f"{source_name}:{line}:{column}"
+                    )
+                    if warning not in warnings:
+                        warnings.append(warning)
+            if (
+                preserve_theorem_declarations
+                and definition.group("command")
+                in TEX_THEOREM_DEFINITIONS
+                | TEX_OPTION_FIRST_THEOREM_DEFINITIONS
+            ):
+                cursor = max(end, definition.end())
+                continue
+            mask_tex_range(characters, definition.start(), end)
+            cursor = max(end, definition.end())
+            continue
+        inline_verb = inline_verbatim_end(text, cursor)
+        if inline_verb is not None:
+            end, terminated = inline_verb
+            if not terminated and warnings is not None:
+                line, column = source_line_column(text, cursor)
+                warning = (
+                    "Unterminated inline verbatim requires manual review: "
+                    f"{source_name}:{line}:{column}"
+                )
+                if warning not in warnings:
+                    warnings.append(warning)
+            mask_tex_range(characters, cursor, end)
+            cursor = max(end, cursor + 1)
+            continue
+        verbatim = TEX_VERBATIM_BEGIN_RE.match(text, cursor)
+        if verbatim is not None:
+            environment = verbatim.group("environment")
+            end_re = re.compile(rf"\\end\s*\{{{re.escape(environment)}\}}")
+            end_match = end_re.search(text, verbatim.end())
+            end = end_match.end() if end_match is not None else len(text)
+            if end_match is None and warnings is not None:
+                line, column = source_line_column(text, verbatim.start())
+                warning = (
+                    "Unterminated verbatim-like environment requires manual review: "
+                    f"{source_name}:{line}:{column}"
+                )
+                if warning not in warnings:
+                    warnings.append(warning)
+            mask_tex_range(characters, verbatim.start(), end)
+            cursor = max(end, verbatim.end())
+            continue
+        cursor += 1
     return "".join(characters)
+
+
+def named_argument_conditional(command: str) -> bool:
+    """Return whether the control-sequence family uses bounded arguments."""
+    return (
+        command in ARGUMENT_CONDITIONAL_COMMANDS
+        or command.startswith("If")
+        or command.startswith("@if")
+        or "_if" in command
+        or ":" in command
+    )
+
+
+def argument_conditional_end(
+    text: str, command: str, token_end: int
+) -> int | None:
+    """Return the end of a syntactically bounded argument conditional."""
+    cursor = skip_tex_whitespace(text, token_end)
+    while cursor < len(text):
+        control_argument_end = consume_tex_control_sequence(text, cursor)
+        if control_argument_end is None:
+            break
+        cursor = skip_tex_whitespace(text, control_argument_end)
+    if command == "@ifnextchar" and cursor < len(text):
+        if text[cursor] == "{":
+            token_argument_end = consume_balanced_tex_group(
+                text, cursor, "{", "}"
+            )
+            if token_argument_end is not None:
+                cursor = skip_tex_whitespace(text, token_argument_end)
+        else:
+            cursor = skip_tex_whitespace(text, cursor + 1)
+    group_count = 0
+    while cursor < len(text) and text[cursor] == "{":
+        group_end = consume_balanced_tex_group(text, cursor, "{", "}")
+        if group_end is None:
+            break
+        group_count += 1
+        cursor = skip_tex_whitespace(text, group_end)
+    minimum_groups = 1 if named_argument_conditional(command) else 2
+    return cursor if group_count >= minimum_groups else None
+
+
+def conditional_uses_fi_syntax(
+    command: str, text: str, token_end: int
+) -> bool:
+    r"""Distinguish primitive/custom \if...\fi controls from argument macros."""
+    if command in TEX_FI_CONDITIONAL_COMMANDS:
+        return True
+    if named_argument_conditional(command):
+        return False
+    return argument_conditional_end(text, command, token_end) is None
+
+
+def matched_tex_conditional_open_offsets(text: str) -> set[int]:
+    """Return conditional-token offsets that have a structural \fi partner."""
+    stack: list[int] = []
+    matched: set[int] = set()
+    for token in TEX_CONDITIONAL_RE.finditer(text):
+        conditional = token.group("conditional")
+        if (
+            conditional is not None
+            and conditional_uses_fi_syntax(conditional, text, token.end())
+        ):
+            stack.append(token.start())
+        elif token.group("end") is not None and stack:
+            matched.add(stack.pop())
+    return matched
+
+
+def unmatched_argument_conditional_ranges(
+    text: str, matched_offsets: set[int]
+) -> list[tuple[int, int]]:
+    """Bound brace-argument conditionals that do not use TeX's \fi syntax."""
+    ranges: list[tuple[int, int]] = []
+    for token in TEX_CONDITIONAL_RE.finditer(text):
+        conditional = token.group("conditional")
+        if conditional is None or token.start() in matched_offsets:
+            continue
+        range_end = argument_conditional_end(
+            text, conditional, token.end()
+        )
+        if range_end is not None:
+            ranges.append((token.start(), range_end))
+    return ranges
+
+
+def mask_inactive_tex_branches(
+    text: str,
+    *,
+    warnings: list[str] | None = None,
+    source_name: str = "<source>",
+) -> str:
+    """Mask only branches statically known to be inactive, preserving offsets."""
+    characters = list(text)
+    conditional_stack: list[bool | None] = []
+    matched_offsets = matched_tex_conditional_open_offsets(text)
+    unless_pending = False
+    cursor = 0
+
+    def possibly_active() -> bool:
+        return all(state is not False for state in conditional_stack)
+
+    for token in TEX_CONDITIONAL_RE.finditer(text):
+        active_before = possibly_active()
+        if not active_before:
+            mask_tex_range(characters, cursor, token.end())
+
+        conditional = token.group("conditional")
+        if conditional is not None:
+            if conditional == "iftrue":
+                state: bool | None = True
+            elif conditional == "iffalse":
+                state = False
+            else:
+                state = None
+                if active_before and warnings is not None:
+                    line, column = source_line_column(text, token.start())
+                    warning = (
+                        "Unknown TeX conditional preserves candidate structure "
+                        "and requires manual review: "
+                        f"{source_name}:{line}:{column}: \\{conditional}"
+                    )
+                    if warning not in warnings:
+                        warnings.append(warning)
+            if unless_pending and state is not None:
+                state = not state
+            if state is not None or token.start() in matched_offsets:
+                conditional_stack.append(state)
+            unless_pending = False
+        elif token.group("unless") is not None:
+            unless_pending = active_before
+        elif token.group("branch") is not None:
+            unless_pending = False
+            if conditional_stack:
+                state = conditional_stack[-1]
+                conditional_stack[-1] = None if state is None else not state
+        elif token.group("end") is not None:
+            unless_pending = False
+            if conditional_stack:
+                conditional_stack.pop()
+        cursor = token.end()
+
+    if not possibly_active():
+        mask_tex_range(characters, cursor, len(text))
+    return "".join(characters)
+
+
+def mask_structural_tex(
+    text: str,
+    *,
+    preserve_theorem_declarations: bool = False,
+    warnings: list[str] | None = None,
+    source_name: str = "<source>",
+) -> str:
+    """Mask nonexecuting structural TeX without changing source positions."""
+    nonexecuting = mask_nonexecuting_tex(
+        text,
+        preserve_theorem_declarations=preserve_theorem_declarations,
+        warnings=warnings,
+        source_name=source_name,
+    )
+    return mask_inactive_tex_branches(
+        nonexecuting,
+        warnings=warnings,
+        source_name=source_name,
+    )
 
 
 def relative_or_absolute(path: Path, base: Path) -> str:
     try:
-        return os.path.relpath(path.resolve(), base.resolve())
+        return Path(os.path.relpath(path.resolve(), base.resolve())).as_posix()
     except ValueError:
+        return path.resolve().as_posix()
+
+
+def source_path_identity(path: Path, base: Path | None = None) -> str:
+    """Serialize a source path with an optional relocatable identity base."""
+    if base is None:
         return str(path.resolve())
+    return relative_or_absolute(path, base)
 
 
 def resolve_stored_path(value: str, base: Path) -> Path:
-    candidate = Path(value)
-    if candidate.is_absolute():
-        return candidate.resolve()
+    if not is_nonempty_string(value):
+        raise ValueError("Stored path must be a nonempty string")
+    windows_drive = bool(re.match(r"^[A-Za-z]:[\\/]", value))
+    windows_drive_relative = bool(re.match(r"^[A-Za-z]:(?![\\/])", value))
+    windows_unc = value.startswith("\\\\") or value.startswith("//")
+    posix_absolute = value.startswith("/") and not windows_unc
+    if windows_drive_relative:
+        raise ValueError(f"Drive-relative stored path is unsupported: {value}")
+    if (windows_drive or windows_unc) and os.name != "nt":
+        raise ValueError(f"Foreign Windows absolute path cannot be resolved here: {value}")
+    if posix_absolute and os.name == "nt":
+        raise ValueError(f"Foreign POSIX absolute path cannot be resolved here: {value}")
+    if windows_drive or windows_unc or posix_absolute:
+        return Path(value).resolve()
+    candidate = Path(
+        *[part for part in re.split(r"[\\/]", value) if part not in {"", "."}]
+    )
     return (base / candidate).resolve()
+
+
+CANONICAL_MANIFEST_ARTIFACT_PATHS = {
+    "inventory_file": "audit/01_index/theorem_inventory.json",
+    "dependency_registry": "audit/03_dependencies/DEPENDENCY_REGISTRY.json",
+    "method_interface_registry": (
+        "audit/03_dependencies/METHOD_INTERFACE_REGISTRY.json"
+    ),
+    "finalization_record": "audit/06_reports/FINALIZATION.json",
+}
+
+
+def path_redirect_kind(path: Path) -> str | None:
+    """Identify filesystem redirections without assuming one operating system."""
+    try:
+        if path.is_symlink():
+            return "symlink"
+        is_junction = getattr(path, "is_junction", None)
+        if callable(is_junction) and is_junction():
+            return "junction"
+        lexical = os.path.normcase(os.path.abspath(path))
+        resolved = os.path.normcase(os.path.realpath(path))
+        if lexical != resolved:
+            return "filesystem redirection"
+    except OSError:
+        return "uninspectable filesystem redirection"
+    return None
+
+
+def canonical_artifact_path(
+    root: Path,
+    relative: str,
+    label: str,
+    errors: list[str],
+) -> tuple[Path, bool]:
+    """Return one fixed audit path after rejecting redirected components."""
+    resolved_root = root.resolve()
+    parts = tuple(part for part in relative.split("/") if part)
+    candidate = resolved_root.joinpath(*parts)
+    valid = True
+    current = resolved_root
+    for part in parts:
+        current = current / part
+        redirect_kind = path_redirect_kind(current)
+        if redirect_kind is not None:
+            message = (
+                f"Canonical {label} location traverses a {redirect_kind}: {current}"
+            )
+            if message not in errors:
+                errors.append(message)
+            valid = False
+    try:
+        candidate.resolve(strict=False).relative_to(resolved_root)
+    except (OSError, ValueError):
+        message = f"Canonical {label} location resolves outside the audit root"
+        if message not in errors:
+            errors.append(message)
+        valid = False
+    return candidate, valid
+
+
+def manifest_canonical_artifact_path(
+    manifest: dict[str, Any],
+    root: Path,
+    field: str,
+    label: str,
+    errors: list[str],
+) -> tuple[Path, bool]:
+    """Validate a manifest pointer and return only its fixed canonical target."""
+    relative = CANONICAL_MANIFEST_ARTIFACT_PATHS[field]
+    canonical, valid = canonical_artifact_path(root, relative, label, errors)
+    value = manifest.get(field)
+    if not is_nonempty_string(value):
+        errors.append(f"manifest.{field} must be a nonempty path")
+        return canonical, False
+    normalized = value.replace("\\", "/")
+    if normalized != relative:
+        errors.append(
+            f"manifest.{field} must resolve to {relative} through the canonical "
+            "root-relative path"
+        )
+        return canonical, False
+    try:
+        resolved = resolve_stored_path(value, root)
+    except ValueError as exc:
+        errors.append(f"manifest.{field} is invalid: {exc}")
+        return canonical, False
+    if resolved != canonical:
+        errors.append(f"manifest.{field} must resolve to {relative}")
+        return canonical, False
+    return canonical, valid
+
+
+def load_audit_manifest(
+    root: Path,
+) -> tuple[Path, dict[str, Any], list[str]]:
+    """Load the fixed audit manifest without following redirected components."""
+    errors: list[str] = []
+    path, valid = canonical_artifact_path(
+        root, "AUDIT_MANIFEST.json", "audit manifest", errors
+    )
+    if not valid:
+        return path, {}, errors
+    manifest, read_errors = load_json_object(path, "audit manifest")
+    errors.extend(read_errors)
+    return path, manifest, errors
+
+
+def audit_internal_redirect_errors(root: Path) -> list[str]:
+    """Reject redirected files or directories inside canonical audit state."""
+    errors: list[str] = []
+    resolved_root = root.resolve()
+    pending = [resolved_root]
+    while pending:
+        directory = pending.pop()
+        try:
+            children = list(directory.iterdir())
+        except OSError as exc:
+            errors.append(f"Cannot inspect audit directory safely: {directory}: {exc}")
+            continue
+        for child in children:
+            redirect_kind = path_redirect_kind(child)
+            if redirect_kind is not None:
+                errors.append(
+                    f"Audit state contains a redirected {redirect_kind}: {child}"
+                )
+                continue
+            try:
+                is_directory = child.is_dir()
+            except OSError as exc:
+                errors.append(f"Cannot inspect audit artifact safely: {child}: {exc}")
+                continue
+            if is_directory:
+                pending.append(child)
+    return errors
 
 
 def is_int(value: Any) -> bool:
@@ -960,6 +1809,80 @@ def validate_aspect_matrix(
     return statuses
 
 
+def normalized_evidence_template(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return re.sub(
+        r"\s+",
+        " ",
+        unicodedata.normalize("NFKC", value).strip().casefold(),
+    )
+
+
+def validate_evidence_specificity(
+    records: list[dict[str, str]], errors: list[str]
+) -> None:
+    """Reject only strong exact-template reuse signals, with bounded output."""
+    diagnostics: list[str] = []
+    grouped: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
+    for record in records:
+        template = normalized_evidence_template(record.get("text"))
+        if template:
+            grouped[(record.get("category", "evidence"), template)].append(record)
+
+    for (category, template), rows in sorted(grouped.items()):
+        step_ids = sorted({row.get("step_id", "") for row in rows if row.get("step_id")})
+        claims = {
+            normalized_evidence_template(row.get("claim"))
+            for row in rows
+            if normalized_evidence_template(row.get("claim"))
+        }
+        if category != "risk" and len(step_ids) >= 4 and len(claims) >= 3:
+            diagnostics.append(
+                f"Repeated {category} evidence template across {len(step_ids)} "
+                f"unrelated steps; first affected step {step_ids[0]}: "
+                f"{truncate(template, 120)}"
+            )
+        if category == "risk":
+            by_step: dict[str, set[str]] = defaultdict(set)
+            for row in rows:
+                if row.get("step_id") and row.get("aspect"):
+                    by_step[row["step_id"]].add(row["aspect"])
+            broad_step = next(
+                (
+                    (step_id, aspects)
+                    for step_id, aspects in sorted(by_step.items())
+                    if len(aspects) >= 3
+                ),
+                None,
+            )
+            if broad_step is not None:
+                diagnostics.append(
+                    f"Repeated risk evidence template across {len(broad_step[1])} "
+                    f"distinct aspects in {broad_step[0]}: {truncate(template, 120)}"
+                )
+            applicable_steps = sorted(
+                {
+                    row.get("step_id", "")
+                    for row in rows
+                    if row.get("step_id") and row.get("status") != "not_applicable"
+                }
+            )
+            if len(applicable_steps) >= 4 and len(claims) >= 3:
+                diagnostics.append(
+                    f"Repeated applicable risk evidence template across "
+                    f"{len(applicable_steps)} unrelated steps; first affected step "
+                    f"{applicable_steps[0]}: {truncate(template, 120)}"
+                )
+    if diagnostics:
+        errors.extend(diagnostics[:10])
+        if len(diagnostics) > 10:
+            errors.append(
+                f"Evidence-specificity diagnostics omitted {len(diagnostics) - 10} "
+                "additional repeated templates"
+            )
+
+
 def load_json_object(path: Path, description: str) -> tuple[dict[str, Any], list[str]]:
     try:
         data = json.loads(read_text(path))
@@ -1052,33 +1975,47 @@ def locked_span_contains_label(span: Any, base: Path, label: str) -> bool:
     labels: set[str] = set()
     conditional_stack: list[bool | None] = []
     unless_pending = False
-    clean_text = mask_nonexecuting_tex(
-        "\n".join(strip_latex_comment(line) for line in lines[:end])
+    clean_text = mask_nonexecuting_tex("\n".join(lines))
+    matched_offsets = matched_tex_conditional_open_offsets(clean_text)
+    uncertain_ranges = unmatched_argument_conditional_ranges(
+        clean_text, matched_offsets
     )
-    for line_number, clean in enumerate(clean_text.split("\n"), 1):
-        for token in TEX_CONDITIONAL_LABEL_RE.finditer(clean):
-            conditional = token.group("conditional")
-            if conditional is not None:
-                if unless_pending:
-                    conditional_stack.append(None)
-                elif conditional == "iftrue":
-                    conditional_stack.append(True)
-                elif conditional == "iffalse":
-                    conditional_stack.append(False)
-                else:
-                    conditional_stack.append(None)
-                unless_pending = False
-            elif token.group("unless") is not None:
-                unless_pending = True
-            elif token.group("branch") is not None and conditional_stack:
+    for token in TEX_CONDITIONAL_LABEL_RE.finditer(clean_text):
+        active_before = all(state is not False for state in conditional_stack)
+        conditional = token.group("conditional")
+        if conditional is not None:
+            if conditional == "iftrue":
+                state: bool | None = True
+            elif conditional == "iffalse":
+                state = False
+            else:
+                state = None
+            if unless_pending and state is not None:
+                state = not state
+            if state is not None or token.start() in matched_offsets:
+                conditional_stack.append(state)
+            unless_pending = False
+        elif token.group("unless") is not None:
+            unless_pending = active_before
+        elif token.group("branch") is not None:
+            unless_pending = False
+            if conditional_stack:
                 state = conditional_stack[-1]
                 conditional_stack[-1] = None if state is None else not state
-            elif token.group("end") is not None and conditional_stack:
+        elif token.group("end") is not None:
+            unless_pending = False
+            if conditional_stack:
                 conditional_stack.pop()
-            elif (
-                token.group("label") is not None
-                and start <= line_number <= end
+        elif token.group("label") is not None:
+            line_number, _ = source_line_column(clean_text, token.start())
+            argument_conditional = any(
+                range_start <= token.start() < range_end
+                for range_start, range_end in uncertain_ranges
+            )
+            if (
+                start <= line_number <= end
                 and not unless_pending
+                and not argument_conditional
                 and all(state is True for state in conditional_stack)
             ):
                 labels.add(token.group("label"))
@@ -1137,6 +2074,58 @@ def source_line_column(text: str, offset: int, start_line: int = 1) -> tuple[int
     return line, column
 
 
+SECTION_LEVELS = {
+    "part": 0,
+    "chapter": 1,
+    "section": 2,
+    "subsection": 3,
+    "subsubsection": 4,
+}
+
+
+def scan_section_headings(text: str) -> list[dict[str, Any]]:
+    """Parse static LaTeX section titles with balanced nested braces."""
+    masked = mask_structural_tex(text)
+    headings: list[dict[str, Any]] = []
+    for match in SECTION_COMMAND_START_RE.finditer(masked):
+        opening = match.end() - 1
+        group_end = consume_balanced_tex_group(masked, opening, "{", "}")
+        if group_end is None:
+            continue
+        start_line, start_column = source_line_column(text, match.start())
+        end_line, end_column = source_line_column(text, group_end - 1)
+        title = text[opening + 1 : group_end - 1]
+        masked_title = masked[opening + 1 : group_end - 1]
+        title_references, _ = scan_reference_occurrences(
+            masked_title,
+            Path("section-heading.tex"),
+            Path("."),
+            structural_context="section_heading",
+        )
+        static_targets = sorted(
+            {
+                str(reference.get("target"))
+                for reference in title_references
+                if reference.get("resolution_status") != "dynamic"
+                and is_nonempty_string(reference.get("target"))
+            }
+        )
+        command = match.group("command")
+        headings.append(
+            {
+                "command": command,
+                "level": SECTION_LEVELS[command],
+                "title": title,
+                "target_labels": static_targets,
+                "start_line": start_line,
+                "start_column": start_column,
+                "end_line": end_line,
+                "end_column": end_column,
+            }
+        )
+    return headings
+
+
 def scan_reference_occurrences(
     text: str,
     path: Path,
@@ -1146,40 +2135,69 @@ def scan_reference_occurrences(
     structural_context: str = "source",
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Return exact static reference occurrences, including bracket hyperrefs."""
-    masked = mask_nonexecuting_tex(mask_latex_comments(text))
+    relative_file = relative_or_absolute(path, base)
+    warnings: list[str] = []
+    masked = mask_structural_tex(
+        text,
+        warnings=warnings,
+        source_name=relative_file,
+    )
     matches = sorted(
         [*REFERENCE_COMMAND_RE.finditer(masked), *HYPERREF_COMMAND_RE.finditer(masked)],
         key=lambda match: match.start(),
     )
-    relative_file = relative_or_absolute(path, base)
     occurrences: list[dict[str, Any]] = []
-    warnings: list[str] = []
+    handled_starts = {match.start() for match in matches}
     for match in matches:
         command = match.group("command")
         cursor = skip_tex_whitespace(masked, match.end())
         opening, closing = ("[", "]") if command == "hyperref" else ("{", "}")
-        group_end = consume_balanced_tex_group(masked, cursor, opening, closing)
         line, column = source_line_column(text, match.start(), start_line)
-        if group_end is None:
-            warnings.append(
-                f"Malformed or dynamic \\{command} requires manual review: "
-                f"{relative_file}:{line}:{column}"
+        group_count = 2 if command in RANGE_REFERENCE_COMMANDS else 1
+        target_groups: list[list[str]] = []
+        group_end: int | None = None
+        for group_index in range(1, group_count + 1):
+            group_end = consume_balanced_tex_group(
+                masked, cursor, opening, closing
             )
-            continue
-        raw_targets = text[cursor + 1 : group_end - 1]
-        targets = split_reference_keys(raw_targets)
+            if group_end is None:
+                warnings.append(
+                    f"Malformed or dynamic \\{command} argument {group_index} "
+                    "requires manual review: "
+                    f"{relative_file}:{line}:{column}"
+                )
+                break
+            raw_targets = text[cursor + 1 : group_end - 1]
+            targets = split_reference_keys(raw_targets)
+            target_groups.append(targets)
+            if not targets:
+                warnings.append(
+                    f"Empty \\{command} argument {group_index} requires manual "
+                    f"review: {relative_file}:{line}:{column}"
+                )
+            if command in RANGE_REFERENCE_COMMANDS and len(targets) != 1:
+                warnings.append(
+                    f"\\{command} argument {group_index} must resolve to exactly "
+                    "one static target: "
+                    f"{relative_file}:{line}:{column}"
+                )
+            cursor = skip_tex_whitespace(masked, group_end)
+        targets = [
+            target
+            for target_group in target_groups
+            for target in target_group
+        ]
         if command == "hyperref":
-            display_cursor = skip_tex_whitespace(masked, group_end)
+            display_cursor = (
+                skip_tex_whitespace(masked, group_end)
+                if group_end is not None
+                else cursor
+            )
             if consume_balanced_tex_group(masked, display_cursor, "{", "}") is None:
                 warnings.append(
                     "Malformed or dynamic \\hyperref display text requires manual "
                     f"review: {relative_file}:{line}:{column}"
                 )
-        if not targets:
-            warnings.append(
-                f"Empty \\{command} target requires manual review: "
-                f"{relative_file}:{line}:{column}"
-            )
         for key_index, target in enumerate(targets, 1):
             dynamic = '\\' in target or '#' in target
             if dynamic:
@@ -1209,7 +2227,21 @@ def scan_reference_occurrences(
                     "owner_region": None,
                 }
             )
-    return occurrences, warnings
+    for match in REF_LIKE_COMMAND_RE.finditer(masked):
+        command = match.group("command")
+        if (
+            match.start() in handled_starts
+            or command in REFERENCE_CONFIGURATION_COMMANDS
+        ):
+            continue
+        line, column = source_line_column(text, match.start(), start_line)
+        warning = (
+            f"Unsupported reference-like command \\{command} requires manual "
+            f"review: {relative_file}:{line}:{column}"
+        )
+        if warning not in warnings:
+            warnings.append(warning)
+    return occurrences, list(dict.fromkeys(warnings))
 
 
 def scan_label_occurrences(
@@ -1219,7 +2251,7 @@ def scan_label_occurrences(
     *,
     start_line: int = 1,
 ) -> list[dict[str, Any]]:
-    masked = mask_nonexecuting_tex(mask_latex_comments(text))
+    masked = mask_structural_tex(text)
     relative_file = relative_or_absolute(path, base)
     result: list[dict[str, Any]] = []
     for match in LABEL_RE.finditer(masked):
@@ -1239,7 +2271,7 @@ def proof_optional_title_span(
     block: list[str], start_line: int = 1
 ) -> dict[str, Any] | None:
     text = "\n".join(block)
-    masked = mask_latex_comments(text)
+    masked = mask_structural_tex(text)
     begin = re.search(r"\\begin\s*\{proof\}", masked)
     if begin is None:
         return None
@@ -1303,8 +2335,8 @@ def scan_span_evidence(
         structural_context=structural_context,
     )
     citations: list[str] = []
-    for line_number, line in enumerate(selected, start_line):
-        clean = strip_latex_comment(line)
+    masked_lines = mask_structural_tex(text).split("\n")
+    for line_number, clean in enumerate(masked_lines, start_line):
         handled_citations: set[int] = set()
         for match in CITE_RE.finditer(clean):
             handled_citations.add(match.start())
@@ -1346,7 +2378,7 @@ def scan_unit_statement_evidence(
 
 def display_math_spans(lines: list[str]) -> list[dict[str, Any]]:
     text = "\n".join(lines)
-    masked = mask_nonexecuting_tex(mask_latex_comments(text))
+    masked = mask_structural_tex(text)
     stack: list[dict[str, Any]] = []
     spans: list[dict[str, Any]] = []
     for token in TOKEN_RE.finditer(masked):
@@ -1424,17 +2456,14 @@ def proof_heading_gaps(
             else:
                 merged_barriers.append([start_line, end_line])
 
-        headings: list[dict[str, Any]] = []
         text = "\n".join(lines)
-        masked = mask_nonexecuting_tex(mask_latex_comments(text))
-        for match in SECTION_COMMAND_RE.finditer(masked):
-            line_number, _ = source_line_column(text, match.start())
-            headings.append(
-                {
-                    "line": line_number,
-                    "title": match.group("title"),
-                }
-            )
+        headings = [
+            {
+                **heading,
+                "line": heading["start_line"],
+            }
+            for heading in scan_section_headings(text)
+        ]
         for heading_index, heading in enumerate(headings):
             if not re.search(r"\bproofs?\b", heading["title"], re.IGNORECASE):
                 continue
@@ -1605,68 +2634,307 @@ def resolve_candidate_internal_dependencies(
     return sorted(dependencies)
 
 
-def bounded_proof_region(
-    path: Path, anchor_line: int, *, max_heading_distance: int = 4
-) -> dict[str, Any] | None:
-    """Conservatively bound an appendix proof headed immediately after an anchor."""
+PROOF_TERMINATOR_TOKEN_RE = re.compile(
+    r"(?:\\hfill\s*)?(?P<marker>\\BlackBox|\\qed(?:here)?|\\QED|"
+    r"\\(?:black)?square|\$\s*\\(?:Box|square|blacksquare)\s*\$)"
+)
+DISPLAY_CLOSING_ENVIRONMENTS = DISPLAY_MATH_ENVIRONMENTS | {
+    "aligned",
+    "alignedat",
+    "array",
+    "cases",
+    "gathered",
+    "matrix",
+    "pmatrix",
+    "smallmatrix",
+    "split",
+}
+
+
+def same_line_display_closers_are_structural(value: str) -> bool:
+    cursor = 0
+    found = False
+    while cursor < len(value):
+        match = re.match(r"\s*\\end\s*\{([^}]+)\}", value[cursor:])
+        if match is None:
+            return False
+        if match.group(1).rstrip("*") not in DISPLAY_CLOSING_ENVIRONMENTS:
+            return False
+        cursor += match.end()
+        found = True
+    return found
+
+
+def proof_terminator_kind(raw_line: str) -> str | None:
+    clean = strip_latex_comment(raw_line).strip()
+    if re.fullmatch(r"\\end\s*\{proof\}", clean):
+        return "proof_environment_end"
+    matches = list(PROOF_TERMINATOR_TOKEN_RE.finditer(clean))
+    if not matches:
+        return None
+    if len(matches) != 1:
+        return "multiple_qed_markers"
+    marker = matches[0].group("marker")
+    suffix = clean[matches[0].end() :]
+    if suffix and not (
+        marker == r"\qedhere"
+        and same_line_display_closers_are_structural(suffix)
+    ):
+        return None
+    if marker == r"\qedhere":
+        return "qed_here_marker"
+    return "qed_marker"
+
+
+def proof_terminal_region_end(
+    lines: list[str], marker_line: int, section_end: int, boundary_kind: str
+) -> int:
+    r"""Include only display closers structurally required after \qedhere."""
+    if boundary_kind != "qed_here_marker":
+        return marker_line
+    region_end = marker_line
+    cursor = marker_line + 1
+    while cursor <= section_end:
+        clean = strip_latex_comment(lines[cursor - 1]).strip()
+        if not clean:
+            cursor += 1
+            continue
+        if clean == r"\]":
+            region_end = cursor
+            cursor += 1
+            continue
+        closing = re.fullmatch(r"\\end\s*\{([^}]+)\}", clean)
+        if (
+            closing is None
+            or closing.group(1).rstrip("*") not in DISPLAY_CLOSING_ENVIRONMENTS
+        ):
+            break
+        region_end = cursor
+        cursor += 1
+    return region_end
+
+
+def proof_tail_is_structural(
+    lines: list[str], start_line: int, end_line: int, *, allow_epilogue: bool
+) -> bool:
+    """Return whether a post-proof tail contains no unheaded manuscript prose."""
+    bibliography_depth = 0
+    for line_number in range(start_line, end_line + 1):
+        clean = strip_latex_comment(lines[line_number - 1]).strip()
+        if not clean:
+            continue
+        if re.fullmatch(r"\\begin\s*\{thebibliography\}(?:\{[^}]*\})?", clean):
+            if not allow_epilogue:
+                return False
+            bibliography_depth += 1
+            continue
+        if bibliography_depth:
+            if re.fullmatch(r"\\end\s*\{thebibliography\}", clean):
+                bibliography_depth -= 1
+            continue
+        if re.fullmatch(
+            r"\\(?:phantomsection|label\s*\{[^}]+\}|clearpage|newpage|"
+            r"FloatBarrier)",
+            clean,
+        ):
+            continue
+        if allow_epilogue and re.fullmatch(
+            r"\\(?:bibliographystyle\s*\{[^}]+\}|bibliography\s*\{[^}]+\}|"
+            r"printbibliography(?:\[[^]]*\])?|end\s*\{document\}|"
+            r"vskip\s+[^%]+|vspace\*?\s*\{[^}]+\}|"
+            r"smallskip|medskip|bigskip|pagebreak(?:\[[^]]*\])?|"
+            r"nopagebreak(?:\[[^]]*\])?)",
+            clean,
+        ):
+            continue
+        return False
+    return bibliography_depth == 0
+
+
+def analyze_proof_region(
+    path: Path,
+    anchor_line: int,
+    *,
+    target_unit_id: str | None = None,
+    max_heading_distance: int = 4,
+) -> dict[str, Any]:
+    """Return one canonical proof region or a structured rejection reason."""
     lines = read_lines(path)
-    levels = {
-        "part": 0,
-        "chapter": 1,
-        "section": 2,
-        "subsection": 3,
-        "subsubsection": 4,
-    }
-    headings: list[dict[str, Any]] = []
-    for line_number, raw_line in enumerate(lines, 1):
-        match = SECTION_COMMAND_RE.search(strip_latex_comment(raw_line))
-        if match is not None:
-            headings.append(
-                {
-                    "line": line_number,
-                    "level": levels[match.group("command")],
-                    "title": match.group("title"),
-                }
-            )
+    if not 1 <= anchor_line <= len(lines):
+        return {
+            "status": "invalid",
+            "reason": "anchor_out_of_range",
+            "start_line": anchor_line,
+            "end_line": None,
+        }
+    structural_lines = mask_structural_tex("\n".join(lines)).split("\n")
+
+    exact_environments = sorted(
+        (start, end)
+        for start, end in proof_environment_spans(path)
+        if start == anchor_line
+    )
+    if len(exact_environments) == 1:
+        start_line, end_line = exact_environments[0]
+        return {
+            "status": "accepted",
+            "method": "proof_environment",
+            "start_line": start_line,
+            "end_line": end_line,
+            "header_span": None,
+            "target_labels": [],
+            "boundary": {
+                "kind": "proof_environment_end",
+                "line": end_line,
+                "evidence": strip_latex_comment(lines[end_line - 1]).strip(),
+            },
+            "reason": None,
+        }
+
+    headings = scan_section_headings("\n".join(lines))
     candidates = [
         heading
         for heading in headings
-        if anchor_line <= heading["line"] <= anchor_line + max_heading_distance
-        and re.search(r"\bproof\b", heading["title"], re.IGNORECASE)
+        if anchor_line <= heading["start_line"] <= anchor_line + max_heading_distance
+        and re.search(r"\bproofs?\b", heading["title"], re.IGNORECASE)
     ]
+    if target_unit_id is not None:
+        candidates = [
+            heading
+            for heading in candidates
+            if heading["target_labels"] == [target_unit_id]
+        ]
     if len(candidates) != 1:
-        return None
+        return {
+            "status": "ambiguous",
+            "reason": (
+                "named_heading_target_not_unique"
+                if target_unit_id is not None
+                else "named_heading_not_unique"
+            ),
+            "start_line": anchor_line,
+            "end_line": None,
+            "candidate_count": len(candidates),
+        }
+
     heading = candidates[0]
     later_boundary = next(
         (
             other
             for other in headings
-            if other["line"] > heading["line"]
+            if other["start_line"] > heading["start_line"]
             and other["level"] <= heading["level"]
         ),
         None,
     )
-    end_line = later_boundary["line"] - 1 if later_boundary else len(lines)
-    if later_boundary is not None:
-        while end_line > anchor_line and (
-            not lines[end_line - 1].strip()
-            or re.fullmatch(
-                r"\s*\\(?:phantomsection|label\s*\{[^}]+\})\s*",
-                strip_latex_comment(lines[end_line - 1]),
+    section_end = (
+        later_boundary["start_line"] - 1
+        if later_boundary is not None
+        else len(lines)
+    )
+    terminators = [
+        (line_number, proof_terminator_kind(structural_lines[line_number - 1]))
+        for line_number in range(heading["end_line"], section_end + 1)
+        if proof_terminator_kind(structural_lines[line_number - 1]) is not None
+    ]
+    if terminators:
+        if (
+            len(terminators) != 1
+            or any(kind == "multiple_qed_markers" for _, kind in terminators)
+        ):
+            return {
+                "status": "ambiguous",
+                "reason": "multiple_terminal_markers",
+                "start_line": anchor_line,
+                "end_line": None,
+                "terminator_lines": [line for line, _ in terminators],
+            }
+        acceptable = [
+            (
+                line_number,
+                proof_terminal_region_end(
+                    structural_lines, line_number, section_end, kind
+                ),
+                kind,
             )
+            for line_number, kind in terminators
+            if proof_tail_is_structural(
+                structural_lines,
+                proof_terminal_region_end(
+                    structural_lines, line_number, section_end, kind
+                )
+                + 1,
+                section_end,
+                allow_epilogue=later_boundary is None,
+            )
+        ]
+        if len(acceptable) != 1:
+            return {
+                "status": "ambiguous",
+                "reason": "terminator_followed_by_substantive_or_ambiguous_tail",
+                "start_line": anchor_line,
+                "end_line": None,
+                "terminator_lines": [line for line, _ in terminators],
+            }
+        marker_line, end_line, boundary_kind = acceptable[0]
+    elif later_boundary is not None:
+        end_line = section_end
+        while end_line >= heading["end_line"] and proof_tail_is_structural(
+            structural_lines, end_line, end_line, allow_epilogue=False
         ):
             end_line -= 1
+        boundary_kind = "next_heading"
     else:
-        while end_line > anchor_line and not lines[end_line - 1].strip():
-            end_line -= 1
-    if end_line < heading["line"]:
-        return None
+        return {
+            "status": "unbounded",
+            "reason": "named_heading_at_eof_requires_terminal_marker",
+            "start_line": anchor_line,
+            "end_line": None,
+        }
+    if end_line < heading["end_line"]:
+        return {
+            "status": "invalid",
+            "reason": "empty_named_proof_region",
+            "start_line": anchor_line,
+            "end_line": None,
+        }
     return {
+        "status": "accepted",
+        "method": "named_heading",
         "start_line": anchor_line,
         "end_line": end_line,
-        "heading_line": heading["line"],
-        "heading_title": heading["title"],
+        "header_span": {
+            "start_line": heading["start_line"],
+            "start_column": heading["start_column"],
+            "end_line": heading["end_line"],
+            "end_column": heading["end_column"],
+            "text": heading["title"],
+        },
+        "target_labels": heading["target_labels"],
+        "boundary": {
+            "kind": boundary_kind,
+            "line": end_line,
+            "marker_line": marker_line if terminators else None,
+            "evidence": strip_latex_comment(lines[end_line - 1]).strip(),
+        },
+        "reason": None,
     }
+
+
+def bounded_proof_region(
+    path: Path,
+    anchor_line: int,
+    *,
+    target_unit_id: str | None = None,
+    max_heading_distance: int = 4,
+) -> dict[str, Any] | None:
+    region = analyze_proof_region(
+        path,
+        anchor_line,
+        target_unit_id=target_unit_id,
+        max_heading_distance=max_heading_distance,
+    )
+    return region if region.get("status") == "accepted" else None
 
 
 def canonical_location(value: Any) -> dict[str, Any] | None:
@@ -1691,25 +2959,30 @@ def source_span_sha256(path: Path, start_line: int, end_line: int) -> str:
 def proof_environment_spans(path: Path) -> set[tuple[int, int]]:
     spans: set[tuple[int, int]] = set()
     stack: list[int] = []
-    for line_number, raw_line in enumerate(read_lines(path), 1):
-        clean = strip_latex_comment(raw_line)
-        for token in TOKEN_RE.finditer(clean):
-            action, environment = token.group(1), token.group(2)
-            if environment != "proof":
-                continue
-            if action == "begin":
-                stack.append(line_number)
-            elif stack:
-                spans.add((stack.pop(), line_number))
+    text = "\n".join(read_lines(path))
+    masked = mask_structural_tex(text)
+    for token in TOKEN_RE.finditer(masked):
+        action, environment = token.group(1), token.group(2)
+        if environment != "proof":
+            continue
+        line_number, _ = source_line_column(text, token.start())
+        if action == "begin":
+            stack.append(line_number)
+        elif stack:
+            spans.add((stack.pop(), line_number))
     return spans
 
 
 def proof_span_has_safe_boundary(
-    path: Path, start_line: int, end_line: int
+    path: Path,
+    start_line: int,
+    end_line: int,
+    *,
+    target_unit_id: str | None = None,
 ) -> bool:
-    if (start_line, end_line) in proof_environment_spans(path):
-        return True
-    region = bounded_proof_region(path, start_line)
+    region = bounded_proof_region(
+        path, start_line, target_unit_id=target_unit_id
+    )
     return bool(
         isinstance(region, dict)
         and region.get("start_line") == start_line
@@ -1822,11 +3095,21 @@ def reviewed_span_evidence(
             raise ValueError(f"Invalid reviewed proof range for {unit_id}")
         evidence = scan_span_evidence(path, start_line, end_line, base)
         lines = read_lines(path)[start_line - 1 : end_line]
-        title_span = (
-            proof_optional_title_span(lines, start_line)
-            if (start_line, end_line) in proof_environment_spans(path)
-            else None
-        )
+        if (start_line, end_line) in proof_environment_spans(path):
+            title_span = proof_optional_title_span(lines, start_line)
+        else:
+            analyzed = analyze_proof_region(
+                path,
+                start_line,
+                target_unit_id=unit_id,
+            )
+            title_span = (
+                analyzed.get("header_span")
+                if analyzed.get("status") == "accepted"
+                and analyzed.get("method") == "named_heading"
+                and analyzed.get("end_line") == end_line
+                else None
+            )
         title = (
             title_span.get("text")
             if isinstance(title_span, dict)
@@ -1882,14 +3165,21 @@ def discover_source_closure(
     additional_files: Iterable[Path] | None = None,
     fls_file: Path | None = None,
     project_root: Path | None = None,
+    warning_path_base: Path | None = None,
 ) -> dict[str, Any]:
     root = root.resolve()
     project_root = (project_root or root.parent).resolve()
+    warning_path_base = (
+        warning_path_base.resolve() if warning_path_base is not None else None
+    )
     ordered: list[Path] = []
     visited: set[Path] = set()
     active: set[Path] = set()
     warnings: list[str] = []
     outside_project_inputs: set[str] = set()
+
+    def shown(path: Path) -> str:
+        return source_path_identity(path, warning_path_base)
 
     def local_candidates(
         requested: str, suffix: str, source: Path, line_number: int
@@ -1898,7 +3188,7 @@ def discover_source_closure(
         if "\\" in raw or "#" in raw:
             warnings.append(
                 "Dynamic class or package requires manual review: "
-                f"{source}:{line_number}: {raw}"
+                f"{shown(source)}:{line_number}: {raw}"
             )
             return []
         requested_path = Path(raw)
@@ -1925,24 +3215,25 @@ def discover_source_closure(
         if len(candidates) > 1:
             warnings.append(
                 "Ambiguous local class or package resolution requires manual review: "
-                f"{source}:{line_number}: {raw}: "
-                + ", ".join(str(item) for item in candidates)
+                f"{shown(source)}:{line_number}: {raw}: "
+                + ", ".join(shown(item) for item in candidates)
             )
         if not candidates and explicit_local_reference:
             warnings.append(
-                f"Explicit local class or package not found: {source}:{line_number}: {raw}"
+                "Explicit local class or package not found: "
+                f"{shown(source)}:{line_number}: {raw}"
             )
         return candidates
 
     def visit(path: Path) -> None:
         path = path.resolve()
         if path in active:
-            warnings.append(f"Include cycle detected at {path}")
+            warnings.append(f"Include cycle detected at {shown(path)}")
             return
         if path in visited:
             return
         if not path.is_file():
-            warnings.append(f"Included file not found: {path}")
+            warnings.append(f"Included file not found: {shown(path)}")
             return
 
         visited.add(path)
@@ -1951,12 +3242,16 @@ def discover_source_closure(
         try:
             lines = read_lines(path)
         except UnicodeError as exc:
-            warnings.append(f"Cannot decode {path} as UTF-8: {exc}")
+            warnings.append(f"Cannot decode {shown(path)} as UTF-8: {exc}")
             active.remove(path)
             return
 
-        for line_number, line in enumerate(lines, 1):
-            clean = strip_latex_comment(line)
+        structural_lines = mask_structural_tex(
+            "\n".join(lines),
+            warnings=warnings,
+            source_name=shown(path),
+        ).split("\n")
+        for line_number, clean in enumerate(structural_lines, 1):
             handled_positions: set[int] = set()
 
             def include(raw: str, position: int) -> None:
@@ -1964,7 +3259,8 @@ def discover_source_closure(
                 raw = raw.strip()
                 if "\\" in raw or "#" in raw:
                     warnings.append(
-                        f"Dynamic include requires manual review: {path}:{line_number}: {raw}"
+                        "Dynamic include requires manual review: "
+                        f"{shown(path)}:{line_number}: {raw}"
                     )
                     return
                 include_path = Path(raw)
@@ -1986,12 +3282,13 @@ def discover_source_closure(
                 if len(candidates) > 1:
                     warnings.append(
                         "Ambiguous include resolution requires manual review: "
-                        f"{path}:{line_number}: {raw}: "
-                        + ", ".join(str(item) for item in candidates)
+                        f"{shown(path)}:{line_number}: {raw}: "
+                        + ", ".join(shown(item) for item in candidates)
                     )
                 if not candidates:
                     warnings.append(
-                        f"Included file not found: {path}:{line_number}: {raw}"
+                        "Included file not found: "
+                        f"{shown(path)}:{line_number}: {raw}"
                     )
                 for candidate in candidates:
                     visit(candidate)
@@ -2023,7 +3320,7 @@ def discover_source_closure(
                 if match.start() not in handled_positions:
                     warnings.append(
                         "Unresolved inclusion command requires manual review: "
-                        f"{path}:{line_number}: {truncate(clean)}"
+                        f"{shown(path)}:{line_number}: {truncate(clean)}"
                     )
 
         active.remove(path)
@@ -2032,14 +3329,16 @@ def discover_source_closure(
     for additional in additional_files or []:
         additional_path = additional.resolve()
         if not additional_path.is_file():
-            warnings.append(f"Additional source file not found: {additional_path}")
+            warnings.append(
+                f"Additional source file not found: {shown(additional_path)}"
+            )
             continue
         visit(additional_path)
 
     if fls_file is not None:
         fls_path = fls_file.resolve()
         if not fls_path.is_file():
-            warnings.append(f"Recorder file not found: {fls_path}")
+            warnings.append(f"Recorder file not found: {shown(fls_path)}")
         else:
             working_directory = project_root
             fls_input_paths: set[Path] = set()
@@ -2047,7 +3346,7 @@ def discover_source_closure(
                 fls_lines = read_lines(fls_path)
             except UnicodeError as exc:
                 warnings.append(
-                    f"Cannot decode recorder file {fls_path} as UTF-8: {exc}"
+                    f"Cannot decode recorder file {shown(fls_path)} as UTF-8: {exc}"
                 )
                 fls_lines = []
             for raw_line in fls_lines:
@@ -2071,16 +3370,17 @@ def discover_source_closure(
                     outside_project_inputs.add(str(candidate))
                     warnings.append(
                         "Recorder source input outside project root requires manual "
-                        f"review and explicit promotion if load-bearing: {candidate}"
+                        "review and explicit promotion if load-bearing: "
+                        f"{shown(candidate)}"
                     )
                     continue
                 if candidate.is_file():
                     visit(candidate)
                 else:
-                    warnings.append(f"Recorder input not found: {candidate}")
+                    warnings.append(f"Recorder input not found: {shown(candidate)}")
             if root not in fls_input_paths:
                 warnings.append(
-                    f"Recorder trace does not include the main paper: {root}"
+                    f"Recorder trace does not include the main paper: {shown(root)}"
                 )
 
     return {
@@ -2096,12 +3396,14 @@ def collect_tex_files(
     additional_files: Iterable[Path] | None = None,
     fls_file: Path | None = None,
     project_root: Path | None = None,
+    warning_path_base: Path | None = None,
 ) -> tuple[list[Path], list[str]]:
     closure = discover_source_closure(
         root,
         additional_files=additional_files,
         fls_file=fls_file,
         project_root=project_root,
+        warning_path_base=warning_path_base,
     )
     return closure["files"], closure["warnings"]
 
@@ -2199,14 +3501,19 @@ def truncate(text: str, limit: int = 300) -> str:
 
 
 def readable_source_lines(
-    files: Iterable[Path], warnings: list[str]
+    files: Iterable[Path],
+    warnings: list[str],
+    path_identity_base: Path | None = None,
 ) -> dict[Path, list[str]]:
     result: dict[Path, list[str]] = {}
     for path in files:
         try:
             result[path] = read_lines(path)
         except UnicodeError as exc:
-            warning = f"Cannot decode {path} as UTF-8: {exc}"
+            warning = (
+                f"Cannot decode {source_path_identity(path, path_identity_base)} "
+                f"as UTF-8: {exc}"
+            )
             if warning not in warnings:
                 warnings.append(warning)
     return result
@@ -2217,17 +3524,38 @@ def scan_formal_units(
     *,
     source_files: Iterable[Path] | None = None,
     source_warnings: Iterable[str] | None = None,
+    path_identity_base: Path | None = None,
 ) -> dict[str, Any]:
     if source_files is None:
-        files, warnings = collect_tex_files(root)
+        files, warnings = collect_tex_files(
+            root, warning_path_base=path_identity_base
+        )
     else:
         files, warnings = list(source_files), list(source_warnings or [])
     base = root.resolve().parent
+    path_identity_base = (
+        path_identity_base.resolve() if path_identity_base is not None else None
+    )
+
+    def shown(path: Path) -> str:
+        return source_path_identity(path, path_identity_base)
+
     environments = set(FORMAL_ENVIRONMENTS)
-    source_lines = readable_source_lines(files, warnings)
+    source_lines = readable_source_lines(files, warnings, path_identity_base)
+    masked_source_lines: dict[Path, list[str]] = {}
     for path, lines in source_lines.items():
-        for line in lines:
-            environments.update(NEW_THEOREM_RE.findall(strip_latex_comment(line)))
+        text = "\n".join(lines)
+        declaration_text = mask_structural_tex(
+            text, preserve_theorem_declarations=True
+        )
+        environments.update(NEW_THEOREM_RE.findall(declaration_text))
+        environments.update(DECLARE_THEOREM_RE.findall(declaration_text))
+        masked_text = mask_structural_tex(
+            text,
+            warnings=warnings,
+            source_name=shown(path),
+        )
+        masked_source_lines[path] = masked_text.split("\n") if lines else []
 
     units: list[dict[str, Any]] = []
     proofs: list[dict[str, Any]] = []
@@ -2240,9 +3568,9 @@ def scan_formal_units(
     for path, lines in source_lines.items():
         formal_stack: list[dict[str, Any]] = []
         proof_stack: list[int] = []
+        masked_lines = masked_source_lines[path]
 
-        for line_number, raw_line in enumerate(lines, 1):
-            clean = strip_latex_comment(raw_line)
+        for line_number, clean in enumerate(masked_lines, 1):
             for token in TOKEN_RE.finditer(clean):
                 action, environment = token.group(1), token.group(2)
                 if environment in environments:
@@ -2261,15 +3589,19 @@ def scan_formal_units(
                         )
                         if match_index is None:
                             warnings.append(
-                                f"Unmatched \\end{{{environment}}}: {path}:{line_number}"
+                                "Unmatched "
+                                f"\\end{{{environment}}}: {shown(path)}:{line_number}"
                             )
                             continue
                         opened = formal_stack.pop(match_index)
                         block = lines[opened["start"] - 1 : line_number]
+                        masked_block = masked_lines[
+                            opened["start"] - 1 : line_number
+                        ]
                         labels = [
                             key
-                            for block_line in block
-                            for key in LABEL_RE.findall(strip_latex_comment(block_line))
+                            for block_line in masked_block
+                            for key in LABEL_RE.findall(block_line)
                         ]
                         label = labels[0] if labels else None
                         units.append(
@@ -2353,20 +3685,25 @@ def scan_formal_units(
                                 "title": title,
                                 "title_targets": title_targets,
                                 "evidence": evidence,
+                                "association_method": "named_environment",
                                 "assigned": False,
                             }
                         )
                     else:
                         warnings.append(
-                            f"Unmatched \\end{{proof}}: {path}:{line_number}"
+                            f"Unmatched \\end{{proof}}: {shown(path)}:{line_number}"
                         )
 
         for opened in formal_stack:
             warnings.append(
-                f"Unclosed \\begin{{{opened['environment']}}}: {path}:{opened['start']}"
+                "Unclosed "
+                f"\\begin{{{opened['environment']}}}: "
+                f"{shown(path)}:{opened['start']}"
             )
         for proof_start in proof_stack:
-            warnings.append(f"Unclosed \\begin{{proof}}: {path}:{proof_start}")
+            warnings.append(
+                f"Unclosed \\begin{{proof}}: {shown(path)}:{proof_start}"
+            )
 
     units.sort(
         key=lambda item: (
@@ -2430,12 +3767,74 @@ def scan_formal_units(
         if intervening:
             return None
         candidate_path = proof["file_path"]
-        separation = source_lines[candidate_path][
+        separation = masked_source_lines[candidate_path][
             candidate["statement"]["end_line"] : proof["start_line"] - 1
         ]
-        if any(strip_latex_comment(line).strip() for line in separation):
+        if any(line.strip() for line in separation):
             return None
         return candidate
+
+    # Add uniquely targeted manual proof headings through the same canonical
+    # region analyzer used by finalization. Explicit proof environments keep
+    # precedence when they occur inside the named region.
+    for path, lines in source_lines.items():
+        for heading in scan_section_headings("\n".join(lines)):
+            if not re.search(r"\bproofs?\b", heading["title"], re.IGNORECASE):
+                continue
+            targets = [
+                target
+                for target in heading["target_labels"]
+                if target in units_by_id
+            ]
+            if len(targets) != 1 or heading["target_labels"] != targets:
+                warnings.append(
+                    "Named proof heading does not resolve to exactly one formal "
+                    f"result: {relative_or_absolute(path, base)}:"
+                    f"{heading['start_line']}"
+                )
+                continue
+            target = targets[0]
+            region = analyze_proof_region(
+                path,
+                heading["start_line"],
+                target_unit_id=target,
+            )
+            if region.get("status") != "accepted":
+                warnings.append(
+                    "Named proof heading has no canonical complete boundary: "
+                    f"{relative_or_absolute(path, base)}:"
+                    f"{heading['start_line']} ({region.get('reason')})"
+                )
+                continue
+            if any(
+                proof["file_path"].resolve() == path.resolve()
+                and region["start_line"] <= proof["start_line"] <= region["end_line"]
+                for proof in proofs
+            ):
+                continue
+            evidence = scan_span_evidence(
+                path,
+                region["start_line"],
+                region["end_line"],
+                base,
+            )
+            warnings.extend(evidence["warnings"])
+            header_span = region.get("header_span")
+            for occurrence in evidence["reference_occurrences"]:
+                if occurrence_in_title(occurrence, header_span):
+                    occurrence["structural_context"] = "proof_header"
+            proofs.append(
+                {
+                    "file_path": path,
+                    "start_line": region["start_line"],
+                    "end_line": region["end_line"],
+                    "title": heading["title"],
+                    "title_targets": [target],
+                    "evidence": evidence,
+                    "association_method": "named_heading",
+                    "assigned": False,
+                }
+            )
 
     ordered_proofs = sorted(
         proofs, key=lambda item: (str(item["file_path"]), item["start_line"])
@@ -2475,7 +3874,7 @@ def scan_formal_units(
         attach_proof(
             unit,
             proof,
-            method="named_environment",
+            method=proof.get("association_method", "named_environment"),
             evidence_occurrence_ids=evidence_ids,
         )
 
@@ -2496,13 +3895,13 @@ def scan_formal_units(
             for row in occurrences
             if row.get("target") in units_by_id
         }
-        block = source_lines[proof["file_path"]][
+        block = masked_source_lines[proof["file_path"]][
             proof["start_line"] - 1 : proof["end_line"]
         ]
         compact = " ".join(
             line.strip()
             for line in block[1:-1]
-            if strip_latex_comment(line).strip()
+            if line.strip()
         )
         has_math_signal = bool(
             re.search(
@@ -2684,7 +4083,7 @@ def scan_formal_units(
 
     return {
         "schema_version": SCHEMA_VERSION,
-        "root_file": str(root.resolve()),
+        "root_file": source_path_identity(root, path_identity_base),
         "files": [relative_or_absolute(path, base) for path in files],
         "formal_environments": sorted(environments),
         "units": units,
@@ -2698,19 +4097,30 @@ def scan_cross_references(
     *,
     source_files: Iterable[Path] | None = None,
     source_warnings: Iterable[str] | None = None,
+    path_identity_base: Path | None = None,
 ) -> dict[str, Any]:
     if source_files is None:
-        files, warnings = collect_tex_files(root)
+        files, warnings = collect_tex_files(
+            root, warning_path_base=path_identity_base
+        )
     else:
         files, warnings = list(source_files), list(source_warnings or [])
     base = root.resolve().parent
+    path_identity_base = (
+        path_identity_base.resolve() if path_identity_base is not None else None
+    )
     labels: dict[str, list[dict[str, Any]]] = defaultdict(list)
     references: dict[str, list[dict[str, Any]]] = defaultdict(list)
     occurrences: list[dict[str, Any]] = []
 
-    source_lines = readable_source_lines(files, warnings)
+    source_lines = readable_source_lines(files, warnings, path_identity_base)
     for path, lines in source_lines.items():
         text = "\n".join(lines)
+        mask_structural_tex(
+            text,
+            warnings=warnings,
+            source_name=source_path_identity(path, path_identity_base),
+        )
         for row in scan_label_occurrences(text, path, base):
             labels[row["target"]].append(
                 {
@@ -2739,7 +4149,7 @@ def scan_cross_references(
     reference_keys = set(references)
     return {
         "schema_version": SCHEMA_VERSION,
-        "root_file": str(root.resolve()),
+        "root_file": source_path_identity(root, path_identity_base),
         "files": [relative_or_absolute(path, base) for path in files],
         "counts": {
             "unique_labels": len(label_keys),
@@ -2870,6 +4280,18 @@ def escape_markdown(value: Any) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ")
 
 
+def escape_markdown_heading(value: Any) -> str:
+    """Render heading text without creating active raw HTML."""
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\r", " ")
+        .replace("\n", " ")
+    )
+
+
 def index_markdown(data: dict[str, Any]) -> str:
     rows = [
         "# Formal Proof-Unit Inventory",
@@ -2959,24 +4381,63 @@ def write_or_print(text: str, output: Path | None, force: bool = False) -> None:
     output = output.resolve()
     if output.exists() and not force:
         raise FileExistsError(f"Output exists; use --force to replace it: {output}")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(text, encoding="utf-8", newline="\n")
+    atomic_write_text(output, text)
 
 
 def copy_template(skill_root: Path, name: str, destination: Path) -> None:
     source = skill_root / "assets" / "templates" / name
     if not source.is_file():
         raise FileNotFoundError(f"Bundled template not found: {source}")
-    shutil.copy2(source, destination)
+    atomic_copy_file(source, destination)
 
 
-def cmd_scaffold(args: argparse.Namespace) -> int:
+PDF_TRANSCRIPTION_WARNING = (
+    "PDF transcription input requires a complete manual theorem/proof inventory, "
+    "page-map review, and visual comparison against the hash-locked publisher PDF "
+    "before finalization."
+)
+
+
+def _build_scaffold(args: argparse.Namespace, output: Path) -> dict[str, Any]:
     paper = args.paper.resolve()
-    output = args.output.resolve()
+    output = output.resolve()
     if not paper.is_file():
         raise FileNotFoundError(f"Paper source not found: {paper}")
-    if output.exists():
-        raise FileExistsError(f"Refusing to overwrite existing audit root: {output}")
+    input_kind = getattr(args, "input_kind", "latex")
+    if input_kind not in {"latex", "pdf_transcription"}:
+        raise ValueError("input_kind must be latex or pdf_transcription")
+    if paper.suffix.lower() == ".pdf":
+        raise ValueError(
+            "Raw PDF cannot be used as parsed source; provide LaTeX or a "
+            "UTF-8 PDF transcription with --input-kind pdf_transcription"
+        )
+    portable_sources = bool(getattr(args, "portable_sources", False))
+    publisher_arg = getattr(args, "publisher_pdf", None)
+    publisher_pdf = (
+        publisher_arg.resolve() if isinstance(publisher_arg, Path) else None
+    )
+    visual_review_status = getattr(args, "visual_review_status", "not_started")
+    visual_review_notes = getattr(args, "visual_review_notes", "") or ""
+    if visual_review_status not in {"not_started", "partial", "complete"}:
+        raise ValueError("visual_review_status is invalid")
+    if visual_review_status == "complete":
+        raise ValueError(
+            "Scaffold cannot assert a complete visual review; first record reviewed_pages, "
+            "substantive notes, and completed_utc after the actual review"
+        )
+    if input_kind == "pdf_transcription":
+        if publisher_pdf is None or not publisher_pdf.is_file():
+            raise FileNotFoundError(
+                "pdf_transcription requires an existing --publisher-pdf"
+            )
+        if publisher_pdf.suffix.lower() != ".pdf":
+            raise ValueError("--publisher-pdf must name a PDF file")
+        if getattr(args, "additional_source", None) or getattr(args, "fls", None):
+            raise ValueError(
+                "pdf_transcription does not accept LaTeX additional-source or FLS inputs"
+            )
+    elif publisher_pdf is not None:
+        raise ValueError("--publisher-pdf applies only to pdf_transcription input")
 
     project_root_arg = getattr(args, "project_root", None)
     project_root = (
@@ -3029,6 +4490,8 @@ def cmd_scaffold(args: argparse.Namespace) -> int:
         output / "audit" / "05_adversarial",
         output / "audit" / "06_reports",
     ]
+    if portable_sources:
+        directories.insert(0, output / "audit" / "00_sources")
     for directory in directories:
         directory.mkdir(parents=True, exist_ok=False)
 
@@ -3045,23 +4508,104 @@ def cmd_scaffold(args: argparse.Namespace) -> int:
         "FINAL_REPORT.md",
         output / "audit" / "06_reports" / "FINAL_REPORT.md",
     )
-    closure = discover_source_closure(
-        paper,
-        additional_files=additional_paths,
-        fls_file=fls_path,
-        project_root=project_root,
-    )
-    source_files = closure["files"]
-    source_warnings = closure["warnings"]
+    original_paper = paper
+    original_project_root = project_root
+    original_additional_paths = list(additional_paths)
+    original_fls_path = fls_path
+    if input_kind == "latex":
+        closure = discover_source_closure(
+            paper,
+            additional_files=additional_paths,
+            fls_file=fls_path,
+            project_root=project_root,
+            warning_path_base=paper.parent if portable_sources else None,
+        )
+        source_files = closure["files"]
+        source_warnings = closure["warnings"]
+    else:
+        closure = {
+            "files": [paper],
+            "warnings": [PDF_TRANSCRIPTION_WARNING],
+            "outside_project_inputs": [],
+        }
+        source_files = [paper]
+        source_warnings = [PDF_TRANSCRIPTION_WARNING]
+
+    publisher_authoritative = publisher_pdf
+    if portable_sources:
+        outside_project_sources = [
+            source
+            for source in source_files
+            if not source.resolve().is_relative_to(original_project_root)
+        ]
+        if outside_project_sources:
+            raise ValueError(
+                "--portable-sources cannot preserve relative source topology outside "
+                "--project-root; rerun with a broader --project-root containing: "
+                + ", ".join(path.as_posix() for path in outside_project_sources)
+            )
+        source_map: dict[Path, Path] = {}
+        portable_root = output / "audit" / "00_sources"
+        for source in source_files:
+            source = source.resolve()
+            if input_kind == "pdf_transcription" and source == original_paper:
+                destination = portable_root / "transcription" / source.name
+            elif source.is_relative_to(original_project_root):
+                destination = (
+                    portable_root
+                    / "project"
+                    / source.relative_to(original_project_root)
+                )
+            else:  # Guarded above; retained as a defensive invariant.
+                raise ValueError(f"Unconfined portable source: {source.as_posix()}")
+            atomic_copy_file(source, destination)
+            source_map[source] = destination.resolve()
+        paper = source_map[original_paper]
+        source_files = [source_map[path.resolve()] for path in source_files]
+        additional_paths = [
+            source_map[path.resolve()] for path in original_additional_paths
+        ]
+        additional_records = [
+            {**record, "file": relative_or_absolute(path, output)}
+            for record, path in zip(additional_records, additional_paths)
+        ]
+        project_root = portable_root / "project"
+        fls_path = None
+        if publisher_pdf is not None:
+            publisher_authoritative = portable_root / "publisher" / publisher_pdf.name
+            atomic_copy_file(publisher_pdf, publisher_authoritative)
+        if input_kind == "latex":
+            source_files, source_warnings = rediscover_portable_source_closure(
+                paper,
+                source_files,
+                additional_paths,
+                output,
+                source_warnings,
+            )
+            unconfined_bundle_sources = [
+                path
+                for path in source_files
+                if not path.is_relative_to(portable_root)
+            ]
+            if unconfined_bundle_sources:
+                raise ValueError(
+                    "--portable-sources found an absolute or otherwise "
+                    "nonrelocatable inclusion after bundling: "
+                    + ", ".join(
+                        path.as_posix() for path in unconfined_bundle_sources
+                    )
+                )
     inventory = scan_formal_units(
         paper,
         source_files=source_files,
         source_warnings=source_warnings,
+        path_identity_base=paper.parent if portable_sources else None,
     )
     cross_references = scan_cross_references(
         paper,
         source_files=source_files,
         source_warnings=source_warnings,
+        path_identity_base=paper.parent if portable_sources else None,
     )
     paper_value = relative_or_absolute(paper, output)
     parser_warnings = sorted(
@@ -3084,10 +4628,45 @@ def cmd_scaffold(args: argparse.Namespace) -> int:
             "project_root": relative_or_absolute(project_root, output),
             "outside_project_inputs": closure["outside_project_inputs"],
         }
+    publisher_record = None
+    if publisher_authoritative is not None and publisher_pdf is not None:
+        publisher_record = {
+            "file": relative_or_absolute(publisher_authoritative, output),
+            "sha256": sha256_file(publisher_authoritative),
+            "size_bytes": publisher_authoritative.stat().st_size,
+            "original_location": publisher_pdf.as_posix(),
+        }
+    input_provenance = {
+        "kind": input_kind,
+        "authoritative_source": paper_value,
+        "portable_sources": portable_sources,
+        "original_locations": {
+            "authoritative": False,
+            "paper": original_paper.as_posix(),
+            "project_root": original_project_root.as_posix(),
+            "additional_sources": [
+                path.as_posix() for path in original_additional_paths
+            ],
+            "fls": original_fls_path.as_posix() if original_fls_path else None,
+            "fls_sha256": (
+                sha256_file(original_fls_path) if original_fls_path else None
+            ),
+            "publisher_pdf": publisher_pdf.as_posix() if publisher_pdf else None,
+        },
+        "manual_inventory_required": input_kind == "pdf_transcription",
+        "publisher_pdf": publisher_record,
+        "visual_review": {
+            "status": visual_review_status,
+            "notes": visual_review_notes.strip(),
+            "reviewed_pages": [],
+            "completed_utc": None,
+        },
+    }
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "protocol": protocol_identity(),
         "paper_file": paper_value,
+        "input_provenance": input_provenance,
         "created_utc": utc_now(),
         "inventory_file": "audit/01_index/theorem_inventory.json",
         "dependency_registry": "audit/03_dependencies/DEPENDENCY_REGISTRY.json",
@@ -3102,6 +4681,8 @@ def cmd_scaffold(args: argparse.Namespace) -> int:
         "source_discovery": {
             "additional_files": additional_records,
             "fls": fls_record,
+            "portable_fixed_closure": portable_sources,
+            "recorded_warnings": source_warnings if portable_sources else [],
         },
         "parser_warnings": parser_warnings,
         "parser_warning_reviews": [
@@ -3159,6 +4740,7 @@ def cmd_scaffold(args: argparse.Namespace) -> int:
             },
             "final_report_ready": False,
         },
+        "report_deliverables": [],
         "notes": [],
     }
     progress = {
@@ -3176,8 +4758,16 @@ def cmd_scaffold(args: argparse.Namespace) -> int:
         "open_high_priority_issues": [],
         "source_or_parser_limits": [],
         "next_action": (
-            "Review CHECK_PLAN.md, confirm the source closure, and establish "
-            "audited targets, scope, and depth."
+            (
+                "Manually inventory every theorem, lemma, assumption, and proof; "
+                "complete the publisher-PDF page map and visual review; then "
+                "establish audited targets, scope, and depth."
+            )
+            if input_kind == "pdf_transcription"
+            else (
+                "Review CHECK_PLAN.md, confirm the source closure, and establish "
+                "audited targets, scope, and depth."
+            )
         ),
         "updated_utc": utc_now(),
     }
@@ -3204,67 +4794,96 @@ def cmd_scaffold(args: argparse.Namespace) -> int:
         },
         "interfaces": [],
     }
-    (output / "AUDIT_MANIFEST.json").write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-        newline="\n",
+    atomic_write_json(output / "AUDIT_MANIFEST.json", manifest)
+    atomic_write_json(output / "PROGRESS.json", progress)
+    atomic_write_json(output / "audit" / "06_reports" / "ISSUE_LOG.json", issue_log)
+    atomic_write_text(
+        output / "audit" / "06_reports" / "ISSUE_SUMMARY.md",
+        render_issue_summary([]),
     )
-    (output / "PROGRESS.json").write_text(
-        json.dumps(progress, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-        newline="\n",
+    atomic_write_json(
+        output / "audit" / "01_index" / "theorem_inventory.json", inventory
     )
-    (output / "audit" / "06_reports" / "ISSUE_LOG.json").write_text(
-        json.dumps(issue_log, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-        newline="\n",
+    atomic_write_text(
+        output / "audit" / "01_index" / "theorem_inventory.md",
+        index_markdown(inventory),
     )
-    (output / "audit" / "06_reports" / "ISSUE_SUMMARY.md").write_text(
-        render_issue_summary([]), encoding="utf-8", newline="\n"
+    atomic_write_json(
+        output / "audit" / "01_index" / "cross_reference_audit.json",
+        cross_references,
     )
-    (output / "audit" / "01_index" / "theorem_inventory.json").write_text(
-        serialize(inventory, "json"), encoding="utf-8", newline="\n"
+    atomic_write_text(
+        output / "audit" / "01_index" / "cross_reference_audit.md",
+        crossref_markdown(cross_references),
     )
-    (output / "audit" / "01_index" / "theorem_inventory.md").write_text(
-        index_markdown(inventory), encoding="utf-8", newline="\n"
+    atomic_write_json(
+        output / "audit" / "03_dependencies" / "DEPENDENCY_REGISTRY.json",
+        dependency_registry,
     )
-    (output / "audit" / "01_index" / "cross_reference_audit.json").write_text(
-        serialize(cross_references, "json"), encoding="utf-8", newline="\n"
-    )
-    (output / "audit" / "01_index" / "cross_reference_audit.md").write_text(
-        crossref_markdown(cross_references), encoding="utf-8", newline="\n"
-    )
-    (output / "audit" / "03_dependencies" / "DEPENDENCY_REGISTRY.json").write_text(
-        json.dumps(dependency_registry, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    (
-        output / "audit" / "03_dependencies" / "METHOD_INTERFACE_REGISTRY.json"
-    ).write_text(
-        json.dumps(method_interface_registry, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-        newline="\n",
+    atomic_write_json(
+        output / "audit" / "03_dependencies" / "METHOD_INTERFACE_REGISTRY.json",
+        method_interface_registry,
     )
 
-    print(
-        json.dumps(
-            {
-                "audit_root": str(output),
-                "paper_file": paper_value,
-                "source_files": len(source_files),
-                "proof_units": len(inventory["units"]),
-                "parser_warnings": len(parser_warnings),
-            },
-            indent=2,
+    return {
+        "audit_root": str(output),
+        "paper_file": paper_value,
+        "source_files": len(source_files),
+        "proof_units": len(inventory["units"]),
+        "parser_warnings": len(parser_warnings),
+        "input_kind": input_kind,
+        "portable_sources": portable_sources,
+    }
+
+
+def _remove_scaffold_staging(staging: Path, parent: Path, prefix: str) -> None:
+    resolved_parent = parent.resolve()
+    resolved_staging = staging.resolve()
+    try:
+        resolved_staging.relative_to(resolved_parent)
+    except ValueError as exc:
+        raise ValueError(f"Refusing to clean unconfined scaffold stage: {staging}") from exc
+    if resolved_staging.parent != resolved_parent or not staging.name.startswith(prefix):
+        raise ValueError(f"Refusing to clean unexpected scaffold stage: {staging}")
+    if staging.is_symlink():
+        staging.unlink(missing_ok=True)
+    elif staging.exists():
+        shutil.rmtree(staging)
+
+
+def cmd_scaffold(args: argparse.Namespace) -> int:
+    output = args.output.resolve()
+    if output.exists():
+        raise FileExistsError(f"Refusing to overwrite existing audit root: {output}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    prefix = f".{output.name}."
+    staging = Path(
+        tempfile.mkdtemp(
+            prefix=prefix,
+            suffix=".proofcheck.stage",
+            dir=str(output.parent),
         )
     )
+    staged_args = argparse.Namespace(**vars(args))
+    staged_args.output = staging
+    try:
+        result = _build_scaffold(staged_args, staging)
+        if output.exists():
+            raise FileExistsError(f"Refusing to overwrite existing audit root: {output}")
+        os.replace(staging, output)
+    finally:
+        if staging.exists() or staging.is_symlink():
+            _remove_scaffold_staging(staging, output.parent, prefix)
+    result["audit_root"] = str(output)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
 
 def cmd_index(args: argparse.Namespace) -> int:
     if not args.file.is_file():
         raise FileNotFoundError(f"LaTeX source not found: {args.file}")
+    if args.file.suffix.lower() == ".pdf":
+        raise ValueError("Raw PDF cannot be indexed as parsed source")
     data = scan_formal_units(args.file)
     text = index_markdown(data) if args.format == "markdown" else serialize(data, "json")
     write_or_print(text, args.output, args.force)
@@ -3274,6 +4893,8 @@ def cmd_index(args: argparse.Namespace) -> int:
 def cmd_crossref(args: argparse.Namespace) -> int:
     if not args.file.is_file():
         raise FileNotFoundError(f"LaTeX source not found: {args.file}")
+    if args.file.suffix.lower() == ".pdf":
+        raise ValueError("Raw PDF cannot be scanned as parsed source")
     data = scan_cross_references(args.file)
     text = (
         crossref_markdown(data)
@@ -3289,6 +4910,8 @@ def cmd_extract(args: argparse.Namespace) -> int:
     output = args.output.resolve()
     if not source.is_file():
         raise FileNotFoundError(f"Source file not found: {source}")
+    if source.suffix.lower() == ".pdf":
+        raise ValueError("Raw PDF cannot be extracted as parsed source")
     if output == source:
         raise ValueError("Ledger output must not overwrite the source file")
     if output.exists() and not args.force:
@@ -3309,6 +4932,8 @@ def cmd_extract(args: argparse.Namespace) -> int:
     if statement_start is not None:
         if not statement_source.is_file():
             raise FileNotFoundError(f"Statement source not found: {statement_source}")
+        if statement_source.suffix.lower() == ".pdf":
+            raise ValueError("Raw PDF cannot be used as parsed statement source")
         statement_lines = read_lines(statement_source)
         if not (
             1 <= statement_start <= statement_end <= len(statement_lines)
@@ -3348,6 +4973,24 @@ def cmd_extract(args: argparse.Namespace) -> int:
                 "text": text,
             }
             for line_number, text in enumerate(selected, args.start)
+        ],
+        "source_units": [
+            {
+                "id": f"U{offset:03d}",
+                "lines": [line_number, line_number],
+                "kind": (
+                    "non_substantive" if is_non_substantive(text) else "one_line"
+                ),
+                "source_sha256": sha256_text(text),
+                "partition_evidence": (
+                    "The locked line is blank, comment-only, or a proof wrapper."
+                    if is_non_substantive(text)
+                    else "This source unit is exactly one locked physical line."
+                ),
+            }
+            for offset, (line_number, text) in enumerate(
+                enumerate(selected, args.start), 1
+            )
         ],
         "obligation": {
             "statement_spans": (
@@ -3400,16 +5043,17 @@ def cmd_extract(args: argparse.Namespace) -> int:
             "challenger_verdict": "not_checked",
             "reconciled_verdict": "not_checked",
             "artifact": "",
+            "covered_issue_ids": [],
+            "source_snapshot_sha256": "",
+            "challenged_ledger_sha256": "",
+            "challenge_artifact_sha256": "",
+            "generated_utc": "",
             "disagreements": [],
             "resolution": "",
         },
         "steps": [],
     }
-    output.write_text(
-        json.dumps(ledger, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+    atomic_write_json(output, ledger)
     print(
         json.dumps(
             {
@@ -3430,6 +5074,124 @@ def cmd_extract(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_migrate_ledger(args: argparse.Namespace) -> int:
+    source_path = args.ledger.resolve()
+    output_path = args.output.resolve()
+    if not source_path.is_file():
+        raise FileNotFoundError(f"Legacy ledger not found: {source_path}")
+    if source_path == output_path:
+        raise ValueError(
+            "Migration must write a separate file so the legacy record remains inspectable"
+        )
+    if output_path.exists() and not args.force:
+        raise FileExistsError(
+            f"Migration output exists; use --force to replace it: {output_path}"
+        )
+    legacy, read_errors = load_json_object(source_path, "legacy ledger")
+    if read_errors:
+        raise ValueError(read_errors[0])
+    if legacy.get("schema_version") != LEGACY_SCHEMA_VERSION:
+        raise ValueError("migrate-ledger accepts only artifact schema 4")
+    source_lines = legacy.get("source_lines")
+    if not isinstance(source_lines, list) or not source_lines:
+        raise ValueError("Legacy ledger has no locked source_lines")
+    source_units: list[dict[str, Any]] = []
+    for index, row in enumerate(source_lines, 1):
+        if (
+            not isinstance(row, dict)
+            or not is_int(row.get("line"))
+            or not isinstance(row.get("text"), str)
+        ):
+            raise ValueError(f"Legacy source_lines[{index}] is malformed")
+        text = row["text"]
+        source_units.append(
+            {
+                "id": f"U{index:03d}",
+                "lines": [row["line"], row["line"]],
+                "kind": (
+                    "non_substantive" if is_non_substantive(text) else "one_line"
+                ),
+                "source_sha256": sha256_text(text),
+                "partition_evidence": (
+                    "The locked line is blank, comment-only, or a proof wrapper."
+                    if is_non_substantive(text)
+                    else "This migration unit is exactly one locked physical line."
+                ),
+            }
+        )
+    migrated = {
+        **legacy,
+        "schema_version": SCHEMA_VERSION,
+        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
+        "source_units": source_units,
+        "review": {
+            "unit_status": "not_checked",
+            "conclusion_step_id": "",
+            "conclusion_results": [],
+            "contract_fidelity": "not_checked",
+            "argument_status": "not_checked",
+            "statement_status": "not_assessed",
+            "dependency_closure": "not_checked",
+            "use_site_sufficiency": "not_checked",
+            "explicit_assumptions": [],
+            "inherited_assumptions": [],
+            "direct_dependencies": [],
+            "source_reference_dispositions": [],
+            "citation_dispositions": [],
+            "use_sites": [],
+            "verification_basis": [],
+            "reviewer_notes": [],
+        },
+        "independent_check": {
+            "required": False,
+            "status": "not_required",
+            "independence_level": "none",
+            "challenger_verdict": "not_checked",
+            "reconciled_verdict": "not_checked",
+            "artifact": "",
+            "covered_issue_ids": [],
+            "source_snapshot_sha256": "",
+            "challenged_ledger_sha256": "",
+            "challenge_artifact_sha256": "",
+            "generated_utc": "",
+            "disagreements": [],
+            "resolution": "",
+        },
+        "steps": [],
+        "migration": {
+            "from_schema_version": LEGACY_SCHEMA_VERSION,
+            "from_evidence_contract_version": legacy.get(
+                "evidence_contract_version"
+            ),
+            "legacy_ledger_sha256": sha256_file(source_path),
+            "legacy_step_count": len(legacy.get("steps", []))
+            if isinstance(legacy.get("steps"), list)
+            else 0,
+            "status": "requires_manual_recheck",
+            "recheck_evidence": "",
+            "rechecked_utc": "",
+        },
+    }
+    atomic_write_json(output_path, migrated)
+    print(
+        json.dumps(
+            {
+                "legacy_ledger": str(source_path),
+                "migrated_ledger": str(output_path),
+                "artifact_schema_version": SCHEMA_VERSION,
+                "artifact_state": "requires_manual_recheck",
+                "next_action": (
+                    "Rebuild atomic steps against source_units, rerun every "
+                    "mathematical check, then set migration.status to rechecked "
+                    "with evidence and UTC time."
+                ),
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
 def is_non_substantive(text: str) -> bool:
     stripped = text.strip()
     if not stripped or stripped.startswith("%"):
@@ -3440,6 +5202,126 @@ def is_non_substantive(text: str) -> bool:
             stripped,
         )
     )
+
+
+def validate_source_units(
+    value: Any,
+    *,
+    start: int,
+    end: int,
+    selected_lines: list[str],
+    final: bool,
+    errors: list[str],
+) -> tuple[
+    dict[str, dict[str, Any]],
+    dict[int, list[str]],
+    dict[str, int],
+]:
+    """Validate exact physical coverage independently of inferential steps."""
+    if not isinstance(value, list):
+        errors.append("source_units must be a list under artifact schema 5")
+        return {}, defaultdict(list), {}
+    units: dict[str, dict[str, Any]] = {}
+    coverage: dict[int, list[str]] = defaultdict(list)
+    order: dict[str, int] = {}
+    previous_end = start - 1
+    display_ranges = [
+        (
+            start + span["start_line"] - 1,
+            start + span["end_line"] - 1,
+        )
+        for span in display_math_spans(selected_lines)
+    ]
+    for index, record in enumerate(value, 1):
+        prefix = f"source_units[{index}]"
+        if not isinstance(record, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        unit_id = record.get("id")
+        if not isinstance(unit_id, str) or not SOURCE_UNIT_ID_RE.fullmatch(unit_id):
+            errors.append(f"{prefix}.id must match U001")
+            continue
+        if unit_id in units:
+            errors.append(f"Duplicate source unit id: {unit_id}")
+            continue
+        units[unit_id] = record
+        order[unit_id] = index
+        line_range = record.get("lines")
+        if (
+            not isinstance(line_range, list)
+            or len(line_range) != 2
+            or not all(is_int(item) for item in line_range)
+        ):
+            errors.append(f"{prefix}.lines must be [start, end]")
+            continue
+        unit_start, unit_end = line_range
+        if unit_start > unit_end or unit_start < start or unit_end > end:
+            errors.append(
+                f"{prefix}.lines {unit_start}-{unit_end} lies outside {start}-{end}"
+            )
+            continue
+        if unit_start <= previous_end:
+            errors.append(f"{prefix} must follow prior source units in source order")
+        previous_end = max(previous_end, unit_end)
+        for line_number in range(unit_start, unit_end + 1):
+            coverage[line_number].append(unit_id)
+        kind = record.get("kind")
+        if not is_enum_value(kind, SOURCE_UNIT_KINDS):
+            errors.append(f"{prefix}.kind is invalid: {kind!r}")
+            continue
+        local_start = unit_start - start
+        local_end = unit_end - start + 1
+        texts = selected_lines[local_start:local_end]
+        if len(texts) != unit_end - unit_start + 1:
+            continue
+        expected_hash = sha256_text("\n".join(texts))
+        if record.get("source_sha256") != expected_hash:
+            errors.append(f"{prefix}.source_sha256 does not match locked source")
+        if final and not is_substantive_string(record.get("partition_evidence")):
+            errors.append(f"{prefix}.partition_evidence must be substantive")
+        if kind == "one_line" and unit_start != unit_end:
+            errors.append(f"{prefix}: one_line must cover exactly one physical line")
+        if kind == "non_substantive":
+            if not all(is_non_substantive(text) for text in texts):
+                errors.append(f"{prefix}: non_substantive covers mathematical content")
+        else:
+            if all(is_non_substantive(text) for text in texts):
+                errors.append(f"{prefix}: substantive source unit has no content")
+        if kind == "continued_sentence":
+            if unit_start == unit_end:
+                errors.append(f"{prefix}: continued_sentence must span multiple lines")
+            if any(not strip_latex_comment(text).strip() for text in texts):
+                errors.append(
+                    f"{prefix}: continued_sentence cannot cross a blank or "
+                    "comment-only separator"
+                )
+        if kind == "continued_display":
+            if unit_start == unit_end:
+                errors.append(f"{prefix}: continued_display must span multiple lines")
+            if not any(
+                display_start <= unit_start and unit_end <= display_end
+                for display_start, display_end in display_ranges
+            ):
+                errors.append(
+                    f"{prefix}: continued_display must lie inside one complete "
+                    "recognized display environment"
+                )
+
+    for first, last in consecutive_ranges(
+        line_number
+        for line_number in range(start, end + 1)
+        if not coverage.get(line_number)
+    ):
+        label = str(first) if first == last else f"{first}-{last}"
+        errors.append(f"Uncovered source-unit lines: {label}")
+    for first, last in consecutive_ranges(
+        line_number
+        for line_number in range(start, end + 1)
+        if len(coverage.get(line_number, [])) > 1
+    ):
+        label = str(first) if first == last else f"{first}-{last}"
+        errors.append(f"Multiply covered source-unit lines: {label}")
+    return units, coverage, order
 
 
 def expected_unit_status(statuses: list[str]) -> str:
@@ -3880,7 +5762,12 @@ def validate_dependency_record(
 
 
 def validate_independent_check(
-    value: Any, final: bool, errors: list[str]
+    value: Any,
+    final: bool,
+    errors: list[str],
+    *,
+    primary_ledger_sha256: str | None = None,
+    current_contract: bool = True,
 ) -> dict[str, Any]:
     if not isinstance(value, dict):
         errors.append("independent_check must be an object")
@@ -3901,6 +5788,18 @@ def validate_independent_check(
         is_substantive_string(item) for item in disagreements
     ):
         errors.append("independent_check.disagreements must contain substantive strings")
+    covered_issue_ids = value.get("covered_issue_ids")
+    if current_contract:
+        if not isinstance(covered_issue_ids, list) or not all(
+            isinstance(issue_id, str) and ISSUE_ID_RE.fullmatch(issue_id)
+            for issue_id in covered_issue_ids
+        ):
+            errors.append(
+                "independent_check.covered_issue_ids must contain canonical issue IDs"
+            )
+            covered_issue_ids = []
+        elif len(covered_issue_ids) != len(set(covered_issue_ids)):
+            errors.append("independent_check.covered_issue_ids contains duplicates")
     if final and value.get("required"):
         if not is_enum_value(value.get("status"), {"agreed", "resolved"}):
             errors.append("required independent check must be agreed or resolved")
@@ -3914,12 +5813,44 @@ def validate_independent_check(
             errors.append("required independent check needs a checked challenger verdict")
         if value.get("reconciled_verdict") == "not_checked":
             errors.append("required independent check needs a reconciled verdict")
-        if value.get("status") == "agreed" and disagreements:
-            errors.append("agreed independent check must have no disagreements")
-        if value.get("status") == "resolved" and not is_substantive_string(
-            value.get("resolution")
-        ):
-            errors.append("resolved independent disagreement needs a resolution record")
+        if value.get("status") == "agreed":
+            if disagreements:
+                errors.append("agreed independent check must have no disagreements")
+            if value.get("challenger_verdict") != reconciled_verdict:
+                errors.append(
+                    "agreed independent check requires identical challenger and "
+                    "reconciled verdicts"
+                )
+        if value.get("status") == "resolved":
+            if not disagreements:
+                errors.append(
+                    "resolved independent check must record at least one substantive "
+                    "disagreement"
+                )
+            if not is_substantive_string(value.get("resolution")):
+                errors.append(
+                    "resolved independent disagreement needs a resolution record"
+                )
+        if current_contract:
+            for field in (
+                "source_snapshot_sha256",
+                "challenged_ledger_sha256",
+                "challenge_artifact_sha256",
+            ):
+                if not isinstance(value.get(field), str) or not SHA256_RE.fullmatch(
+                    value[field]
+                ):
+                    errors.append(f"required independent check needs valid {field}")
+            if (
+                primary_ledger_sha256 is not None
+                and value.get("challenged_ledger_sha256") != primary_ledger_sha256
+            ):
+                errors.append(
+                    "independent_check.challenged_ledger_sha256 is stale relative "
+                    "to the primary ledger evidence"
+                )
+            if not is_utc_timestamp(value.get("generated_utc")):
+                errors.append("required independent check needs a valid generated_utc")
     return value
 
 
@@ -4168,6 +6099,7 @@ def validate_inference_record(
     step_status: Any,
     step_issue_ids: set[str],
     covered_lines: list[int],
+    one_move_contract: bool,
     final: bool,
     errors: list[str],
 ) -> tuple[dict[str, int], set[str], set[str]]:
@@ -4329,7 +6261,11 @@ def validate_inference_record(
         if conclusion_move is not None:
             errors.append(f"{prefix}: non_inferential step needs null conclusion_move")
     else:
-        if atomicity_status == "single_move" and len(moves) != 1:
+        if one_move_contract and len(moves) != 1:
+            errors.append(
+                f"{prefix}: schema-5 inferential step must contain exactly one move"
+            )
+        elif atomicity_status == "single_move" and len(moves) != 1:
             errors.append(f"{prefix}: single_move step must contain exactly one move")
         if atomicity_status == "source_indivisible_chain" and len(moves) < 2:
             errors.append(
@@ -4667,25 +6603,60 @@ def check_ledger_data(
     if not isinstance(ledger, dict):
         return [f"Ledger root must be an object: {ledger_path}"], {}
 
-    if ledger.get("schema_version") != SCHEMA_VERSION:
+    schema_version = ledger.get("schema_version")
+    legacy_schema = schema_version == LEGACY_SCHEMA_VERSION
+    if schema_version not in {SCHEMA_VERSION, LEGACY_SCHEMA_VERSION}:
         errors.append(
-            f"Unsupported ledger schema_version {ledger.get('schema_version')!r}; "
-            f"expected {SCHEMA_VERSION}"
+            f"Unsupported ledger schema_version {schema_version!r}; expected "
+            f"{SCHEMA_VERSION}, or {LEGACY_SCHEMA_VERSION} for legacy inspection"
+        )
+    elif final and legacy_schema:
+        errors.append(
+            "upgrade_required: artifact schema 4 is inspection-only; migrate to "
+            "schema 5 and recheck the proof before finalization"
         )
     evidence_contract_version = ledger.get("evidence_contract_version")
-    if (
-        evidence_contract_version is not None
-        and evidence_contract_version != EVIDENCE_CONTRACT_VERSION
-    ):
+    if evidence_contract_version not in {
+        EVIDENCE_CONTRACT_VERSION,
+        LEGACY_EVIDENCE_CONTRACT_VERSION,
+        None,
+    }:
         errors.append(
             "Unsupported evidence_contract_version "
-            f"{evidence_contract_version!r}; expected {EVIDENCE_CONTRACT_VERSION}"
+            f"{evidence_contract_version!r}; expected {EVIDENCE_CONTRACT_VERSION}, "
+            f"or {LEGACY_EVIDENCE_CONTRACT_VERSION} for legacy inspection"
         )
     elif final and evidence_contract_version != EVIDENCE_CONTRACT_VERSION:
         errors.append(
-            "Final ledger requires evidence_contract_version "
-            f"{EVIDENCE_CONTRACT_VERSION}; legacy free-text evidence is inspection-only"
+            "upgrade_required: final ledger requires evidence_contract_version "
+            f"{EVIDENCE_CONTRACT_VERSION}; evidence contract 3 is inspection-only"
         )
+    migration = ledger.get("migration")
+    if schema_version == SCHEMA_VERSION and migration is not None:
+        if not isinstance(migration, dict):
+            errors.append("migration must be an object")
+        else:
+            if migration.get("from_schema_version") != LEGACY_SCHEMA_VERSION:
+                errors.append("migration.from_schema_version must be 4")
+            if not isinstance(
+                migration.get("legacy_ledger_sha256"), str
+            ) or not SHA256_RE.fullmatch(migration["legacy_ledger_sha256"]):
+                errors.append("migration.legacy_ledger_sha256 must be a SHA-256")
+            if migration.get("status") not in {
+                "requires_manual_recheck",
+                "rechecked",
+            }:
+                errors.append("migration.status is invalid")
+            if final and migration.get("status") != "rechecked":
+                errors.append(
+                    "upgrade_required: migrated ledger still requires a full "
+                    "manual atomic recheck"
+                )
+            if migration.get("status") == "rechecked":
+                if not is_substantive_string(migration.get("recheck_evidence")):
+                    errors.append("migration.recheck_evidence must be substantive")
+                if not is_utc_timestamp(migration.get("rechecked_utc")):
+                    errors.append("migration.rechecked_utc must be a valid UTC time")
     unit_id = ledger.get("unit_id")
     if not is_nonempty_string(unit_id):
         errors.append("unit_id must be a nonempty string")
@@ -4776,6 +6747,23 @@ def check_ledger_data(
                         f"at line {line_number}; " + exact_mismatch_detail(text, current_text)
                     )
 
+    locked_selected = [
+        item.get("text", "") if isinstance(item, dict) else ""
+        for item in source_lines
+    ]
+    source_units: dict[str, dict[str, Any]] = {}
+    source_unit_coverage: dict[int, list[str]] = defaultdict(list)
+    source_unit_order: dict[str, int] = {}
+    if schema_version == SCHEMA_VERSION and valid_range:
+        source_units, source_unit_coverage, source_unit_order = validate_source_units(
+            ledger.get("source_units"),
+            start=start,
+            end=end,
+            selected_lines=locked_selected,
+            final=final,
+            errors=errors,
+        )
+
     obligation = ledger.get("obligation")
     obligation_error_start = len(errors)
     normalization_statuses = validate_obligation(obligation, ledger_path, final, errors)
@@ -4800,19 +6788,28 @@ def check_ledger_data(
     if not isinstance(steps, list):
         errors.append("steps must be a list")
         steps = []
-    coverage: dict[int, list[str]] = defaultdict(list)
+    coverage: dict[int, list[str]] = (
+        source_unit_coverage
+        if schema_version == SCHEMA_VERSION
+        else defaultdict(list)
+    )
+    source_unit_step_ids: dict[str, list[str]] = defaultdict(list)
     step_ids: set[str] = set()
     step_status_by_id: dict[str, str] = {}
     step_kind_by_id: dict[str, str] = {}
     step_claim_by_id: dict[str, str] = {}
+    step_support_role_by_id: dict[str, str] = {}
     premise_records_by_step: dict[str, dict[str, dict[str, Any]]] = {}
     step_ranges_by_id: dict[str, tuple[int, int]] = {}
+    step_position_by_id: dict[str, int] = {}
     step_dependency_claims: list[tuple[str, str, str]] = []
     result_dependency_claims: list[dict[str, Any]] = []
     statuses: list[str] = []
     issue_references: set[str] = set()
     issue_links: list[dict[str, str]] = []
+    evidence_specificity_records: list[dict[str, str]] = []
     previous_step_end = start - 1
+    previous_source_unit_order = 0
 
     for index, step in enumerate(steps, 1):
         prefix = f"Step {index}"
@@ -4826,32 +6823,57 @@ def check_ledger_data(
         elif step_id in step_ids:
             errors.append(f"Duplicate step id: {step_id}")
         step_ids.add(step_id)
+        step_position_by_id[step_id] = index
         prefix = step_id
 
-        line_range = step.get("lines")
         covered_lines: list[int] = []
-        if (
-            not isinstance(line_range, list)
-            or len(line_range) != 2
-            or not all(is_int(value) for value in line_range)
-        ):
-            errors.append(f"{prefix}: lines must be [start, end]")
-        else:
-            step_start, step_end = line_range
-            if step_start > step_end:
-                errors.append(f"{prefix}: line range is reversed")
-            elif step_start < start or step_end > end:
+        if schema_version == SCHEMA_VERSION:
+            if final and "lines" in step:
                 errors.append(
-                    f"{prefix}: line range {step_start}-{step_end} is outside {start}-{end}"
+                    f"{prefix}: schema-5 steps must reference source_unit_id, not lines"
                 )
+            source_unit_id = step.get("source_unit_id")
+            source_unit = source_units.get(source_unit_id)
+            if not isinstance(source_unit_id, str) or source_unit is None:
+                errors.append(f"{prefix}.source_unit_id must reference one source unit")
             else:
-                covered_lines = list(range(step_start, step_end + 1))
-                for line_number in covered_lines:
-                    coverage[line_number].append(step_id)
-                if step_start <= previous_step_end:
-                    errors.append(f"{prefix}: steps must appear in source order")
-                previous_step_end = max(previous_step_end, step_end)
-                step_ranges_by_id[step_id] = (step_start, step_end)
+                source_unit_step_ids[source_unit_id].append(step_id)
+                line_range = source_unit.get("lines")
+                if isinstance(line_range, list) and len(line_range) == 2:
+                    step_start, step_end = line_range
+                    covered_lines = list(range(step_start, step_end + 1))
+                    step_ranges_by_id[step_id] = (step_start, step_end)
+                unit_order = source_unit_order.get(source_unit_id, 0)
+                if unit_order < previous_source_unit_order:
+                    errors.append(f"{prefix}: steps must follow source-unit order")
+                previous_source_unit_order = max(
+                    previous_source_unit_order, unit_order
+                )
+        else:
+            line_range = step.get("lines")
+            if (
+                not isinstance(line_range, list)
+                or len(line_range) != 2
+                or not all(is_int(value) for value in line_range)
+            ):
+                errors.append(f"{prefix}: lines must be [start, end]")
+            else:
+                step_start, step_end = line_range
+                if step_start > step_end:
+                    errors.append(f"{prefix}: line range is reversed")
+                elif step_start < start or step_end > end:
+                    errors.append(
+                        f"{prefix}: line range {step_start}-{step_end} is outside "
+                        f"{start}-{end}"
+                    )
+                else:
+                    covered_lines = list(range(step_start, step_end + 1))
+                    for line_number in covered_lines:
+                        coverage[line_number].append(step_id)
+                    if step_start <= previous_step_end:
+                        errors.append(f"{prefix}: steps must appear in source order")
+                    previous_step_end = max(previous_step_end, step_end)
+                    step_ranges_by_id[step_id] = (step_start, step_end)
 
         kind = step.get("kind")
         if not is_enum_value(kind, STEP_KINDS):
@@ -4885,13 +6907,23 @@ def check_ledger_data(
             errors.append(f"{prefix}: not_checked is not allowed with --final")
 
         if status == "non_substantive":
-            if current_selected and covered_lines:
-                texts = [current_selected[number - start] for number in covered_lines]
+            if locked_selected and covered_lines:
+                texts = [locked_selected[number - start] for number in covered_lines]
                 if not all(is_non_substantive(text) for text in texts):
                     errors.append(
                         f"{prefix}: non_substantive covers prose or mathematical content"
                     )
             continue
+        if (
+            schema_version == SCHEMA_VERSION
+            and isinstance(step.get("source_unit_id"), str)
+            and source_units.get(step["source_unit_id"], {}).get("kind")
+            == "non_substantive"
+        ):
+            errors.append(
+                f"{prefix}: substantive step cannot reference a non_substantive "
+                "source unit"
+            )
 
         if final and status != "not_checked":
             restatement = step.get("restatement")
@@ -4986,12 +7018,34 @@ def check_ledger_data(
             else:
                 if not is_substantive_string(checks.get("literal")):
                     errors.append(f"{prefix}.checks.literal must be nonempty and substantive")
+                elif schema_version == SCHEMA_VERSION:
+                    evidence_specificity_records.append(
+                        {
+                            "category": "literal",
+                            "text": checks["literal"],
+                            "step_id": step_id,
+                            "claim": str(step.get("restatement", "")),
+                        }
+                    )
                 validate_string_list(
                     checks.get("adversarial"),
                     f"{prefix}.checks.adversarial",
                     errors,
                     substantive=True,
                 )
+                if schema_version == SCHEMA_VERSION and isinstance(
+                    checks.get("adversarial"), list
+                ):
+                    evidence_specificity_records.extend(
+                        {
+                            "category": "adversarial",
+                            "text": text,
+                            "step_id": step_id,
+                            "claim": str(step.get("restatement", "")),
+                        }
+                        for text in checks["adversarial"]
+                        if is_substantive_string(text)
+                    )
                 atomicity = checks.get("atomicity")
                 if not isinstance(atomicity, dict):
                     errors.append(f"{prefix}.checks.atomicity must be an object")
@@ -5002,6 +7056,15 @@ def check_ledger_data(
                     if not is_substantive_string(atomicity.get("evidence")):
                         errors.append(
                             f"{prefix}.checks.atomicity.evidence must be nonempty and substantive"
+                        )
+                    elif schema_version == SCHEMA_VERSION:
+                        evidence_specificity_records.append(
+                            {
+                                "category": "atomicity",
+                                "text": atomicity["evidence"],
+                                "step_id": step_id,
+                                "claim": str(step.get("restatement", "")),
+                            }
                         )
                     if (
                         atomicity_status == "non_inferential"
@@ -5016,6 +7079,11 @@ def check_ledger_data(
                     if (
                         atomicity_status == "source_indivisible_chain"
                     ):
+                        if schema_version == SCHEMA_VERSION:
+                            errors.append(
+                                f"{prefix}: schema 5 replaces source_indivisible_chain "
+                                "with shared source_unit_id atomic steps"
+                            )
                         source_unit_kind = atomicity.get("source_unit_kind")
                         allowed_source_units = {
                             "one_line",
@@ -5051,9 +7119,9 @@ def check_ledger_data(
                                     "continued_sentence or continued_display"
                                 )
                             texts = [
-                                current_selected[line - start]
+                                locked_selected[line - start]
                                 for line in covered_lines
-                            ] if current_selected else []
+                            ] if locked_selected else []
                             if any(
                                 not strip_latex_comment(text).strip()
                                 for text in texts
@@ -5067,6 +7135,21 @@ def check_ledger_data(
                         f"{prefix}: checks.inferential is legacy free text; "
                         "use the structured inference record"
                     )
+
+        support_role = step.get("support_role")
+        if schema_version == SCHEMA_VERSION:
+            if atomicity_status == "non_inferential":
+                if support_role is not None:
+                    errors.append(
+                        f"{prefix}: non_inferential step must omit support_role"
+                    )
+            elif final and status != "not_checked":
+                if not is_enum_value(support_role, SUPPORT_ROLES):
+                    errors.append(
+                        f"{prefix}.support_role must be derivation or reuse"
+                    )
+                else:
+                    step_support_role_by_id[step_id] = support_role
 
         prior_statuses = {
             prior_id: prior_status
@@ -5102,6 +7185,41 @@ def check_ledger_data(
             errors,
         )
         premise_records_by_step[step_id] = premises
+        premise_claims = [
+            premise.get("claim")
+            for premise in premises.values()
+            if is_nonempty_string(premise.get("claim"))
+        ]
+        duplicate_claims = sorted(
+            claim
+            for claim, count in Counter(premise_claims).items()
+            if count > 1
+        )
+        if schema_version == SCHEMA_VERSION and duplicate_claims:
+            errors.append(
+                f"{prefix}: duplicate exact premise claims are not independent "
+                "support: " + "; ".join(duplicate_claims[:3])
+            )
+        exact_conclusion_premises = [
+            premise
+            for premise in premises.values()
+            if premise.get("claim") == step.get("restatement")
+        ]
+        if (
+            schema_version == SCHEMA_VERSION
+            and support_role == "derivation"
+            and exact_conclusion_premises
+        ):
+            errors.append(
+                f"{prefix}: derivation premise already equals the current "
+                "restatement; declare a reuse step or remove the circular premise"
+            )
+        if schema_version == SCHEMA_VERSION and support_role == "reuse":
+            if len(exact_conclusion_premises) != 1:
+                errors.append(
+                    f"{prefix}: reuse step requires exactly one premise equal to "
+                    "the current restatement"
+                )
         move_ids, inference_premises, failed_move_ids = validate_inference_record(
             step.get("inference"),
             prefix,
@@ -5111,9 +7229,29 @@ def check_ledger_data(
             status,
             set(issue_ids),
             covered_lines,
+            schema_version == SCHEMA_VERSION,
             final and status != "not_checked",
             errors,
         )
+        if schema_version == SCHEMA_VERSION:
+            inference_value = step.get("inference")
+            moves_value = (
+                inference_value.get("moves")
+                if isinstance(inference_value, dict)
+                else None
+            )
+            if isinstance(moves_value, list):
+                evidence_specificity_records.extend(
+                    {
+                        "category": "move justification",
+                        "text": move["justification"],
+                        "step_id": step_id,
+                        "claim": str(step.get("restatement", "")),
+                    }
+                    for move in moves_value
+                    if isinstance(move, dict)
+                    and is_substantive_string(move.get("justification"))
+                )
         open_side_condition_ids, discharge_premises = validate_side_conditions(
             step.get("side_conditions"),
             prefix,
@@ -5160,6 +7298,22 @@ def check_ledger_data(
             if final or "risk_checks" in step
             else {}
         )
+        if schema_version == SCHEMA_VERSION and isinstance(
+            step.get("risk_checks"), list
+        ):
+            evidence_specificity_records.extend(
+                {
+                    "category": "risk",
+                    "text": record["evidence"],
+                    "step_id": step_id,
+                    "claim": str(step.get("restatement", "")),
+                    "aspect": str(record.get("aspect", "")),
+                    "status": str(record.get("status", "")),
+                }
+                for record in step["risk_checks"]
+                if isinstance(record, dict)
+                and is_substantive_string(record.get("evidence"))
+            )
 
         unused_premises = set(premises) - inference_premises - discharge_premises
         if final and status != "not_checked" and unused_premises:
@@ -5248,6 +7402,9 @@ def check_ledger_data(
                     "unclear risk checks: " + ", ".join(sorted(invalid_risks))
                 )
 
+    if final and schema_version == SCHEMA_VERSION:
+        validate_evidence_specificity(evidence_specificity_records, errors)
+
     dependency_status_from_step = STEP_TO_DEPENDENCY_STATUS
     step_graph: dict[str, set[str]] = {step_id: set() for step_id in step_ids}
     for owner, dependency_id, declared_dependency_status in step_dependency_claims:
@@ -5257,11 +7414,17 @@ def check_ledger_data(
         step_graph.setdefault(owner, set()).add(dependency_id)
         owner_range = step_ranges_by_id.get(owner)
         dependency_range = step_ranges_by_id.get(dependency_id)
-        if (
-            owner_range is not None
-            and dependency_range is not None
-            and dependency_range[1] >= owner_range[0]
-        ):
+        dependency_not_prior = (
+            step_position_by_id.get(dependency_id, 0)
+            >= step_position_by_id.get(owner, 0)
+            if schema_version == SCHEMA_VERSION
+            else bool(
+                owner_range is not None
+                and dependency_range is not None
+                and dependency_range[1] >= owner_range[0]
+            )
+        )
+        if dependency_not_prior:
             errors.append(
                 f"{owner}: step dependency {dependency_id} is not established before use"
             )
@@ -5278,6 +7441,34 @@ def check_ledger_data(
     cycle = find_cycle(step_graph)
     if cycle:
         errors.append("Step dependency cycle: " + " -> ".join(cycle))
+
+    if final and schema_version == SCHEMA_VERSION:
+        unrepresented_units = [
+            unit_id
+            for unit_id in source_units
+            if not source_unit_step_ids.get(unit_id)
+        ]
+        if unrepresented_units:
+            shown = ", ".join(unrepresented_units[:8])
+            suffix = (
+                f" and {len(unrepresented_units) - 8} more"
+                if len(unrepresented_units) > 8
+                else ""
+            )
+            errors.append(
+                "Source units without any ledger step: " + shown + suffix
+            )
+        multiply_represented_non_substantive = [
+            unit_id
+            for unit_id, record in source_units.items()
+            if record.get("kind") == "non_substantive"
+            and len(source_unit_step_ids.get(unit_id, [])) > 1
+        ]
+        if multiply_represented_non_substantive:
+            errors.append(
+                "Non-substantive source units must have exactly one wrapper step: "
+                + ", ".join(multiply_represented_non_substantive[:8])
+            )
 
     if valid_range:
         uncovered = [
@@ -5795,6 +7986,14 @@ def check_ledger_data(
         step_id = support.get("step_id")
         move_id = support.get("move_id")
         step = steps_by_id.get(step_id)
+        if (
+            schema_version == SCHEMA_VERSION
+            and step_support_role_by_id.get(str(step_id)) == "reuse"
+        ):
+            errors.append(
+                f"{prefix}.support cannot use a reuse-only step to establish a "
+                "canonical conclusion"
+            )
         inference = step.get("inference") if isinstance(step, dict) else None
         moves = inference.get("moves") if isinstance(inference, dict) else None
         matching_moves = [
@@ -6093,7 +8292,11 @@ def check_ledger_data(
             errors.append("conditional unit cannot hide failed direct dependencies")
 
     independent_check = validate_independent_check(
-        ledger.get("independent_check"), final, errors
+        ledger.get("independent_check"),
+        final,
+        errors,
+        primary_ledger_sha256=canonical_primary_ledger_sha256(ledger),
+        current_contract=schema_version == SCHEMA_VERSION,
     )
     if independent_check and not independent_check.get("required"):
         if independent_check.get("status") != "not_required":
@@ -6120,11 +8323,22 @@ def check_ledger_data(
     summary = {
         "ledger": str(ledger_path),
         "unit_id": unit_id,
+        "schema_version": schema_version,
         "evidence_contract_version": evidence_contract_version,
         "validation_mode": "final" if final else "draft",
         "validation_scope": {
             "local_record_integrity": (
-                "failed" if errors else ("passed" if final else "inspection_only")
+                "failed"
+                if errors
+                else (
+                    "passed"
+                    if final
+                    else (
+                        "legacy_inspection_only"
+                        if legacy_schema
+                        else "inspection_only"
+                    )
+                )
             ),
             "audit_wide_dependency_resolution": (
                 "not_performed; run finalize on the audit root"
@@ -6137,6 +8351,7 @@ def check_ledger_data(
         "coverage_mode": coverage_mode,
         "physical_lines": max(0, end - start + 1),
         "steps": len(steps),
+        "source_units": len(source_units) if schema_version == SCHEMA_VERSION else None,
         "step_ids": [
             step.get("id")
             for step in steps
@@ -6210,23 +8425,1743 @@ def cmd_ledger_check(args: argparse.Namespace) -> int:
     return 0
 
 
-def load_issue_log(root: Path) -> tuple[Path, list[dict[str, Any]], list[str]]:
-    path = root / "audit" / "06_reports" / "ISSUE_LOG.json"
+def load_issue_log(
+    root: Path,
+) -> tuple[Path, list[dict[str, Any]], int | None, list[str]]:
     errors: list[str] = []
+    path, path_valid = canonical_artifact_path(
+        root,
+        "audit/06_reports/ISSUE_LOG.json",
+        "issue log",
+        errors,
+    )
+    if not path_valid:
+        return path, [], None, errors
     if not path.is_file():
-        return path, [], [f"Canonical issue log not found: {path}"]
+        return path, [], None, [f"Canonical issue log not found: {path}"]
     try:
         data = json.loads(read_text(path))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        return path, [], [f"Cannot read issue log: {exc}"]
+        return path, [], None, [f"Cannot read issue log: {exc}"]
+    schema_version = data.get("schema_version") if isinstance(data, dict) else None
     issues = data.get("issues") if isinstance(data, dict) else None
-    if isinstance(data, dict) and data.get("schema_version") != SCHEMA_VERSION:
+    if schema_version not in {
+        SCHEMA_VERSION,
+        LEGACY_SCHEMA_VERSION,
+    }:
         errors.append(
-            f"ISSUE_LOG.json schema_version must be {SCHEMA_VERSION}"
+            f"ISSUE_LOG.json schema_version must be {SCHEMA_VERSION}, or "
+            f"{LEGACY_SCHEMA_VERSION} for legacy inspection"
         )
     if not isinstance(issues, list):
-        return path, [], ["ISSUE_LOG.json must contain an issues list"]
-    return path, issues, errors
+        return path, [], schema_version, [
+            *errors,
+            "ISSUE_LOG.json must contain an issues list",
+        ]
+    return path, issues, schema_version, errors
+
+
+RESOLUTION_ARCHIVE_STABLE_FIELDS = (
+    "id",
+    "severity",
+    "confidence",
+    "scope",
+    "load_bearing",
+    "origin_ref",
+    "invalidation_kind",
+    "affected_result",
+    "summary",
+    "interface_id",
+    "finding_class",
+    "affected_layer",
+    "evidence_class",
+    "resolution_evidence_needed",
+)
+
+
+def resolution_archive_payload_sha256(record: dict[str, Any]) -> str:
+    payload = dict(record)
+    payload.pop("archive_payload_sha256", None)
+    return canonical_sha256(payload)
+
+
+def confined_history_directory(root: Path) -> tuple[Path, list[str]]:
+    """Return the lexical history directory after rejecting redirected ancestors."""
+    resolved_root = root.resolve()
+    parts = ("audit", "06_reports", "history")
+    candidate = resolved_root.joinpath(*parts)
+    errors: list[str] = []
+    current = resolved_root
+    for part in parts:
+        current = current / part
+        redirect_kind = path_redirect_kind(current)
+        if current.exists() and redirect_kind == "symlink":
+            errors.append(
+                f"Resolution history ancestor cannot be a symlink: {current}"
+            )
+        elif current.exists() and redirect_kind is not None:
+            errors.append(
+                "Resolution history ancestor cannot be a filesystem "
+                f"redirection ({redirect_kind}): {current}"
+            )
+    try:
+        candidate.resolve(strict=False).relative_to(resolved_root)
+    except ValueError:
+        errors.append(
+            "Resolution history directory resolves outside the audit root"
+        )
+    return candidate, errors
+
+
+def proofcheck_temp_path(path: Path) -> Path:
+    return path.with_name(f".{path.name}.proofcheck.tmp")
+
+
+def proofcheck_lock_path(path: Path) -> Path:
+    return path.with_name(f".{path.name}.proofcheck.lock")
+
+
+def stage_text_for_atomic_commit(path: Path, text: str) -> Path:
+    """Durably stage UTF-8 text beside its destination."""
+    temporary = proofcheck_temp_path(path)
+    if temporary.exists() and temporary.is_symlink():
+        raise ValueError(f"Refusing a symlinked proofcheck temp file: {temporary}")
+    with temporary.open(
+        "w", encoding="utf-8", newline="\n"
+    ) as stream:
+        stream.write(text)
+        stream.flush()
+        os.fsync(stream.fileno())
+    return temporary
+
+
+def atomic_replace_text(path: Path, text: str) -> None:
+    atomic_write_text(path, text)
+
+
+def atomic_create_text(path: Path, text: str) -> None:
+    """Idempotently create one complete file via a fixed staged payload."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = proofcheck_temp_path(path)
+    lock = proofcheck_lock_path(path)
+    expected_sha256 = sha256_text(text)
+    lock_record = {
+        "transaction_schema_version": 1,
+        "target": path.name,
+        "expected_sha256": expected_sha256,
+    }
+
+    def matching_file(candidate: Path) -> bool:
+        return candidate.is_file() and sha256_file(candidate) == expected_sha256
+
+    def read_matching_lock() -> bool:
+        try:
+            value = json.loads(read_text(lock))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return False
+        return (
+            isinstance(value, dict)
+            and value.get("transaction_schema_version") == 1
+            and value.get("target") == path.name
+            and value.get("expected_sha256") == expected_sha256
+        )
+
+    if path.is_symlink() or temporary.is_symlink() or lock.is_symlink():
+        raise ValueError("Refusing a symlinked archive transaction path")
+    if path.exists():
+        if not matching_file(path):
+            raise FileExistsError(path)
+        if temporary.exists() and matching_file(temporary):
+            temporary.unlink()
+        if lock.exists() and read_matching_lock():
+            lock.unlink()
+        return
+
+    lock_exists = lock.exists()
+    if lock_exists and not read_matching_lock():
+        raise FileExistsError(
+            f"Archive transaction lock belongs to different or invalid content: {lock}"
+        )
+    if not lock_exists:
+        try:
+            descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            if not read_matching_lock():
+                raise
+        else:
+            try:
+                payload = (json.dumps(lock_record, sort_keys=True) + "\n").encode(
+                    "utf-8"
+                )
+                offset = 0
+                while offset < len(payload):
+                    written = os.write(descriptor, payload[offset:])
+                    if written <= 0:
+                        raise OSError(f"Cannot write archive transaction lock: {lock}")
+                    offset += written
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+
+    committed = False
+    try:
+        if not matching_file(temporary):
+            atomic_write_text(temporary, text)
+        if not matching_file(temporary):
+            raise OSError(f"Archive staging hash mismatch: {temporary}")
+        if path.exists():
+            if not matching_file(path):
+                raise FileExistsError(path)
+        else:
+            try:
+                os.replace(temporary, path)
+            except FileNotFoundError:
+                if not matching_file(path):
+                    raise
+        if not matching_file(path):
+            raise OSError(f"Archive commit hash mismatch: {path}")
+        committed = True
+    finally:
+        if committed:
+            if temporary.exists() and matching_file(temporary):
+                temporary.unlink()
+            if lock.exists() and read_matching_lock():
+                lock.unlink()
+
+
+def sealed_file_record(path: Path, stored_file: str) -> dict[str, str]:
+    """Return one byte-exact, self-hashing archive record."""
+    payload = path.read_bytes()
+    return {
+        "file": stored_file,
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "content_base64": base64.b64encode(payload).decode("ascii"),
+    }
+
+
+def decode_sealed_file_record(
+    value: Any,
+    label: str,
+    errors: list[str],
+) -> tuple[str, str, bytes] | None:
+    """Validate one byte-exact archive record without touching live evidence."""
+    if not isinstance(value, dict):
+        errors.append(f"{label} must be an object")
+        return None
+    file_value = value.get("file")
+    digest = value.get("sha256")
+    payload = value.get("content_base64")
+    if not is_nonempty_string(file_value):
+        errors.append(f"{label}.file must be nonempty")
+    if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest):
+        errors.append(f"{label}.sha256 is invalid")
+    if not isinstance(payload, str):
+        errors.append(f"{label}.content_base64 must be a string")
+        return None
+    try:
+        raw = base64.b64decode(payload.encode("ascii"), validate=True)
+    except (UnicodeEncodeError, binascii.Error, ValueError):
+        errors.append(f"{label}.content_base64 is invalid")
+        return None
+    actual = hashlib.sha256(raw).hexdigest()
+    if digest != actual:
+        errors.append(f"{label}.sha256 does not match its byte-exact content")
+    if not is_nonempty_string(file_value) or not isinstance(digest, str):
+        return None
+    return str(file_value), digest, raw
+
+
+def sealed_json_object(
+    value: Any,
+    label: str,
+    errors: list[str],
+) -> tuple[str, str, dict[str, Any]] | None:
+    decoded = decode_sealed_file_record(value, label, errors)
+    if decoded is None:
+        return None
+    file_value, digest, raw = decoded
+    try:
+        parsed = json.loads(raw.decode("utf-8-sig"))
+    except (UnicodeError, json.JSONDecodeError):
+        errors.append(f"{label} is not valid UTF-8 JSON")
+        return None
+    if not isinstance(parsed, dict):
+        errors.append(f"{label} JSON root must be an object")
+        return None
+    return file_value, digest, parsed
+
+
+def finalization_artifact_hashes(
+    prior_record: dict[str, Any],
+    issue_id: str,
+    errors: list[str],
+) -> dict[str, str]:
+    rows = prior_record.get("artifact_manifest")
+    if not isinstance(rows, list):
+        errors.append(
+            f"{issue_id} prior finalization artifact_manifest must be a list"
+        )
+        return {}
+    result: dict[str, str] = {}
+    for index, row in enumerate(rows, 1):
+        prefix = f"{issue_id} prior artifact_manifest[{index}]"
+        if not isinstance(row, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        file_value = row.get("file")
+        digest = row.get("sha256")
+        if (
+            not is_nonempty_string(file_value)
+            or not isinstance(digest, str)
+            or not SHA256_RE.fullmatch(digest)
+        ):
+            errors.append(f"{prefix} has an invalid file or sha256")
+            continue
+        if file_value in result:
+            errors.append(f"{issue_id} prior artifact is duplicated: {file_value}")
+        result[str(file_value)] = digest
+    return result
+
+
+def validate_sealed_audit_artifact(
+    value: Any,
+    label: str,
+    expected_file: str,
+    artifact_hashes: dict[str, str],
+    errors: list[str],
+) -> dict[str, Any] | None:
+    decoded = sealed_json_object(value, label, errors)
+    if decoded is None:
+        return None
+    file_value, digest, parsed = decoded
+    if file_value != expected_file:
+        errors.append(f"{label}.file must be {expected_file}")
+    if artifact_hashes.get(file_value) != digest:
+        errors.append(
+            f"{label} bytes are not bound by the prior finalization manifest"
+        )
+    return parsed
+
+
+def archived_ledger_step_projection(
+    ledger: dict[str, Any], step_id: Any
+) -> dict[str, Any] | None:
+    """Project a source-locked step directly from a sealed ledger object."""
+    step = next(
+        (
+            row
+            for row in ledger.get("steps", [])
+            if isinstance(row, dict) and row.get("id") == step_id
+        ),
+        None,
+    )
+    if not isinstance(step, dict):
+        return None
+    source_unit_id = step.get("source_unit_id")
+    source_unit = next(
+        (
+            row
+            for row in ledger.get("source_units", [])
+            if isinstance(row, dict) and row.get("id") == source_unit_id
+        ),
+        None,
+    )
+    line_range = source_unit.get("lines") if isinstance(source_unit, dict) else None
+    if (
+        not isinstance(line_range, list)
+        or len(line_range) != 2
+        or not all(is_int(value) for value in line_range)
+    ):
+        return None
+    start_line, end_line = line_range
+    locked_rows = {
+        row.get("line"): row.get("text")
+        for row in ledger.get("source_lines", [])
+        if isinstance(row, dict)
+        and is_int(row.get("line"))
+        and isinstance(row.get("text"), str)
+    }
+    if any(line not in locked_rows for line in range(start_line, end_line + 1)):
+        return None
+    quote = "\n".join(
+        locked_rows[line] for line in range(start_line, end_line + 1)
+    )
+    source = ledger.get("source")
+    file_value = source.get("file") if isinstance(source, dict) else None
+    return {
+        "step": step,
+        "file": str(file_value),
+        "start_line": start_line,
+        "end_line": end_line,
+        "sha256": sha256_text(quote),
+        "quote": quote,
+    }
+
+
+def archived_ledger_move_failure_rows(
+    issue: dict[str, Any],
+    ledgers: dict[str, dict[str, Any]],
+) -> list[list[str]] | None:
+    """Recompute the exact report failure row for a sealed ledger-move issue."""
+    origin = issue.get("origin_ref")
+    if not isinstance(origin, dict) or origin.get("kind") != "ledger_move":
+        return None
+    unit_id = str(origin.get("unit_id", issue.get("affected_result")))
+    ledger = ledgers.get(unit_id)
+    if not isinstance(ledger, dict):
+        return None
+    step_projection = archived_ledger_step_projection(
+        ledger, origin.get("step_id")
+    )
+    if step_projection is None:
+        return None
+    step = step_projection["step"]
+    inference = step.get("inference")
+    moves = inference.get("moves") if isinstance(inference, dict) else []
+    move = next(
+        (
+            row
+            for row in moves
+            if isinstance(row, dict) and row.get("id") == origin.get("move_id")
+        ),
+        None,
+    ) if isinstance(moves, list) else None
+    if not isinstance(move, dict):
+        return None
+    premise_by_id = {
+        row.get("id"): row
+        for row in step.get("premise_uses", [])
+        if isinstance(row, dict) and is_nonempty_string(row.get("id"))
+    }
+    premises = json.dumps(
+        {
+            "premises": [
+                {
+                    "id": premise_id,
+                    "claim": premise_by_id.get(premise_id, {}).get("claim"),
+                    "origin": premise_by_id.get(premise_id, {}).get("origin"),
+                }
+                for premise_id in move.get("premise_ids", [])
+            ],
+            "prior_moves": move.get("prior_move_ids", []),
+        },
+        ensure_ascii=False,
+    )
+    failure = move.get("failure")
+    failure_evidence = (
+        str(failure.get("evidence")) if isinstance(failure, dict) else "none"
+    )
+    failure_kind = (
+        str(failure.get("kind"))
+        if isinstance(failure, dict)
+        else str(issue.get("invalidation_kind", "none"))
+    )
+    return [[
+        (
+            f"{step_projection['file']}:{step_projection['start_line']}-"
+            f"{step_projection['end_line']}"
+        ),
+        str(step_projection["sha256"]),
+        json.dumps(step_projection["quote"], ensure_ascii=False),
+        unit_id,
+        f"{origin.get('step_id')}/{origin.get('move_id')}",
+        str(move.get("claim", "none")),
+        str(move.get("rule", "none")),
+        premises,
+        failure_evidence,
+        failure_kind,
+    ]]
+
+
+def validate_resolution_archive_provenance(
+    archive: dict[str, Any],
+    archived_issue: dict[str, Any],
+    prior_record: dict[str, Any],
+    required_units: list[str],
+    root: Path,
+    issue_id: str,
+    errors: list[str],
+) -> dict[str, dict[str, Any]]:
+    """Bind historical issue evidence to one passed, byte-exact audit state."""
+    artifact_hashes = finalization_artifact_hashes(
+        prior_record, issue_id, errors
+    )
+    prior_artifacts = archive.get("prior_artifacts")
+    if not isinstance(prior_artifacts, dict):
+        errors.append(f"{issue_id} resolution archive needs prior_artifacts")
+        prior_artifacts = {}
+
+    prior_manifest = validate_sealed_audit_artifact(
+        prior_artifacts.get("manifest"),
+        f"{issue_id} prior_artifacts.manifest",
+        "AUDIT_MANIFEST.json",
+        artifact_hashes,
+        errors,
+    )
+    prior_issue_log = validate_sealed_audit_artifact(
+        prior_artifacts.get("issue_log"),
+        f"{issue_id} prior_artifacts.issue_log",
+        "audit/06_reports/ISSUE_LOG.json",
+        artifact_hashes,
+        errors,
+    )
+    prior_report_text: str | None = None
+    report_record = decode_sealed_file_record(
+        prior_artifacts.get("final_report"),
+        f"{issue_id} prior_artifacts.final_report",
+        errors,
+    )
+    if report_record is not None:
+        report_file, report_digest, report_bytes = report_record
+        if report_file != "audit/06_reports/FINAL_REPORT.md":
+            errors.append(
+                f"{issue_id} prior_artifacts.final_report.file is invalid"
+            )
+        if artifact_hashes.get(report_file) != report_digest:
+            errors.append(
+                f"{issue_id} prior_artifacts.final_report bytes are not bound "
+                "by the prior finalization manifest"
+            )
+        try:
+            prior_report_text = active_markdown_text(
+                report_bytes.decode("utf-8-sig")
+            )
+        except UnicodeError:
+            errors.append(
+                f"{issue_id} prior_artifacts.final_report is not UTF-8"
+            )
+
+    inventory_file = (
+        prior_manifest.get("inventory_file")
+        if isinstance(prior_manifest, dict)
+        else None
+    )
+    registry_file = (
+        prior_manifest.get("dependency_registry")
+        if isinstance(prior_manifest, dict)
+        else None
+    )
+    interface_registry_file = (
+        prior_manifest.get("method_interface_registry")
+        if isinstance(prior_manifest, dict)
+        else None
+    )
+    if not is_nonempty_string(inventory_file):
+        errors.append(f"{issue_id} prior manifest inventory_file is invalid")
+        inventory_file = "<invalid-inventory>"
+    if not is_nonempty_string(registry_file):
+        errors.append(
+            f"{issue_id} prior manifest dependency_registry is invalid"
+        )
+        registry_file = "<invalid-registry>"
+    if not is_nonempty_string(interface_registry_file):
+        errors.append(
+            f"{issue_id} prior manifest method_interface_registry is invalid"
+        )
+        interface_registry_file = "<invalid-interface-registry>"
+    prior_inventory = validate_sealed_audit_artifact(
+        prior_artifacts.get("inventory"),
+        f"{issue_id} prior_artifacts.inventory",
+        str(inventory_file),
+        artifact_hashes,
+        errors,
+    )
+    prior_registry = validate_sealed_audit_artifact(
+        prior_artifacts.get("dependency_registry"),
+        f"{issue_id} prior_artifacts.dependency_registry",
+        str(registry_file),
+        artifact_hashes,
+        errors,
+    )
+    prior_interface_registry = validate_sealed_audit_artifact(
+        prior_artifacts.get("method_interface_registry"),
+        f"{issue_id} prior_artifacts.method_interface_registry",
+        str(interface_registry_file),
+        artifact_hashes,
+        errors,
+    )
+
+    if isinstance(prior_manifest, dict):
+        if prior_manifest.get("protocol") != archive.get("protocol"):
+            errors.append(
+                f"{issue_id} archived manifest protocol disagrees with archive"
+            )
+        snapshot = prior_manifest.get("source_snapshot")
+        if (
+            not isinstance(snapshot, dict)
+            or snapshot.get("sha256")
+            != archive.get("source_snapshot_sha256")
+        ):
+            errors.append(
+                f"{issue_id} archived manifest source snapshot disagrees "
+                "with archive"
+            )
+    if isinstance(prior_issue_log, dict):
+        if prior_issue_log.get("schema_version") != SCHEMA_VERSION:
+            errors.append(
+                f"{issue_id} archived issue log must use schema {SCHEMA_VERSION}"
+            )
+        issue_rows = prior_issue_log.get("issues")
+        matching_issues = [
+            row
+            for row in issue_rows
+            if isinstance(row, dict) and row.get("id") == issue_id
+        ] if isinstance(issue_rows, list) else []
+        if len(matching_issues) != 1 or matching_issues[0] != archived_issue:
+            errors.append(
+                f"{issue_id} archived issue is not the exact prior issue-log member"
+            )
+
+    ledgers_value = prior_artifacts.get("ledgers")
+    if not isinstance(ledgers_value, list):
+        errors.append(f"{issue_id} prior_artifacts.ledgers must be a list")
+        ledgers_value = []
+    ledgers: dict[str, dict[str, Any]] = {}
+    ledger_hashes: dict[str, str] = {}
+    for index, value in enumerate(ledgers_value, 1):
+        label = f"{issue_id} prior_artifacts.ledgers[{index}]"
+        decoded = sealed_json_object(value, label, errors)
+        if decoded is None:
+            continue
+        file_value, digest, ledger = decoded
+        if artifact_hashes.get(file_value) != digest:
+            errors.append(
+                f"{label} bytes are not bound by the prior finalization manifest"
+            )
+        unit_id = ledger.get("unit_id")
+        if not is_nonempty_string(unit_id):
+            errors.append(f"{label} has no unit_id")
+            continue
+        if unit_id in ledgers:
+            errors.append(f"{issue_id} archived ledger is duplicated: {unit_id}")
+            continue
+        ledgers[str(unit_id)] = ledger
+        ledger_hashes[str(unit_id)] = digest
+    if sorted(ledgers) != required_units:
+        errors.append(
+            f"{issue_id} archived ledgers must cover the required units exactly"
+        )
+    if archive.get("ledger_sha256s") != ledger_hashes:
+        errors.append(
+            f"{issue_id} archive ledger_sha256s disagree with sealed ledgers"
+        )
+
+    if isinstance(prior_artifacts.get("inventory"), dict):
+        inventory_digest = prior_artifacts["inventory"].get("sha256")
+        if archive.get("inventory_sha256") != inventory_digest:
+            errors.append(
+                f"{issue_id} archive inventory_sha256 disagrees with sealed inventory"
+            )
+    if isinstance(prior_artifacts.get("dependency_registry"), dict):
+        registry_digest = prior_artifacts["dependency_registry"].get("sha256")
+        if archive.get("dependency_registry_sha256") != registry_digest:
+            errors.append(
+                f"{issue_id} archive dependency_registry_sha256 disagrees "
+                "with sealed registry"
+            )
+    if prior_inventory is None or prior_registry is None:
+        errors.append(
+            f"{issue_id} resolution archive lacks a usable prior inventory "
+            "or dependency registry"
+        )
+
+    prior_interfaces: dict[str, dict[str, Any]] = {}
+    if isinstance(prior_interface_registry, dict):
+        interface_rows = prior_interface_registry.get("interfaces")
+        if not isinstance(interface_rows, list):
+            errors.append(
+                f"{issue_id} archived method-interface registry has no "
+                "interfaces list"
+            )
+        else:
+            for row in interface_rows:
+                if not isinstance(row, dict) or not is_nonempty_string(
+                    row.get("id")
+                ):
+                    continue
+                interface_id = str(row["id"])
+                if interface_id in prior_interfaces:
+                    errors.append(
+                        f"{issue_id} archived method-interface registry "
+                        f"duplicates {interface_id}"
+                    )
+                    continue
+                prior_interfaces[interface_id] = row
+
+    prior_global_checks: dict[str, dict[str, Any]] = {}
+    if isinstance(prior_manifest, dict):
+        completion = prior_manifest.get("completion")
+        global_pass = (
+            completion.get("global_consistency_pass")
+            if isinstance(completion, dict)
+            else None
+        )
+        check_rows = (
+            global_pass.get("checks")
+            if isinstance(global_pass, dict)
+            else None
+        )
+        if isinstance(check_rows, list):
+            for row in check_rows:
+                if not isinstance(row, dict) or not is_nonempty_string(
+                    row.get("aspect")
+                ):
+                    continue
+                aspect = str(row["aspect"])
+                if aspect in prior_global_checks:
+                    errors.append(
+                        f"{issue_id} archived global consistency pass "
+                        f"duplicates {aspect}"
+                    )
+                    continue
+                prior_global_checks[aspect] = row
+
+    source_rows = (
+        prior_manifest.get("source_snapshot", {}).get("files", [])
+        if isinstance(prior_manifest, dict)
+        and isinstance(prior_manifest.get("source_snapshot"), dict)
+        else []
+    )
+    expected_sources = {
+        str(row.get("file")): row.get("sha256")
+        for row in source_rows
+        if isinstance(row, dict)
+        and is_nonempty_string(row.get("file"))
+        and isinstance(row.get("sha256"), str)
+    } if isinstance(source_rows, list) else {}
+    source_values = archive.get("prior_sources")
+    if not isinstance(source_values, list):
+        errors.append(f"{issue_id} prior_sources must be a list")
+        source_values = []
+    sealed_sources: dict[str, bytes] = {}
+    for index, value in enumerate(source_values, 1):
+        label = f"{issue_id} prior_sources[{index}]"
+        decoded = decode_sealed_file_record(value, label, errors)
+        if decoded is None:
+            continue
+        file_value, digest, raw = decoded
+        if file_value in sealed_sources:
+            errors.append(f"{issue_id} archived source is duplicated: {file_value}")
+        sealed_sources[file_value] = raw
+        if expected_sources.get(file_value) != digest:
+            errors.append(
+                f"{label} bytes disagree with the prior source snapshot"
+            )
+    if set(sealed_sources) != set(expected_sources):
+        errors.append(
+            f"{issue_id} prior_sources must cover the prior source snapshot exactly"
+        )
+
+    projection = archive.get("projection")
+    if isinstance(projection, dict):
+        if prior_report_text is not None:
+            detailed = report_section(
+                prior_report_text, "## Detailed findings"
+            )
+            block_match = (
+                re.search(
+                    rf"^###\s+{re.escape(issue_id)}\s+\[[^\]]+\].*?\n"
+                    rf"(.*?)(?=^###\s+I-[0-9]{{3}}\s|\Z)",
+                    detailed,
+                    re.MULTILINE | re.DOTALL,
+                )
+                if detailed is not None
+                else None
+            )
+            block = block_match.group(1) if block_match is not None else ""
+            exact_section = report_subsection(
+                block, "#### 1. Exact failure site and contract"
+            )
+            tables = markdown_tables(exact_section or "")
+            prior_failure_rows = (
+                tables[0][2:]
+                if tables and len(tables[0]) >= 2
+                else []
+            )
+            if projection.get("failure") != prior_failure_rows:
+                errors.append(
+                    f"{issue_id} archived failure projection is not the exact "
+                    "prior finalized report row"
+                )
+        recomputed_failure = archived_ledger_move_failure_rows(
+            archived_issue, ledgers
+        )
+        if recomputed_failure is not None:
+            if projection.get("failure") != recomputed_failure:
+                errors.append(
+                    f"{issue_id} archived failure projection does not match "
+                    "the sealed ledger move"
+                )
+        elif archived_issue.get("origin_ref", {}).get("kind") in {
+            "interface_record",
+            "global_check",
+        }:
+            recomputed_nonledger_failure = archived_nonledger_failure_rows(
+                archived_issue,
+                prior_interfaces,
+                prior_global_checks,
+                sealed_sources,
+            )
+            if not recomputed_nonledger_failure:
+                errors.append(
+                    f"{issue_id} archived non-ledger origin cannot be "
+                    "recomputed from sealed canonical records"
+                )
+            elif projection.get("failure") != recomputed_nonledger_failure:
+                errors.append(
+                    f"{issue_id} archived failure projection does not match "
+                    "the sealed canonical origin record"
+                )
+        else:
+            failure_rows = projection.get("failure")
+            if not isinstance(failure_rows, list) or not failure_rows:
+                errors.append(
+                    f"{issue_id} archived failure projection is missing"
+                )
+            else:
+                for row_index, row in enumerate(failure_rows, 1):
+                    label = (
+                        f"{issue_id} archived failure projection[{row_index}]"
+                    )
+                    if not isinstance(row, list) or len(row) != 10:
+                        errors.append(f"{label} must have ten exact fields")
+                        continue
+                    location = row[0]
+                    match = re.fullmatch(r"(.+):([0-9]+)-([0-9]+)", location)
+                    try:
+                        quote = json.loads(row[2])
+                    except (TypeError, json.JSONDecodeError):
+                        quote = None
+                    if (
+                        match is None
+                        or not isinstance(quote, str)
+                        or row[1] != sha256_text(quote)
+                    ):
+                        errors.append(
+                            f"{label} has an invalid exact location or quote hash"
+                        )
+                        continue
+                    file_value = match.group(1)
+                    start_line = int(match.group(2))
+                    end_line = int(match.group(3))
+                    source_bytes = sealed_sources.get(file_value)
+                    try:
+                        source_lines = (
+                            source_bytes.decode("utf-8-sig").splitlines()
+                            if source_bytes is not None
+                            else []
+                        )
+                    except UnicodeError:
+                        source_lines = []
+                    expected_quote = "\n".join(
+                        source_lines[start_line - 1 : end_line]
+                    )
+                    if quote != expected_quote:
+                        errors.append(
+                            f"{label} quote disagrees with sealed prior source"
+                        )
+    return ledgers
+
+
+def resolution_archive_path(
+    issue_id: str, historical_origin: dict[str, Any], root: Path
+) -> tuple[Path | None, list[str]]:
+    errors: list[str] = []
+    artifact = historical_origin.get("artifact")
+    if not is_nonempty_string(artifact):
+        return None, [f"{issue_id}.historical_origin.artifact must be a path"]
+    path = resolve_stored_path(str(artifact), root)
+    canonical_directory, confinement_errors = confined_history_directory(root)
+    errors.extend(confinement_errors)
+    resolved_directory = canonical_directory.resolve(strict=False)
+    if (
+        path.parent != resolved_directory
+        or path.name != f"{issue_id}-origin.json"
+    ):
+        errors.append(
+            f"{issue_id}.historical_origin.artifact must resolve to "
+            f"audit/06_reports/history/{issue_id}-origin.json"
+        )
+    if path.is_symlink():
+        errors.append(
+            f"{issue_id}.historical_origin.artifact cannot use a symlink"
+        )
+    return path, errors
+
+
+def load_resolution_archive(
+    issue: dict[str, Any], root: Path, errors: list[str]
+) -> dict[str, Any] | None:
+    issue_id = str(issue.get("id", "<unknown>"))
+    historical_origin = issue.get("historical_origin")
+    if not isinstance(historical_origin, dict):
+        errors.append(f"{issue_id}.historical_origin must be an object")
+        return None
+    artifact_path, path_errors = resolution_archive_path(
+        issue_id, historical_origin, root
+    )
+    errors.extend(path_errors)
+    if artifact_path is None or not artifact_path.is_file():
+        errors.append(
+            f"{issue_id}.historical_origin artifact is missing: {artifact_path}"
+        )
+        return None
+    recorded_digest = historical_origin.get("sha256")
+    actual_digest = sha256_file(artifact_path)
+    if (
+        not is_nonempty_string(recorded_digest)
+        or recorded_digest != actual_digest
+    ):
+        errors.append(
+            f"{issue_id}.historical_origin.sha256 does not match the archive"
+        )
+    archive, archive_errors = load_json_object(
+        artifact_path, f"resolution archive for {issue_id}"
+    )
+    errors.extend(archive_errors)
+    if archive_errors:
+        return None
+    if archive.get("archive_schema_version") != RESOLUTION_ARCHIVE_SCHEMA_VERSION:
+        errors.append(
+            f"{issue_id} resolution archive has an unsupported schema version"
+        )
+    if archive.get("archive_payload_sha256") != resolution_archive_payload_sha256(
+        archive
+    ):
+        errors.append(
+            f"{issue_id} resolution archive payload hash does not match"
+        )
+    if not is_utc_timestamp(archive.get("generated_utc")):
+        errors.append(
+            f"{issue_id} resolution archive generated_utc must be UTC"
+        )
+
+    archived_issue = archive.get("issue_record")
+    if not isinstance(archived_issue, dict):
+        errors.append(f"{issue_id} resolution archive needs issue_record")
+        archived_issue = {}
+    if archive.get("issue_record_sha256") != canonical_sha256(archived_issue):
+        errors.append(
+            f"{issue_id} resolution archive issue_record hash does not match"
+        )
+    if archived_issue.get("status") not in {"open", "deferred"}:
+        errors.append(
+            f"{issue_id} resolution archive must capture an open or deferred issue"
+        )
+    if archived_issue.get("finding_status") not in {"defect", "inconclusive"}:
+        errors.append(
+            f"{issue_id} resolution archive must capture an unresolved finding"
+        )
+    for field in RESOLUTION_ARCHIVE_STABLE_FIELDS:
+        if archived_issue.get(field) != issue.get(field):
+            errors.append(
+                f"{issue_id} current {field} differs from the archived issue"
+            )
+
+    protocol = archive.get("protocol")
+    if not isinstance(protocol, dict):
+        errors.append(f"{issue_id} resolution archive protocol must be an object")
+        protocol = {}
+    for field, expected in {
+        "skill_name": SKILL_NAME,
+        "skill_version": SKILL_VERSION,
+        "artifact_schema_version": SCHEMA_VERSION,
+        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
+        "method_interface_schema_version": METHOD_INTERFACE_SCHEMA_VERSION,
+        "closure_contract_version": CLOSURE_CONTRACT_VERSION,
+    }.items():
+        if protocol.get(field) != expected:
+            errors.append(
+                f"{issue_id} resolution archive protocol.{field} is invalid"
+            )
+    if not (
+        isinstance(protocol.get("validator_sha256"), str)
+        and SHA256_RE.fullmatch(protocol["validator_sha256"])
+    ):
+        errors.append(
+            f"{issue_id} resolution archive validator_sha256 is invalid"
+        )
+
+    source_snapshot = archive.get("source_snapshot_sha256")
+    if not is_nonempty_string(source_snapshot) or (
+        historical_origin.get("source_snapshot_sha256") != source_snapshot
+    ):
+        errors.append(
+            f"{issue_id}.historical_origin source snapshot disagrees with archive"
+        )
+
+    prior_record = archive.get("prior_finalization_record")
+    if not isinstance(prior_record, dict):
+        errors.append(
+            f"{issue_id} resolution archive needs prior_finalization_record"
+        )
+        prior_record = {}
+    if archive.get("prior_finalization_record_sha256") != canonical_sha256(
+        prior_record
+    ):
+        errors.append(
+            f"{issue_id} prior finalization record hash does not match"
+        )
+    if (
+        prior_record.get("status") != "passed"
+        or prior_record.get("errors") != []
+        or prior_record.get("record_payload_sha256")
+        != finalization_payload_sha256(prior_record)
+        or prior_record.get("source_snapshot_sha256") != source_snapshot
+        or prior_record.get("protocol") != protocol
+    ):
+        errors.append(
+            f"{issue_id} resolution archive is not bound to a valid prior "
+            "finalization record"
+        )
+    prior_manifest = prior_record.get("artifact_manifest")
+    prior_issue_log_sha256 = archive.get("prior_issue_log_sha256")
+    matching_issue_rows = [
+        row
+        for row in prior_manifest
+        if isinstance(row, dict)
+        and row.get("file") == "audit/06_reports/ISSUE_LOG.json"
+    ] if isinstance(prior_manifest, list) else []
+    if (
+        len(matching_issue_rows) != 1
+        or matching_issue_rows[0].get("sha256") != prior_issue_log_sha256
+    ):
+        errors.append(
+            f"{issue_id} prior finalization does not bind the archived issue log"
+        )
+
+    projection = archive.get("projection")
+    if not isinstance(projection, dict):
+        errors.append(f"{issue_id} resolution archive projection must be an object")
+        projection = {}
+    if archive.get("projection_sha256") != canonical_sha256(projection):
+        errors.append(
+            f"{issue_id} resolution archive projection hash does not match"
+        )
+    for field in ("failure", "contract", "propagation", "severity"):
+        if not isinstance(projection.get(field), list) or not projection[field]:
+            errors.append(
+                f"{issue_id} resolution archive projection.{field} must be nonempty"
+            )
+
+    required_closure = archive.get("required_closure")
+    if not isinstance(required_closure, dict):
+        errors.append(
+            f"{issue_id} resolution archive required_closure must be an object"
+        )
+        required_closure = {}
+    required_units = validate_string_list(
+        required_closure.get("units"),
+        f"{issue_id} archive required_closure.units",
+        errors,
+    )
+    archived_affected = archived_issue.get("affected_results")
+    if not isinstance(archived_affected, list):
+        errors.append(
+            f"{issue_id} archived issue affected_results must be a list"
+        )
+        archived_affected = []
+    if required_units != sorted(
+        item for item in archived_affected if is_nonempty_string(item)
+    ):
+        errors.append(
+            f"{issue_id} archive required units must equal archived affected_results"
+        )
+    dependency_rows = required_closure.get("dependency_uses")
+    if not isinstance(dependency_rows, list):
+        errors.append(
+            f"{issue_id} archive required_closure.dependency_uses must be a list"
+        )
+        dependency_rows = []
+    dependency_ids: list[str] = []
+    for row_index, row in enumerate(dependency_rows, 1):
+        prefix = (
+            f"{issue_id} archive required_closure.dependency_uses[{row_index}]"
+        )
+        if not isinstance(row, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        use_id = row.get("use_id")
+        edge_digest = row.get("edge_sha256")
+        if not (
+            is_nonempty_string(use_id)
+            and DEPENDENCY_USE_ID_RE.fullmatch(str(use_id))
+        ):
+            errors.append(f"{prefix}.use_id must match D001")
+        else:
+            dependency_ids.append(str(use_id))
+        if not (
+            isinstance(edge_digest, str) and SHA256_RE.fullmatch(edge_digest)
+        ):
+            errors.append(f"{prefix}.edge_sha256 is invalid")
+    if dependency_ids != sorted(set(dependency_ids)):
+        errors.append(
+            f"{issue_id} archive dependency uses must be sorted and unique"
+        )
+    required_challenges = validate_string_list(
+        required_closure.get("challenges"),
+        f"{issue_id} archive required_closure.challenges",
+        errors,
+        allow_empty=True,
+    )
+    required_deliverables = validate_string_list(
+        required_closure.get("report_deliverables"),
+        f"{issue_id} archive required_closure.report_deliverables",
+        errors,
+        allow_empty=True,
+    )
+    for field, expected in (
+        ("required_units", required_units),
+        ("required_dependency_uses", dependency_ids),
+        ("required_challenges", required_challenges),
+        ("required_report_deliverables", required_deliverables),
+    ):
+        if historical_origin.get(field) != expected:
+            errors.append(
+                f"{issue_id}.historical_origin.{field} disagrees with archive"
+            )
+
+    ledger_hashes = archive.get("ledger_sha256s")
+    if not isinstance(ledger_hashes, dict) or set(ledger_hashes) != set(
+        required_units
+    ):
+        errors.append(
+            f"{issue_id} archive ledger_sha256s must cover every required unit"
+        )
+    elif any(
+        not isinstance(digest, str) or not SHA256_RE.fullmatch(digest)
+        for digest in ledger_hashes.values()
+    ):
+        errors.append(f"{issue_id} archive ledger_sha256s contains an invalid hash")
+
+    root_components = archive.get("root_components")
+    if not isinstance(root_components, dict):
+        errors.append(
+            f"{issue_id} resolution archive root_components must be an object"
+        )
+        root_components = {}
+    historical_component = {
+        "proof_gap": ("argument_status", {"gap"}),
+        "proof_invalid": ("argument_status", {"invalid"}),
+        "statement_refuted": ("statement_status", {"refuted"}),
+        "dependency_mismatch": (
+            "dependency_closure",
+            {"gap", "incorrect", "unclear"},
+        ),
+    }.get(archived_issue.get("invalidation_kind"))
+    if historical_component is not None:
+        component, allowed = historical_component
+        if root_components.get(component) not in allowed:
+            errors.append(
+                f"{issue_id} archived invalidation disagrees with historical "
+                f"{component}"
+            )
+    validate_resolution_archive_provenance(
+        archive,
+        archived_issue,
+        prior_record,
+        required_units,
+        root,
+        issue_id,
+        errors,
+    )
+    archive["issue_record"] = archived_issue
+    archive["projection"] = projection
+    archive["required_closure"] = required_closure
+    return archive
+
+
+def issue_recheck_edges(
+    issue: dict[str, Any], dependency_edges: Iterable[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Return direct uses that must be rechecked for every affected unit."""
+    affected_result = issue.get("affected_result")
+    affected_results = {
+        item
+        for item in issue.get("affected_results", [])
+        if is_nonempty_string(item)
+    } if isinstance(issue.get("affected_results"), list) else set()
+    origin = issue.get("origin_ref")
+    origin_use = (
+        origin.get("use_id")
+        if isinstance(origin, dict)
+        and origin.get("kind") == "dependency_use"
+        and is_nonempty_string(origin.get("use_id"))
+        else None
+    )
+    selected = [
+        edge
+        for edge in dependency_edges
+        if isinstance(edge, dict)
+        and is_nonempty_string(edge.get("use_id"))
+        and (
+            (
+                edge.get("dependent_unit") in affected_results
+            )
+            or (
+                origin_use is not None
+                and edge.get("use_id") == origin_use
+                and edge.get("dependent_unit") == affected_result
+            )
+        )
+    ]
+    return sorted(
+        selected,
+        key=lambda edge: (
+            str(edge.get("use_id")),
+            str(edge.get("dependent_unit")),
+            str(edge.get("dependency_id")),
+        ),
+    )
+
+
+def resolve_current_issue_ref(
+    ref: Any,
+    ledgers_by_unit: dict[str, dict[str, Any]],
+    interfaces: dict[str, dict[str, Any]] | None,
+    global_checks: dict[str, dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(ref, dict):
+        return None
+    kind = ref.get("kind")
+    unit_id = ref.get("unit_id")
+    ledger = ledgers_by_unit.get(str(unit_id))
+    if kind == "ledger_move" and isinstance(ledger, dict):
+        step = next(
+            (
+                row
+                for row in ledger.get("steps", [])
+                if isinstance(row, dict) and row.get("id") == ref.get("step_id")
+            ),
+            None,
+        )
+        inference = (
+            step.get("inference") if isinstance(step, dict) else None
+        )
+        moves = inference.get("moves") if isinstance(inference, dict) else []
+        matches = [
+            move
+            for move in moves
+            if isinstance(move, dict) and move.get("id") == ref.get("move_id")
+        ] if isinstance(moves, list) else []
+        if len(matches) == 1:
+            return {"kind": kind, "step": step, "move": matches[0]}
+    elif kind == "obligation_pointer" and isinstance(ledger, dict):
+        found, value = resolve_json_pointer(
+            ledger.get("obligation"), ref.get("pointer")
+        )
+        if found:
+            return {"kind": kind, "value": value}
+    elif kind == "dependency_use" and isinstance(ledger, dict):
+        dependencies = ledger.get("review", {}).get("direct_dependencies", [])
+        matches = [
+            row
+            for row in dependencies
+            if isinstance(row, dict) and row.get("use_id") == ref.get("use_id")
+        ] if isinstance(dependencies, list) else []
+        if len(matches) == 1:
+            return {"kind": kind, "dependency": matches[0]}
+    elif kind == "interface_record":
+        interface_id = ref.get("interface_id")
+        if (
+            is_nonempty_string(interface_id)
+            and interfaces is not None
+            and interface_id in interfaces
+        ):
+            return {"kind": kind, "interface": interfaces[interface_id]}
+    elif kind == "global_check":
+        aspect = ref.get("aspect")
+        if (
+            is_nonempty_string(aspect)
+            and global_checks is not None
+            and aspect in global_checks
+        ):
+            return {"kind": kind, "global_check": global_checks[aspect]}
+    return None
+
+
+def canonical_issue_ref_identity(ref: Any) -> dict[str, Any] | None:
+    """Return the stable canonical identity of an issue reference."""
+    if not isinstance(ref, dict):
+        return None
+    return {
+        key: value
+        for key, value in ref.items()
+        if key != "evidence_spans"
+    }
+
+
+def validate_current_resolution(
+    issue: dict[str, Any],
+    archive: dict[str, Any],
+    root: Path,
+    errors: list[str],
+    ledgers_by_unit: dict[str, dict[str, Any]],
+    dependency_edges: list[dict[str, Any]],
+    interfaces: dict[str, dict[str, Any]] | None,
+    global_checks: dict[str, dict[str, Any]] | None,
+) -> dict[str, list[str]]:
+    issue_id = str(issue.get("id"))
+    record = issue.get("current_resolution")
+    if not isinstance(record, dict):
+        errors.append(f"{issue_id}.current_resolution must be an object")
+        record = {}
+    disposition = record.get("disposition")
+    if not is_enum_value(disposition, RESOLUTION_DISPOSITIONS):
+        errors.append(f"{issue_id}.current_resolution.disposition is invalid")
+    if not is_substantive_string(record.get("mapping")):
+        errors.append(
+            f"{issue_id}.current_resolution.mapping must explain the old-to-new "
+            "relationship"
+        )
+    if record.get("verification_status") != "verified_sufficient":
+        errors.append(
+            f"{issue_id}.current_resolution.verification_status must be "
+            "verified_sufficient"
+        )
+    evidence_spans = record.get("evidence_spans")
+    validate_locked_span_list(
+        evidence_spans,
+        root,
+        f"{issue_id}.current_resolution.evidence_spans",
+        errors,
+    )
+
+    archived_closure = archive.get("required_closure")
+    if not isinstance(archived_closure, dict):
+        archived_closure = {}
+    archived_units = sorted(
+        item
+        for item in archived_closure.get("units", [])
+        if is_nonempty_string(item)
+    )
+    current_units = sorted(
+        item
+        for item in issue.get("affected_results", [])
+        if is_nonempty_string(item)
+    )
+    required_units = sorted(set(archived_units) | set(current_units))
+    required_rechecks = validate_string_list(
+        record.get("required_rechecks"),
+        f"{issue_id}.current_resolution.required_rechecks",
+        errors,
+    )
+    if required_rechecks != required_units:
+        errors.append(
+            f"{issue_id}.current_resolution.required_rechecks must cover the "
+            "historical-current affected union"
+        )
+
+    archived_dependency_rows = [
+        row
+        for row in archived_closure.get("dependency_uses", [])
+        if isinstance(row, dict) and is_nonempty_string(row.get("use_id"))
+    ]
+    archived_dependency_hashes = {
+        str(row["use_id"]): row.get("edge_sha256")
+        for row in archived_dependency_rows
+    }
+    current_edges = issue_recheck_edges(issue, dependency_edges)
+    current_dependency_ids = sorted(
+        {
+            str(edge["use_id"])
+            for edge in current_edges
+            if is_nonempty_string(edge.get("use_id"))
+        }
+    )
+    required_dependency_ids = sorted(
+        set(archived_dependency_hashes) | set(current_dependency_ids)
+    )
+    retired_ids = sorted(
+        set(archived_dependency_hashes) - set(current_dependency_ids)
+    )
+    retirement_rows = record.get("retired_dependency_uses")
+    if not isinstance(retirement_rows, list):
+        errors.append(
+            f"{issue_id}.current_resolution.retired_dependency_uses must be a list"
+        )
+        retirement_rows = []
+    recorded_retired_ids: list[str] = []
+    for row_index, row in enumerate(retirement_rows, 1):
+        prefix = (
+            f"{issue_id}.current_resolution.retired_dependency_uses[{row_index}]"
+        )
+        if not isinstance(row, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        use_id = row.get("use_id")
+        if not (
+            is_nonempty_string(use_id)
+            and DEPENDENCY_USE_ID_RE.fullmatch(str(use_id))
+        ):
+            errors.append(f"{prefix}.use_id must match D001")
+            continue
+        recorded_retired_ids.append(str(use_id))
+        if row.get("prior_edge_sha256") != archived_dependency_hashes.get(
+            str(use_id)
+        ):
+            errors.append(
+                f"{prefix}.prior_edge_sha256 does not match the archive"
+            )
+        for field in ("reason", "recheck_evidence"):
+            if not is_substantive_string(row.get(field)):
+                errors.append(f"{prefix}.{field} must be substantive")
+    if recorded_retired_ids != retired_ids:
+        errors.append(
+            f"{issue_id}.current_resolution.retired_dependency_uses must equal "
+            "the archived uses absent from the current dependency closure"
+        )
+
+    archived_issue = archive.get("issue_record")
+    if not isinstance(archived_issue, dict):
+        archived_issue = {}
+    archived_origin = archived_issue.get("origin_ref")
+    current_ref = record.get("current_ref")
+    archived_ref_identity = canonical_issue_ref_identity(archived_origin)
+    current_ref_identity = canonical_issue_ref_identity(current_ref)
+    resolved_current_ref = resolve_current_issue_ref(
+        current_ref, ledgers_by_unit, interfaces, global_checks
+    )
+    archived_ref_still_resolves = resolve_current_issue_ref(
+        archived_origin, ledgers_by_unit, interfaces, global_checks
+    )
+    if disposition == "removed":
+        if issue.get("affected_result") not in ledgers_by_unit:
+            errors.append(
+                f"{issue_id}.current_resolution removed may retire only the "
+                "failed origin inside a retained affected result"
+            )
+        if current_ref is not None:
+            errors.append(
+                f"{issue_id}.current_resolution.current_ref must be null when removed"
+            )
+        if archived_ref_still_resolves is not None:
+            errors.append(
+                f"{issue_id}.current_resolution says removed but the archived "
+                "origin still resolves"
+            )
+    else:
+        if resolved_current_ref is None:
+            errors.append(
+                f"{issue_id}.current_resolution.current_ref does not resolve"
+            )
+        if (
+            disposition == "repaired"
+            and current_ref_identity != archived_ref_identity
+        ):
+            errors.append(
+                f"{issue_id}.current_resolution repaired must retain the archived "
+                "origin reference"
+            )
+        if (
+            disposition == "replaced"
+            and current_ref_identity == archived_ref_identity
+        ):
+            errors.append(
+                f"{issue_id}.current_resolution replaced must name a new reference"
+            )
+        if isinstance(resolved_current_ref, dict):
+            if resolved_current_ref.get("kind") == "ledger_move":
+                step = resolved_current_ref.get("step")
+                move = resolved_current_ref.get("move")
+                if (
+                    not isinstance(step, dict)
+                    or step.get("status")
+                    not in {"verified", "conditionally_verified"}
+                    or not isinstance(move, dict)
+                    or move.get("failure") is not None
+                ):
+                    errors.append(
+                        f"{issue_id}.current_resolution ledger move is not clean"
+                    )
+            elif resolved_current_ref.get("kind") == "dependency_use":
+                dependency = resolved_current_ref.get("dependency")
+                if (
+                    not isinstance(dependency, dict)
+                    or dependency.get("status")
+                    not in {"verified", "conditional", "not_applicable"}
+                ):
+                    errors.append(
+                        f"{issue_id}.current_resolution dependency use is not clean"
+                    )
+            if not current_resolution_ref_is_connected(
+                issue,
+                current_ref,
+                resolved_current_ref,
+                ledgers_by_unit,
+            ):
+                errors.append(
+                    f"{issue_id}.current_resolution.current_ref is not connected "
+                    "to a current affected-result contract or support closure"
+                )
+    return {
+        "required_units": required_units,
+        "required_dependency_uses": required_dependency_ids,
+        "retired_dependency_uses": retired_ids,
+    }
+
+
+def locked_span_identity(span: Any) -> tuple[Any, Any, Any, Any, Any] | None:
+    if not isinstance(span, dict):
+        return None
+    fields = (
+        span.get("file"),
+        span.get("start_line"),
+        span.get("end_line"),
+        span.get("sha256"),
+        span.get("role"),
+    )
+    if (
+        not is_nonempty_string(fields[0])
+        or not is_int(fields[1])
+        or not is_int(fields[2])
+        or not is_nonempty_string(fields[3])
+    ):
+        return None
+    return fields
+
+
+def nested_locked_spans(value: Any) -> list[dict[str, Any]]:
+    spans: list[dict[str, Any]] = []
+    if isinstance(value, dict):
+        if locked_span_identity(value) is not None:
+            spans.append(value)
+        else:
+            for nested in value.values():
+                spans.extend(nested_locked_spans(nested))
+    elif isinstance(value, list):
+        for nested in value:
+            spans.extend(nested_locked_spans(nested))
+    return spans
+
+
+def ledger_support_contract_closure(
+    ledger: dict[str, Any], support_step_id: str, support_move_id: str
+) -> dict[str, set[Any]]:
+    """Return the exact backward support closure for one ledger move."""
+    steps = [
+        step
+        for step in ledger.get("steps", [])
+        if isinstance(step, dict) and is_nonempty_string(step.get("id"))
+    ]
+    steps_by_id = {str(step["id"]): step for step in steps}
+    premises_by_step = {
+        str(step["id"]): {
+            str(premise["id"]): premise
+            for premise in step.get("premise_uses", [])
+            if isinstance(premise, dict)
+            and is_nonempty_string(premise.get("id"))
+        }
+        for step in steps
+    }
+    pending: list[tuple[str, str]] = [(support_step_id, support_move_id)]
+    move_keys: set[tuple[str, str]] = set()
+    obligation_pointers: set[str] = set()
+    dependency_uses: set[str] = set()
+
+    def consume_premise(step_id: str, premise_id: str) -> None:
+        premise = premises_by_step.get(step_id, {}).get(premise_id)
+        origin = premise.get("origin") if isinstance(premise, dict) else None
+        if not isinstance(origin, dict):
+            return
+        kind = origin.get("kind")
+        reference = origin.get("reference")
+        if kind == "obligation" and is_nonempty_string(reference):
+            obligation_pointers.add(str(reference))
+        elif is_enum_value(
+            kind, {"internal_result", "external_result"}
+        ) and is_nonempty_string(reference):
+            dependency_uses.add(str(reference))
+        elif kind == "prior_step" and is_nonempty_string(reference):
+            prior_step = steps_by_id.get(str(reference))
+            inference = (
+                prior_step.get("inference")
+                if isinstance(prior_step, dict)
+                else None
+            )
+            prior_move = (
+                inference.get("conclusion_move")
+                if isinstance(inference, dict)
+                else None
+            )
+            if is_nonempty_string(prior_move):
+                pending.append((str(reference), str(prior_move)))
+
+    while pending:
+        step_id, move_id = pending.pop()
+        key = (step_id, move_id)
+        if key in move_keys:
+            continue
+        move_keys.add(key)
+        step = steps_by_id.get(step_id)
+        inference = step.get("inference") if isinstance(step, dict) else None
+        moves = inference.get("moves") if isinstance(inference, dict) else []
+        move = next(
+            (
+                row
+                for row in moves
+                if isinstance(row, dict) and row.get("id") == move_id
+            ),
+            None,
+        ) if isinstance(moves, list) else None
+        if not isinstance(move, dict):
+            continue
+        for prior_move_id in move.get("prior_move_ids", []):
+            if is_nonempty_string(prior_move_id):
+                pending.append((step_id, str(prior_move_id)))
+        for premise_id in move.get("premise_ids", []):
+            if is_nonempty_string(premise_id):
+                consume_premise(step_id, str(premise_id))
+        side_conditions = step.get("side_conditions")
+        if not isinstance(side_conditions, list):
+            continue
+        for condition in side_conditions:
+            if (
+                not isinstance(condition, dict)
+                or condition.get("generated_by") != move_id
+                or condition.get("status") != "discharged"
+            ):
+                continue
+            discharge = condition.get("discharge")
+            sources = (
+                discharge.get("sources")
+                if isinstance(discharge, dict)
+                else []
+            )
+            if not isinstance(sources, list):
+                continue
+            for source in sources:
+                if not isinstance(source, dict):
+                    continue
+                reference = source.get("reference")
+                if not is_nonempty_string(reference):
+                    continue
+                if source.get("kind") == "premise":
+                    consume_premise(step_id, str(reference))
+                elif source.get("kind") == "inference_move":
+                    pending.append((step_id, str(reference)))
+    return {
+        "move_keys": move_keys,
+        "obligation_pointers": obligation_pointers,
+        "dependency_uses": dependency_uses,
+    }
+
+
+def current_resolution_ref_is_connected(
+    issue: dict[str, Any],
+    current_ref: Any,
+    resolved_ref: dict[str, Any],
+    ledgers_by_unit: dict[str, dict[str, Any]],
+) -> bool:
+    """Require the current repair reference to support the current root contract."""
+    if not isinstance(current_ref, dict):
+        return False
+    kind = current_ref.get("kind")
+    affected_result = issue.get("affected_result")
+    if kind in {"ledger_move", "obligation_pointer", "dependency_use"}:
+        if current_ref.get("unit_id") != affected_result:
+            return False
+    elif kind == "interface_record":
+        interface = resolved_ref.get("interface")
+        return (
+            isinstance(interface, dict)
+            and current_ref.get("interface_id") == issue.get("interface_id")
+            and affected_result in interface.get("affected_results", [])
+        )
+    elif kind == "global_check":
+        check = resolved_ref.get("global_check")
+        current_contract_refs = issue.get("contract_refs")
+        resolution = issue.get("current_resolution")
+        evidence_spans = (
+            resolution.get("evidence_spans")
+            if isinstance(resolution, dict)
+            else None
+        )
+        return (
+            isinstance(check, dict)
+            and check.get("aspect") == current_ref.get("aspect")
+            and current_ref.get("aspect")
+            == (
+                issue.get("origin_ref", {}).get("aspect")
+                if isinstance(issue.get("origin_ref"), dict)
+                else None
+            )
+            and check.get("status") in {"passed", "not_applicable"}
+            and isinstance(evidence_spans, list)
+            and bool(evidence_spans)
+            and isinstance(current_contract_refs, list)
+            and any(
+                isinstance(ref, dict)
+                and ref.get("unit_id") == affected_result
+                for ref in current_contract_refs
+            )
+        )
+    else:
+        return False
+
+    ledger = ledgers_by_unit.get(str(affected_result))
+    if not isinstance(ledger, dict):
+        return False
+    contract_refs = [
+        ref
+        for ref in issue.get("contract_refs", [])
+        if isinstance(ref, dict) and ref.get("unit_id") == affected_result
+    ] if isinstance(issue.get("contract_refs"), list) else []
+    if not contract_refs:
+        return False
+    if kind == "obligation_pointer":
+        return any(
+            ref.get("kind") == "obligation_pointer"
+            and ref.get("pointer") == current_ref.get("pointer")
+            for ref in contract_refs
+        )
+    if kind == "dependency_use":
+        return any(
+            ref.get("kind") == "dependency_use"
+            and ref.get("use_id") == current_ref.get("use_id")
+            for ref in contract_refs
+        )
+    if kind != "ledger_move":
+        return False
+
+    step_id = str(current_ref.get("step_id"))
+    move_id = str(current_ref.get("move_id"))
+    move_key = (step_id, move_id)
+    move_closure = ledger_support_contract_closure(
+        ledger, step_id, move_id
+    )
+    linked_conclusions: set[str] = set()
+    for result in ledger.get("review", {}).get("conclusion_results", []):
+        if not isinstance(result, dict):
+            continue
+        support = result.get("support")
+        if not isinstance(support, dict):
+            continue
+        support_closure = ledger_support_contract_closure(
+            ledger,
+            str(support.get("step_id")),
+            str(support.get("move_id")),
+        )
+        conclusion_id = result.get("conclusion_id")
+        if move_key in support_closure["move_keys"] and is_nonempty_string(
+            conclusion_id
+        ):
+            linked_conclusions.add(str(conclusion_id))
+    return any(
+        (
+            ref.get("kind") == "conclusion"
+            and ref.get("conclusion_id") in linked_conclusions
+        )
+        or (
+            ref.get("kind") == "obligation_pointer"
+            and ref.get("pointer") in move_closure["obligation_pointers"]
+        )
+        or (
+            ref.get("kind") == "dependency_use"
+            and ref.get("use_id") in move_closure["dependency_uses"]
+        )
+        for ref in contract_refs
+    )
 
 
 def validate_issues(
@@ -6239,10 +10174,74 @@ def validate_issues(
     source_snapshot_id: str | None = None,
     in_scope: Iterable[str] | None = None,
     reverse_graph: dict[str, set[str]] | None = None,
+    ledger_summaries: Iterable[dict[str, Any]] | None = None,
+    dependency_edges: Iterable[dict[str, Any]] | None = None,
+    global_checks: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[str], Counter[str]]:
     errors: list[str] = []
     seen: set[str] = set()
     counts: Counter[str] = Counter()
+    summaries_by_unit = {
+        summary.get("unit_id"): summary
+        for summary in (ledger_summaries or [])
+        if isinstance(summary, dict)
+        and is_nonempty_string(summary.get("unit_id"))
+    }
+    ledgers_by_unit: dict[str, dict[str, Any]] = {}
+    for unit_id, summary in summaries_by_unit.items():
+        ledger_value = summary.get("ledger")
+        if not is_nonempty_string(ledger_value):
+            continue
+        ledger, ledger_errors = load_json_object(
+            Path(ledger_value), f"ledger for {unit_id}"
+        )
+        if not ledger_errors:
+            ledgers_by_unit[str(unit_id)] = ledger
+    backlink_sources: dict[str, set[str]] = defaultdict(set)
+    for issue_id in referenced:
+        backlink_sources[str(issue_id)].add("ledger step")
+    for unit_id, summary in summaries_by_unit.items():
+        for result in summary.get("conclusion_results", []):
+            if not isinstance(result, dict):
+                continue
+            for issue_id in result.get("issue_ids", []):
+                if is_nonempty_string(issue_id):
+                    backlink_sources[str(issue_id)].add(
+                        f"{unit_id} conclusion result"
+                    )
+        for dependency in summary.get("direct_dependencies", []):
+            if not isinstance(dependency, dict):
+                continue
+            for issue_id in dependency.get("issue_ids", []):
+                if is_nonempty_string(issue_id):
+                    backlink_sources[str(issue_id)].add(
+                        f"{unit_id} direct dependency"
+                    )
+    for edge in dependency_edges or []:
+        if not isinstance(edge, dict):
+            continue
+        for issue_id in edge.get("issue_ids", []):
+            if is_nonempty_string(issue_id):
+                backlink_sources[str(issue_id)].add(
+                    "canonical dependency edge"
+                )
+    for interface_id, interface in (interfaces or {}).items():
+        if not isinstance(interface, dict):
+            continue
+        for issue_id in interface.get("issue_ids", []):
+            if is_nonempty_string(issue_id):
+                backlink_sources[str(issue_id)].add(
+                    f"method interface {interface_id}"
+                )
+    for aspect, check in (global_checks or {}).items():
+        if not isinstance(check, dict):
+            continue
+        for issue_id in check.get("issue_ids", []):
+            if is_nonempty_string(issue_id):
+                backlink_sources[str(issue_id)].add(
+                    f"global check {aspect}"
+                )
+    all_referenced = set(backlink_sources)
     for index, issue in enumerate(issues, 1):
         prefix = f"Issue record {index}"
         if not isinstance(issue, dict):
@@ -6259,6 +10258,12 @@ def validate_issues(
         confidence = issue.get("confidence")
         status = issue.get("status")
         finding_status = issue.get("finding_status")
+        resolution_archive: dict[str, Any] | None = None
+        resolution_requirements: dict[str, list[str]] = {
+            "required_units": [],
+            "required_dependency_uses": [],
+            "retired_dependency_uses": [],
+        }
         if not is_enum_value(severity, ISSUE_SEVERITIES):
             errors.append(f"{issue_id}: invalid severity {severity!r}")
         else:
@@ -6275,15 +10280,43 @@ def validate_issues(
             errors.append(f"{issue_id}: resolved lifecycle status requires finding_status resolved")
         elif is_enum_value(status, {"open", "deferred"}) and finding_status == "resolved":
             errors.append(f"{issue_id}: an open or deferred issue cannot have finding_status resolved")
-        for field in ("location", "affected_result", "summary"):
+        if final and (
+            status == "resolved" or "historical_origin" in issue
+        ):
+            if evidence_base is None:
+                errors.append(
+                    f"{issue_id}: historical_origin cannot be checked without "
+                    "an audit root"
+                )
+            else:
+                resolution_archive = load_resolution_archive(
+                    issue, evidence_base, errors
+                )
+        for field in ("affected_result", "summary"):
             if not is_substantive_string(issue.get(field)):
                 errors.append(f"{issue_id}: {field} must be nonempty and substantive")
-        validate_string_list(
-            issue.get("evidence"),
-            f"{issue_id}.evidence",
-            errors,
-            substantive=True,
-        )
+        if final and isinstance(issue.get("summary"), str) and any(
+            character in issue["summary"] for character in "\r\n"
+        ):
+            errors.append(
+                f"{issue_id}: summary must be one line for the canonical finding heading"
+            )
+        if final:
+            retired_fields = [
+                field
+                for field in (
+                    "location",
+                    "evidence",
+                    "downstream_consequences",
+                    "possible_repair",
+                )
+                if field in issue
+            ]
+            if retired_fields:
+                errors.append(
+                    f"{issue_id}: schema-5 issue uses retired authored prose fields: "
+                    + ", ".join(retired_fields)
+                )
         affected_result = issue.get("affected_result")
         scope_ids = set(in_scope) if in_scope is not None else None
         if scope_ids is not None and (
@@ -6320,11 +10353,615 @@ def validate_issues(
                     f"{issue_id}.affected_results must equal the reverse dependency closure: "
                     + ", ".join(sorted(expected_affected))
                 )
+        if final:
+            origin_ref = issue.get("origin_ref")
+            if not isinstance(origin_ref, dict):
+                errors.append(f"{issue_id}.origin_ref must be an object")
+                origin_ref = {}
+            origin_kind = origin_ref.get("kind")
+            if not is_enum_value(origin_kind, ISSUE_ORIGIN_KINDS):
+                errors.append(f"{issue_id}.origin_ref.kind is invalid")
+            origin_unit_id = origin_ref.get("unit_id")
+            origin_ledger = ledgers_by_unit.get(str(origin_unit_id))
+            origin_move: dict[str, Any] | None = None
+            origin_dependency: dict[str, Any] | None = None
+            origin_dependency_edge: dict[str, Any] | None = None
+            origin_interface: dict[str, Any] | None = None
+            origin_global_check: dict[str, Any] | None = None
+            if (
+                status != "resolved"
+                and origin_kind != "global_check"
+                and origin_kind != "interface_record"
+            ):
+                if not is_nonempty_string(origin_unit_id) or origin_ledger is None:
+                    errors.append(
+                        f"{issue_id}.origin_ref must resolve one audited unit"
+                    )
+                elif origin_unit_id != affected_result:
+                    errors.append(
+                        f"{issue_id}.origin_ref unit_id must equal affected_result"
+                    )
+            if (
+                status != "resolved"
+                and origin_kind == "ledger_move"
+                and origin_ledger is not None
+            ):
+                step_id = origin_ref.get("step_id")
+                move_id = origin_ref.get("move_id")
+                step = next(
+                    (
+                        row
+                        for row in origin_ledger.get("steps", [])
+                        if isinstance(row, dict) and row.get("id") == step_id
+                    ),
+                    None,
+                )
+                moves = (
+                    step.get("inference", {}).get("moves", [])
+                    if isinstance(step, dict)
+                    and isinstance(step.get("inference"), dict)
+                    else []
+                )
+                matching_moves = [
+                    move
+                    for move in moves
+                    if isinstance(move, dict) and move.get("id") == move_id
+                ]
+                if len(matching_moves) != 1:
+                    errors.append(
+                        f"{issue_id}.origin_ref must resolve exactly one ledger move"
+                    )
+                else:
+                    origin_move = matching_moves[0]
+                if not isinstance(step, dict) or issue_id not in step.get("issue_ids", []):
+                    errors.append(
+                        f"{issue_id}.origin_ref ledger step must link back to the issue"
+                    )
+            elif (
+                status != "resolved"
+                and origin_kind == "obligation_pointer"
+                and origin_ledger is not None
+            ):
+                found, _ = resolve_json_pointer(
+                    origin_ledger.get("obligation"), origin_ref.get("pointer")
+                )
+                if not found:
+                    errors.append(f"{issue_id}.origin_ref obligation pointer is unresolved")
+            elif (
+                status != "resolved"
+                and origin_kind == "dependency_use"
+                and origin_ledger is not None
+            ):
+                use_id = origin_ref.get("use_id")
+                dependency_records = [
+                    dependency
+                    for step in origin_ledger.get("steps", [])
+                    if isinstance(step, dict)
+                    for dependency in step.get("dependencies", [])
+                    if isinstance(dependency, dict)
+                ] + [
+                    dependency
+                    for dependency in origin_ledger.get("review", {}).get(
+                        "direct_dependencies", []
+                    )
+                    if isinstance(dependency, dict)
+                ]
+                matching_dependencies = [
+                    dependency
+                    for dependency in dependency_records
+                    if dependency.get("use_id") == use_id
+                ]
+                if not matching_dependencies:
+                    errors.append(f"{issue_id}.origin_ref dependency use is unresolved")
+                else:
+                    origin_dependency = matching_dependencies[0]
+                matching_edges = [
+                    edge
+                    for edge in (dependency_edges or [])
+                    if isinstance(edge, dict)
+                    and edge.get("dependent_unit") == affected_result
+                    and edge.get("use_id") == use_id
+                ]
+                if dependency_edges is not None:
+                    if len(matching_edges) != 1:
+                        errors.append(
+                            f"{issue_id}.origin_ref dependency use must resolve "
+                            "exactly one canonical registry edge"
+                        )
+                    else:
+                        origin_dependency_edge = matching_edges[0]
+                        if issue_id not in origin_dependency_edge.get(
+                            "issue_ids", []
+                        ):
+                            errors.append(
+                                f"{issue_id}.origin_ref dependency use must link "
+                                "back through the canonical registry edge issue_ids"
+                            )
+            elif status != "resolved" and origin_kind == "interface_record":
+                interface_id = origin_ref.get("interface_id")
+                if (
+                    not is_nonempty_string(interface_id)
+                    or interfaces is None
+                    or interface_id not in interfaces
+                ):
+                    errors.append(f"{issue_id}.origin_ref interface is unresolved")
+                else:
+                    origin_interface = interfaces[interface_id]
+                    if issue.get("interface_id") != interface_id:
+                        errors.append(
+                            f"{issue_id}.origin_ref interface_id must equal "
+                            "the issue interface_id"
+                        )
+                    if affected_result not in origin_interface.get(
+                        "affected_results", []
+                    ):
+                        errors.append(
+                            f"{issue_id}.origin_ref interface does not affect "
+                            "affected_result"
+                        )
+                    if issue_id not in origin_interface.get("issue_ids", []):
+                        errors.append(
+                            f"{issue_id}.origin_ref interface must link back "
+                            "through issue_ids"
+                        )
+                evidence_spans = origin_ref.get("evidence_spans")
+                if not isinstance(evidence_spans, list) or not evidence_spans:
+                    errors.append(
+                        f"{issue_id}.origin_ref.evidence_spans must be a "
+                        "nonempty list"
+                    )
+                    evidence_spans = []
+                if evidence_base is None:
+                    errors.append(
+                        f"{issue_id}.origin_ref.evidence_spans cannot be source-checked"
+                    )
+                    validated_origin_spans: list[dict[str, Any]] = []
+                else:
+                    validated_origin_spans = validate_locked_span_list(
+                        evidence_spans,
+                        evidence_base,
+                        f"{issue_id}.origin_ref.evidence_spans",
+                        errors,
+                        allow_empty=True,
+                    )
+                if origin_interface is not None and validated_origin_spans:
+                    canonical_spans = {
+                        identity
+                        for span in nested_locked_spans(origin_interface)
+                        if (identity := locked_span_identity(span)) is not None
+                    }
+                    for span_index, span in enumerate(validated_origin_spans, 1):
+                        if locked_span_identity(span) not in canonical_spans:
+                            errors.append(
+                                f"{issue_id}.origin_ref.evidence_spans[{span_index}] "
+                                "is not a canonical member of the interface record"
+                            )
+            elif status != "resolved" and origin_kind == "global_check":
+                aspect = origin_ref.get("aspect")
+                if not is_nonempty_string(aspect):
+                    errors.append(
+                        f"{issue_id}.origin_ref global aspect must be explicit"
+                    )
+                elif global_checks is None or aspect not in global_checks:
+                    errors.append(
+                        f"{issue_id}.origin_ref global aspect is unresolved"
+                    )
+                else:
+                    origin_global_check = global_checks[aspect]
+                    if issue_id not in origin_global_check.get("issue_ids", []):
+                        errors.append(
+                            f"{issue_id}.origin_ref global check must link back "
+                            "through issue_ids"
+                        )
+                    if affected_result not in origin_global_check.get(
+                        "affected_units", []
+                    ):
+                        errors.append(
+                            f"{issue_id}.origin_ref global check does not name "
+                            "affected_result"
+                        )
+                evidence_spans = origin_ref.get("evidence_spans")
+                if not isinstance(evidence_spans, list) or not evidence_spans:
+                    errors.append(
+                        f"{issue_id}.origin_ref.evidence_spans must be a "
+                        "nonempty list"
+                    )
+                    evidence_spans = []
+                if evidence_base is None:
+                    errors.append(
+                        f"{issue_id}.origin_ref.evidence_spans cannot be source-checked"
+                    )
+                else:
+                    validate_locked_span_list(
+                        evidence_spans,
+                        evidence_base,
+                        f"{issue_id}.origin_ref.evidence_spans",
+                        errors,
+                        allow_empty=True,
+                    )
+
+            origin_move_closure: dict[str, set[Any]] = {
+                "move_keys": set(),
+                "obligation_pointers": set(),
+                "dependency_uses": set(),
+            }
+            origin_linked_conclusions: set[str] = set()
+            if (
+                origin_kind == "ledger_move"
+                and origin_ledger is not None
+                and origin_move is not None
+            ):
+                origin_step_id = str(origin_ref.get("step_id"))
+                origin_move_id = str(origin_ref.get("move_id"))
+                origin_key = (origin_step_id, origin_move_id)
+                origin_move_closure = ledger_support_contract_closure(
+                    origin_ledger, origin_step_id, origin_move_id
+                )
+                for result in origin_ledger.get("review", {}).get(
+                    "conclusion_results", []
+                ):
+                    support = (
+                        result.get("support")
+                        if isinstance(result, dict)
+                        else None
+                    )
+                    if not isinstance(support, dict):
+                        continue
+                    result_closure = ledger_support_contract_closure(
+                        origin_ledger,
+                        str(support.get("step_id")),
+                        str(support.get("move_id")),
+                    )
+                    if origin_key in result_closure["move_keys"] and (
+                        is_nonempty_string(result.get("conclusion_id"))
+                    ):
+                        origin_linked_conclusions.add(
+                            str(result["conclusion_id"])
+                        )
+
+            contract_refs = issue.get("contract_refs")
+            if not isinstance(contract_refs, list) or not contract_refs:
+                errors.append(f"{issue_id}.contract_refs must be a nonempty list")
+                contract_refs = []
+            seen_contract_refs: set[str] = set()
+            contract_refs_on_root = 0
+            exact_origin_contract = False
+            root_contract_connected_to_origin = False
+            for ref_index, contract_ref in enumerate(contract_refs, 1):
+                ref_prefix = f"{issue_id}.contract_refs[{ref_index}]"
+                if not isinstance(contract_ref, dict):
+                    errors.append(f"{ref_prefix} must be an object")
+                    continue
+                ref_key = canonical_sha256(contract_ref)
+                if ref_key in seen_contract_refs:
+                    errors.append(f"{issue_id}.contract_refs contains duplicates")
+                seen_contract_refs.add(ref_key)
+                ref_kind = contract_ref.get("kind")
+                if not is_enum_value(ref_kind, ISSUE_CONTRACT_REF_KINDS):
+                    errors.append(f"{ref_prefix}.kind is invalid")
+                    continue
+                ref_unit_id = contract_ref.get("unit_id")
+                if ref_unit_id == affected_result:
+                    contract_refs_on_root += 1
+                ref_ledger = ledgers_by_unit.get(str(ref_unit_id))
+                if ref_ledger is None:
+                    errors.append(f"{ref_prefix}.unit_id is unresolved")
+                    continue
+                if ref_kind == "conclusion":
+                    conclusion_id = contract_ref.get("conclusion_id")
+                    conclusions = ref_ledger.get("obligation", {}).get(
+                        "conclusions", []
+                    )
+                    conclusion_matches = sum(
+                        isinstance(row, dict) and row.get("id") == conclusion_id
+                        for row in conclusions
+                    )
+                    if conclusion_matches != 1:
+                        errors.append(f"{ref_prefix}.conclusion_id is unresolved")
+                    elif (
+                        status != "resolved"
+                        and
+                        origin_kind == "ledger_move"
+                        and ref_unit_id == origin_unit_id
+                    ):
+                        if conclusion_id in origin_linked_conclusions:
+                            root_contract_connected_to_origin = True
+                        else:
+                            errors.append(
+                                f"{ref_prefix}.conclusion_id {conclusion_id} is "
+                                "not linked back to the ledger-move origin "
+                                "support closure"
+                            )
+                elif ref_kind == "obligation_pointer":
+                    found, _ = resolve_json_pointer(
+                        ref_ledger.get("obligation"), contract_ref.get("pointer")
+                    )
+                    if not found:
+                        errors.append(f"{ref_prefix}.pointer is unresolved")
+                    elif (
+                        status != "resolved"
+                        and
+                        origin_kind == "ledger_move"
+                        and ref_unit_id == origin_unit_id
+                        and contract_ref.get("pointer")
+                        in origin_move_closure["obligation_pointers"]
+                    ):
+                        root_contract_connected_to_origin = True
+                    if (
+                        status != "resolved"
+                        and
+                        origin_kind == "obligation_pointer"
+                        and ref_unit_id == origin_unit_id
+                        and contract_ref.get("pointer") == origin_ref.get("pointer")
+                    ):
+                        exact_origin_contract = True
+                else:
+                    use_id = contract_ref.get("use_id")
+                    use_records = [
+                        row
+                        for row in ref_ledger.get("review", {}).get(
+                            "direct_dependencies", []
+                        )
+                        if isinstance(row, dict)
+                    ]
+                    if sum(row.get("use_id") == use_id for row in use_records) != 1:
+                        errors.append(f"{ref_prefix}.use_id is unresolved")
+                    elif (
+                        status != "resolved"
+                        and
+                        origin_kind == "ledger_move"
+                        and ref_unit_id == origin_unit_id
+                        and use_id in origin_move_closure["dependency_uses"]
+                    ):
+                        root_contract_connected_to_origin = True
+                    if (
+                        status != "resolved"
+                        and
+                        origin_kind == "dependency_use"
+                        and ref_unit_id == origin_unit_id
+                        and use_id == origin_ref.get("use_id")
+                    ):
+                        exact_origin_contract = True
+            if contract_refs_on_root < 1:
+                errors.append(
+                    f"{issue_id}.contract_refs must include affected_result"
+                )
+            if (
+                status != "resolved"
+                and origin_kind in {"obligation_pointer", "dependency_use"}
+                and not exact_origin_contract
+            ):
+                errors.append(
+                    f"{issue_id}.contract_refs must include the exact origin_ref "
+                    f"{'pointer' if origin_kind == 'obligation_pointer' else 'use_id'}"
+                )
+            if (
+                status != "resolved"
+                and
+                origin_kind == "ledger_move"
+                and origin_move is not None
+                and not root_contract_connected_to_origin
+            ):
+                errors.append(
+                    f"{issue_id}.contract_refs has no affected-result contract "
+                    "linked back to the ledger-move origin support closure"
+                )
+
+            invalidation_kind = issue.get("invalidation_kind")
+            if not is_enum_value(invalidation_kind, ISSUE_INVALIDATION_KINDS):
+                errors.append(f"{issue_id}.invalidation_kind is invalid")
+            root_summary = summaries_by_unit.get(str(affected_result), {})
+            components = root_summary.get("review_components", {})
+            required_component = {
+                "proof_gap": ("argument_status", {"gap"}),
+                "proof_invalid": ("argument_status", {"invalid"}),
+                "statement_refuted": ("statement_status", {"refuted"}),
+                "dependency_mismatch": (
+                    "dependency_closure",
+                    {"gap", "incorrect", "unclear"},
+                ),
+            }.get(invalidation_kind)
+            if required_component is not None and status != "resolved":
+                component, allowed = required_component
+                if components.get(component) not in allowed:
+                    errors.append(
+                        f"{issue_id}.invalidation_kind disagrees with root "
+                        f"{component}"
+                    )
+            if status == "resolved":
+                clean_component = {
+                    "proof_gap": ("argument_status", {"valid", "conditional"}),
+                    "proof_invalid": (
+                        "argument_status",
+                        {"valid", "conditional"},
+                    ),
+                    "statement_refuted": (
+                        "statement_status",
+                        {"established", "conditional"},
+                    ),
+                    "dependency_mismatch": (
+                        "dependency_closure",
+                        {"verified", "conditionally_verified"},
+                    ),
+                }.get(invalidation_kind)
+                if clean_component is not None:
+                    component, allowed = clean_component
+                    if components.get(component) not in allowed:
+                        errors.append(
+                            f"{issue_id}: resolved issue retains a nonclean root "
+                            f"{component}"
+                        )
+            if invalidation_kind == "presentation_only" and issue.get("load_bearing"):
+                errors.append(
+                    f"{issue_id}: presentation_only cannot be load-bearing"
+                )
+            if (
+                status != "resolved"
+                and
+                invalidation_kind in {"proof_gap", "proof_invalid"}
+                and origin_kind == "ledger_move"
+                and (
+                    origin_move is None
+                    or not isinstance(origin_move.get("failure"), dict)
+                    or origin_move["failure"].get("issue_id") != issue_id
+                )
+            ):
+                errors.append(
+                    f"{issue_id}.origin_ref ledger move needs a matching "
+                    "failure.issue_id for the proof failure"
+                )
+            if invalidation_kind == "dependency_mismatch":
+                if origin_kind != "dependency_use":
+                    errors.append(
+                        f"{issue_id}.invalidation_kind dependency_mismatch "
+                        "requires a dependency_use origin_ref"
+                    )
+                elif status in {"open", "deferred"}:
+                    mismatch_statuses = (
+                        {"gap", "incorrect"}
+                        if finding_status == "defect"
+                        else {"unclear"}
+                        if finding_status == "inconclusive"
+                        else set()
+                    )
+                    if (
+                        origin_dependency is not None
+                        and origin_dependency.get("status")
+                        not in mismatch_statuses
+                    ):
+                        errors.append(
+                            f"{issue_id}.origin_ref dependency use status "
+                            f"{origin_dependency.get('status')!r} cannot establish "
+                            "dependency_mismatch with finding_status "
+                            f"{finding_status!r}"
+                        )
+                    if origin_dependency_edge is not None:
+                        edge_status = origin_dependency_edge.get(
+                            "effective_status",
+                            origin_dependency_edge.get("status"),
+                        )
+                        if edge_status not in mismatch_statuses:
+                            errors.append(
+                                f"{issue_id}.origin_ref canonical dependency "
+                                f"status {edge_status!r} cannot establish "
+                                "dependency_mismatch with finding_status "
+                                f"{finding_status!r}"
+                            )
+            if invalidation_kind == "statement_refuted" and status != "resolved":
+                failure = (
+                    origin_move.get("failure")
+                    if isinstance(origin_move, dict)
+                    else None
+                )
+                if (
+                    origin_kind != "ledger_move"
+                    or not isinstance(failure, dict)
+                    or failure.get("kind") not in REFUTATION_FAILURE_KINDS
+                    or failure.get("issue_id") != issue_id
+                ):
+                    errors.append(
+                        f"{issue_id}.invalidation_kind statement_refuted "
+                        "requires a refuting ledger_move origin_ref"
+                    )
+            if (
+                invalidation_kind == "scope_inconclusive"
+                and status != "resolved"
+                and finding_status != "inconclusive"
+            ):
+                errors.append(
+                    f"{issue_id}.invalidation_kind scope_inconclusive requires "
+                    "finding_status inconclusive"
+                )
+
+            suggested_changes = issue.get("suggested_changes")
+            if not isinstance(suggested_changes, list) or not suggested_changes:
+                errors.append(f"{issue_id}.suggested_changes must be a nonempty list")
+                suggested_changes = []
+            for change_index, change in enumerate(suggested_changes, 1):
+                change_prefix = f"{issue_id}.suggested_changes[{change_index}]"
+                if not isinstance(change, dict):
+                    errors.append(f"{change_prefix} must be an object")
+                    continue
+                target_ref = change.get("target_ref")
+                if not isinstance(target_ref, dict) or target_ref.get("kind") != "source_span":
+                    errors.append(
+                        f"{change_prefix}.target_ref must be a source_span object"
+                    )
+                elif evidence_base is None:
+                    errors.append(f"{change_prefix}.target_ref cannot be source-checked")
+                else:
+                    validate_locked_span(
+                        target_ref,
+                        evidence_base,
+                        f"{change_prefix}.target_ref",
+                        errors,
+                    )
+                if not is_enum_value(
+                    change.get("action"), SUGGESTED_CHANGE_ACTIONS
+                ):
+                    errors.append(f"{change_prefix}.action is invalid")
+                if not is_substantive_string(change.get("proposal")):
+                    errors.append(f"{change_prefix}.proposal must be substantive")
+                verification_status = change.get("verification_status")
+                if not is_enum_value(
+                    verification_status, SUGGESTED_CHANGE_STATUSES
+                ):
+                    errors.append(
+                        f"{change_prefix}.verification_status is invalid"
+                    )
+                required_rechecks = validate_string_list(
+                    change.get("required_rechecks"),
+                    f"{change_prefix}.required_rechecks",
+                    errors,
+                )
+                if required_rechecks != sorted(affected_results):
+                    errors.append(
+                        f"{change_prefix}.required_rechecks must equal the full "
+                        "affected result closure"
+                    )
+                if verification_status == "verified_sufficient" and status != "resolved":
+                    errors.append(
+                        f"{change_prefix}: verified_sufficient requires a resolved issue"
+                    )
+            if status == "resolved" and isinstance(
+                resolution_archive, dict
+            ) and evidence_base is not None:
+                resolution_requirements = validate_current_resolution(
+                    issue,
+                    resolution_archive,
+                    evidence_base,
+                    errors,
+                    ledgers_by_unit,
+                    list(dependency_edges or []),
+                    interfaces,
+                    global_checks,
+                )
+                for required_unit in resolution_requirements["required_units"]:
+                    required_summary = summaries_by_unit.get(required_unit)
+                    if (
+                        not isinstance(required_summary, dict)
+                        or required_summary.get("expected_unit_status")
+                        not in {"verified", "conditionally_verified"}
+                    ):
+                        errors.append(
+                            f"{issue_id}: resolved affected unit {required_unit} "
+                            "has not been cleanly rechecked"
+                        )
         scope = issue.get("scope")
         if not is_enum_value(scope, {"unit", "global"}):
             errors.append(f"{issue_id}: scope must be unit or global")
-        if scope == "unit" and issue_id not in referenced:
+        if (
+            scope == "unit"
+            and status in {"open", "deferred"}
+            and issue_id not in referenced
+        ):
             errors.append(f"{issue_id}: unit issue is not referenced by any ledger step")
+        if status == "resolved" and issue_id in all_referenced:
+            errors.append(
+                f"{issue_id}: resolved issue must use historical_origin and "
+                "current_resolution, not current issue backlinks in "
+                + ", ".join(sorted(backlink_sources[issue_id]))
+            )
 
         interface_id = issue.get("interface_id")
         if interface_id is not None:
@@ -6421,10 +11058,26 @@ def validate_issues(
                         f"{issue_id}: execution_provenance_status disagrees with {interface_id}"
                     )
                 interface_issue_ids = interface.get("issue_ids")
-                if isinstance(interface_issue_ids, list) and issue_id not in interface_issue_ids:
-                    errors.append(f"{issue_id}: not linked back from {interface_id}.issue_ids")
+                if isinstance(interface_issue_ids, list):
+                    if status == "resolved" and issue_id in interface_issue_ids:
+                        errors.append(
+                            f"{issue_id}: resolved interface issue must not retain "
+                            f"a live {interface_id}.issue_ids backlink"
+                        )
+                    elif (
+                        status in {"open", "deferred"}
+                        and issue_id not in interface_issue_ids
+                    ):
+                        errors.append(
+                            f"{issue_id}: not linked back from "
+                            f"{interface_id}.issue_ids"
+                        )
                 specification = interface.get("interface_specification_status")
-                if issue.get("load_bearing") is True and interface.get("load_bearing") is not True:
+                if (
+                    status != "resolved"
+                    and issue.get("load_bearing") is True
+                    and interface.get("load_bearing") is not True
+                ):
                     errors.append(
                         f"{issue_id}: a load-bearing issue requires a load-bearing interface"
                     )
@@ -6438,15 +11091,21 @@ def validate_issues(
                         errors.append(
                             f"{issue_id}: exposition_ambiguity requires an ambiguous or incomplete specification"
                         )
-                    if canonical_target == "mismatch":
+                    if status != "resolved" and canonical_target == "mismatch":
                         errors.append(
                             f"{issue_id}: exposition ambiguity cannot be reported as a target mismatch"
                         )
-                if finding_class == "estimator_target_mismatch" and canonical_target != "mismatch":
+                if (
+                    status != "resolved"
+                    and finding_class == "estimator_target_mismatch"
+                    and canonical_target != "mismatch"
+                ):
                     errors.append(
                         f"{issue_id}: estimator_target_mismatch requires an established target mismatch"
                     )
                 if (
+                    status != "resolved"
+                    and
                     finding_class == "implementation_mismatch"
                     and canonical_code_to_documented != "inconsistent"
                 ):
@@ -6454,6 +11113,8 @@ def validate_issues(
                         f"{issue_id}: implementation_mismatch requires code-to-documentation inconsistency"
                     )
                 if (
+                    status != "resolved"
+                    and
                     finding_class == "implementation_mismatch"
                     and issue.get("load_bearing") is True
                     and interface.get("implementation_required_for_claim") is not True
@@ -6461,14 +11122,20 @@ def validate_issues(
                     errors.append(
                         f"{issue_id}: a load-bearing implementation mismatch must be required for the claim"
                     )
-                if finding_class == "scope_boundary" and not is_enum_value(
-                    canonical_inspection,
-                    {"available_not_checked", "unavailable", "out_of_scope"},
+                if (
+                    status != "resolved"
+                    and finding_class == "scope_boundary"
+                    and not is_enum_value(
+                        canonical_inspection,
+                        {"available_not_checked", "unavailable", "out_of_scope"},
+                    )
                 ):
                     errors.append(
                         f"{issue_id}: scope_boundary requires an uninspected implementation status"
                     )
                 if (
+                    status != "resolved"
+                    and
                     finding_class == "reproducibility_gap"
                     and canonical_provenance == "matched"
                 ):
@@ -6476,6 +11143,8 @@ def validate_issues(
                         f"{issue_id}: reproducibility_gap conflicts with matched execution provenance"
                     )
                 if (
+                    status != "resolved"
+                    and
                     finding_class == "reproducibility_gap"
                     and issue.get("load_bearing") is True
                     and interface.get("execution_provenance_required_for_claim") is not True
@@ -6483,22 +11152,28 @@ def validate_issues(
                     errors.append(
                         f"{issue_id}: a load-bearing reproducibility gap must be required for the claim"
                     )
+                if status == "resolved":
+                    resolved_interface_ok = {
+                        "exposition_ambiguity": specification == "clear",
+                        "estimator_target_mismatch": canonical_target
+                        in {"match", "conditional_match"},
+                        "implementation_mismatch": canonical_code_to_documented
+                        in {"consistent", "not_applicable"},
+                        "scope_boundary": canonical_inspection
+                        in {"inspected", "not_applicable"},
+                        "reproducibility_gap": canonical_provenance
+                        in {"matched", "not_applicable"},
+                    }.get(finding_class, False)
+                    if not resolved_interface_ok:
+                        errors.append(
+                            f"{issue_id}: resolved interface record does not show "
+                            f"a clean current {finding_class} state"
+                        )
 
         if final and not isinstance(issue.get("load_bearing"), bool):
             errors.append(f"{issue_id}: load_bearing must be true or false")
         if final and is_enum_value(severity, {"S0", "S1"}) and issue.get("load_bearing") is not True:
             errors.append(f"{issue_id}: S0 and S1 issues must be load-bearing")
-        if final:
-            validate_string_list(
-                issue.get("downstream_consequences"),
-                f"{issue_id}.downstream_consequences",
-                errors,
-                substantive=True,
-            )
-            if not is_substantive_string(issue.get("possible_repair")):
-                errors.append(
-                    f"{issue_id}: possible_repair must be explicit and substantive"
-                )
         if status == "resolved" and final:
             if not is_substantive_string(issue.get("resolution")):
                 errors.append(f"{issue_id}: resolved issue needs a substantive resolution")
@@ -6519,10 +11194,70 @@ def validate_issues(
                 f"{issue_id}.rechecked_units",
                 errors,
             )
-            if rechecked_units != sorted(affected_results):
+            if rechecked_units != resolution_requirements["required_units"]:
                 errors.append(
-                    f"{issue_id}.rechecked_units must equal affected_results exactly"
+                    f"{issue_id}.rechecked_units must equal the historical-current "
+                    "affected union exactly"
                 )
+            rechecked_dependency_uses = validate_string_list(
+                issue.get("rechecked_dependency_uses"),
+                f"{issue_id}.rechecked_dependency_uses",
+                errors,
+                allow_empty=True,
+            )
+            if len(rechecked_dependency_uses) != len(
+                set(rechecked_dependency_uses)
+            ) or not all(
+                DEPENDENCY_USE_ID_RE.fullmatch(use_id)
+                for use_id in rechecked_dependency_uses
+            ):
+                errors.append(
+                    f"{issue_id}.rechecked_dependency_uses must contain unique Dxxx IDs"
+                )
+            elif (
+                rechecked_dependency_uses
+                != resolution_requirements["required_dependency_uses"]
+            ):
+                errors.append(
+                    f"{issue_id}.rechecked_dependency_uses must equal the "
+                    "historical-current dependency-use union"
+                )
+            reconciled_deliverables = validate_string_list(
+                issue.get("reconciled_deliverables"),
+                f"{issue_id}.reconciled_deliverables",
+                errors,
+                allow_empty=True,
+            )
+            if len(reconciled_deliverables) != len(set(reconciled_deliverables)) or not all(
+                REPORT_DELIVERABLE_ID_RE.fullmatch(deliverable_id)
+                for deliverable_id in reconciled_deliverables
+            ):
+                errors.append(
+                    f"{issue_id}.reconciled_deliverables must contain unique Rxxx IDs"
+                )
+            else:
+                archived_deliverables = (
+                    resolution_archive.get("required_closure", {}).get(
+                        "report_deliverables", []
+                    )
+                    if isinstance(resolution_archive, dict)
+                    else []
+                )
+                current_deliverables = [
+                    item
+                    for item in issue.get(
+                        "reconciled_deliverables", []
+                    )
+                    if is_nonempty_string(item)
+                ]
+                required_deliverables = sorted(
+                    set(archived_deliverables) | set(current_deliverables)
+                )
+                if reconciled_deliverables != required_deliverables:
+                    errors.append(
+                        f"{issue_id}.reconciled_deliverables must preserve the "
+                        "historical deliverable closure"
+                    )
             if interface_id is not None:
                 contract = issue.get("semantic_contract")
                 if not isinstance(contract, dict):
@@ -6583,8 +11318,8 @@ def validate_issues(
                                     f"{issue_id}: semantic support must be an authoritative span"
                                 )
 
-    for issue_id in sorted(referenced - seen):
-        errors.append(f"Ledger references undefined issue: {issue_id}")
+    for issue_id in sorted(all_referenced - seen):
+        errors.append(f"Current audit records reference undefined issue: {issue_id}")
     counts["total"] = len(issues)
     return errors, counts
 
@@ -6630,13 +11365,13 @@ def render_issue_summary(issues: list[dict[str, Any]]) -> str:
             "",
             "## Issues",
             "",
-            "| ID | Severity | Confidence | Status | Finding status | Load-bearing | Finding class | Affected layer | Interface | Estimator target | Implementation inspection | Code to documented estimator | Code to required target | Execution provenance | Affected result | Affected results | Summary |",
-            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+            "| Issue | Severity | Load-bearing | Confidence | Lifecycle | Finding | Invalidation kind | Origin ref | Contract refs | Affected results |",
+            "|---|---|---|---|---|---|---|---|---|---|",
         ]
     )
     if not issues:
         rows.append(
-            "| None | None | None | None | None | None | None | None | None | None | None | None | None | None | None | None | No issues recorded |"
+            "| None | None | None | None | None | None | None | None | None | None |"
         )
     else:
         for issue in sorted(
@@ -6670,23 +11405,45 @@ def audit_ledgers(root: Path, final: bool) -> tuple[list[str], list[dict[str, An
 def cmd_issues(args: argparse.Namespace) -> int:
     root = args.root.resolve()
     errors, summaries, referenced = audit_ledgers(root, args.final)
+    errors = [*audit_internal_redirect_errors(root), *errors]
     if args.final and not summaries:
         errors.append("Final issue reconciliation requires at least one ledger")
-    issue_path, issues, issue_read_errors = load_issue_log(root)
+    issue_path, issues, issue_schema_version, issue_read_errors = load_issue_log(root)
     errors.extend(issue_read_errors)
-    manifest, manifest_errors = load_json_object(root / "AUDIT_MANIFEST.json", "audit manifest")
+    if args.final and issue_schema_version != SCHEMA_VERSION:
+        errors.append(
+            "upgrade_required: final issue reconciliation requires "
+            f"ISSUE_LOG.json schema_version {SCHEMA_VERSION}; schema "
+            f"{issue_schema_version!r} is inspection-only"
+        )
+    _, manifest, manifest_errors = load_audit_manifest(root)
     errors.extend(manifest_errors)
+    summaries_by_id = {
+        summary.get("unit_id"): summary
+        for summary in summaries
+        if isinstance(summary, dict)
+        and is_nonempty_string(summary.get("unit_id"))
+    }
     interfaces: dict[str, dict[str, Any]] | None = None
     source_snapshot_id: str | None = None
+    in_scope: list[str] | None = None
+    reverse_graph: dict[str, set[str]] | None = None
+    dependency_edges: list[dict[str, Any]] = []
+    global_checks: dict[str, dict[str, Any]] | None = None
     if not manifest_errors:
         source_snapshot = manifest.get("source_snapshot")
         if isinstance(source_snapshot, dict) and is_nonempty_string(
             source_snapshot.get("sha256")
         ):
             source_snapshot_id = source_snapshot["sha256"]
-        registry_value = manifest.get("method_interface_registry")
-        if is_nonempty_string(registry_value):
-            registry_path = resolve_stored_path(registry_value, root)
+        registry_path, registry_path_valid = manifest_canonical_artifact_path(
+            manifest,
+            root,
+            "method_interface_registry",
+            "method-interface registry",
+            errors,
+        )
+        if registry_path_valid:
             registry, registry_errors = load_json_object(
                 registry_path, "method-interface registry"
             )
@@ -6695,6 +11452,109 @@ def cmd_issues(args: argparse.Namespace) -> int:
                 interfaces = validate_method_interface_registry(
                     registry, root, errors, final=args.final
                 )
+                for interface in interfaces.values():
+                    referenced.update(
+                        issue_id
+                        for issue_id in interface.get("issue_ids", [])
+                        if is_nonempty_string(issue_id)
+                    )
+        if args.final:
+            errors.extend(source_snapshot_freshness_errors(root, manifest))
+            scope = manifest.get("audit_scope")
+            if not isinstance(scope, dict):
+                errors.append(
+                    "Final issue reconciliation requires audit_scope as an object"
+                )
+                scope = {}
+            if scope.get("status") != "reviewed":
+                errors.append(
+                    "Final issue reconciliation requires reviewed audit_scope"
+                )
+            in_scope = validate_string_list(
+                scope.get("in_scope_units"),
+                "audit_scope.in_scope_units",
+                errors,
+            )
+            inventory_path, inventory_path_valid = (
+                manifest_canonical_artifact_path(
+                    manifest,
+                    root,
+                    "inventory_file",
+                    "proof-unit inventory",
+                    errors,
+                )
+            )
+            if inventory_path_valid and not inventory_path.is_file():
+                errors.append(
+                    "Final issue reconciliation cannot find the reviewed "
+                    f"inventory: {inventory_path}"
+                )
+            dependency_registry_path, dependency_path_valid = (
+                manifest_canonical_artifact_path(
+                    manifest,
+                    root,
+                    "dependency_registry",
+                    "dependency registry",
+                    errors,
+                )
+            )
+            dependency_registry, dependency_registry_errors = (
+                load_json_object(
+                    dependency_registry_path, "dependency registry"
+                )
+                if dependency_path_valid
+                else ({}, [])
+            )
+            errors.extend(dependency_registry_errors)
+            if dependency_path_valid and not dependency_registry_errors:
+                closure_result = validate_dependency_closure(
+                    dependency_registry,
+                    root,
+                    summaries_by_id,
+                    source_snapshot_sha256=source_snapshot_id,
+                    inventory_sha256=(
+                        sha256_file(inventory_path)
+                        if inventory_path_valid and inventory_path.is_file()
+                        else ""
+                    ),
+                    in_scope=in_scope,
+                    errors=errors,
+                )
+                dependency_edges = closure_result["edges"]
+                referenced.update(closure_result["issue_ids"])
+                reverse_graph = {
+                    unit_id: set() for unit_id in summaries_by_id
+                }
+                for dependent, dependencies in closure_result[
+                    "unit_graph"
+                ].items():
+                    for dependency in dependencies:
+                        reverse_graph.setdefault(dependency, set()).add(
+                            dependent
+                        )
+            completion = manifest.get("completion")
+            if not isinstance(completion, dict):
+                errors.append(
+                    "Final issue reconciliation requires manifest completion "
+                    "as an object"
+                )
+                completion = {}
+            global_pass = completion.get("global_consistency_pass")
+            global_result = validate_global_consistency_pass(
+                global_pass, in_scope, errors
+            )
+            referenced.update(global_result.get("issue_ids", set()))
+            checks = (
+                global_pass.get("checks")
+                if isinstance(global_pass, dict)
+                else []
+            )
+            global_checks = {
+                row.get("aspect"): row
+                for row in checks
+                if isinstance(row, dict)
+                and is_nonempty_string(row.get("aspect"))
+            }
     issue_errors, counts = validate_issues(
         issues,
         referenced,
@@ -6702,14 +11562,86 @@ def cmd_issues(args: argparse.Namespace) -> int:
         evidence_base=root,
         interfaces=interfaces,
         source_snapshot_id=source_snapshot_id,
+        in_scope=in_scope,
+        reverse_graph=reverse_graph,
+        ledger_summaries=summaries,
+        dependency_edges=dependency_edges if args.final else None,
+        global_checks=global_checks,
     )
     errors.extend(issue_errors)
 
-    if args.write_summary and not issue_read_errors:
-        summary_path = root / "audit" / "06_reports" / "ISSUE_SUMMARY.md"
-        summary_path.write_text(
-            render_issue_summary(issues), encoding="utf-8", newline="\n"
-        )
+    summary_path, summary_path_valid = canonical_artifact_path(
+        root,
+        "audit/06_reports/ISSUE_SUMMARY.md",
+        "issue summary",
+        errors,
+    )
+    summary_candidate = (
+        render_issue_summary(issues)
+        if args.write_summary and not issue_read_errors and summary_path_valid
+        else None
+    )
+    report_views_written = False
+    report_path: Path | None = None
+    report_candidate: str | None = None
+    if getattr(args, "write_report_views", False):
+        if not args.final:
+            errors.append("--write-report-views requires --final")
+        elif not errors:
+            report_path, report_path_valid = canonical_artifact_path(
+                root,
+                "audit/06_reports/FINAL_REPORT.md",
+                "final report",
+                errors,
+            )
+            if not report_path_valid:
+                report_path = None
+            elif not report_path.is_file():
+                errors.append(f"Canonical final report not found: {report_path}")
+            else:
+                effective_critical, _ = effective_critical_requirements(
+                    manifest, issues
+                )
+                report_deliverables = manifest.get("report_deliverables")
+                if not isinstance(report_deliverables, list):
+                    report_deliverables = []
+                scope = manifest.get("audit_scope")
+                assessment = (
+                    scope.get("overall_assessment")
+                    if isinstance(scope, dict)
+                    else None
+                )
+                issue_index, detailed_findings = render_issue_report_views(
+                    issues,
+                    summaries_by_id,
+                    dependency_edges,
+                    effective_critical,
+                    report_deliverables,
+                    assessment,
+                    interfaces=interfaces,
+                    global_checks=global_checks,
+                )
+                try:
+                    report_text = read_text(report_path)
+                except TextArtifactReadError as exc:
+                    errors.append(str(exc))
+                else:
+                    report_text = replace_report_section_text(
+                        report_text, "## Issue index", issue_index
+                    )
+                    report_text = replace_report_section_text(
+                        report_text, "## Detailed findings", detailed_findings
+                    )
+                    report_candidate = report_text
+
+    if not errors:
+        pending_writes: list[tuple[Path, str]] = []
+        if report_path is not None and report_candidate is not None:
+            pending_writes.append((report_path, report_candidate))
+        if summary_candidate is not None:
+            pending_writes.append((summary_path, summary_candidate))
+        transactional_write_texts(pending_writes)
+        report_views_written = report_candidate is not None
 
     result = {
         "audit_root": str(root),
@@ -6717,6 +11649,7 @@ def cmd_issues(args: argparse.Namespace) -> int:
         "ledgers": len(summaries),
         "ledger_issue_references": len(referenced),
         "issue_counts": dict(counts),
+        "report_views_written": report_views_written,
         "errors": len(errors),
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -6724,6 +11657,489 @@ def cmd_issues(args: argparse.Namespace) -> int:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)
         return 1
+    return 0
+
+
+def historical_origin_from_archive(
+    archive: dict[str, Any], archive_path: Path, root: Path
+) -> dict[str, Any]:
+    closure = archive.get("required_closure")
+    if not isinstance(closure, dict):
+        closure = {}
+    dependency_rows = closure.get("dependency_uses")
+    dependency_ids = [
+        str(row.get("use_id"))
+        for row in dependency_rows
+        if isinstance(row, dict) and is_nonempty_string(row.get("use_id"))
+    ] if isinstance(dependency_rows, list) else []
+    return {
+        "artifact": archive_path.relative_to(root).as_posix(),
+        "sha256": sha256_file(archive_path),
+        "source_snapshot_sha256": archive.get("source_snapshot_sha256"),
+        "required_units": list(closure.get("units", []))
+        if isinstance(closure.get("units"), list)
+        else [],
+        "required_dependency_uses": dependency_ids,
+        "required_challenges": list(closure.get("challenges", []))
+        if isinstance(closure.get("challenges"), list)
+        else [],
+        "required_report_deliverables": list(
+            closure.get("report_deliverables", [])
+        )
+        if isinstance(closure.get("report_deliverables"), list)
+        else [],
+    }
+
+
+def adopt_existing_issue_archive(
+    root: Path,
+    manifest: dict[str, Any],
+    issue_path: Path,
+    issue_log: dict[str, Any],
+    issue: dict[str, Any],
+    archive_path: Path,
+) -> dict[str, Any]:
+    """Recover a valid archive created just before an interrupted issue-log commit."""
+    archive, archive_errors = load_json_object(
+        archive_path, "existing resolution archive"
+    )
+    if archive_errors:
+        raise ValueError("; ".join(archive_errors))
+    historical_origin = historical_origin_from_archive(
+        archive, archive_path, root
+    )
+    candidate_issue = json.loads(json.dumps(issue, ensure_ascii=False))
+    candidate_issue["historical_origin"] = historical_origin
+    validation_errors: list[str] = []
+    load_resolution_archive(candidate_issue, root, validation_errors)
+    validation_errors.extend(source_snapshot_freshness_errors(root, manifest))
+    if sha256_file(issue_path) != archive.get("prior_issue_log_sha256"):
+        validation_errors.append(
+            "Live issue log no longer equals the archive's prior issue log"
+        )
+
+    prior_record = archive.get("prior_finalization_record")
+    if not isinstance(prior_record, dict):
+        validation_errors.append(
+            "Existing archive has no valid prior finalization record"
+        )
+    else:
+        record_path, record_path_errors = finalization_record_path(
+            manifest, root
+        )
+        validation_errors.extend(record_path_errors)
+        archive_relative = archive_path.relative_to(root).as_posix()
+        current_rows = [
+            row
+            for row in audit_state_manifest(root, record_path)
+            if row.get("file") != archive_relative
+        ]
+        manifest_errors, changes = artifact_manifest_changes(
+            prior_record.get("artifact_manifest"), current_rows
+        )
+        validation_errors.extend(manifest_errors)
+        if any(changes.values()):
+            validation_errors.append(
+                "Current audit state changed beyond the recoverable archive file"
+            )
+    if validation_errors:
+        raise ValueError(
+            "Existing resolution archive cannot be adopted: "
+            + "; ".join(validation_errors[:10])
+        )
+    transaction_temp = proofcheck_temp_path(archive_path)
+    transaction_lock = proofcheck_lock_path(archive_path)
+    if transaction_temp.exists() and transaction_temp.is_symlink():
+        raise ValueError(
+            f"Refusing a symlinked proofcheck temp file: {transaction_temp}"
+        )
+    if transaction_lock.exists() and transaction_lock.is_symlink():
+        raise ValueError(
+            f"Refusing a symlinked proofcheck lock file: {transaction_lock}"
+        )
+    issue["historical_origin"] = historical_origin
+    atomic_replace_text(
+        issue_path,
+        json.dumps(issue_log, ensure_ascii=False, indent=2) + "\n",
+    )
+    if transaction_temp.exists():
+        transaction_temp.unlink()
+    if transaction_lock.exists():
+        try:
+            lock_record = json.loads(read_text(transaction_lock))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            lock_record = None
+        if (
+            isinstance(lock_record, dict)
+            and lock_record.get("transaction_schema_version") == 1
+            and lock_record.get("target") == archive_path.name
+            and lock_record.get("expected_sha256") == sha256_file(archive_path)
+        ):
+            transaction_lock.unlink()
+    return historical_origin
+
+
+def cmd_archive_issue(args: argparse.Namespace) -> int:
+    """Seal one currently finalized unresolved issue before source repair."""
+    root = args.root.resolve()
+    issue_id = args.issue_id
+    history_directory, history_errors = confined_history_directory(root)
+    if history_errors:
+        raise ValueError("; ".join(history_errors))
+    freshness = check_finalization_freshness(root)
+    _, manifest, manifest_errors = load_audit_manifest(root)
+    if manifest_errors:
+        raise ValueError("; ".join(manifest_errors))
+    issue_path_errors: list[str] = []
+    issue_path, issue_path_valid = canonical_artifact_path(
+        root,
+        "audit/06_reports/ISSUE_LOG.json",
+        "issue log",
+        issue_path_errors,
+    )
+    if not issue_path_valid:
+        raise ValueError("; ".join(issue_path_errors))
+    issue_log, issue_log_errors = load_json_object(issue_path, "issue log")
+    if issue_log_errors:
+        raise ValueError("; ".join(issue_log_errors))
+    issues = issue_log.get("issues")
+    if not isinstance(issues, list):
+        raise ValueError("ISSUE_LOG.json must contain an issues list")
+    matches = [
+        issue
+        for issue in issues
+        if isinstance(issue, dict) and issue.get("id") == issue_id
+    ]
+    if len(matches) != 1:
+        raise ValueError(f"archive-issue must resolve exactly one issue: {issue_id}")
+    issue = matches[0]
+    if issue.get("status") not in {"open", "deferred"}:
+        raise ValueError("archive-issue accepts only an open or deferred issue")
+    if "historical_origin" in issue:
+        raise ValueError(f"{issue_id} already has historical_origin")
+
+    archive_path = history_directory / f"{issue_id}-origin.json"
+    if archive_path.exists():
+        historical_origin = adopt_existing_issue_archive(
+            root,
+            manifest,
+            issue_path,
+            issue_log,
+            issue,
+            archive_path,
+        )
+        print(
+            json.dumps(
+                {
+                    "audit_root": str(root),
+                    "issue_id": issue_id,
+                    "archive": str(archive_path),
+                    "archive_sha256": historical_origin["sha256"],
+                    "recovered_existing_archive": True,
+                    "next_action": (
+                        "Apply the source repair, rebuild affected ledgers and "
+                        "dependencies, add current_resolution, run fresh "
+                        "challenges, and regenerate issue/report views."
+                    ),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    if not freshness.get("usable_finalization"):
+        raise ValueError(
+            "archive-issue requires a current passed finalization record for "
+            "the unresolved audit"
+        )
+
+    ledger_errors, summaries, _ = audit_ledgers(root, True)
+    if ledger_errors:
+        raise ValueError(
+            "archive-issue found invalid ledgers: " + "; ".join(ledger_errors[:5])
+        )
+    summaries_by_id = {
+        str(summary["unit_id"]): summary
+        for summary in summaries
+        if isinstance(summary, dict)
+        and is_nonempty_string(summary.get("unit_id"))
+    }
+    scope = manifest.get("audit_scope")
+    if not isinstance(scope, dict):
+        raise ValueError("archive-issue requires audit_scope")
+    in_scope = [
+        unit_id
+        for unit_id in scope.get("in_scope_units", [])
+        if is_nonempty_string(unit_id)
+    ]
+    canonical_errors: list[str] = []
+    inventory_path, inventory_path_valid = manifest_canonical_artifact_path(
+        manifest,
+        root,
+        "inventory_file",
+        "proof-unit inventory",
+        canonical_errors,
+    )
+    registry_path, registry_path_valid = manifest_canonical_artifact_path(
+        manifest,
+        root,
+        "dependency_registry",
+        "dependency registry",
+        canonical_errors,
+    )
+    if not inventory_path_valid or not registry_path_valid:
+        raise ValueError("; ".join(canonical_errors))
+    registry, registry_errors = load_json_object(
+        registry_path, "dependency registry"
+    )
+    if registry_errors:
+        raise ValueError("; ".join(registry_errors))
+    closure_errors: list[str] = []
+    snapshot = manifest.get("source_snapshot")
+    closure = validate_dependency_closure(
+        registry,
+        root,
+        summaries_by_id,
+        source_snapshot_sha256=(
+            snapshot.get("sha256") if isinstance(snapshot, dict) else None
+        ),
+        inventory_sha256=sha256_file(inventory_path),
+        in_scope=in_scope,
+        errors=closure_errors,
+    )
+    if closure_errors:
+        raise ValueError(
+            "archive-issue dependency closure failed: "
+            + "; ".join(closure_errors[:5])
+        )
+    dependency_edges = closure["edges"]
+    effective_critical, _ = effective_critical_requirements(manifest, issues)
+    report_deliverables = manifest.get("report_deliverables")
+    if not isinstance(report_deliverables, list):
+        report_deliverables = []
+    context_errors: list[str] = []
+    interfaces: dict[str, dict[str, Any]] | None = None
+    interface_registry_path: Path | None = None
+    interface_registry_path, interface_registry_path_valid = (
+        manifest_canonical_artifact_path(
+            manifest,
+            root,
+            "method_interface_registry",
+            "method-interface registry",
+            context_errors,
+        )
+    )
+    if interface_registry_path_valid:
+        interface_registry, interface_registry_errors = load_json_object(
+            interface_registry_path,
+            "method-interface registry",
+        )
+        context_errors.extend(interface_registry_errors)
+        if not interface_registry_errors:
+            interfaces = validate_method_interface_registry(
+                interface_registry, root, context_errors, final=True
+            )
+    completion = manifest.get("completion")
+    global_checks: dict[str, dict[str, Any]] | None = None
+    if isinstance(completion, dict):
+        global_pass = completion.get("global_consistency_pass")
+        validate_global_consistency_pass(
+            global_pass, in_scope, context_errors
+        )
+        checks = (
+            global_pass.get("checks")
+            if isinstance(global_pass, dict)
+            else []
+        )
+        global_checks = {
+            row.get("aspect"): row
+            for row in checks
+            if isinstance(row, dict)
+            and is_nonempty_string(row.get("aspect"))
+        }
+    if context_errors:
+        raise ValueError(
+            "archive-issue canonical issue context failed: "
+            + "; ".join(context_errors[:5])
+        )
+    if not interface_registry_path_valid:
+        raise ValueError(
+            "archive-issue requires method_interface_registry in the manifest"
+        )
+    projection = canonical_issue_detail_projection(
+        issue,
+        summaries_by_id,
+        dependency_edges,
+        effective_critical,
+        report_deliverables,
+        scope.get("overall_assessment"),
+        evidence_base=root,
+        interfaces=interfaces,
+        global_checks=global_checks,
+    )
+    required = projection.get("required_closure")
+    if not isinstance(required, dict):
+        raise ValueError("archive-issue could not derive required closure")
+    required_units = list(required.get("units", []))
+    required_use_ids = list(required.get("dependency_uses", []))
+    selected_edges = issue_recheck_edges(issue, dependency_edges)
+    edges_by_use: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for edge in selected_edges:
+        edges_by_use[str(edge.get("use_id"))].append(edge)
+    dependency_rows: list[dict[str, str]] = []
+    for use_id in required_use_ids:
+        matches_for_use = edges_by_use.get(str(use_id), [])
+        if len(matches_for_use) != 1:
+            raise ValueError(
+                f"archive-issue requires one canonical edge for {use_id}"
+            )
+        dependency_rows.append(
+            {
+                "use_id": str(use_id),
+                "edge_sha256": canonical_sha256(matches_for_use[0]),
+            }
+        )
+
+    ledger_sha256s: dict[str, str] = {}
+    sealed_ledgers: list[dict[str, str]] = []
+    for unit_id in required_units:
+        summary = summaries_by_id.get(str(unit_id))
+        ledger_value = summary.get("ledger") if isinstance(summary, dict) else None
+        if not is_nonempty_string(ledger_value):
+            raise ValueError(f"archive-issue cannot find ledger for {unit_id}")
+        ledger_path = Path(str(ledger_value)).resolve()
+        try:
+            stored_ledger = ledger_path.relative_to(root).as_posix()
+        except ValueError as exc:
+            raise ValueError(
+                f"archive-issue ledger is outside the audit root: {ledger_path}"
+            ) from exc
+        record = sealed_file_record(ledger_path, stored_ledger)
+        ledger_sha256s[str(unit_id)] = record["sha256"]
+        sealed_ledgers.append(record)
+
+    prior_record_path = Path(str(freshness.get("record")))
+    prior_record, prior_record_errors = load_json_object(
+        prior_record_path, "prior finalization record"
+    )
+    if prior_record_errors:
+        raise ValueError("; ".join(prior_record_errors))
+    source_records = (
+        snapshot.get("files") if isinstance(snapshot, dict) else None
+    )
+    if not isinstance(source_records, list):
+        raise ValueError("archive-issue requires source_snapshot.files")
+    sealed_sources: list[dict[str, str]] = []
+    for index, source_record in enumerate(source_records, 1):
+        if not isinstance(source_record, dict):
+            raise ValueError(
+                f"archive-issue source_snapshot.files[{index}] is invalid"
+            )
+        file_value = source_record.get("file")
+        digest = source_record.get("sha256")
+        if not is_nonempty_string(file_value):
+            raise ValueError(
+                f"archive-issue source_snapshot.files[{index}].file is invalid"
+            )
+        source_path = resolve_stored_path(str(file_value), root)
+        if not source_path.is_file() or sha256_file(source_path) != digest:
+            raise ValueError(
+                f"archive-issue source snapshot is stale: {file_value}"
+            )
+        sealed_sources.append(
+            sealed_file_record(source_path, str(file_value))
+        )
+    prior_artifacts = {
+        "manifest": sealed_file_record(
+            root / "AUDIT_MANIFEST.json", "AUDIT_MANIFEST.json"
+        ),
+        "issue_log": sealed_file_record(
+            issue_path, "audit/06_reports/ISSUE_LOG.json"
+        ),
+        "final_report": sealed_file_record(
+            root / "audit" / "06_reports" / "FINAL_REPORT.md",
+            "audit/06_reports/FINAL_REPORT.md",
+        ),
+        "inventory": sealed_file_record(
+            inventory_path, str(manifest.get("inventory_file"))
+        ),
+        "dependency_registry": sealed_file_record(
+            registry_path, str(manifest.get("dependency_registry"))
+        ),
+        "method_interface_registry": sealed_file_record(
+            interface_registry_path,
+            str(manifest.get("method_interface_registry")),
+        ),
+        "ledgers": sorted(
+            sealed_ledgers, key=lambda record: record["file"]
+        ),
+    }
+    archived_issue = json.loads(json.dumps(issue, ensure_ascii=False))
+    archive = {
+        "archive_schema_version": RESOLUTION_ARCHIVE_SCHEMA_VERSION,
+        "protocol": manifest.get("protocol"),
+        "source_snapshot_sha256": (
+            snapshot.get("sha256") if isinstance(snapshot, dict) else None
+        ),
+        "issue_record": archived_issue,
+        "issue_record_sha256": canonical_sha256(archived_issue),
+        "prior_issue_log_sha256": sha256_file(issue_path),
+        "prior_finalization_record": prior_record,
+        "prior_finalization_record_sha256": canonical_sha256(prior_record),
+        "prior_artifacts": prior_artifacts,
+        "prior_sources": sealed_sources,
+        "ledger_sha256s": ledger_sha256s,
+        "dependency_registry_sha256": sha256_file(registry_path),
+        "inventory_sha256": sha256_file(inventory_path),
+        "root_components": summaries_by_id.get(
+            str(issue.get("affected_result")), {}
+        ).get("review_components", {}),
+        "projection": projection,
+        "projection_sha256": canonical_sha256(projection),
+        "required_closure": {
+            "units": required_units,
+            "dependency_uses": dependency_rows,
+            "challenges": list(required.get("challenges", [])),
+            "report_deliverables": list(
+                required.get("report_deliverables", [])
+            ),
+        },
+        # Bind retries to the unchanged finalized state so an interrupted
+        # archive transaction regenerates byte-identical content.
+        "generated_utc": prior_record.get("generated_utc"),
+    }
+    archive["archive_payload_sha256"] = resolution_archive_payload_sha256(
+        archive
+    )
+    history_directory.mkdir(parents=True, exist_ok=True)
+    atomic_create_text(
+        archive_path,
+        json.dumps(archive, ensure_ascii=False, indent=2) + "\n",
+    )
+    issue["historical_origin"] = historical_origin_from_archive(
+        archive, archive_path, root
+    )
+    atomic_replace_text(
+        issue_path,
+        json.dumps(issue_log, ensure_ascii=False, indent=2) + "\n",
+    )
+    print(
+        json.dumps(
+            {
+                "audit_root": str(root),
+                "issue_id": issue_id,
+                "archive": str(archive_path),
+                "archive_sha256": issue["historical_origin"]["sha256"],
+                "next_action": (
+                    "Apply the source repair, rebuild affected ledgers and "
+                    "dependencies, add current_resolution, run fresh challenges, "
+                    "and regenerate issue/report views."
+                ),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 
@@ -7649,6 +13065,7 @@ def validate_dependency_closure(
     edges: list[dict[str, Any]] = []
     closure_issue_ids: set[str] = set()
     seen_internal: set[tuple[str, str]] = set()
+    globally_seen_use_ids: dict[str, str] = {}
     internal_rows = registry.get("internal_uses")
     if not isinstance(internal_rows, list):
         errors.append("Dependency registry internal_uses must be a list")
@@ -7664,6 +13081,15 @@ def validate_dependency_closure(
             )
         if valid_key:
             seen_internal.add(key)
+            use_id = str(key[1])
+            owner = str(key[0])
+            if use_id in globally_seen_use_ids:
+                errors.append(
+                    f"Dependency use ID {use_id} is not audit-globally unique: "
+                    f"{globally_seen_use_ids[use_id]} and {owner}"
+                )
+            else:
+                globally_seen_use_ids[use_id] = owner
         expected_use = expected.get(key) if valid_key else None
         if expected_use is None or expected_use.get("kind") != "internal_result":
             errors.append(f"{prefix}: stale or unused internal use")
@@ -7765,6 +13191,11 @@ def validate_dependency_closure(
                     "applicability_status": applicability,
                     "effective_status": effective,
                     "issue_ids": use_issues,
+                    "compatibility_checks": use.get(
+                        "compatibility_checks", []
+                    ),
+                    "prerequisite_map": [],
+                    "source_evidence": [],
                 }
             )
 
@@ -7815,6 +13246,15 @@ def validate_dependency_closure(
                 errors.append(f"Duplicate external use for {key[0]} / {key[1]}")
             if valid_key:
                 seen_external.add(key)
+                use_id = str(key[1])
+                owner = str(key[0])
+                if use_id in globally_seen_use_ids:
+                    errors.append(
+                        f"Dependency use ID {use_id} is not audit-globally "
+                        f"unique: {globally_seen_use_ids[use_id]} and {owner}"
+                    )
+                else:
+                    globally_seen_use_ids[use_id] = owner
             expected_use = expected.get(key) if valid_key else None
             if expected_use is None or expected_use.get("kind") != "external_result":
                 errors.append(f"{prefix}: stale or unused external use")
@@ -7894,6 +13334,15 @@ def validate_dependency_closure(
                         "applicability_status": applicability,
                         "effective_status": effective,
                         "issue_ids": use_issues,
+                        "compatibility_checks": use.get(
+                            "compatibility_checks", []
+                        ),
+                        "prerequisite_map": use.get(
+                            "prerequisite_map", []
+                        ),
+                        "source_evidence": record.get(
+                            "source_evidence", []
+                        ),
                     }
                 )
 
@@ -8061,51 +13510,297 @@ def canonical_issue_row(issue: dict[str, Any]) -> list[str]:
     values = [
         str(issue.get("id", "")),
         str(issue.get("severity", "")),
+        str(issue.get("load_bearing", "")),
         str(issue.get("confidence", "")),
         str(issue.get("status", "")),
         str(issue.get("finding_status", "")),
-        str(issue.get("load_bearing", "")),
-        str(issue.get("finding_class", "")),
-        str(issue.get("affected_layer", "")),
-        str(issue.get("interface_id", "")),
-        str(issue.get("estimator_target_status", "")),
-        str(issue.get("implementation_inspection_status", "")),
-        str(issue.get("code_to_documented_estimator", "")),
-        str(issue.get("code_to_required_target", "")),
-        str(issue.get("execution_provenance_status", "")),
-        str(issue.get("affected_result", "")),
+        str(issue.get("invalidation_kind", "")),
+        compact_json_value(issue.get("origin_ref")),
+        compact_json_value(issue.get("contract_refs")),
         canonical_id_field(issue.get("affected_results", [])),
-        str(issue.get("summary", "")),
     ]
     return [value.replace("\n", " ") for value in values]
 
 
-def canonical_interface_issue_row(issue: dict[str, Any]) -> list[str]:
-    def ordered_text(value: Any) -> str:
-        if not isinstance(value, list) or not all(
-            is_substantive_string(item) for item in value
-        ):
-            return "<invalid>"
-        return "; ".join(item.replace("\n", " ") for item in value)
-
-    evidence_scope = (
-        "Evidence: "
-        + ordered_text(issue.get("evidence"))
-        + " Consequences: "
-        + ordered_text(issue.get("downstream_consequences"))
+def canonical_interface_issue_row(
+    issue: dict[str, Any],
+    interfaces: dict[str, dict[str, Any]] | None = None,
+) -> list[str]:
+    interface = (
+        interfaces.get(str(issue.get("interface_id")))
+        if interfaces is not None
+        else None
     )
+    target_status = issue.get("estimator_target_status")
+    inspection_status = issue.get("implementation_inspection_status")
+    inspection_mode = issue.get("implementation_inspection_mode")
+    code_to_documented = issue.get("code_to_documented_estimator")
+    code_to_target = issue.get("code_to_required_target")
+    provenance_status = issue.get("execution_provenance_status")
+    if isinstance(interface, dict):
+        target_relation = interface.get("target_relation")
+        if isinstance(target_relation, dict):
+            target_status = target_relation.get("verdict")
+        implementation = interface.get("implementation_relation")
+        if isinstance(implementation, dict):
+            inspection_status = implementation.get("inspection_status")
+            inspection_mode = implementation.get("inspection_mode")
+            comparisons = implementation.get("comparisons")
+            if isinstance(comparisons, list):
+                comparison_by_target = {
+                    row.get("to"): row.get("verdict")
+                    for row in comparisons
+                    if isinstance(row, dict)
+                }
+                code_to_documented = comparison_by_target.get(
+                    "documented_estimator"
+                )
+                code_to_target = comparison_by_target.get("required_target")
+            provenance = implementation.get("execution_provenance")
+            if isinstance(provenance, dict):
+                provenance_status = provenance.get("status")
     return [
         str(issue.get("id", "")),
         str(issue.get("finding_class", "")),
         str(issue.get("interface_id", "")),
-        str(issue.get("estimator_target_status", "")),
-        str(issue.get("implementation_inspection_status", "")),
-        str(issue.get("code_to_documented_estimator", "")),
-        str(issue.get("code_to_required_target", "")),
-        str(issue.get("execution_provenance_status", "")),
+        str(target_status or ""),
+        str(inspection_status or ""),
+        str(inspection_mode or ""),
+        str(code_to_documented or ""),
+        str(code_to_target or ""),
+        str(provenance_status or ""),
         str(issue.get("affected_layer", "")),
-        evidence_scope,
     ]
+
+
+REPORT_SCALAR_FIELDS = (
+    "Overall assessment code",
+    "Overall judgment",
+    "Checked scope",
+    "Target results",
+    "Source revision",
+    "Skill version",
+    "Artifact schema version",
+    "Evidence contract version",
+    "Method-interface schema version",
+    "Closure contract version",
+    "Source snapshot ID",
+    "Finalization record",
+    "Highest-consequence issue",
+    "Final confidence",
+    "Files and results checked",
+    "Results not checked",
+    "External results checked",
+    "External results not checked",
+    "Tooling, extraction, or rendering limitations",
+    "Independence level of the critical-path challenge",
+    "Declared external deliverables",
+)
+
+
+def validate_report_deliverables(
+    value: Any,
+    root: Path,
+    canonical_issue_ids: set[str],
+    overall_verdict: Any,
+    errors: list[str],
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        errors.append("report_deliverables must be a list")
+        return []
+    records: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    seen_paths: set[Path] = set()
+    canonical_report_path, canonical_report_path_valid = canonical_artifact_path(
+        root,
+        "audit/06_reports/FINAL_REPORT.md",
+        "final report",
+        errors,
+    )
+    canonical_report_text: str | None = None
+    if canonical_report_path_valid and canonical_report_path.is_file():
+        try:
+            canonical_report_text = active_markdown_text(
+                read_text(canonical_report_path)
+            )
+        except TextArtifactReadError as exc:
+            errors.append(str(exc))
+        if (
+            canonical_report_text is not None
+            and ACTIVE_HIDDEN_HTML_MARKER in canonical_report_text
+        ):
+            errors.append(
+                "Canonical final report contains active raw HTML"
+            )
+    semantic_sections = (
+        "Verdict",
+        "Audit boundary and limitations",
+        "Main theorem chain",
+        "Conclusion judgments",
+        "Dependency closure",
+        "Issue index",
+        "Detailed findings",
+        "Independent critical-path challenges",
+        "Method-interface findings",
+        "Computational evidence",
+        "Unchecked scope",
+        "Assurance boundary",
+    )
+    if canonical_report_path_valid and canonical_report_text is None and value:
+        errors.append(
+            "Declared reports cannot be reconciled because the canonical "
+            f"FINAL_REPORT.md is missing: {canonical_report_path}"
+        )
+    for index, record in enumerate(value, 1):
+        prefix = f"report_deliverables[{index}]"
+        if not isinstance(record, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        deliverable_id = record.get("id")
+        if (
+            not isinstance(deliverable_id, str)
+            or not REPORT_DELIVERABLE_ID_RE.fullmatch(deliverable_id)
+        ):
+            errors.append(f"{prefix}.id must match R001")
+        elif deliverable_id in seen_ids:
+            errors.append(f"Duplicate report deliverable id: {deliverable_id}")
+        else:
+            seen_ids.add(deliverable_id)
+        if record.get("role") != "user_facing_report":
+            errors.append(f"{prefix}.role must be user_facing_report")
+        path_value = record.get("path")
+        if not is_nonempty_string(path_value):
+            errors.append(f"{prefix}.path must be nonempty")
+            continue
+        path = resolve_stored_path(path_value, root)
+        if path in seen_paths:
+            errors.append(f"Duplicate report deliverable path: {path}")
+        seen_paths.add(path)
+        if not path.is_file():
+            errors.append(f"{prefix}.path is missing: {path}")
+            continue
+        if record.get("sha256") != sha256_file(path):
+            errors.append(f"{prefix}.sha256 is stale")
+        issue_ids = record.get("issue_ids")
+        if not isinstance(issue_ids, list) or not all(
+            isinstance(issue_id, str) and ISSUE_ID_RE.fullmatch(issue_id)
+            for issue_id in issue_ids
+        ):
+            errors.append(f"{prefix}.issue_ids must contain canonical issue IDs")
+            issue_ids = []
+        if issue_ids != sorted(canonical_issue_ids):
+            errors.append(
+                f"{prefix}.issue_ids must equal the canonical issue set"
+            )
+        if record.get("overall_verdict") != overall_verdict:
+            errors.append(
+                f"{prefix}.overall_verdict disagrees with the canonical verdict"
+            )
+        try:
+            raw_text = read_text(path)
+        except TextArtifactReadError as exc:
+            errors.append(f"{prefix}: {exc}")
+            records.append(record)
+            continue
+        text = active_markdown_text(raw_text)
+        if ACTIVE_HIDDEN_HTML_MARKER in text:
+            errors.append(
+                f"{prefix}: user-facing report contains active raw HTML"
+            )
+        validate_report_assurance_language(
+            raw_text, f"{prefix} user-facing report", errors
+        )
+        rendered_issue_ids = set(re.findall(r"\bI-[0-9]{3}\b", text))
+        if rendered_issue_ids != canonical_issue_ids:
+            errors.append(
+                f"{prefix}: rendered issue IDs disagree with ISSUE_LOG.json"
+            )
+        for heading in re.findall(r"^#{2,4}\s+.*$", text, re.MULTILINE):
+            if re.search(r"\bS[0-3]\b", heading) and not re.search(
+                r"\bI-[0-9]{3}\b", heading
+            ):
+                errors.append(
+                    f"{prefix}: severity-bearing finding heading lacks a "
+                    "canonical issue ID: " + truncate(heading, 140)
+                )
+        verdict_matches = re.findall(
+            r"^- (?:Overall assessment code|Overall verdict):\s*(.*?)\s*$",
+            text,
+            re.MULTILINE,
+        )
+        if len(verdict_matches) != 1 or verdict_matches[0] != overall_verdict:
+            errors.append(
+                f"{prefix}: rendered report needs exactly one canonical overall verdict"
+            )
+        if canonical_report_text is not None:
+            for label in REPORT_SCALAR_FIELDS:
+                canonical_values = re.findall(
+                    rf"^- {re.escape(label)}:\s*(.*?)\s*$",
+                    canonical_report_text,
+                    re.MULTILINE,
+                )
+                rendered_values = re.findall(
+                    rf"^- {re.escape(label)}:\s*(.*?)\s*$",
+                    text,
+                    re.MULTILINE,
+                )
+                if len(canonical_values) != 1:
+                    errors.append(
+                        f"{prefix}: canonical report field {label} is "
+                        "missing or duplicated"
+                    )
+                elif rendered_values != canonical_values:
+                    errors.append(
+                        f"{prefix}: user-facing report field {label} "
+                        "disagrees with the canonical report"
+                    )
+            for section_name in semantic_sections:
+                heading = f"## {section_name}"
+                canonical_count = len(
+                    re.findall(
+                        rf"^{re.escape(heading)}\s*$",
+                        canonical_report_text,
+                        re.MULTILINE,
+                    )
+                )
+                rendered_count = len(
+                    re.findall(
+                        rf"^{re.escape(heading)}\s*$",
+                        text,
+                        re.MULTILINE,
+                    )
+                )
+                if canonical_count == 0 and section_name == "Verdict":
+                    # Early schema-5 reports place the canonical verdict fields
+                    # directly below the title. Their exact overall verdict is
+                    # already reconciled above, while extra orientation prose is
+                    # intentionally allowed.
+                    continue
+                if canonical_count != 1:
+                    errors.append(
+                        f"{prefix}: canonical {section_name} section is "
+                        "missing or duplicated"
+                    )
+                    continue
+                if rendered_count != 1:
+                    errors.append(
+                        f"{prefix}: user-facing {section_name} section is "
+                        "missing or duplicated"
+                    )
+                    continue
+                canonical_section = (
+                    report_section(canonical_report_text, heading) or ""
+                ).strip()
+                rendered_section = (
+                    report_section(text, heading) or ""
+                ).strip()
+                if rendered_section != canonical_section:
+                    errors.append(
+                        f"{prefix}: user-facing {section_name} section "
+                        "disagrees with the canonical report"
+                    )
+        records.append(record)
+    return records
 
 
 def report_section(text: str, heading: str) -> str | None:
@@ -8141,45 +13836,1600 @@ def markdown_table_rows(section: str) -> list[list[str]]:
                 index += 1
             cells.append("".join(current).strip())
             rows.append(cells)
+    if len(rows) < 2:
+        return []
+    delimiter = rows[1]
+    if len(delimiter) != len(rows[0]) or any(
+        re.fullmatch(r":?-{3,}:?", cell) is None for cell in delimiter
+    ):
+        return []
     return rows
+
+
+def markdown_tables(section: str) -> list[list[list[str]]]:
+    tables: list[list[list[str]]] = []
+    current_lines: list[str] = []
+    for line in section.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("|") and stripped.endswith("|"):
+            current_lines.append(line)
+            continue
+        if current_lines:
+            tables.append(markdown_table_rows("\n".join(current_lines)))
+            current_lines = []
+    if current_lines:
+        tables.append(markdown_table_rows("\n".join(current_lines)))
+    return tables
+
+
+ACTIVE_HIDDEN_HTML_MARKER = "PROOFCHECK_ACTIVE_RAW_HTML"
+
+
+def active_markdown_text(text: str) -> str:
+    """Mask nonrendered Markdown and flag active raw HTML semantics."""
+    characters = list(text)
+    fence_character: str | None = None
+    fence_length = 0
+    in_comment = False
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        content = line.rstrip("\r\n")
+        if fence_character is not None:
+            mask_tex_range(characters, offset, offset + len(line))
+            if re.fullmatch(
+                rf"[ ]{{0,3}}{re.escape(fence_character)}"
+                rf"{{{fence_length},}}[ \t]*",
+                content,
+            ):
+                fence_character = None
+                fence_length = 0
+            offset += len(line)
+            continue
+
+        cursor = 0
+        if in_comment:
+            closing_comment = content.find("-->")
+            if closing_comment < 0:
+                mask_tex_range(characters, offset, offset + len(line))
+                offset += len(line)
+                continue
+            mask_tex_range(
+                characters, offset, offset + closing_comment + 3
+            )
+            cursor = closing_comment + 3
+            in_comment = False
+
+        if cursor == 0 and re.match(r"^(?: {4}|\t)", content):
+            mask_tex_range(characters, offset, offset + len(line))
+            offset += len(line)
+            continue
+        opening_fence = (
+            re.match(r"^[ ]{0,3}(\x60{3,}|~{3,})", content)
+            if cursor == 0
+            else None
+        )
+        if opening_fence is not None:
+            marker = opening_fence.group(1)
+            fence_character = marker[0]
+            fence_length = len(marker)
+            mask_tex_range(characters, offset, offset + len(line))
+            offset += len(line)
+            continue
+
+        while cursor < len(content):
+            if content.startswith("<!--", cursor):
+                closing_comment = content.find("-->", cursor + 4)
+                if closing_comment < 0:
+                    mask_tex_range(
+                        characters, offset + cursor, offset + len(line)
+                    )
+                    in_comment = True
+                    break
+                mask_tex_range(
+                    characters,
+                    offset + cursor,
+                    offset + closing_comment + 3,
+                )
+                cursor = closing_comment + 3
+                continue
+            if content[cursor] == "\x60":
+                run_end = cursor + 1
+                while (
+                    run_end < len(content)
+                    and content[run_end] == "\x60"
+                ):
+                    run_end += 1
+                marker = content[cursor:run_end]
+                closing_code = content.find(marker, run_end)
+                if closing_code >= 0:
+                    mask_tex_range(
+                        characters,
+                        offset + cursor,
+                        offset + closing_code + len(marker),
+                    )
+                    cursor = closing_code + len(marker)
+                    continue
+            cursor += 1
+        offset += len(line)
+
+    visible = "".join(characters)
+    html_scan = list(visible)
+
+    for match in re.finditer(
+        r"(?<!\\)\$\$(?:.|\n)*?(?<!\\)\$\$|"
+        r"\\\[(?:.|\n)*?\\\]|\\\((?:.|\n)*?\\\)|"
+        r"(?<!\\)\$(?!\$)[^\n]*?(?<!\\)\$",
+        visible,
+    ):
+        mask_tex_range(html_scan, match.start(), match.end())
+    for match in re.finditer(
+        r"\\begin\{(?P<env>equation\*?|align\*?|alignat\*?|gather\*?|"
+        r"multline\*?|displaymath)\}(?:.|\n)*?"
+        r"\\end\{(?P=env)\}",
+        visible,
+    ):
+        mask_tex_range(html_scan, match.start(), match.end())
+
+    offset = 0
+    table_start: int | None = None
+    table_lines: list[str] = []
+
+    def mask_quoted_evidence_rows() -> None:
+        if table_start is None or len(table_lines) < 3:
+            return
+        rows = markdown_table_rows("".join(table_lines))
+        exact_headers = {
+            "Exact locked quote",
+            "Failure evidence",
+            "Exact use-site quote",
+        }
+        if rows and exact_headers.intersection(rows[0]):
+            data_start = table_start + len(table_lines[0]) + len(table_lines[1])
+            data_end = table_start + sum(len(line) for line in table_lines)
+            mask_tex_range(html_scan, data_start, data_end)
+
+    for line in visible.splitlines(keepends=True):
+        content = line.rstrip("\r\n")
+        stripped = content.strip()
+        if re.match(r"^[ ]{0,3}>", content):
+            mask_tex_range(html_scan, offset, offset + len(line))
+        if stripped.startswith("|") and stripped.endswith("|"):
+            if table_start is None:
+                table_start = offset
+            table_lines.append(line)
+        else:
+            mask_quoted_evidence_rows()
+            table_start = None
+            table_lines = []
+        offset += len(line)
+    mask_quoted_evidence_rows()
+
+    active_html = re.search(
+        r"<(?!(?:https?|mailto):)(?:"
+        r"[A-Za-z][A-Za-z0-9:-]*(?=[\s/>])|![A-Za-z]|\?)",
+        "".join(html_scan),
+        re.IGNORECASE,
+    )
+    if active_html is not None:
+        return visible + "\n" + ACTIVE_HIDDEN_HTML_MARKER + "\n"
+    return visible
+
+
+def authorial_report_text(text: str) -> str:
+    """Return active report prose with quotations and exact evidence masked."""
+    active = active_markdown_text(text)
+    characters = list(active)
+    offset = 0
+    lines = active.splitlines(keepends=True)
+    for line in lines:
+        content = line.rstrip("\r\n")
+        if re.match(r"^[ ]{0,3}>", content) or re.match(r"^(?: {4}|\t)", content):
+            mask_tex_range(characters, offset, offset + len(line))
+        else:
+            for match in re.finditer(
+                r"(?P<ticks>\x60+)[^\n]*?(?P=ticks)", content
+            ):
+                mask_tex_range(
+                    characters, offset + match.start(), offset + match.end()
+                )
+        offset += len(line)
+
+    active = "".join(characters)
+    lines = active.splitlines(keepends=True)
+    offset = 0
+    table_start: int | None = None
+    table_lines: list[str] = []
+
+    def mask_exact_evidence_table() -> None:
+        if table_start is None or not table_lines:
+            return
+        rows = markdown_table_rows("".join(table_lines))
+        if not rows:
+            return
+        exact_headers = {
+            "Exact locked quote",
+            "Failure evidence",
+            "Exact use-site quote",
+        }
+        if not exact_headers.intersection(rows[0]):
+            return
+        header_length = len(table_lines[0]) if table_lines else 0
+        delimiter_length = len(table_lines[1]) if len(table_lines) > 1 else 0
+        data_start = table_start + header_length + delimiter_length
+        data_end = table_start + sum(len(item) for item in table_lines)
+        mask_tex_range(characters, data_start, data_end)
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("|") and stripped.endswith("|"):
+            if table_start is None:
+                table_start = offset
+            table_lines.append(line)
+        else:
+            mask_exact_evidence_table()
+            table_start = None
+            table_lines = []
+        offset += len(line)
+    mask_exact_evidence_table()
+    return "".join(characters)
+
+
+def validate_report_assurance_language(
+    text: str, prefix: str, errors: list[str]
+) -> None:
+    """Reject unsupported assurance claims in active authorial prose."""
+    prose = authorial_report_text(text)
+    if re.search(
+        r"(?:complete proof certification|"
+        r"certif(?:y|ies|ied).{0,80}proof.{0,40}(?:correct|valid))",
+        prose,
+        re.IGNORECASE | re.DOTALL,
+    ):
+        errors.append(f"{prefix} contains unsupported proof-certification language")
+    if re.search(
+        r"(?<!not )(?<!not a )\b(?:formally\s+(?:verified|checked|certified)|"
+        r"(?:kernel|machine|proof[- ]assistant)[ -](?:checked|verified|certified))"
+        r"\s+(?:mathematical\s+)?proof\b|"
+        r"\bproof\b.{0,40}\b(?:is|was|has been)\s+(?!not\b)formally\s+"
+        r"(?:verified|checked|certified)\b",
+        prose,
+        re.IGNORECASE | re.DOTALL,
+    ):
+        errors.append(f"{prefix} contains unsupported formal-verification language")
+    calibrated_prose = prose
+    for calibrated_context in (
+        r"\b(?:this audit\s+|we\s+|the audit\s+)?"
+        r"(?:do|does|did|can|could|should|would|will)\s+not\s+"
+        r"(?:claim|assert|establish|show|mean)\s+(?:that\s+)?"
+        r"[^.!?\n]{0,160}\b(?:correct|valid)\b",
+        r"\b(?:it\s+is\s+)?(?:unclear|uncertain|unknown|unresolved)?\s*"
+        r"whether\s+[^.!?\n]{0,160}\b(?:correct|valid)\b",
+        r"\b(?:we\s+found\s+)?no\s+(?:evidence|basis)\s+"
+        r"(?:that|to\s+(?:conclude|claim)\s+that)\s+"
+        r"[^.!?\n]{0,160}\b(?:correct|valid)\b",
+    ):
+        calibrated_prose = re.sub(
+            calibrated_context,
+            "",
+            calibrated_prose,
+            flags=re.IGNORECASE,
+        )
+    overclaim_pattern = re.compile(
+        r"\b(?:(?:the|this|that|our|each|every|all)\s+)?"
+        r"(?:paper|appendix|theorem|proof|lemma|proposition|corollary|"
+        r"result|argument|derivation|statement|conclusion)s?\b.{0,80}"
+        r"\b(?:is|are|was|were|has been|have been)\s+"
+        r"(?:mathematically\s+)?(?:correct|valid)\b",
+        re.IGNORECASE | re.DOTALL,
+    )
+    for match in overclaim_pattern.finditer(calibrated_prose):
+        errors.append(f"{prefix} contains an unsupported correctness overclaim")
+        break
+
+
+def report_subsection(text: str, heading: str) -> str | None:
+    match = re.search(
+        rf"^{re.escape(heading)}\s*$\n(.*?)(?=^####\s|\Z)",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    return match.group(1) if match is not None else None
+
+
+def load_summary_ledger(summary: dict[str, Any]) -> tuple[dict[str, Any], Path] | None:
+    ledger_value = summary.get("ledger")
+    if not is_nonempty_string(ledger_value):
+        return None
+    ledger_path = Path(ledger_value)
+    ledger, ledger_errors = load_json_object(ledger_path, "report ledger")
+    return (ledger, ledger_path) if not ledger_errors else None
+
+
+def ledger_step_projection(
+    summary: dict[str, Any], step_id: Any
+) -> dict[str, Any] | None:
+    loaded = load_summary_ledger(summary)
+    if loaded is None:
+        return None
+    ledger, ledger_path = loaded
+    step = next(
+        (
+            row
+            for row in ledger.get("steps", [])
+            if isinstance(row, dict) and row.get("id") == step_id
+        ),
+        None,
+    )
+    if not isinstance(step, dict):
+        return None
+    if ledger.get("schema_version") == SCHEMA_VERSION:
+        source_unit_id = step.get("source_unit_id")
+        source_unit = next(
+            (
+                row
+                for row in ledger.get("source_units", [])
+                if isinstance(row, dict) and row.get("id") == source_unit_id
+            ),
+            None,
+        )
+        line_range = source_unit.get("lines") if isinstance(source_unit, dict) else None
+    else:
+        source_unit = None
+        line_range = step.get("lines")
+    if (
+        not isinstance(line_range, list)
+        or len(line_range) != 2
+        or not all(is_int(value) for value in line_range)
+    ):
+        return None
+    start_line, end_line = line_range
+    locked_rows = {
+        row.get("line"): row.get("text")
+        for row in ledger.get("source_lines", [])
+        if isinstance(row, dict)
+        and is_int(row.get("line"))
+        and isinstance(row.get("text"), str)
+    }
+    if any(line not in locked_rows for line in range(start_line, end_line + 1)):
+        return None
+    quote = "\n".join(
+        locked_rows[line] for line in range(start_line, end_line + 1)
+    )
+    source = ledger.get("source", {})
+    file_value = source.get("file") if isinstance(source, dict) else None
+    return {
+        "ledger": ledger,
+        "ledger_path": ledger_path,
+        "step": step,
+        "file": str(file_value),
+        "start_line": start_line,
+        "end_line": end_line,
+        "sha256": sha256_text(quote),
+        "quote": quote,
+    }
+
+
+def locked_span_report_value(span: Any, ledger_path: Path) -> str:
+    if not isinstance(span, dict):
+        return "<invalid>"
+    file_value = span.get("file")
+    start_line = span.get("start_line")
+    end_line = span.get("end_line")
+    if (
+        not is_nonempty_string(file_value)
+        or not is_int(start_line)
+        or not is_int(end_line)
+    ):
+        return "<invalid>"
+    path = resolve_stored_path(file_value, ledger_path.parent)
+    try:
+        lines = read_lines(path)
+        quote = "\n".join(lines[start_line - 1 : end_line])
+    except (OSError, UnicodeError):
+        return "<unavailable>"
+    return json.dumps(
+        {
+            "file": file_value,
+            "lines": [start_line, end_line],
+            "sha256": sha256_text(quote),
+            "quote": quote,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def infer_audit_root(
+    summaries_by_id: dict[str, dict[str, Any]],
+) -> Path | None:
+    for summary in summaries_by_id.values():
+        ledger_value = summary.get("ledger")
+        if not is_nonempty_string(ledger_value):
+            continue
+        ledger_path = Path(ledger_value).resolve()
+        for candidate in (ledger_path.parent, *ledger_path.parents):
+            if (candidate / "AUDIT_MANIFEST.json").is_file():
+                return candidate
+    return None
+
+
+def locked_span_projection(
+    span: Any, base: Path | None
+) -> dict[str, Any] | None:
+    if not isinstance(span, dict) or base is None:
+        return None
+    file_value = span.get("file")
+    start_line = span.get("start_line")
+    end_line = span.get("end_line")
+    if (
+        not is_nonempty_string(file_value)
+        or not is_int(start_line)
+        or not is_int(end_line)
+        or start_line < 1
+        or end_line < start_line
+    ):
+        return None
+    source = resolve_stored_path(file_value, base)
+    try:
+        lines = read_lines(source)
+    except (OSError, UnicodeError):
+        return None
+    if end_line > len(lines):
+        return None
+    quote = "\n".join(lines[start_line - 1 : end_line])
+    return {
+        "file": str(file_value),
+        "start_line": start_line,
+        "end_line": end_line,
+        "sha256": sha256_text(quote),
+        "quote": quote,
+    }
+
+
+def canonical_nonledger_origin_diagnostic(
+    issue: dict[str, Any],
+    interfaces: dict[str, dict[str, Any]] | None,
+    global_checks: dict[str, dict[str, Any]] | None,
+) -> dict[str, str] | None:
+    """Project the exact canonical diagnostic for interface/global origins."""
+    origin = issue.get("origin_ref")
+    if not isinstance(origin, dict):
+        return None
+    kind = origin.get("kind")
+    if kind == "interface_record":
+        interface_id = str(origin.get("interface_id"))
+        interface = (
+            interfaces.get(interface_id)
+            if interfaces is not None
+            else None
+        )
+        if not isinstance(interface, dict):
+            return None
+        target_relation = interface.get("target_relation")
+        implementation = interface.get("implementation_relation")
+        return {
+            "claim": str(
+                target_relation.get("required_target")
+                if isinstance(target_relation, dict)
+                else issue.get("summary", "none")
+            ),
+            "rule": "canonical method-interface comparison",
+            "premises": json.dumps(
+                {
+                    "interface_id": interface_id,
+                    "affected_results": interface.get("affected_results"),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            "failure_evidence": json.dumps(
+                {
+                    "target_relation": target_relation,
+                    "implementation_relation": implementation,
+                    "issue_ids": interface.get("issue_ids"),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            "failure_kind": str(
+                issue.get("finding_class", issue.get("invalidation_kind", "none"))
+            ),
+        }
+    if kind == "global_check":
+        aspect = str(origin.get("aspect"))
+        check = (
+            global_checks.get(aspect)
+            if global_checks is not None
+            else None
+        )
+        if not isinstance(check, dict):
+            return None
+        return {
+            "claim": f"Global consistency check: {aspect}",
+            "rule": "canonical global-consistency check",
+            "premises": json.dumps(
+                {"affected_units": check.get("affected_units")},
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            "failure_evidence": json.dumps(
+                {
+                    "aspect": check.get("aspect"),
+                    "status": check.get("status"),
+                    "evidence": check.get("evidence"),
+                    "affected_units": check.get("affected_units"),
+                    "issue_ids": check.get("issue_ids"),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            "failure_kind": str(
+                check.get("status", issue.get("invalidation_kind", "none"))
+            ),
+        }
+    return None
+
+
+def archived_nonledger_failure_rows(
+    issue: dict[str, Any],
+    interfaces: dict[str, dict[str, Any]] | None,
+    global_checks: dict[str, dict[str, Any]] | None,
+    sealed_sources: dict[str, bytes],
+) -> list[list[str]] | None:
+    """Recompute interface/global failure rows from sealed canonical bytes."""
+    diagnostic = canonical_nonledger_origin_diagnostic(
+        issue, interfaces, global_checks
+    )
+    if diagnostic is None:
+        return None
+    origin = issue.get("origin_ref")
+    if not isinstance(origin, dict):
+        return []
+    affected_result = str(issue.get("affected_result"))
+    origin_unit = str(origin.get("unit_id", affected_result))
+    origin_reference = compact_json_value(
+        {
+            key: value
+            for key, value in origin.items()
+            if key != "evidence_spans"
+        }
+    )
+    spans = origin.get("evidence_spans")
+    if not isinstance(spans, list):
+        return []
+    rows: list[list[str]] = []
+    for span in spans:
+        if not isinstance(span, dict):
+            continue
+        file_value = span.get("file")
+        start_line = span.get("start_line")
+        end_line = span.get("end_line")
+        if (
+            not is_nonempty_string(file_value)
+            or not is_int(start_line)
+            or not is_int(end_line)
+            or start_line < 1
+            or end_line < start_line
+        ):
+            continue
+        source_bytes = sealed_sources.get(str(file_value))
+        try:
+            source_lines = (
+                source_bytes.decode("utf-8-sig").splitlines()
+                if source_bytes is not None
+                else []
+            )
+        except UnicodeError:
+            source_lines = []
+        if end_line > len(source_lines):
+            continue
+        quote = "\n".join(source_lines[start_line - 1 : end_line])
+        rows.append(
+            [
+                f"{file_value}:{start_line}-{end_line}",
+                sha256_text(quote),
+                json.dumps(quote, ensure_ascii=False),
+                origin_unit,
+                origin_reference,
+                diagnostic["claim"],
+                diagnostic["rule"],
+                diagnostic["premises"],
+                diagnostic["failure_evidence"],
+                diagnostic["failure_kind"],
+            ]
+        )
+    return rows
+
+
+def canonical_issue_detail_projection(
+    issue: dict[str, Any],
+    summaries_by_id: dict[str, dict[str, Any]],
+    dependency_edges: list[dict[str, Any]],
+    critical_units: Iterable[str],
+    report_deliverables: list[dict[str, Any]],
+    overall_assessment: Any,
+    evidence_base: Path | None = None,
+    interfaces: dict[str, dict[str, Any]] | None = None,
+    global_checks: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    issue_id = str(issue.get("id"))
+    affected_result = str(issue.get("affected_result"))
+    raw_affected_results = issue.get("affected_results")
+    affected_results = (
+        {
+            item
+            for item in raw_affected_results
+            if is_nonempty_string(item)
+        }
+        if isinstance(raw_affected_results, list)
+        else set()
+    )
+    contract_refs = issue.get("contract_refs")
+    if not isinstance(contract_refs, list):
+        contract_refs = []
+    suggested_changes = issue.get("suggested_changes")
+    if not isinstance(suggested_changes, list):
+        suggested_changes = []
+    origin = issue.get("origin_ref") if isinstance(issue.get("origin_ref"), dict) else {}
+    origin_unit = str(origin.get("unit_id", affected_result))
+    origin_summary = summaries_by_id.get(origin_unit, {})
+    origin_projection = None
+    origin_move: dict[str, Any] = {}
+    origin_claim = "none"
+    origin_rule = str(origin.get("kind", "none"))
+    origin_premises = "none"
+    origin_failure_evidence = "none"
+    origin_failure_kind = str(issue.get("invalidation_kind", "none"))
+    origin_reference = compact_json_value(
+        {key: value for key, value in origin.items() if key != "evidence_spans"}
+    )
+    evidence_base = evidence_base or infer_audit_root(summaries_by_id)
+    resolution_archive: dict[str, Any] | None = None
+    if (
+        issue.get("status") == "resolved"
+        and evidence_base is not None
+        and isinstance(issue.get("historical_origin"), dict)
+    ):
+        archive_errors: list[str] = []
+        candidate_archive = load_resolution_archive(
+            issue, evidence_base, archive_errors
+        )
+        if not archive_errors:
+            resolution_archive = candidate_archive
+    if origin.get("kind") == "ledger_move":
+        origin_projection = ledger_step_projection(
+            origin_summary, origin.get("step_id")
+        )
+        if origin_projection is not None:
+            inference = origin_projection["step"].get("inference")
+            moves = inference.get("moves", []) if isinstance(inference, dict) else []
+            origin_move = next(
+                (
+                    move
+                    for move in moves
+                    if isinstance(move, dict)
+                    and move.get("id") == origin.get("move_id")
+                ),
+                {},
+            )
+            origin_claim = str(origin_move.get("claim", "none"))
+            origin_rule = str(origin_move.get("rule", "none"))
+            failure = origin_move.get("failure")
+            premise_by_id = {
+                row.get("id"): row
+                for row in origin_projection["step"].get("premise_uses", [])
+                if isinstance(row, dict) and is_nonempty_string(row.get("id"))
+            }
+            origin_premises = json.dumps(
+                {
+                    "premises": [
+                        {
+                            "id": premise_id,
+                            "claim": premise_by_id.get(premise_id, {}).get(
+                                "claim"
+                            ),
+                            "origin": premise_by_id.get(premise_id, {}).get(
+                                "origin"
+                            ),
+                        }
+                        for premise_id in origin_move.get("premise_ids", [])
+                    ],
+                    "prior_moves": origin_move.get("prior_move_ids", []),
+                },
+                ensure_ascii=False,
+            )
+            origin_failure_evidence = (
+                str(failure.get("evidence"))
+                if isinstance(failure, dict)
+                else "none"
+            )
+            origin_failure_kind = (
+                str(failure.get("kind"))
+                if isinstance(failure, dict)
+                else origin_failure_kind
+            )
+    elif origin.get("kind") == "dependency_use":
+        use_id = origin.get("use_id")
+        dependency_claim = next(
+            (
+                row
+                for row in origin_summary.get("result_dependency_claims", [])
+                if isinstance(row, dict) and row.get("use_id") == use_id
+            ),
+            {},
+        )
+        origin_projection = ledger_step_projection(
+            origin_summary, dependency_claim.get("owner_step")
+        )
+        direct_dependency = next(
+            (
+                row
+                for row in origin_summary.get("direct_dependencies", [])
+                if isinstance(row, dict) and row.get("use_id") == use_id
+            ),
+            {},
+        )
+        origin_claim = str(direct_dependency.get("needed_form", "none"))
+        origin_premises = json.dumps(
+            {
+                "dependency_id": direct_dependency.get("id"),
+                "conclusion_id": direct_dependency.get("conclusion_id"),
+                "needed_form": direct_dependency.get("needed_form"),
+            },
+            ensure_ascii=False,
+        )
+        origin_rule = str(
+            direct_dependency.get("compatibility_check", "dependency_use")
+        )
+        origin_edge = next(
+            (
+                edge
+                for edge in dependency_edges
+                if isinstance(edge, dict)
+                and edge.get("dependent_unit") == affected_result
+                and edge.get("use_id") == use_id
+            ),
+            {},
+        )
+        origin_failure_evidence = json.dumps(
+            {
+                "source_status": origin_edge.get("source_status"),
+                "applicability_status": origin_edge.get(
+                    "applicability_status"
+                ),
+                "effective_status": origin_edge.get("effective_status"),
+                "issue_ids": origin_edge.get("issue_ids"),
+                "nonpassing_compatibility_checks": [
+                    {
+                        "aspect": row.get("aspect"),
+                        "status": row.get("status"),
+                        "evidence": row.get("evidence"),
+                        "issue_ids": row.get("issue_ids"),
+                    }
+                    for row in origin_edge.get(
+                        "compatibility_checks", []
+                    )
+                    if isinstance(row, dict)
+                    and row.get("status")
+                    not in {"passed", "not_applicable"}
+                ],
+                "nonpassing_prerequisites": [
+                    {
+                        "prerequisite": row.get("prerequisite"),
+                        "status": row.get("status"),
+                        "manuscript_evidence": row.get(
+                            "manuscript_evidence"
+                        ),
+                        "evidence_spans": row.get("evidence_spans"),
+                        "issue_ids": row.get("issue_ids"),
+                    }
+                    for row in origin_edge.get("prerequisite_map", [])
+                    if isinstance(row, dict)
+                    and row.get("status") != "satisfied"
+                ],
+                "source_evidence": (
+                    origin_edge.get("source_evidence", [])
+                    if origin_edge.get("source_status") != "verified"
+                    else []
+                ),
+            },
+            ensure_ascii=False,
+        )
+        origin_failure_kind = str(
+            direct_dependency.get("status", origin_failure_kind)
+        )
+
+    origin_span_projections: list[dict[str, Any]] = []
+    if origin.get("kind") in {"interface_record", "global_check"}:
+        origin_span_projections = [
+            projection
+            for span in (
+                origin.get("evidence_spans")
+                if isinstance(origin.get("evidence_spans"), list)
+                else []
+            )
+            if (projection := locked_span_projection(span, evidence_base))
+            is not None
+        ]
+        diagnostic = canonical_nonledger_origin_diagnostic(
+            issue, interfaces, global_checks
+        )
+        if diagnostic is not None:
+            origin_claim = diagnostic["claim"]
+            origin_rule = diagnostic["rule"]
+            origin_premises = diagnostic["premises"]
+            origin_failure_evidence = diagnostic["failure_evidence"]
+            origin_failure_kind = diagnostic["failure_kind"]
+    elif origin.get("kind") == "obligation_pointer":
+        loaded_origin = load_summary_ledger(origin_summary)
+        if loaded_origin is not None:
+            origin_ledger, origin_ledger_path = loaded_origin
+            obligation = origin_ledger.get("obligation")
+            if not isinstance(obligation, dict):
+                obligation = {}
+            found, pointer_value = resolve_json_pointer(
+                obligation, origin.get("pointer")
+            )
+            origin_claim = (
+                json.dumps(pointer_value, ensure_ascii=False)
+                if found
+                else "none"
+            )
+            origin_premises = json.dumps(
+                {"obligation_pointer": origin.get("pointer")},
+                ensure_ascii=False,
+            )
+            origin_failure_evidence = (
+                "The issue is anchored to this exact normalized obligation "
+                "field and its source-locked statement context."
+            )
+            candidate_spans = nested_locked_spans(pointer_value)
+            if not candidate_spans:
+                candidate_spans = [
+                    span
+                    for field in ("statement_spans", "context_spans")
+                    for span in (
+                        obligation.get(field)
+                        if isinstance(obligation.get(field), list)
+                        else []
+                    )
+                    if isinstance(span, dict)
+                ]
+            origin_span_projections = [
+                projection
+                for span in candidate_spans
+                if (
+                    projection := locked_span_projection(
+                        span, origin_ledger_path.parent
+                    )
+                )
+                is not None
+            ]
+    if origin_projection is not None:
+        origin_span_projections = [origin_projection]
+    failure_rows = [
+        [
+            f"{projection['file']}:{projection['start_line']}-{projection['end_line']}",
+            str(projection["sha256"]),
+            json.dumps(projection["quote"], ensure_ascii=False),
+            origin_unit,
+            (
+                f"{origin.get('step_id')}/{origin.get('move_id')}"
+                if origin.get("kind") == "ledger_move"
+                else origin_reference
+            ),
+            origin_claim,
+            origin_rule,
+            origin_premises,
+            origin_failure_evidence,
+            origin_failure_kind,
+        ]
+        for projection in origin_span_projections
+    ]
+    if not failure_rows:
+        failure_rows = [
+            [
+                origin_reference,
+                "none",
+                "none",
+                origin_unit,
+                (
+                    f"{origin.get('step_id')}/{origin.get('move_id')}"
+                    if origin.get("kind") == "ledger_move"
+                    else origin_reference
+                ),
+                origin_claim,
+                origin_rule,
+                origin_premises,
+                origin_failure_evidence,
+                origin_failure_kind,
+            ]
+        ]
+
+    contract_rows: list[list[str]] = []
+    for contract_ref in contract_refs:
+        if not isinstance(contract_ref, dict):
+            continue
+        unit_id = str(contract_ref.get("unit_id"))
+        summary = summaries_by_id.get(unit_id, {})
+        loaded = load_summary_ledger(summary)
+        if loaded is None:
+            continue
+        ledger, ledger_path = loaded
+        obligation = ledger.get("obligation")
+        if not isinstance(obligation, dict):
+            obligation = {}
+        kind = contract_ref.get("kind")
+        if kind == "conclusion":
+            conclusions = obligation.get("conclusions")
+            if not isinstance(conclusions, list):
+                conclusions = []
+            conclusion = next(
+                (
+                    row
+                    for row in conclusions
+                    if isinstance(row, dict)
+                    and row.get("id") == contract_ref.get("conclusion_id")
+                ),
+                {},
+            )
+            resolved_scope = []
+            applies_under = conclusion.get("applies_under")
+            if not isinstance(applies_under, list):
+                applies_under = []
+            for pointer in applies_under:
+                found, value = resolve_json_pointer(obligation, pointer)
+                resolved_scope.append(
+                    {"pointer": pointer, "value": value if found else "<unresolved>"}
+                )
+            source_spans = conclusion.get("source_spans")
+            if not isinstance(source_spans, list):
+                source_spans = []
+            evidence = "; ".join(
+                locked_span_report_value(span, ledger_path)
+                for span in source_spans
+            )
+            contract_rows.append(
+                [
+                    compact_json_value(contract_ref),
+                    str(conclusion.get("claim", "<unresolved>")),
+                    json.dumps(resolved_scope, ensure_ascii=False, sort_keys=True),
+                    evidence or "none",
+                ]
+            )
+        elif kind == "obligation_pointer":
+            found, value = resolve_json_pointer(
+                obligation, contract_ref.get("pointer")
+            )
+            contract_rows.append(
+                [
+                    compact_json_value(contract_ref),
+                    json.dumps(value if found else "<unresolved>", ensure_ascii=False),
+                    json.dumps(
+                        {
+                            "probability_model": obligation.get("probability_model"),
+                            "regime": obligation.get("regime"),
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    str(contract_ref.get("pointer")),
+                ]
+            )
+        elif kind == "dependency_use":
+            use_id = contract_ref.get("use_id")
+            review = ledger.get("review")
+            if not isinstance(review, dict):
+                review = {}
+            direct_dependencies = review.get("direct_dependencies")
+            if not isinstance(direct_dependencies, list):
+                direct_dependencies = []
+            dependency = next(
+                (
+                    row
+                    for row in direct_dependencies
+                    if isinstance(row, dict) and row.get("use_id") == use_id
+                ),
+                {},
+            )
+            contract_rows.append(
+                [
+                    compact_json_value(contract_ref),
+                    str(dependency.get("needed_form", "<unresolved>")),
+                    str(dependency.get("compatibility_check", "<unresolved>")),
+                    f"use_id={use_id}",
+                ]
+            )
+
+    propagation_rows: list[list[str]] = []
+    origin_effect = str(issue.get("invalidation_kind"))
+    propagation_rows.append(
+        [
+            affected_result,
+            "origin",
+            "none",
+            "none",
+            failure_rows[0][0],
+            failure_rows[0][1],
+            failure_rows[0][2],
+            origin_effect,
+        ]
+    )
+    origin_dependency_use = (
+        str(origin.get("use_id"))
+        if origin.get("kind") == "dependency_use"
+        and is_nonempty_string(origin.get("use_id"))
+        else None
+    )
+    for edge in dependency_edges:
+        if not isinstance(edge, dict):
+            continue
+        dependent = edge.get("dependent_unit")
+        dependency = edge.get("dependency_id")
+        is_origin_use = bool(
+            origin_dependency_use is not None
+            and edge.get("use_id") == origin_dependency_use
+            and dependent == affected_result
+        )
+        is_downstream_use = bool(
+            dependent in affected_results and dependency in affected_results
+        )
+        if not is_origin_use and not is_downstream_use:
+            continue
+        dependent_summary = summaries_by_id.get(str(dependent), {})
+        claim = next(
+            (
+                row
+                for row in dependent_summary.get("result_dependency_claims", [])
+                if isinstance(row, dict) and row.get("use_id") == edge.get("use_id")
+            ),
+            {},
+        )
+        use_projection = ledger_step_projection(
+            dependent_summary, claim.get("owner_step")
+        )
+        components = dependent_summary.get("review_components", {})
+        propagation_rows.append(
+            [
+                str(dependent),
+                f"uses {dependency}",
+                str(edge.get("use_id")),
+                str(edge.get("dependency_conclusion_id") or "none"),
+                (
+                    f"{use_projection['file']}:"
+                    f"{use_projection['start_line']}-{use_projection['end_line']}"
+                    if use_projection is not None
+                    else "unresolved"
+                ),
+                str(use_projection.get("sha256")) if use_projection else "none",
+                (
+                    json.dumps(use_projection["quote"], ensure_ascii=False)
+                    if use_projection is not None
+                    else "none"
+                ),
+                json.dumps(components, ensure_ascii=False, sort_keys=True),
+            ]
+        )
+
+    root_components = summaries_by_id.get(affected_result, {}).get(
+        "review_components", {}
+    )
+    conclusion_results = summaries_by_id.get(affected_result, {}).get(
+        "conclusion_results"
+    )
+    if not isinstance(conclusion_results, list):
+        conclusion_results = []
+    conclusion_effect = "; ".join(
+        f"{row.get('conclusion_id')}:{row.get('statement_status')}/"
+        f"{row.get('argument_status')}"
+        for row in conclusion_results
+        if isinstance(row, dict)
+    ) or "none"
+    assessment_effect = (
+        "blocks no_defect_found"
+        if issue.get("status") in {"open", "deferred"}
+        and issue.get("load_bearing") is True
+        else f"current assessment: {overall_assessment}"
+    )
+    severity_rows = [
+        [
+            str(issue.get("severity")),
+            str(issue.get("load_bearing")),
+            str(issue.get("confidence")),
+            str(issue.get("invalidation_kind")),
+            json.dumps(root_components, ensure_ascii=False, sort_keys=True),
+            conclusion_effect,
+            assessment_effect,
+        ]
+    ]
+    change_rows = [
+        [
+            compact_json_value(change.get("target_ref")),
+            str(change.get("action")),
+            str(change.get("proposal")),
+            str(change.get("verification_status")),
+            canonical_id_field(change.get("required_rechecks", [])),
+        ]
+        for change in suggested_changes
+        if isinstance(change, dict)
+    ]
+    current_required_uses = {
+        str(edge.get("use_id"))
+        for edge in issue_recheck_edges(issue, dependency_edges)
+        if is_nonempty_string(edge.get("use_id"))
+    }
+    historical_origin = issue.get("historical_origin")
+    historical_required_uses = (
+        {
+            item
+            for item in historical_origin.get("required_dependency_uses", [])
+            if is_nonempty_string(item)
+        }
+        if isinstance(historical_origin, dict)
+        else set()
+    )
+    required_uses = sorted(current_required_uses | historical_required_uses)
+    historical_required_units = (
+        {
+            item
+            for item in historical_origin.get("required_units", [])
+            if is_nonempty_string(item)
+        }
+        if isinstance(historical_origin, dict)
+        else set()
+    )
+    required_units = sorted(affected_results | historical_required_units)
+    historical_required_challenges = (
+        {
+            item
+            for item in historical_origin.get("required_challenges", [])
+            if is_nonempty_string(item)
+        }
+        if isinstance(historical_origin, dict)
+        else set()
+    )
+    required_challenges = sorted(
+        (set(critical_units) & set(required_units))
+        | historical_required_challenges
+    )
+    reconciled_challenges = [
+        unit_id
+        for unit_id in required_challenges
+        if (
+            summaries_by_id.get(unit_id, {}).get(
+                "independent_check", {}
+            ).get("status")
+            in {"agreed", "resolved"}
+            and (
+                not (
+                    issue.get("severity") in {"S0", "S1"}
+                    and issue.get("load_bearing") is True
+                )
+                or issue_id
+                in summaries_by_id.get(unit_id, {}).get(
+                    "independent_check", {}
+                ).get("covered_issue_ids", [])
+            )
+        )
+    ]
+    current_required_deliverables = {
+        str(record.get("id"))
+        for record in report_deliverables
+        if isinstance(record, dict) and is_nonempty_string(record.get("id"))
+    }
+    historical_required_deliverables = (
+        {
+            item
+            for item in historical_origin.get(
+                "required_report_deliverables", []
+            )
+            if is_nonempty_string(item)
+        }
+        if isinstance(historical_origin, dict)
+        else set()
+    )
+    required_deliverables = sorted(
+        current_required_deliverables | historical_required_deliverables
+    )
+    raw_rechecked_units = issue.get("rechecked_units")
+    rechecked_units = sorted(
+        item
+        for item in raw_rechecked_units
+        if is_nonempty_string(item)
+    ) if isinstance(raw_rechecked_units, list) else []
+    raw_rechecked_uses = issue.get("rechecked_dependency_uses")
+    rechecked_uses = sorted(
+        item
+        for item in raw_rechecked_uses
+        if is_nonempty_string(item)
+    ) if isinstance(raw_rechecked_uses, list) else []
+    raw_reconciled_deliverables = issue.get("reconciled_deliverables")
+    reconciled_deliverables = sorted(
+        item
+        for item in raw_reconciled_deliverables
+        if is_nonempty_string(item)
+    ) if isinstance(raw_reconciled_deliverables, list) else []
+    closure_complete = (
+        issue.get("status") == "resolved"
+        and rechecked_units == required_units
+        and rechecked_uses == required_uses
+        and reconciled_challenges == required_challenges
+        and reconciled_deliverables == required_deliverables
+    )
+    closure_rows = [
+        [
+            canonical_id_field(required_units),
+            canonical_id_field(rechecked_units),
+            canonical_id_field(required_uses),
+            canonical_id_field(rechecked_uses),
+            canonical_id_field(required_challenges),
+            canonical_id_field(reconciled_challenges),
+            canonical_id_field(required_deliverables),
+            canonical_id_field(reconciled_deliverables),
+            "complete" if closure_complete else "open",
+        ]
+    ]
+    if isinstance(resolution_archive, dict):
+        archived_projection = resolution_archive.get("projection")
+        if isinstance(archived_projection, dict):
+            if isinstance(archived_projection.get("failure"), list):
+                failure_rows = archived_projection["failure"]
+    return {
+        "failure": failure_rows,
+        "contract": contract_rows,
+        "propagation": propagation_rows,
+        "severity": severity_rows,
+        "changes": change_rows,
+        "closure": closure_rows,
+        "required_closure": {
+            "units": required_units,
+            "dependency_uses": required_uses,
+            "challenges": required_challenges,
+            "report_deliverables": required_deliverables,
+        },
+    }
+
+
+def render_markdown_table(
+    header: list[str], rows: Iterable[Iterable[Any]]
+) -> str:
+    lines = [
+        "| " + " | ".join(escape_markdown(value) for value in header) + " |",
+        "|" + "|".join("---" for _ in header) + "|",
+    ]
+    lines.extend(
+        "| " + " | ".join(escape_markdown(value) for value in row) + " |"
+        for row in rows
+    )
+    return "\n".join(lines)
+
+
+def render_issue_report_views(
+    issues: list[dict[str, Any]],
+    summaries_by_id: dict[str, dict[str, Any]],
+    dependency_edges: list[dict[str, Any]],
+    critical_units: Iterable[str],
+    report_deliverables: list[dict[str, Any]],
+    overall_assessment: Any,
+    interfaces: dict[str, dict[str, Any]] | None = None,
+    global_checks: dict[str, dict[str, Any]] | None = None,
+) -> tuple[str, str]:
+    canonical_issues = sorted(
+        (issue for issue in issues if isinstance(issue, dict)),
+        key=lambda issue: (
+            ISSUE_SEVERITY_RANK.get(str(issue.get("severity")), 99),
+            str(issue.get("id", "")),
+        ),
+    )
+    if not canonical_issues:
+        return "No issues.", "No issues."
+
+    issue_header = [
+        "Issue",
+        "Severity",
+        "Load-bearing",
+        "Confidence",
+        "Lifecycle",
+        "Finding",
+        "Invalidation kind",
+        "Origin ref",
+        "Contract refs",
+        "Affected results",
+    ]
+    issue_index = render_markdown_table(
+        issue_header,
+        (canonical_issue_row(issue) for issue in canonical_issues),
+    )
+
+    detail_blocks: list[str] = []
+    for issue in canonical_issues:
+        issue_id = str(issue.get("id"))
+        projection = canonical_issue_detail_projection(
+            issue,
+            summaries_by_id,
+            dependency_edges,
+            critical_units,
+            report_deliverables,
+            overall_assessment,
+            interfaces=interfaces,
+            global_checks=global_checks,
+        )
+        block = [
+            f"### {issue_id} [{issue.get('severity')}] "
+            f"{escape_markdown_heading(issue.get('summary'))}",
+            "",
+            "#### 1. Exact failure site and contract",
+            "",
+            render_markdown_table(
+                [
+                    "File and lines",
+                    "Span SHA256",
+                    "Exact locked quote",
+                    "Result",
+                    "Step and move",
+                    "Claim",
+                    "Rule attempted",
+                    "Premises",
+                    "Failure evidence",
+                    "Failure kind",
+                ],
+                projection["failure"],
+            ),
+            "",
+            render_markdown_table(
+                [
+                    "Contract ref",
+                    "Normalized claim or assumption",
+                    "Scope, model, and regime",
+                    "Evidence",
+                ],
+                projection["contract"],
+            ),
+            "",
+            "#### 2. Downstream consequences",
+            "",
+            render_markdown_table(
+                [
+                    "Affected result",
+                    "Relation",
+                    "Use ID",
+                    "Dependency conclusion",
+                    "Use-site file and lines",
+                    "Use-site SHA256",
+                    "Exact use-site quote",
+                    "Propagated effect",
+                ],
+                projection["propagation"],
+            ),
+            "",
+            "#### 3. Severity and validity effect",
+            "",
+            render_markdown_table(
+                [
+                    "Severity",
+                    "Load-bearing",
+                    "Confidence",
+                    "Invalidation kind",
+                    "Current unit effect",
+                    "Current conclusion effect",
+                    "Overall assessment effect",
+                ],
+                projection["severity"],
+            ),
+            "",
+            "#### 4. Suggested changes and recheck",
+            "",
+            render_markdown_table(
+                [
+                    "Target",
+                    "Action",
+                    "Proposal",
+                    "Verification status",
+                    "Required rechecks",
+                ],
+                projection["changes"],
+            ),
+            "",
+            render_markdown_table(
+                [
+                    "Required units",
+                    "Rechecked units",
+                    "Required dependency uses",
+                    "Rechecked dependency uses",
+                    "Required challenges",
+                    "Reconciled challenges",
+                    "Required deliverables",
+                    "Reconciled deliverables",
+                    "Closure status",
+                ],
+                projection["closure"],
+            ),
+        ]
+        detail_blocks.append("\n".join(block))
+    return issue_index, "\n\n".join(detail_blocks)
+
+
+def replace_report_section_text(text: str, heading: str, body: str) -> str:
+    pattern = re.compile(
+        rf"^{re.escape(heading)}\s*$\n.*?(?=^##\s|\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
+    matches = list(pattern.finditer(text))
+    if len(matches) != 1:
+        raise ValueError(
+            f"Final report must contain exactly one {heading} section"
+        )
+    replacement = f"{heading}\n\n{body.strip()}\n\n"
+    return pattern.sub(lambda _: replacement, text, count=1)
 
 
 
 def finalization_target_is_safe(path: Path) -> bool:
-    return not path.is_symlink() and path.parent.resolve() == path.parent
+    return path_redirect_kind(path) is None and path.parent.resolve() == path.parent
 
 
 def finalization_record_path(
     manifest: dict[str, Any], root: Path
 ) -> tuple[Path, list[str]]:
-    root = root.resolve()
-    canonical = root / "audit" / "06_reports" / "FINALIZATION.json"
     errors: list[str] = []
-    if not finalization_target_is_safe(canonical):
-        errors.append("Canonical finalization-record location is symlinked")
-    value = manifest.get("finalization_record")
-    if not is_nonempty_string(value):
-        errors.append("manifest.finalization_record must be a nonempty path")
-        return canonical, errors
-    candidate = resolve_stored_path(value, root)
-    if candidate != canonical:
-        errors.append(
-            "manifest.finalization_record must resolve to "
-            "audit/06_reports/FINALIZATION.json"
-        )
+    canonical, _ = manifest_canonical_artifact_path(
+        manifest,
+        root,
+        "finalization_record",
+        "finalization record",
+        errors,
+    )
     return canonical, errors
 
 
-def check_audit_finalization(
+def validate_input_provenance(
+    manifest: dict[str, Any], root: Path, errors: list[str], *, final: bool
+) -> str:
+    """Validate additive input metadata without breaking legacy schema-5 audits."""
+    provenance = manifest.get("input_provenance")
+    if provenance is None:
+        return "latex"
+    if not isinstance(provenance, dict):
+        errors.append("manifest.input_provenance must be an object")
+        return "latex"
+    kind = provenance.get("kind")
+    if kind not in {"latex", "pdf_transcription"}:
+        errors.append("input_provenance.kind must be latex or pdf_transcription")
+        kind = "latex"
+    authoritative = provenance.get("authoritative_source")
+    if not is_nonempty_string(authoritative):
+        errors.append("input_provenance.authoritative_source must be a path")
+    elif authoritative != manifest.get("paper_file"):
+        errors.append("input_provenance.authoritative_source must equal paper_file")
+    portable = provenance.get("portable_sources")
+    if not isinstance(portable, bool):
+        errors.append("input_provenance.portable_sources must be boolean")
+        portable = False
+    original = provenance.get("original_locations")
+    if not isinstance(original, dict) or original.get("authoritative") is not False:
+        errors.append(
+            "input_provenance.original_locations must be nonauthoritative provenance"
+        )
+    if portable and is_nonempty_string(authoritative):
+        if (
+            re.match(r"^(?:[A-Za-z]:[\\/]|\\\\)", authoritative)
+            or authoritative.startswith("/")
+            or "\\" in authoritative
+        ):
+            errors.append(
+                "Portable authoritative_source must be a relative POSIX path"
+            )
+        authoritative_path = resolve_stored_path(authoritative, root)
+        try:
+            authoritative_path.relative_to(root / "audit" / "00_sources")
+        except ValueError:
+            errors.append(
+                "Portable authoritative source must be inside audit/00_sources"
+            )
+    if kind != "pdf_transcription":
+        return kind
+    if provenance.get("manual_inventory_required") is not True:
+        errors.append("pdf_transcription must require manual inventory")
+    publisher = provenance.get("publisher_pdf")
+    if not isinstance(publisher, dict):
+        errors.append("pdf_transcription requires publisher_pdf provenance")
+    else:
+        file_value = publisher.get("file")
+        digest = publisher.get("sha256")
+        size = publisher.get("size_bytes")
+        if not is_nonempty_string(file_value):
+            errors.append("publisher_pdf.file must be a path")
+        else:
+            if portable and (
+                re.match(r"^(?:[A-Za-z]:[\\/]|\\\\)", file_value)
+                or file_value.startswith("/")
+                or "\\" in file_value
+            ):
+                errors.append("Portable publisher_pdf.file must be a relative POSIX path")
+            publisher_path = resolve_stored_path(file_value, root)
+            if not publisher_path.is_file():
+                errors.append(f"Publisher PDF not found: {publisher_path}")
+            else:
+                if publisher_path.suffix.lower() != ".pdf":
+                    errors.append("publisher_pdf.file must name a PDF")
+                if digest != sha256_file(publisher_path):
+                    errors.append("Publisher PDF drift: SHA-256 does not match")
+                if not is_int(size) or size != publisher_path.stat().st_size:
+                    errors.append("Publisher PDF size_bytes does not match")
+            if portable:
+                try:
+                    publisher_path.relative_to(root / "audit" / "00_sources")
+                except ValueError:
+                    errors.append(
+                        "Portable publisher PDF must be inside audit/00_sources"
+                    )
+        if not is_nonempty_string(publisher.get("original_location")):
+            errors.append("publisher_pdf.original_location must record provenance")
+    visual = provenance.get("visual_review")
+    if not isinstance(visual, dict):
+        errors.append("pdf_transcription requires visual_review provenance")
+    elif final:
+        if visual.get("status") != "complete":
+            errors.append(
+                "pdf_transcription requires visual_review.status complete before finalization"
+            )
+        reviewed_pages = visual.get("reviewed_pages")
+        if (
+            not isinstance(reviewed_pages, list)
+            or not reviewed_pages
+            or not all(is_nonempty_string(item) for item in reviewed_pages)
+        ):
+            errors.append(
+                "pdf_transcription visual_review.reviewed_pages must be a nonempty string list"
+            )
+        if not is_substantive_string(visual.get("notes")):
+            errors.append("pdf_transcription visual_review.notes must be substantive")
+        if not is_utc_timestamp(visual.get("completed_utc")):
+            errors.append(
+                "pdf_transcription visual_review.completed_utc must be a UTC timestamp"
+            )
+    return kind
+
+
+def rediscover_portable_source_closure(
+    paper: Path,
+    recorded_files: Iterable[Path],
+    additional_files: Iterable[Path],
+    root: Path,
+    recorded_warnings: Iterable[str] = (),
+) -> tuple[list[Path], list[str]]:
+    """Expand bundle-local includes while retaining recorded FLS-only members."""
+    recorded = list(dict.fromkeys(path.resolve() for path in recorded_files))
+    seeds = list(
+        dict.fromkeys(
+            [
+                *(path.resolve() for path in additional_files),
+                *(path for path in recorded if path != paper.resolve()),
+            ]
+        )
+    )
+    closure = discover_source_closure(
+        paper,
+        additional_files=seeds,
+        fls_file=None,
+        project_root=root / "audit" / "00_sources" / "project",
+        warning_path_base=paper.parent,
+    )
+    files = list(dict.fromkeys([*recorded, *closure["files"]]))
+    warnings = sorted(set(recorded_warnings) | set(closure["warnings"]))
+    return files, warnings
+
+
+def _check_audit_finalization(
     root: Path, *, progress_override: dict[str, Any] | None = None
 ) -> tuple[list[str], dict[str, Any]]:
     root = root.resolve()
     errors: list[str] = []
-    manifest_path = root / "AUDIT_MANIFEST.json"
-    manifest, manifest_errors = load_json_object(manifest_path, "audit manifest")
+    manifest_path, manifest, manifest_errors = load_audit_manifest(root)
     errors.extend(manifest_errors)
     if manifest_errors:
         return errors, {"audit_root": str(root), "errors": len(errors)}
+    errors.extend(audit_internal_redirect_errors(root))
     if manifest.get("schema_version") != SCHEMA_VERSION:
         errors.append("AUDIT_MANIFEST.json has an unsupported schema_version")
     protocol = manifest.get("protocol")
@@ -8192,8 +15442,30 @@ def check_audit_finalization(
             errors.append(
                 f"protocol.{field} does not match the validator in use"
             )
-    if not is_nonempty_string(manifest.get("method_interface_registry")):
-        errors.append("manifest.method_interface_registry must be a path")
+    inventory_path, inventory_path_valid = manifest_canonical_artifact_path(
+        manifest,
+        root,
+        "inventory_file",
+        "proof-unit inventory",
+        errors,
+    )
+    registry_path, registry_path_valid = manifest_canonical_artifact_path(
+        manifest,
+        root,
+        "dependency_registry",
+        "dependency registry",
+        errors,
+    )
+    interface_registry_path, interface_registry_path_valid = (
+        manifest_canonical_artifact_path(
+            manifest,
+            root,
+            "method_interface_registry",
+            "method-interface registry",
+            errors,
+        )
+    )
+    input_kind = validate_input_provenance(manifest, root, errors, final=True)
     _, finalization_path_errors = finalization_record_path(manifest, root)
     errors.extend(finalization_path_errors)
 
@@ -8232,6 +15504,38 @@ def check_audit_finalization(
         if not is_nonempty_string(snapshot_id) or snapshot_id != expected_snapshot_id:
             errors.append("Manifest source_snapshot.sha256 is missing or inconsistent")
 
+    provenance = manifest.get("input_provenance")
+    portable_fixed = bool(
+        isinstance(provenance, dict) and provenance.get("portable_sources") is True
+    )
+    discovery_record = manifest.get("source_discovery")
+    recorded_warnings: list[str] = []
+    if portable_fixed:
+        if not isinstance(discovery_record, dict) or discovery_record.get(
+            "portable_fixed_closure"
+        ) is not True:
+            errors.append(
+                "Portable audit requires source_discovery.portable_fixed_closure"
+            )
+        warning_value = (
+            discovery_record.get("recorded_warnings", [])
+            if isinstance(discovery_record, dict)
+            else []
+        )
+        if not isinstance(warning_value, list) or not all(
+            isinstance(item, str) for item in warning_value
+        ):
+            errors.append("source_discovery.recorded_warnings must be a string list")
+        else:
+            recorded_warnings = warning_value
+        for source_path in recorded_files:
+            try:
+                source_path.relative_to(root / "audit" / "00_sources")
+            except ValueError:
+                errors.append(
+                    "Portable source snapshot contains a file outside audit/00_sources: "
+                    + str(source_path)
+                )
     current_files: list[Path] = []
     current_warnings: list[str] = []
     fresh_inventory: dict[str, Any] = {"units": [], "warnings": []}
@@ -8239,7 +15543,42 @@ def check_audit_finalization(
     additional_files, fls_path, discovered_project_root, recorded_outside = (
         parse_manifest_source_discovery(manifest, root, errors)
     )
-    if paper.is_file():
+    if paper.is_file() and portable_fixed and input_kind == "latex":
+        current_files, current_warnings = rediscover_portable_source_closure(
+            paper,
+            recorded_files,
+            additional_files,
+            root,
+            recorded_warnings,
+        )
+        fresh_inventory = scan_formal_units(
+            paper,
+            source_files=current_files,
+            source_warnings=current_warnings,
+            path_identity_base=paper.parent,
+        )
+        fresh_cross_references = scan_cross_references(
+            paper,
+            source_files=current_files,
+            source_warnings=current_warnings,
+            path_identity_base=paper.parent,
+        )
+    elif paper.is_file() and portable_fixed:
+        current_files = list(recorded_files)
+        current_warnings = recorded_warnings
+        fresh_inventory = scan_formal_units(
+            paper,
+            source_files=current_files,
+            source_warnings=current_warnings,
+            path_identity_base=paper.parent,
+        )
+        fresh_cross_references = scan_cross_references(
+            paper,
+            source_files=current_files,
+            source_warnings=current_warnings,
+            path_identity_base=paper.parent,
+        )
+    elif paper.is_file():
         closure = discover_source_closure(
             paper,
             additional_files=additional_files,
@@ -8276,41 +15615,59 @@ def check_audit_finalization(
         elif sha256_file(path) != digest:
             errors.append(f"Source drift in included file: {path}")
 
-    crossref_json_path = (
-        root / "audit" / "01_index" / "cross_reference_audit.json"
+    crossref_json_path, crossref_json_path_valid = canonical_artifact_path(
+        root,
+        "audit/01_index/cross_reference_audit.json",
+        "cross-reference audit JSON",
+        errors,
     )
-    stored_cross_references, crossref_read_errors = load_json_object(
-        crossref_json_path, "cross_reference_audit.json"
+    stored_cross_references, crossref_read_errors = (
+        load_json_object(crossref_json_path, "cross_reference_audit.json")
+        if crossref_json_path_valid
+        else ({}, [])
     )
     errors.extend(crossref_read_errors)
-    if not crossref_read_errors and stored_cross_references != fresh_cross_references:
+    if (
+        crossref_json_path_valid
+        and not crossref_read_errors
+        and stored_cross_references != fresh_cross_references
+    ):
         errors.append(
             "cross_reference_audit.json is stale or disagrees with the fresh scan"
         )
-    crossref_markdown_path = (
-        root / "audit" / "01_index" / "cross_reference_audit.md"
+    crossref_markdown_path, crossref_markdown_path_valid = canonical_artifact_path(
+        root,
+        "audit/01_index/cross_reference_audit.md",
+        "cross-reference audit Markdown",
+        errors,
     )
-    if not crossref_markdown_path.is_file():
+    if crossref_markdown_path_valid and not crossref_markdown_path.is_file():
         errors.append(f"cross_reference_audit.md not found: {crossref_markdown_path}")
-    elif not crossref_read_errors and read_text(
-        crossref_markdown_path
-    ) != crossref_markdown(stored_cross_references):
+    elif (
+        crossref_markdown_path_valid
+        and crossref_json_path_valid
+        and not crossref_read_errors
+        and read_text(crossref_markdown_path)
+        != crossref_markdown(stored_cross_references)
+    ):
         errors.append(
             "cross_reference_audit.md is stale or disagrees with cross_reference_audit.json"
         )
 
-    inventory_value = manifest.get("inventory_file")
-    inventory_path = (
-        resolve_stored_path(inventory_value, root)
-        if is_nonempty_string(inventory_value)
-        else root / "__missing_inventory__"
+    inventory, inventory_errors = (
+        load_json_object(inventory_path, "proof-unit inventory")
+        if inventory_path_valid
+        else ({}, [])
     )
-    inventory, inventory_errors = load_json_object(inventory_path, "proof-unit inventory")
     errors.extend(inventory_errors)
     units = inventory.get("units", []) if not inventory_errors else []
     if not isinstance(units, list):
         errors.append("Proof-unit inventory must contain a units list")
         units = []
+    if input_kind == "pdf_transcription" and not units:
+        errors.append(
+            "pdf_transcription requires a nonempty manually reviewed theorem/proof inventory"
+        )
     unit_inventory: dict[str, dict[str, Any]] = {}
     for index, unit in enumerate(units, 1):
         if not isinstance(unit, dict) or not is_nonempty_string(unit.get("id")):
@@ -8486,7 +15843,10 @@ def check_audit_finalization(
                             and is_int(manual_end)
                             and manual_path.is_file()
                             and proof_span_has_safe_boundary(
-                                manual_path, manual_start, manual_end
+                                manual_path,
+                                manual_start,
+                                manual_end,
+                                target_unit_id=str(unit_id),
                             )
                         )
                     except (OSError, UnicodeError, ValueError):
@@ -8560,7 +15920,10 @@ def check_audit_finalization(
                                     f"{prefix}.reviewed_proof_sha256 is stale"
                                 )
                             if not proof_span_has_safe_boundary(
-                                reviewed_path, reviewed_start, reviewed_end
+                                reviewed_path,
+                                reviewed_start,
+                                reviewed_end,
+                                target_unit_id=str(unit_id),
                             ):
                                 errors.append(
                                     f"{prefix}.reviewed_proof must equal a complete "
@@ -8781,7 +16144,10 @@ def check_audit_finalization(
             try:
                 source_span_sha256(proof_path, proof_start, proof_end)
                 if not proof_span_has_safe_boundary(
-                    proof_path, proof_start, proof_end
+                    proof_path,
+                    proof_start,
+                    proof_end,
+                    target_unit_id=unit_id,
                 ):
                     errors.append(
                         f"{unit_id}: reviewed proof must equal a complete proof "
@@ -9054,36 +16420,26 @@ def check_audit_finalization(
     validate_completion_pass(
         completion.get("adversarial_pass"), "adversarial_pass", errors
     )
-    final_report = root / "audit" / "06_reports" / "FINAL_REPORT.md"
+    final_report, final_report_path_valid = canonical_artifact_path(
+        root,
+        "audit/06_reports/FINAL_REPORT.md",
+        "final report",
+        errors,
+    )
     report_assessment: str | None = None
     report_text = ""
+    raw_report_text = ""
     report_fields: dict[str, str] = {}
-    if not final_report.is_file():
+    if final_report_path_valid and not final_report.is_file():
         errors.append(f"Final report not found: {final_report}")
-    elif completion.get("final_report_ready") is True:
-        report_text = read_text(final_report)
-        for label in (
-            "Overall assessment code",
-            "Overall judgment",
-            "Checked scope",
-            "Target results",
-            "Source revision",
-            "Skill version",
-            "Artifact schema version",
-            "Evidence contract version",
-            "Method-interface schema version",
-            "Closure contract version",
-            "Source snapshot ID",
-            "Finalization record",
-            "Highest-consequence issue",
-            "Final confidence",
-            "Files and results checked",
-            "Results not checked",
-            "External results checked",
-            "External results not checked",
-            "Tooling, extraction, or rendering limitations",
-            "Independence level of the critical-path challenge",
-        ):
+    elif final_report_path_valid and completion.get("final_report_ready") is True:
+        raw_report_text = read_text(final_report)
+        report_text = active_markdown_text(raw_report_text)
+        if ACTIVE_HIDDEN_HTML_MARKER in report_text:
+            errors.append(
+                "Final report contains active raw HTML"
+            )
+        for label in REPORT_SCALAR_FIELDS:
             matches = list(re.finditer(
                 rf"^- {re.escape(label)}:\s*(.*?)\s*$", report_text, re.MULTILINE
             ))
@@ -9102,10 +16458,10 @@ def check_audit_finalization(
             "## Main theorem chain",
             "## Conclusion judgments",
             "## Dependency closure",
-            "## Independent critical-path challenge",
-            "## Issue summary",
+            "## Issue index",
+            "## Detailed findings",
+            "## Independent critical-path challenges",
             "## Method-interface findings",
-            "## Proposed repairs",
             "## Computational evidence",
             "## Unchecked scope",
             "## Assurance boundary",
@@ -9120,6 +16476,9 @@ def check_audit_finalization(
         for obsolete_heading in (
             "## Verified results",
             "## Conditional, gap, incorrect, or unclear results",
+            "## Independent critical-path challenge",
+            "## Issue summary",
+            "## Proposed repairs",
         ):
             if re.search(
                 rf"^{re.escape(obsolete_heading)}\s*$", report_text, re.MULTILINE
@@ -9174,30 +16533,9 @@ def check_audit_finalization(
             )
         if "This is a non-formal audit." not in report_text:
             errors.append("Final report must state the non-formal assurance boundary")
-        if re.search(
-            r"(?:complete proof certification|certif(?:y|ies|ied).{0,80}proof.{0,40}(?:correct|valid))",
-            report_text,
-            re.IGNORECASE | re.DOTALL,
-        ):
-            errors.append("Final report contains unsupported proof-certification language")
-        if re.search(
-            r"(?<!not )(?<!not a )\b(?:formally\s+(?:verified|checked|certified)|"
-            r"(?:kernel|machine|proof[- ]assistant)[ -](?:checked|verified|certified))"
-            r"\s+(?:mathematical\s+)?proof\b|"
-            r"\bproof\b.{0,40}\b(?:is|was|has been)\s+(?!not\b)formally\s+"
-            r"(?:verified|checked|certified)\b",
-            report_text,
-            re.IGNORECASE | re.DOTALL,
-        ):
-            errors.append(
-                "Final report contains unsupported formal-verification language"
-            )
-        if re.search(
-            r"\b(?:every|all)\b.{0,80}\b(?:theorem|proof)s?\b.{0,100}\b(?:correct|valid)\b",
-            report_text,
-            re.IGNORECASE | re.DOTALL,
-        ):
-            errors.append("Final report contains an unsupported correctness overclaim")
+        validate_report_assurance_language(
+            raw_report_text, "Final report", errors
+        )
 
     ledger_errors, summaries, referenced = audit_ledgers(root, True)
     errors.extend(ledger_errors)
@@ -9628,13 +16966,11 @@ def check_audit_finalization(
                 "the result is referenced"
             )
 
-    registry_value = manifest.get("dependency_registry")
-    registry_path = (
-        resolve_stored_path(registry_value, root)
-        if is_nonempty_string(registry_value)
-        else root / "__missing_registry__"
+    registry, registry_errors = (
+        load_json_object(registry_path, "dependency registry")
+        if registry_path_valid
+        else ({}, [])
     )
-    registry, registry_errors = load_json_object(registry_path, "dependency registry")
     errors.extend(registry_errors)
     closure_result = (
         validate_dependency_closure(
@@ -9650,7 +16986,7 @@ def check_audit_finalization(
             in_scope=in_scope,
             errors=errors,
         )
-        if not registry_errors
+        if registry_path_valid and not registry_errors
         else {
             "external_results": {},
             "edges": [],
@@ -9687,19 +17023,15 @@ def check_audit_finalization(
                 "Focused audit includes units outside the exact target closure: "
                 + ", ".join(sorted(unrelated_scope))
             )
-    interface_registry_value = manifest.get("method_interface_registry")
-    interface_registry_path = (
-        resolve_stored_path(interface_registry_value, root)
-        if is_nonempty_string(interface_registry_value)
-        else root / "__missing_method_interface_registry__"
-    )
-    interface_registry, interface_registry_errors = load_json_object(
-        interface_registry_path, "method-interface registry"
+    interface_registry, interface_registry_errors = (
+        load_json_object(interface_registry_path, "method-interface registry")
+        if interface_registry_path_valid
+        else ({}, [])
     )
     errors.extend(interface_registry_errors)
     interfaces = (
         validate_method_interface_registry(interface_registry, root, errors)
-        if not interface_registry_errors
+        if interface_registry_path_valid and not interface_registry_errors
         else {}
     )
     if set(in_scope_interfaces) != set(interfaces):
@@ -9728,25 +17060,14 @@ def check_audit_finalization(
                     f"{interface_id}.affected_results names results outside scope: "
                     + ", ".join(sorted(unknown_results))
                 )
-    for unit_id in critical:
-        summary = summaries_by_id.get(unit_id)
-        if summary is None:
-            continue
-        challenge = summary.get("independent_check", {})
-        if not challenge.get("required"):
-            errors.append(f"Critical unit {unit_id} requires an independent challenger pass")
-        elif not is_enum_value(challenge.get("status"), {"agreed", "resolved"}):
-            errors.append(f"Critical unit {unit_id} has no reconciled challenger verdict")
-        artifact = challenge.get("artifact")
-        if is_nonempty_string(artifact):
-            artifact_path = resolve_stored_path(artifact, root)
-            if not artifact_path.is_file() or artifact_path.stat().st_size == 0:
-                errors.append(
-                    f"Critical unit {unit_id} challenger artifact is missing or empty: {artifact_path}"
-                )
-
-    issue_path, issues, issue_read_errors = load_issue_log(root)
+    issue_path, issues, issue_schema_version, issue_read_errors = load_issue_log(root)
     errors.extend(issue_read_errors)
+    if issue_schema_version != SCHEMA_VERSION:
+        errors.append(
+            "upgrade_required: finalization requires ISSUE_LOG.json "
+            f"schema_version {SCHEMA_VERSION}; schema "
+            f"{issue_schema_version!r} is inspection-only"
+        )
     source_snapshot_id = (
         snapshot.get("sha256") if isinstance(snapshot, dict) else None
     )
@@ -9756,6 +17077,13 @@ def check_audit_finalization(
     for dependent, dependencies in unit_graph.items():
         for dependency in dependencies:
             reverse_graph.setdefault(dependency, set()).add(dependent)
+    global_checks_by_aspect = {
+        row.get("aspect"): row
+        for row in completion.get("global_consistency_pass", {}).get(
+            "checks", []
+        )
+        if isinstance(row, dict) and is_nonempty_string(row.get("aspect"))
+    }
     issue_errors, _ = validate_issues(
         issues,
         referenced,
@@ -9765,6 +17093,9 @@ def check_audit_finalization(
         source_snapshot_id=source_snapshot_id,
         in_scope=in_scope,
         reverse_graph=reverse_graph,
+        ledger_summaries=summaries,
+        dependency_edges=dependency_edges,
+        global_checks=global_checks_by_aspect,
     )
     errors.extend(issue_errors)
     issues_by_id = {
@@ -9772,9 +17103,67 @@ def check_audit_finalization(
         for issue in issues
         if isinstance(issue, dict) and is_nonempty_string(issue.get("id"))
     }
-    issue_summary_path = root / "audit" / "06_reports" / "ISSUE_SUMMARY.md"
+    report_deliverables = validate_report_deliverables(
+        manifest.get("report_deliverables"),
+        root,
+        set(issues_by_id),
+        assessment,
+        errors,
+    )
+    critical, severe_issue_ids_by_unit = effective_critical_requirements(
+        manifest, issues_by_id.values()
+    )
+    for unit_id in critical:
+        summary = summaries_by_id.get(unit_id)
+        if summary is None:
+            errors.append(f"Effective critical unit has no ledger: {unit_id}")
+            continue
+        challenge = summary.get("independent_check", {})
+        triggering_issue_ids = sorted(severe_issue_ids_by_unit.get(unit_id, set()))
+        if not challenge.get("required"):
+            errors.append(
+                f"Effective critical unit {unit_id} requires an independent "
+                "challenger pass"
+            )
+            continue
+        if not is_enum_value(challenge.get("status"), {"agreed", "resolved"}):
+            errors.append(
+                f"Effective critical unit {unit_id} has no reconciled challenger verdict"
+            )
+        if challenge.get("covered_issue_ids") != triggering_issue_ids:
+            errors.append(
+                f"Effective critical unit {unit_id} covered_issue_ids must equal "
+                "its current severe triggering issues: "
+                + canonical_id_field(triggering_issue_ids)
+            )
+        if challenge.get("source_snapshot_sha256") != source_snapshot_id:
+            errors.append(
+                f"Effective critical unit {unit_id} challenger source snapshot is stale"
+            )
+        artifact = challenge.get("artifact")
+        if is_nonempty_string(artifact):
+            artifact_path = resolve_stored_path(artifact, root)
+            if not artifact_path.is_file() or artifact_path.stat().st_size == 0:
+                errors.append(
+                    f"Effective critical unit {unit_id} challenger artifact is "
+                    f"missing or empty: {artifact_path}"
+                )
+            elif challenge.get("challenge_artifact_sha256") != sha256_file(
+                artifact_path
+            ):
+                errors.append(
+                    f"Effective critical unit {unit_id} challenger artifact hash is stale"
+                )
+    issue_summary_path, issue_summary_path_valid = canonical_artifact_path(
+        root,
+        "audit/06_reports/ISSUE_SUMMARY.md",
+        "issue summary",
+        errors,
+    )
     expected_issue_summary = render_issue_summary(issues)
-    if not issue_summary_path.is_file():
+    if not issue_summary_path_valid:
+        pass
+    elif not issue_summary_path.is_file():
         errors.append(f"Canonical issue summary not found: {issue_summary_path}")
     elif read_text(issue_summary_path) != expected_issue_summary:
         errors.append("ISSUE_SUMMARY.md is stale or disagrees with ISSUE_LOG.json")
@@ -9854,57 +17243,61 @@ def check_audit_finalization(
                 "Final report Independence level of the critical-path challenge disagrees with critical ledgers"
             )
         challenge_section = report_section(
-            report_text, "## Independent critical-path challenge"
+            report_text, "## Independent critical-path challenges"
         )
         challenge_rows = markdown_table_rows(challenge_section or "")
         challenge_header = [
             "Result",
             "Challenge status",
-            "Independence level",
+            "Independence",
+            "Covered issue IDs",
             "Challenger verdict",
             "Reconciled verdict",
             "Disagreements",
-            "Resolution",
             "Artifact",
+            "Source snapshot SHA256",
+            "Challenged ledger SHA256",
+            "Artifact SHA256",
+            "Generated UTC",
+            "Resolution",
         ]
         if not challenge_rows or challenge_rows[0] != challenge_header:
             errors.append(
-                "Final report Independent critical-path challenge has an invalid table header"
+                "Final report Independent critical-path challenges has an invalid table header"
             )
         challenge_data = challenge_rows[2:] if len(challenge_rows) >= 2 else []
         expected_challenge_rows: list[list[str]] = []
         for unit_id in critical:
             check = summaries_by_id.get(unit_id, {}).get("independent_check", {})
-            disagreements = check.get("disagreements")
-            disagreement_text = (
-                "; ".join(disagreements)
-                if isinstance(disagreements, list)
-                and bool(disagreements)
-                and all(is_nonempty_string(item) for item in disagreements)
-                else "none"
-                if disagreements == []
-                else "<invalid>"
-            )
             resolution = check.get("resolution")
             expected_challenge_rows.append(
                 [
                     unit_id,
                     str(check.get("status")),
                     str(check.get("independence_level")),
+                    canonical_id_field(check.get("covered_issue_ids", [])),
                     str(check.get("challenger_verdict")),
                     str(check.get("reconciled_verdict")),
-                    disagreement_text.replace("\n", " "),
+                    json.dumps(
+                        check.get("disagreements", []),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                    str(check.get("artifact")),
+                    str(check.get("source_snapshot_sha256")),
+                    str(check.get("challenged_ledger_sha256")),
+                    str(check.get("challenge_artifact_sha256")),
+                    str(check.get("generated_utc")),
                     (
                         str(resolution).replace("\n", " ")
                         if is_substantive_string(resolution)
                         else "none"
                     ),
-                    str(check.get("artifact")),
                 ]
             )
         if sorted(challenge_data) != sorted(expected_challenge_rows):
             errors.append(
-                "Final report Independent critical-path challenge rows disagree with critical ledgers"
+                "Final report Independent critical-path challenges rows disagree with critical ledgers"
             )
         checked_description = report_fields.get("Files and results checked", "")
         if paper.name not in checked_description or any(
@@ -10065,31 +17458,24 @@ def check_audit_finalization(
             errors.append(
                 "Final report Dependency closure rows disagree with canonical dependency uses"
             )
-        issue_section = report_section(report_text, "## Issue summary") or ""
+        issue_section = report_section(report_text, "## Issue index") or ""
         issue_rows = markdown_table_rows(issue_section)
         issue_header = [
-            "ID",
+            "Issue",
             "Severity",
-            "Confidence",
-            "Status",
-            "Finding status",
             "Load-bearing",
-            "Finding class",
-            "Affected layer",
-            "Interface",
-            "Estimator target",
-            "Implementation inspection",
-            "Code to documented estimator",
-            "Code to required target",
-            "Execution provenance",
-            "Affected result",
+            "Confidence",
+            "Lifecycle",
+            "Finding",
+            "Invalidation kind",
+            "Origin ref",
+            "Contract refs",
             "Affected results",
-            "Summary",
         ]
         if issues_by_id:
             if not issue_rows or issue_rows[0] != issue_header:
                 errors.append(
-                    "Final report Issue summary must contain the canonical full-field table"
+                    "Final report Issue index must contain the canonical table"
                 )
             issue_data = issue_rows[2:] if len(issue_rows) >= 2 else []
             expected_issue_rows = sorted(
@@ -10097,27 +17483,222 @@ def check_audit_finalization(
             )
             if sorted(issue_data) != expected_issue_rows:
                 errors.append(
-                    "Final report Issue summary rows disagree with canonical issues"
+                    "Final report Issue index rows disagree with canonical issues"
                 )
         elif issue_rows or issue_section.strip() != "No issues.":
             errors.append(
-                "Final report Issue summary must state exactly No issues. when the log is empty"
+                "Final report Issue index must state exactly No issues. when the log is empty"
+            )
+        detailed_section = report_section(
+            report_text, "## Detailed findings"
+        ) or ""
+        if issues_by_id:
+            rendered_detail_ids = re.findall(
+                r"^###\s+(I-[0-9]{3})\s+\[S[0-3]\]\s+.*$",
+                detailed_section,
+                re.MULTILINE,
+            )
+            if sorted(rendered_detail_ids) != sorted(issues_by_id):
+                errors.append(
+                    "Final report Detailed findings issue headings disagree with "
+                    "ISSUE_LOG.json"
+                )
+            for issue_id, issue in issues_by_id.items():
+                expected_heading_prefix = (
+                    f"### {issue_id} [{issue.get('severity')}] "
+                )
+                matching_headings = [
+                    line
+                    for line in detailed_section.splitlines()
+                    if line.startswith(expected_heading_prefix)
+                ]
+                expected_heading = expected_heading_prefix + escape_markdown_heading(
+                    issue.get("summary")
+                )
+                if len(matching_headings) != 1 or matching_headings[0] != expected_heading:
+                    errors.append(
+                        f"Final report Detailed findings heading is stale for {issue_id}"
+                    )
+                    continue
+                block_match = re.search(
+                    rf"^{re.escape(matching_headings[0])}\s*$\n(.*?)(?=^###\s+I-[0-9]{{3}}\s|\Z)",
+                    detailed_section,
+                    re.MULTILINE | re.DOTALL,
+                )
+                block = block_match.group(1) if block_match is not None else ""
+                for subheading in (
+                    "#### 1. Exact failure site and contract",
+                    "#### 2. Downstream consequences",
+                    "#### 3. Severity and validity effect",
+                    "#### 4. Suggested changes and recheck",
+                ):
+                    if len(
+                        re.findall(
+                            rf"^{re.escape(subheading)}\s*$", block, re.MULTILINE
+                        )
+                    ) != 1:
+                        errors.append(
+                            f"Final report {issue_id} is missing or duplicates "
+                            f"{subheading}"
+                        )
+                projection = canonical_issue_detail_projection(
+                    issue,
+                    summaries_by_id,
+                    dependency_edges,
+                    critical,
+                    report_deliverables,
+                    assessment,
+                    interfaces=interfaces,
+                    global_checks=global_checks_by_aspect,
+                )
+                if (
+                    issue.get("status") == "resolved"
+                    and projection["closure"][0][-1] != "complete"
+                ):
+                    errors.append(
+                        f"{issue_id}: resolved issue has an incomplete affected "
+                        "result, dependency, challenge, or deliverable recheck closure"
+                    )
+                subsection_contracts = [
+                    (
+                        "#### 1. Exact failure site and contract",
+                        [
+                            (
+                                [
+                                    "File and lines",
+                                    "Span SHA256",
+                                    "Exact locked quote",
+                                    "Result",
+                                    "Step and move",
+                                    "Claim",
+                                    "Rule attempted",
+                                    "Premises",
+                                    "Failure evidence",
+                                    "Failure kind",
+                                ],
+                                projection["failure"],
+                            ),
+                            (
+                                [
+                                    "Contract ref",
+                                    "Normalized claim or assumption",
+                                    "Scope, model, and regime",
+                                    "Evidence",
+                                ],
+                                projection["contract"],
+                            ),
+                        ],
+                    ),
+                    (
+                        "#### 2. Downstream consequences",
+                        [
+                            (
+                                [
+                                    "Affected result",
+                                    "Relation",
+                                    "Use ID",
+                                    "Dependency conclusion",
+                                    "Use-site file and lines",
+                                    "Use-site SHA256",
+                                    "Exact use-site quote",
+                                    "Propagated effect",
+                                ],
+                                projection["propagation"],
+                            )
+                        ],
+                    ),
+                    (
+                        "#### 3. Severity and validity effect",
+                        [
+                            (
+                                [
+                                    "Severity",
+                                    "Load-bearing",
+                                    "Confidence",
+                                    "Invalidation kind",
+                                    "Current unit effect",
+                                    "Current conclusion effect",
+                                    "Overall assessment effect",
+                                ],
+                                projection["severity"],
+                            )
+                        ],
+                    ),
+                    (
+                        "#### 4. Suggested changes and recheck",
+                        [
+                            (
+                                [
+                                    "Target",
+                                    "Action",
+                                    "Proposal",
+                                    "Verification status",
+                                    "Required rechecks",
+                                ],
+                                projection["changes"],
+                            ),
+                            (
+                                [
+                                    "Required units",
+                                    "Rechecked units",
+                                    "Required dependency uses",
+                                    "Rechecked dependency uses",
+                                    "Required challenges",
+                                    "Reconciled challenges",
+                                    "Required deliverables",
+                                    "Reconciled deliverables",
+                                    "Closure status",
+                                ],
+                                projection["closure"],
+                            ),
+                        ],
+                    ),
+                ]
+                for subheading, expected_tables in subsection_contracts:
+                    subsection = report_subsection(block, subheading) or ""
+                    actual_tables = markdown_tables(subsection)
+                    if len(actual_tables) != len(expected_tables):
+                        errors.append(
+                            f"Final report {issue_id} {subheading} has the wrong "
+                            "number of canonical tables"
+                        )
+                        continue
+                    for table_index, (expected_header, expected_rows) in enumerate(
+                        expected_tables
+                    ):
+                        actual_table = actual_tables[table_index]
+                        actual_header = actual_table[0] if actual_table else []
+                        actual_rows = actual_table[2:] if len(actual_table) >= 2 else []
+                        if actual_header != expected_header:
+                            errors.append(
+                                f"Final report {issue_id} {subheading} table "
+                                f"{table_index + 1} has an invalid header"
+                            )
+                        if actual_rows != expected_rows:
+                            errors.append(
+                                f"Final report {issue_id} {subheading} table "
+                                f"{table_index + 1} disagrees with canonical evidence"
+                            )
+        elif detailed_section.strip() != "No issues.":
+            errors.append(
+                "Final report Detailed findings must state exactly No issues. "
+                "when the issue log is empty"
             )
         method_section = report_section(
             report_text, "## Method-interface findings"
         ) or ""
         method_rows = markdown_table_rows(method_section)
         method_header = [
-            "Issue ID",
+            "Issue",
             "Finding class",
             "Interface ID",
             "Estimator-target status",
             "Implementation inspection",
+            "Inspection mode",
             "Code to documented estimator",
             "Code to required target",
             "Execution provenance",
             "Affected layer",
-            "Evidence scope and consequence",
         ]
         interface_issues = [
             issue
@@ -10131,7 +17712,8 @@ def check_audit_finalization(
                 )
             method_data = method_rows[2:] if len(method_rows) >= 2 else []
             expected_method_rows = sorted(
-                canonical_interface_issue_row(issue) for issue in interface_issues
+                canonical_interface_issue_row(issue, interfaces)
+                for issue in interface_issues
             )
             if sorted(method_data) != expected_method_rows:
                 errors.append(
@@ -10140,6 +17722,64 @@ def check_audit_finalization(
         elif method_rows or method_section.strip() != "None.":
             errors.append(
                 "Final report Method-interface findings must state exactly None. when there are no interface issues"
+            )
+        deliverable_section_value = report_section(
+            report_text, "## Declared external deliverables"
+        )
+        deliverable_section = deliverable_section_value or ""
+        deliverable_rows = markdown_table_rows(deliverable_section)
+        deliverable_header = [
+            "Deliverable ID",
+            "Role",
+            "Path",
+            "SHA256",
+            "Issue IDs",
+            "Overall verdict",
+        ]
+        expected_declared_deliverables = canonical_id_field(
+            record.get("id")
+            for record in report_deliverables
+            if isinstance(record, dict) and is_nonempty_string(record.get("id"))
+        )
+        if (
+            report_fields.get("Declared external deliverables")
+            != expected_declared_deliverables
+        ):
+            errors.append(
+                "Final report Declared external deliverables field disagrees "
+                "with the manifest"
+            )
+        if report_deliverables:
+            if not deliverable_rows or deliverable_rows[0] != deliverable_header:
+                errors.append(
+                    "Final report Declared external deliverables has an invalid "
+                    "table header"
+                )
+            deliverable_data = (
+                deliverable_rows[2:] if len(deliverable_rows) >= 2 else []
+            )
+            expected_deliverable_rows = sorted(
+                [
+                    str(record.get("id")),
+                    str(record.get("role")),
+                    str(record.get("path")),
+                    str(record.get("sha256")),
+                    canonical_id_field(record.get("issue_ids", [])),
+                    str(record.get("overall_verdict")),
+                ]
+                for record in report_deliverables
+            )
+            if sorted(deliverable_data) != expected_deliverable_rows:
+                errors.append(
+                    "Final report Declared external deliverables rows disagree "
+                    "with the manifest"
+                )
+        elif deliverable_section_value is not None and (
+            deliverable_rows or deliverable_section.strip() not in {"", "None."}
+        ):
+            errors.append(
+                "Final report Declared external deliverables must be absent or "
+                "state exactly None. when none are declared"
             )
         for issue_id, issue in issues_by_id.items():
             if re.search(rf"(?<![A-Za-z0-9-]){re.escape(issue_id)}(?![A-Za-z0-9-])", report_text) is None:
@@ -10190,8 +17830,17 @@ def check_audit_finalization(
                 )
 
     if progress_override is None:
-        progress_path = root / "PROGRESS.json"
-        progress, progress_errors = load_json_object(progress_path, "progress state")
+        progress_path, progress_path_valid = canonical_artifact_path(
+            root,
+            "PROGRESS.json",
+            "progress record",
+            errors,
+        )
+        progress, progress_errors = (
+            load_json_object(progress_path, "progress state")
+            if progress_path_valid
+            else ({}, [])
+        )
     else:
         progress = progress_override
         progress_errors = []
@@ -10466,6 +18115,23 @@ def check_audit_finalization(
     return errors, result
 
 
+def check_audit_finalization(
+    root: Path, *, progress_override: dict[str, Any] | None = None
+) -> tuple[list[str], dict[str, Any]]:
+    """Run the full gate without allowing unreadable artifacts to crash it."""
+    try:
+        return _check_audit_finalization(
+            root, progress_override=progress_override
+        )
+    except (TextArtifactReadError, OSError, UnicodeError, ValueError) as exc:
+        message = str(exc)
+        return [message], {
+            "audit_root": str(root.resolve()),
+            "errors": 1,
+            "read_error": message,
+        }
+
+
 def finalization_payload_sha256(record: dict[str, Any]) -> str:
     payload = dict(record)
     payload.pop("record_payload_sha256", None)
@@ -10476,7 +18142,7 @@ def finalization_payload_sha256(record: dict[str, Any]) -> str:
 def cmd_finalize(args: argparse.Namespace) -> int:
     root = args.root.resolve()
     errors, result = check_audit_finalization(root)
-    manifest, manifest_errors = load_json_object(root / "AUDIT_MANIFEST.json", "audit manifest")
+    _, manifest, manifest_errors = load_audit_manifest(root)
     record_path, record_path_errors = finalization_record_path(manifest, root)
     if not finalization_target_is_safe(record_path):
         raise ValueError(
@@ -10487,7 +18153,13 @@ def cmd_finalize(args: argparse.Namespace) -> int:
             if error not in errors:
                 errors.append(error)
     source_snapshot = manifest.get("source_snapshot") if not manifest_errors else None
-    artifact_manifest = audit_state_manifest(root, record_path)
+    redirect_errors = audit_internal_redirect_errors(root)
+    for error in redirect_errors:
+        if error not in errors:
+            errors.append(error)
+    artifact_manifest = (
+        [] if redirect_errors else audit_state_manifest(root, record_path)
+    )
     record = {
         "finalization_schema_version": 1,
         "status": "passed" if not errors else "failed",
@@ -10503,12 +18175,7 @@ def cmd_finalize(args: argparse.Namespace) -> int:
         "errors": errors,
     }
     record["record_payload_sha256"] = finalization_payload_sha256(record)
-    record_path.parent.mkdir(parents=True, exist_ok=True)
-    record_path.write_text(
-        json.dumps(record, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+    atomic_write_json(record_path, record)
     result["finalization_record"] = str(record_path)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if errors:
@@ -10566,9 +18233,7 @@ def check_finalization_freshness(root: Path) -> dict[str, Any]:
         "current_gate_errors": gate_errors,
         "artifact_changes": {"added": [], "removed": [], "changed": []},
     }
-    manifest, manifest_errors = load_json_object(
-        root / "AUDIT_MANIFEST.json", "audit manifest"
-    )
+    _, manifest, manifest_errors = load_audit_manifest(root)
     if manifest_errors:
         result["record_status"] = "invalid"
         result["freshness"] = "unknown"
@@ -10648,7 +18313,11 @@ def check_finalization_freshness(root: Path) -> dict[str, Any]:
     ):
         reasons.append("Finalization record payload hash does not match")
 
-    current_artifacts = audit_state_manifest(root, record_path)
+    redirect_errors = audit_internal_redirect_errors(root)
+    reasons.extend(redirect_errors)
+    current_artifacts = (
+        [] if redirect_errors else audit_state_manifest(root, record_path)
+    )
     current_state_digest = canonical_sha256(current_artifacts)
     if record.get("audit_state_sha256") != current_state_digest:
         reasons.append("Audit artifacts changed after finalization")
@@ -10719,11 +18388,15 @@ def progress_scope_units(
         errors.append("Reviewed audit scope needs unique nonempty in_scope_units")
         return []
 
-    inventory_value = manifest.get("inventory_file")
-    if not is_nonempty_string(inventory_value):
-        errors.append("Manifest inventory_file must be a path")
+    inventory_path, inventory_path_valid = manifest_canonical_artifact_path(
+        manifest,
+        root,
+        "inventory_file",
+        "proof-unit inventory",
+        errors,
+    )
+    if not inventory_path_valid:
         return []
-    inventory_path = resolve_stored_path(inventory_value, root)
     inventory, inventory_errors = load_json_object(
         inventory_path, "proof-unit inventory"
     )
@@ -10776,6 +18449,7 @@ def source_snapshot_freshness_errors(
 ) -> list[str]:
     root = root.resolve()
     errors: list[str] = []
+    input_kind = validate_input_provenance(manifest, root, errors, final=False)
     paper_value = manifest.get("paper_file")
     paper = (
         resolve_stored_path(paper_value, root)
@@ -10817,7 +18491,17 @@ def source_snapshot_freshness_errors(
         parse_manifest_source_discovery(manifest, root, errors)
     )
     current_files: list[Path] = []
-    if paper.is_file():
+    provenance = manifest.get("input_provenance")
+    portable_fixed = bool(
+        isinstance(provenance, dict) and provenance.get("portable_sources") is True
+    )
+    if paper.is_file() and portable_fixed and input_kind == "latex":
+        current_files, _ = rediscover_portable_source_closure(
+            paper, recorded_files, additional_files, root
+        )
+    elif paper.is_file() and portable_fixed:
+        current_files = list(recorded_files)
+    elif paper.is_file():
         closure = discover_source_closure(
             paper,
             additional_files=additional_files,
@@ -10846,32 +18530,113 @@ def source_snapshot_freshness_errors(
     return list(dict.fromkeys(errors))
 
 
+def effective_critical_requirements(
+    manifest: dict[str, Any], issues: Iterable[dict[str, Any]]
+) -> tuple[list[str], dict[str, set[str]]]:
+    scope = manifest.get("audit_scope")
+    if not isinstance(scope, dict):
+        return [], {}
+    declared_value = scope.get("critical_units")
+    declared = {
+        unit_id
+        for unit_id in declared_value
+        if is_nonempty_string(unit_id)
+    } if isinstance(declared_value, list) else set()
+    in_scope_value = scope.get("in_scope_units")
+    in_scope = {
+        unit_id
+        for unit_id in in_scope_value
+        if is_nonempty_string(unit_id)
+    } if isinstance(in_scope_value, list) else set()
+    severe_by_unit: dict[str, set[str]] = defaultdict(set)
+    for issue in issues:
+        if not isinstance(issue, dict) or not (
+            issue.get("status") in {"open", "deferred", "resolved"}
+            and issue.get("load_bearing") is True
+            and issue.get("severity") in {"S0", "S1"}
+        ):
+            continue
+        issue_id = issue.get("id")
+        affected_results = issue.get("affected_results")
+        if not is_nonempty_string(issue_id) or not isinstance(
+            affected_results, list
+        ):
+            continue
+        historical_origin = issue.get("historical_origin")
+        historical_challenges = (
+            historical_origin.get("required_challenges", [])
+            if isinstance(historical_origin, dict)
+            else []
+        )
+        promoted_units = [
+            *affected_results,
+            *(
+                historical_challenges
+                if isinstance(historical_challenges, list)
+                else []
+            ),
+        ]
+        for unit_id in promoted_units:
+            if unit_id in in_scope:
+                severe_by_unit[unit_id].add(issue_id)
+    return sorted(declared | set(severe_by_unit)), dict(severe_by_unit)
+
+
 def critical_challenges_complete(
-    manifest: dict[str, Any], summaries_by_id: dict[str, dict[str, Any]]
+    root: Path,
+    manifest: dict[str, Any],
+    summaries_by_id: dict[str, dict[str, Any]],
+    issues: list[dict[str, Any]],
 ) -> bool:
     scope = manifest.get("audit_scope")
-    critical = scope.get("critical_units") if isinstance(scope, dict) else None
-    if not isinstance(critical, list) or not critical:
+    if not isinstance(scope, dict) or not isinstance(
+        scope.get("critical_units"), list
+    ):
         return False
-    for unit_id in critical:
+    effective, severe_by_unit = effective_critical_requirements(
+        manifest, issues
+    )
+    if not effective:
+        return False
+    source_snapshot = manifest.get("source_snapshot")
+    snapshot_id = (
+        source_snapshot.get("sha256")
+        if isinstance(source_snapshot, dict)
+        else None
+    )
+    for unit_id in effective:
         summary = summaries_by_id.get(unit_id)
         check = summary.get("independent_check") if isinstance(summary, dict) else None
         if (
             not isinstance(check, dict)
             or check.get("required") is not True
             or check.get("status") not in {"agreed", "resolved"}
+            or check.get("covered_issue_ids")
+            != sorted(severe_by_unit.get(unit_id, set()))
+            or check.get("source_snapshot_sha256") != snapshot_id
+        ):
+            return False
+        artifact = check.get("artifact")
+        if not is_nonempty_string(artifact):
+            return False
+        artifact_path = resolve_stored_path(artifact, root)
+        if (
+            not artifact_path.is_file()
+            or check.get("challenge_artifact_sha256") != sha256_file(artifact_path)
         ):
             return False
     return True
 
 
 def derived_current_pass(
+    root: Path,
     manifest: dict[str, Any],
     scope_units: list[str],
     normalized_units: list[str],
     incomplete_units: list[str],
     blocked_units: dict[str, Any],
     summaries_by_id: dict[str, dict[str, Any]],
+    issues: list[dict[str, Any]],
 ) -> int:
     scope = manifest.get("audit_scope")
     if not isinstance(scope, dict):
@@ -10903,7 +18668,9 @@ def derived_current_pass(
         or adversarial_pass.get("status") not in completed_passes
     ):
         return 5
-    if not critical_challenges_complete(manifest, summaries_by_id):
+    if not critical_challenges_complete(
+        root, manifest, summaries_by_id, issues
+    ):
         return 6
     if completion.get("final_report_ready") is not True:
         return 7
@@ -10994,12 +18761,14 @@ def derive_progress_records(
     ]
     incomplete_units = in_progress_units + not_started_units
     current_pass = derived_current_pass(
+        root,
         manifest,
         scope_units,
         normalized_units,
         incomplete_units,
         blocked_units,
         summaries_by_id,
+        issues,
     )
     completion = manifest.get("completion")
     final_report_ready = (
@@ -11180,16 +18949,25 @@ def bounded_errors(
 
 def cmd_checkpoint(args: argparse.Namespace) -> int:
     root = args.root.resolve()
-    manifest, manifest_errors = load_json_object(
-        root / "AUDIT_MANIFEST.json", "audit manifest"
-    )
+    redirect_errors = audit_internal_redirect_errors(root)
+    if redirect_errors:
+        raise ValueError("; ".join(redirect_errors))
+    _, manifest, manifest_errors = load_audit_manifest(root)
     if manifest_errors:
         raise ValueError("; ".join(manifest_errors))
-    progress_path = root / "PROGRESS.json"
+    progress_path_errors: list[str] = []
+    progress_path, progress_path_valid = canonical_artifact_path(
+        root,
+        "PROGRESS.json",
+        "progress record",
+        progress_path_errors,
+    )
+    if not progress_path_valid:
+        raise ValueError("; ".join(progress_path_errors))
     recorded, progress_errors = load_json_object(progress_path, "progress state")
     if progress_errors:
         raise ValueError("; ".join(progress_errors))
-    _, issues, issue_errors = load_issue_log(root)
+    _, issues, _, issue_errors = load_issue_log(root)
     if issue_errors:
         raise ValueError("; ".join(issue_errors))
 
@@ -11244,11 +19022,7 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
             "updated_utc": checkpoint_time,
         }
     )
-    progress_path.write_text(
-        json.dumps(updated, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+    atomic_write_json(progress_path, updated)
     print(
         json.dumps(
             {
@@ -11268,6 +19042,101 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
         )
     )
     return 0
+
+
+def status_protocol_view(
+    manifest: dict[str, Any], summaries: Iterable[dict[str, Any]]
+) -> dict[str, Any]:
+    protocol = manifest.get("protocol")
+    recorded = {
+        "artifact_schema_version": (
+            protocol.get("artifact_schema_version")
+            if isinstance(protocol, dict)
+            else None
+        ),
+        "evidence_contract_version": (
+            protocol.get("evidence_contract_version")
+            if isinstance(protocol, dict)
+            else None
+        ),
+        "closure_contract_version": (
+            protocol.get("closure_contract_version")
+            if isinstance(protocol, dict)
+            else None
+        ),
+    }
+    current = {
+        "artifact_schema_version": SCHEMA_VERSION,
+        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
+        "closure_contract_version": CLOSURE_CONTRACT_VERSION,
+    }
+    recorded_validator = (
+        protocol.get("validator_sha256") if isinstance(protocol, dict) else None
+    )
+    current_validator = protocol_identity()["validator_sha256"]
+    legacy = (
+        manifest.get("schema_version") == LEGACY_SCHEMA_VERSION
+        and recorded
+        == {
+            "artifact_schema_version": LEGACY_SCHEMA_VERSION,
+            "evidence_contract_version": LEGACY_EVIDENCE_CONTRACT_VERSION,
+            "closure_contract_version": LEGACY_CLOSURE_CONTRACT_VERSION,
+        }
+    )
+    legacy_ledgers = sorted(
+        str(summary.get("ledger"))
+        for summary in summaries
+        if isinstance(summary, dict)
+        and (
+            summary.get("schema_version") == LEGACY_SCHEMA_VERSION
+            or summary.get("evidence_contract_version")
+            == LEGACY_EVIDENCE_CONTRACT_VERSION
+        )
+        and is_nonempty_string(summary.get("ledger"))
+    )
+    versions_current = (
+        manifest.get("schema_version") == SCHEMA_VERSION and recorded == current
+    )
+    validator_revalidation_required = bool(
+        versions_current and recorded_validator != current_validator
+    )
+    status = (
+        "upgrade_required"
+        if legacy
+        else "validator_revalidation_required"
+        if validator_revalidation_required
+        else "current"
+        if versions_current
+        else "mismatch"
+    )
+    if legacy:
+        next_action = (
+            "Run migrate-ledger for every schema-4 ledger, rebuild the audit "
+            "records under schema 5, and manually recheck every proof before "
+            "finalization."
+        )
+    elif validator_revalidation_required:
+        next_action = (
+            "Run revalidate-protocol after resolving any reported source, "
+            "record, or ledger errors. Then rerun status and finalization."
+        )
+    elif status == "mismatch":
+        next_action = (
+            "The recorded schema or contract identity is incompatible with the "
+            "current validator. Re-scaffold or use the documented migration "
+            "workflow, then manually recheck affected records."
+        )
+    else:
+        next_action = "Continue the current audit workflow."
+    return {
+        "status": status,
+        "recorded": recorded,
+        "current": current,
+        "recorded_validator_sha256": recorded_validator,
+        "current_validator_sha256": current_validator,
+        "legacy_ledgers": legacy_ledgers,
+        "next_action": next_action,
+    }
 
 
 def status_markdown(data: dict[str, Any]) -> str:
@@ -11305,6 +19174,33 @@ def status_markdown(data: dict[str, Any]) -> str:
         for status, count in sorted(data["unit_statuses"].items())
     )
     rows.append("")
+    protocol = data.get("protocol")
+    if isinstance(protocol, dict) and protocol.get("status") in {
+        "upgrade_required",
+        "validator_revalidation_required",
+        "mismatch",
+    }:
+        heading = (
+            "Protocol upgrade required"
+            if protocol.get("status") == "upgrade_required"
+            else (
+                "Validator revalidation required"
+                if protocol.get("status") == "validator_revalidation_required"
+                else "Protocol mismatch"
+            )
+        )
+        rows.extend(
+            [
+                f"## {heading}",
+                "",
+                f"- Recorded protocol: {compact_json_value(protocol.get('recorded'))}",
+                f"- Current protocol: {compact_json_value(protocol.get('current'))}",
+                f"- Recorded validator SHA256: {protocol.get('recorded_validator_sha256')}",
+                f"- Current validator SHA256: {protocol.get('current_validator_sha256')}",
+                f"- Next action: {protocol.get('next_action')}",
+                "",
+            ]
+        )
     if progress.get("drift"):
         rows.extend(["## Checkpoint drift", ""])
         rows.extend(f"- {item}" for item in progress["drift"])
@@ -11345,20 +19241,43 @@ def status_markdown(data: dict[str, Any]) -> str:
 
 def cmd_status(args: argparse.Namespace) -> int:
     root = args.root.resolve()
+    structural_errors: list[str] = audit_internal_redirect_errors(root)
+    manifest_path, manifest_path_valid = canonical_artifact_path(
+        root, "AUDIT_MANIFEST.json", "audit manifest", structural_errors
+    )
+    manifest, manifest_errors = (
+        load_json_object(manifest_path, "audit manifest")
+        if manifest_path_valid
+        else ({}, [])
+    )
+    structural_errors.extend(manifest_errors)
+    progress_path, progress_path_valid = canonical_artifact_path(
+        root, "PROGRESS.json", "progress record", structural_errors
+    )
+    recorded_progress, progress_read_errors = (
+        load_json_object(progress_path, "progress state")
+        if progress_path_valid
+        else ({}, [])
+    )
+    structural_errors.extend(progress_read_errors)
+    _, issues, _, issue_read_errors = load_issue_log(root)
+    structural_errors.extend(issue_read_errors)
     ledger_errors, summaries, _ = audit_ledgers(root, False)
-    _, issues, issue_read_errors = load_issue_log(root)
-    manifest, manifest_errors = load_json_object(
-        root / "AUDIT_MANIFEST.json", "audit manifest"
-    )
-    recorded_progress, progress_read_errors = load_json_object(
-        root / "PROGRESS.json", "progress state"
-    )
-    structural_errors = [
-        *manifest_errors,
-        *progress_read_errors,
-        *issue_read_errors,
-    ]
-    if manifest_errors or progress_read_errors:
+    if not manifest_errors and manifest_path_valid:
+        for field, label in (
+            ("inventory_file", "proof-unit inventory"),
+            ("dependency_registry", "dependency registry"),
+            ("method_interface_registry", "method-interface registry"),
+        ):
+            manifest_canonical_artifact_path(
+                manifest, root, field, label, structural_errors
+            )
+    if (
+        manifest_errors
+        or progress_read_errors
+        or not manifest_path_valid
+        or not progress_path_valid
+    ):
         derived = {
             "normalized_units": [],
             "completed_units": [],
@@ -11371,13 +19290,52 @@ def cmd_status(args: argparse.Namespace) -> int:
         }
         drift: list[str] = []
     else:
-        derived, derive_errors = derive_progress_records(
-            root, manifest, recorded_progress, issues
-        )
-        structural_errors.extend(derive_errors)
-        drift = progress_drift(manifest, recorded_progress, derived)
+        try:
+            derived, derive_errors = derive_progress_records(
+                root, manifest, recorded_progress, issues
+            )
+        except (TextArtifactReadError, OSError, UnicodeError, ValueError) as exc:
+            structural_errors.append(f"Cannot derive progress safely: {exc}")
+            derived = {
+                "normalized_units": [],
+                "completed_units": [],
+                "conditional_units": [],
+                "in_progress_units": [],
+                "not_started_units": [],
+                "current_pass": None,
+                "completion_gate_errors": [],
+                "fatal_ledger_errors": [],
+            }
+            drift = []
+        else:
+            structural_errors.extend(derive_errors)
+            drift = progress_drift(manifest, recorded_progress, derived)
 
     finalization = check_finalization_freshness(root)
+    protocol_view = status_protocol_view(manifest, summaries)
+    protocol_mismatch = protocol_view["status"] == "mismatch"
+    if protocol_mismatch:
+        structural_errors.append(
+            "Manifest schema or contract identity is incompatible with the "
+            "current validator."
+        )
+    protocol_source_errors: list[str] = []
+    if (
+        protocol_view["status"]
+        in {"upgrade_required", "validator_revalidation_required"}
+        and not manifest_errors
+    ):
+        try:
+            protocol_source_errors = source_snapshot_freshness_errors(
+                root, manifest
+            )
+        except (TextArtifactReadError, OSError, UnicodeError, ValueError) as exc:
+            protocol_source_errors = [
+                f"Cannot check source snapshot freshness safely: {exc}"
+            ]
+    for error in protocol_source_errors:
+        if error not in structural_errors:
+            structural_errors.append(error)
     output = getattr(args, "output", None)
     if (
         output is not None
@@ -11402,6 +19360,70 @@ def cmd_status(args: argparse.Namespace) -> int:
         finalization_view["current_gate_errors"] = visible_errors
         finalization_view["current_gate_errors_omitted"] = omitted
 
+    coherent_legacy_upgrade = bool(
+        protocol_view["status"] == "upgrade_required"
+        and not structural_errors
+        and not ledger_errors
+        and not protocol_source_errors
+        and not any(finalization.get("artifact_changes", {}).values())
+    )
+    if coherent_legacy_upgrade:
+        finalization_view.update(
+            {
+                "freshness": "legacy_protocol",
+                "usable_finalization": False,
+                "preflight_status": "upgrade_required",
+                "finalizable_now": False,
+                "stale_reasons": (
+                    list(finalization.get("stale_reasons", []))
+                    if verbose
+                    else [
+                        "The recorded finalization is historical evidence under "
+                        "artifact/evidence/closure protocol 4/3/2."
+                    ]
+                ),
+            }
+        )
+        if not verbose:
+            finalization_view["current_gate_errors"] = [
+                "Protocol upgrade required: recorded artifact/evidence/closure "
+                "versions are 4/3/2; current finalization requires 5/4/3.",
+                "Run migrate-ledger for every legacy ledger and manually recheck "
+                "the proof records before finalization.",
+            ]
+            finalization_view["current_gate_errors_omitted"] = len(
+                full_gate_errors
+            )
+
+    coherent_validator_revalidation = bool(
+        protocol_view["status"] == "validator_revalidation_required"
+        and not structural_errors
+        and not protocol_source_errors
+        and not any(finalization.get("artifact_changes", {}).values())
+    )
+    if coherent_validator_revalidation:
+        finalization_view.update(
+            {
+                "freshness": "validator_changed",
+                "usable_finalization": False,
+                "preflight_status": "validator_revalidation_required",
+                "finalizable_now": False,
+                "stale_reasons": [
+                    "The audit records a different validator implementation "
+                    "under the current schema and contract versions."
+                ],
+            }
+        )
+        if not verbose:
+            finalization_view["current_gate_errors"] = [
+                "Validator revalidation required: the schema and contract "
+                "versions are current, but validator_sha256 changed.",
+                "Run revalidate-protocol, then rerun status and finalization.",
+            ]
+            finalization_view["current_gate_errors_omitted"] = len(
+                full_gate_errors
+            )
+
     malformed_or_stale = bool(
         structural_errors
         or drift
@@ -11411,7 +19433,11 @@ def cmd_status(args: argparse.Namespace) -> int:
             or finalization["freshness"] in {"stale", "unknown"}
         )
     )
-    if malformed_or_stale:
+    if coherent_legacy_upgrade:
+        workflow_state = "upgrade_required"
+    elif coherent_validator_revalidation:
+        workflow_state = "validator_revalidation_required"
+    elif malformed_or_stale:
         workflow_state = "malformed_or_stale"
     elif finalization["finalizable_now"]:
         workflow_state = "finalizable"
@@ -11434,8 +19460,20 @@ def cmd_status(args: argparse.Namespace) -> int:
         "in_progress_units": derived.get("in_progress_units", []),
         "not_started_units": derived.get("not_started_units", []),
         "blocked_units": derived.get("blocked_units", {}),
-        "next_action": recorded_progress.get("next_action"),
-        "drift": drift,
+        "next_action": (
+            protocol_view["next_action"]
+            if (
+                coherent_legacy_upgrade
+                or coherent_validator_revalidation
+                or protocol_mismatch
+            )
+            else recorded_progress.get("next_action")
+        ),
+        "drift": (
+            []
+            if coherent_legacy_upgrade or coherent_validator_revalidation
+            else drift
+        ),
         "completion_gate_error_count": len(derived.get("completion_gate_errors", [])),
     }
     visible_structural, structural_omitted = (
@@ -11446,6 +19484,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     result = {
         "audit_root": str(root),
         "workflow_state": workflow_state,
+        "protocol": protocol_view,
         "progress": progress_view,
         "ledgers": len(summaries),
         "ledger_errors": len(ledger_errors),
@@ -11463,7 +19502,597 @@ def cmd_status(args: argparse.Namespace) -> int:
         else json.dumps(result, ensure_ascii=False, indent=2) + "\n"
     )
     write_or_print(text, output, getattr(args, "force", False))
-    return 1 if workflow_state == "malformed_or_stale" else 0
+    return 1 if workflow_state in {
+        "malformed_or_stale",
+        "upgrade_required",
+        "validator_revalidation_required",
+    } else 0
+
+
+def cmd_revalidate_protocol(args: argparse.Namespace) -> int:
+    """Rebind a current-schema WIP audit to the current validator safely."""
+    root = args.root.resolve()
+    errors: list[str] = audit_internal_redirect_errors(root)
+    manifest_path, manifest_path_valid = canonical_artifact_path(
+        root, "AUDIT_MANIFEST.json", "audit manifest", errors
+    )
+    manifest, manifest_errors = (
+        load_json_object(manifest_path, "audit manifest")
+        if manifest_path_valid
+        else ({}, [])
+    )
+    errors.extend(manifest_errors)
+    current_protocol = protocol_identity()
+    previous_validator: Any = None
+
+    if not manifest_errors:
+        if manifest.get("schema_version") != SCHEMA_VERSION:
+            errors.append(
+                "revalidate-protocol requires the current manifest schema_version"
+            )
+        recorded_protocol = manifest.get("protocol")
+        if not isinstance(recorded_protocol, dict):
+            errors.append("AUDIT_MANIFEST.json protocol must be an object")
+            recorded_protocol = {}
+        previous_validator = recorded_protocol.get("validator_sha256")
+        for field, expected in current_protocol.items():
+            if field == "validator_sha256":
+                continue
+            if recorded_protocol.get(field) != expected:
+                errors.append(
+                    f"protocol.{field} is not compatible with the current validator"
+                )
+        if not (
+            isinstance(previous_validator, str)
+            and SHA256_RE.fullmatch(previous_validator)
+        ):
+            errors.append("protocol.validator_sha256 must be a SHA-256 digest")
+
+        canonical_records: dict[str, tuple[Path, bool]] = {}
+        for field, label in (
+            ("inventory_file", "proof-unit inventory"),
+            ("dependency_registry", "dependency registry"),
+            ("method_interface_registry", "method-interface registry"),
+        ):
+            canonical_records[field] = manifest_canonical_artifact_path(
+                manifest, root, field, label, errors
+            )
+        finalization_path, finalization_path_errors = finalization_record_path(
+            manifest, root
+        )
+        errors.extend(finalization_path_errors)
+        if not finalization_path_errors and finalization_path.is_file():
+            _, finalization_read_errors = load_json_object(
+                finalization_path, "finalization record"
+            )
+            errors.extend(finalization_read_errors)
+
+        inventory_path, inventory_path_valid = canonical_records["inventory_file"]
+        inventory, inventory_errors = (
+            load_json_object(inventory_path, "proof-unit inventory")
+            if inventory_path_valid
+            else ({}, [])
+        )
+        errors.extend(inventory_errors)
+        if inventory_path_valid and not inventory_errors:
+            if inventory.get("schema_version") != SCHEMA_VERSION:
+                errors.append(
+                    "Proof-unit inventory has an unsupported schema_version"
+                )
+            inventory_units = inventory.get("units")
+            if not isinstance(inventory_units, list):
+                errors.append("Proof-unit inventory must contain a units list")
+            else:
+                inventory_unit_ids = [
+                    unit.get("id")
+                    for unit in inventory_units
+                    if isinstance(unit, dict)
+                    and is_nonempty_string(unit.get("id"))
+                ]
+                if len(inventory_unit_ids) != len(inventory_units):
+                    errors.append(
+                        "Proof-unit inventory needs object rows with nonempty unit IDs"
+                    )
+                elif len(inventory_unit_ids) != len(set(inventory_unit_ids)):
+                    errors.append(
+                        "Proof-unit inventory needs unique nonempty unit IDs"
+                    )
+
+        registry_path, registry_path_valid = canonical_records[
+            "dependency_registry"
+        ]
+        dependency_registry, dependency_registry_errors = (
+            load_json_object(registry_path, "dependency registry")
+            if registry_path_valid
+            else ({}, [])
+        )
+        errors.extend(dependency_registry_errors)
+        if registry_path_valid and not dependency_registry_errors:
+            if dependency_registry.get("schema_version") != SCHEMA_VERSION:
+                errors.append(
+                    "Dependency registry has an unsupported schema_version"
+                )
+            if (
+                dependency_registry.get("closure_contract_version")
+                != CLOSURE_CONTRACT_VERSION
+            ):
+                errors.append(
+                    "Dependency registry closure_contract_version does not match "
+                    "the validator"
+                )
+            dependency_review = dependency_registry.get("review")
+            if not isinstance(dependency_review, dict):
+                errors.append("Dependency registry review must be an object")
+            elif dependency_review.get("status") not in {
+                "not_reviewed",
+                "reviewed",
+            }:
+                errors.append(
+                    "Dependency registry review.status must be not_reviewed or reviewed"
+                )
+            for field in ("internal_uses", "external_results"):
+                rows = dependency_registry.get(field)
+                if not isinstance(rows, list):
+                    errors.append(f"Dependency registry {field} must be a list")
+                elif not all(isinstance(row, dict) for row in rows):
+                    errors.append(
+                        f"Dependency registry {field} rows must be objects"
+                    )
+
+        interface_path, interface_path_valid = canonical_records[
+            "method_interface_registry"
+        ]
+        interface_registry, interface_registry_errors = (
+            load_json_object(interface_path, "method-interface registry")
+            if interface_path_valid
+            else ({}, [])
+        )
+        errors.extend(interface_registry_errors)
+        if interface_path_valid and not interface_registry_errors:
+            try:
+                validate_method_interface_registry(
+                    interface_registry, root, errors, final=False
+                )
+            except (OSError, UnicodeError, ValueError) as exc:
+                errors.append(
+                    "Cannot validate the method-interface registry safely: "
+                    f"{exc}"
+                )
+
+        report_path, report_path_valid = canonical_artifact_path(
+            root,
+            "audit/06_reports/FINAL_REPORT.md",
+            "final report",
+            errors,
+        )
+        if report_path_valid:
+            if not report_path.is_file():
+                errors.append(f"Final report not found: {report_path}")
+            else:
+                try:
+                    read_text(report_path)
+                except TextArtifactReadError as exc:
+                    errors.append(str(exc))
+
+        progress_path, progress_path_valid = canonical_artifact_path(
+            root, "PROGRESS.json", "progress record", errors
+        )
+        if progress_path_valid:
+            _, progress_errors = load_json_object(
+                progress_path, "progress state"
+            )
+            errors.extend(progress_errors)
+        _, _, issue_schema_version, issue_errors = load_issue_log(root)
+        errors.extend(issue_errors)
+        if issue_schema_version != SCHEMA_VERSION:
+            errors.append(
+                "revalidate-protocol requires the current ISSUE_LOG.json schema_version"
+            )
+        ledger_errors, _, _ = audit_ledgers(root, False)
+        errors.extend(
+            error for error in ledger_errors if is_fatal_ledger_error(error)
+        )
+        try:
+            errors.extend(source_snapshot_freshness_errors(root, manifest))
+        except (TextArtifactReadError, OSError, UnicodeError, ValueError) as exc:
+            errors.append(f"Cannot check source snapshot freshness safely: {exc}")
+
+    errors = list(dict.fromkeys(errors))
+    if errors:
+        result = {
+            "command": "revalidate-protocol",
+            "audit_root": str(root),
+            "status": "failed",
+            "updated": False,
+            "errors": errors,
+        }
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        for error in errors:
+            print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+
+    current_validator = current_protocol["validator_sha256"]
+    if previous_validator == current_validator:
+        status = "already_current"
+        updated = False
+    else:
+        updated_manifest = dict(manifest)
+        updated_manifest["protocol"] = dict(current_protocol)
+        atomic_write_json(manifest_path, updated_manifest)
+        status = "revalidated"
+        updated = True
+    result = {
+        "command": "revalidate-protocol",
+        "audit_root": str(root),
+        "status": status,
+        "updated": updated,
+        "previous_validator_sha256": previous_validator,
+        "current_validator_sha256": current_validator,
+        "finalization_invalidated": updated,
+        "next_action": (
+            "Run status, resolve every current gate error, and rerun finalize."
+            if updated
+            else "Continue the current audit workflow."
+        ),
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """Classify preflight failures without suggesting platform-specific repair."""
+    checks: list[dict[str, str]] = []
+
+    def record(check_id: str, category: str, status: str, detail: str) -> None:
+        checks.append(
+            {
+                "id": check_id,
+                "category": category,
+                "status": status,
+                "detail": detail,
+            }
+        )
+
+    mode = getattr(args, "mode", "new")
+    mode_ok = mode in {"new", "resume"}
+    record(
+        "mode",
+        "input",
+        "passed" if mode_ok else "failed",
+        str(mode),
+    )
+    version_ok = sys.version_info >= (3, 10)
+    record(
+        "interpreter",
+        "environment",
+        "passed" if version_ok else "failed",
+        f"{sys.executable} ({sys.version.split()[0]}); Python >= 3.10 required",
+    )
+    skill_root = Path(__file__).resolve().parent.parent
+    template_names = (
+        "CHECK_PLAN.md",
+        "EXECUTION_ORDER.md",
+        "DEPENDENCY_GRAPH.md",
+        "FINAL_REPORT.md",
+    )
+    unreadable_templates: list[str] = []
+    for name in template_names:
+        template = skill_root / "assets" / "templates" / name
+        try:
+            if not template.is_file():
+                raise FileNotFoundError(template)
+            read_text(template)
+        except (OSError, UnicodeError):
+            unreadable_templates.append(name)
+    record(
+        "templates",
+        "environment",
+        "failed" if unreadable_templates else "passed",
+        (
+            "Missing or unreadable: " + ", ".join(unreadable_templates)
+            if unreadable_templates
+            else "All bundled templates are readable UTF-8 text"
+        ),
+    )
+    input_kind = getattr(args, "input_kind", None)
+    kind_ok = input_kind in {"latex", "pdf_transcription"}
+    record(
+        "input_kind",
+        "input",
+        "passed" if kind_ok else "failed",
+        str(input_kind),
+    )
+    paper = args.paper.resolve()
+    raw_pdf = paper.suffix.lower() == ".pdf"
+    source_ok = paper.is_file() and not raw_pdf
+    source_detail = (
+        "Raw PDF is not parsed source"
+        if raw_pdf
+        else (paper.as_posix() if paper.is_file() else f"Source not found: {paper.as_posix()}")
+    )
+    record(
+        "source_path",
+        "input",
+        "passed" if source_ok else "failed",
+        source_detail,
+    )
+    source_digest: str | None = None
+    if source_ok:
+        try:
+            source_text = read_text(paper)
+            if not source_text.strip():
+                raise ValueError("Source is empty")
+            source_digest = sha256_file(paper)
+        except (OSError, UnicodeError, ValueError) as exc:
+            record("source_read", "source_read", "failed", str(exc))
+        else:
+            record(
+                "source_read",
+                "source_read",
+                "passed",
+                f"Readable nonempty UTF-8 text; sha256={source_digest}",
+            )
+    else:
+        record("source_read", "source_read", "skipped", "Source path check failed")
+
+    publisher_arg = getattr(args, "publisher_pdf", None)
+    publisher_digest: str | None = None
+    publisher_size: int | None = None
+    if input_kind == "pdf_transcription":
+        publisher = publisher_arg.resolve() if isinstance(publisher_arg, Path) else None
+        if publisher is None or not publisher.is_file() or publisher.suffix.lower() != ".pdf":
+            record(
+                "publisher_pdf",
+                "source_read",
+                "failed",
+                publisher.as_posix() if publisher is not None else "Missing --publisher-pdf",
+            )
+        else:
+            try:
+                publisher_digest = sha256_file(publisher)
+                publisher_size = publisher.stat().st_size
+            except OSError as exc:
+                record("publisher_pdf", "source_read", "failed", str(exc))
+            else:
+                record(
+                    "publisher_pdf",
+                    "source_read",
+                    "passed",
+                    f"Readable PDF; size={publisher_size}; sha256={publisher_digest}",
+                )
+    elif publisher_arg is not None:
+        record(
+            "publisher_pdf",
+            "input",
+            "failed",
+            "--publisher-pdf applies only to pdf_transcription",
+        )
+    else:
+        record("publisher_pdf", "source_read", "skipped", "Not required for LaTeX")
+    record(
+        "portable_sources",
+        "input",
+        "passed",
+        "enabled" if getattr(args, "portable_sources", False) else "disabled",
+    )
+
+    output = args.output.resolve()
+    resume_valid = False
+    if mode == "resume":
+        if not output.is_dir():
+            record(
+                "resume_audit",
+                "input",
+                "failed",
+                f"Resume audit root is not a directory: {output.as_posix()}",
+            )
+        else:
+            _, resume_manifest, resume_errors = load_audit_manifest(output)
+            resume_errors = [
+                *audit_internal_redirect_errors(output),
+                *resume_errors,
+            ]
+            manifest_input_kind = "latex"
+            if not resume_errors:
+                try:
+                    manifest_input_kind = validate_input_provenance(
+                        resume_manifest,
+                        output,
+                        resume_errors,
+                        final=False,
+                    )
+                except (OSError, UnicodeError, ValueError) as exc:
+                    resume_errors.append(
+                        f"Resume input provenance could not be validated: {exc}"
+                    )
+            if manifest_input_kind != input_kind:
+                resume_errors.append(
+                    "The supplied input kind does not match the recorded audit "
+                    f"input kind ({manifest_input_kind})."
+                )
+            if manifest_input_kind == "pdf_transcription":
+                provenance = resume_manifest.get("input_provenance")
+                recorded_publisher = (
+                    provenance.get("publisher_pdf")
+                    if isinstance(provenance, dict)
+                    else None
+                )
+                recorded_digest = (
+                    recorded_publisher.get("sha256")
+                    if isinstance(recorded_publisher, dict)
+                    else None
+                )
+                recorded_size = (
+                    recorded_publisher.get("size_bytes")
+                    if isinstance(recorded_publisher, dict)
+                    else None
+                )
+                if (
+                    publisher_digest != recorded_digest
+                    or publisher_size != recorded_size
+                ):
+                    resume_errors.append(
+                        "The supplied publisher PDF does not match the recorded "
+                        "publisher PDF hash and size."
+                    )
+            if resume_errors:
+                record(
+                    "resume_audit",
+                    "input",
+                    "failed",
+                    "; ".join(resume_errors),
+                )
+            else:
+                snapshot = resume_manifest.get("source_snapshot")
+                rows = snapshot.get("files") if isinstance(snapshot, dict) else None
+                authoritative_value = resume_manifest.get("paper_file")
+                authoritative_normalized = (
+                    authoritative_value.replace("\\", "/")
+                    if is_nonempty_string(authoritative_value)
+                    else None
+                )
+                authoritative_digest = next(
+                    (
+                        row.get("sha256")
+                        for row in rows
+                        if isinstance(row, dict)
+                        and is_nonempty_string(row.get("file"))
+                        and row["file"].replace("\\", "/")
+                        == authoritative_normalized
+                        and is_nonempty_string(row.get("sha256"))
+                    ),
+                    None,
+                ) if isinstance(rows, list) else None
+                supplied_digest = source_digest
+                if supplied_digest != authoritative_digest:
+                    record(
+                        "resume_audit",
+                        "input",
+                        "failed",
+                        "The supplied paper hash does not match the recorded "
+                        "authoritative paper.",
+                    )
+                else:
+                    resume_valid = True
+                    record(
+                        "resume_audit",
+                        "input",
+                        "passed",
+                        "Existing audit manifest and supplied paper hash agree.",
+                    )
+        probe_parent = output
+        parent_ok = output.is_dir() and resume_valid
+    else:
+        probe_parent = output.parent
+        while not probe_parent.exists() and probe_parent != probe_parent.parent:
+            probe_parent = probe_parent.parent
+        parent_ok = probe_parent.is_dir() and not output.exists()
+    record(
+        "output_parent",
+        "output_write",
+        "passed" if parent_ok else "failed",
+        (
+            f"Existing audit directory probe: {output.as_posix()}"
+            if mode == "resume" and output.is_dir()
+            else (
+                f"Probe parent: {probe_parent.as_posix()}"
+                if not output.exists()
+                else (
+                    f"New audit output already exists: {output.as_posix()}"
+                    if mode == "new"
+                    else f"Resume output is not usable: {output.as_posix()}"
+                )
+            )
+        ),
+    )
+    probe_directory: Path | None = None
+    if parent_ok:
+        try:
+            probe_directory = Path(
+                tempfile.mkdtemp(prefix=".proofcheck-doctor-", dir=str(probe_parent))
+            )
+            staged = probe_directory / "write.tmp"
+            committed = probe_directory / "rename.ok"
+            with staged.open("wb") as stream:
+                stream.write(b"proofcheck-doctor\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            record("output_write", "output_write", "passed", staged.as_posix())
+            os.replace(staged, committed)
+            record("output_rename", "output_write", "passed", committed.as_posix())
+        except OSError as exc:
+            if not any(row["id"] == "output_write" for row in checks):
+                record("output_write", "output_write", "failed", str(exc))
+                record(
+                    "output_rename", "output_write", "skipped", "Write probe failed"
+                )
+            else:
+                record("output_rename", "output_write", "failed", str(exc))
+        finally:
+            if probe_directory is not None and probe_directory.exists():
+                try:
+                    shutil.rmtree(probe_directory)
+                except OSError as exc:
+                    record("output_cleanup", "output_write", "failed", str(exc))
+    else:
+        record(
+            "output_write", "output_write", "skipped", "Output-parent check failed"
+        )
+        record(
+            "output_rename", "output_write", "skipped", "Output-parent check failed"
+        )
+
+    categories = ("environment", "input", "source_read", "output_write")
+    failures = {
+        category: sum(
+            row["status"] == "failed" and row["category"] == category
+            for row in checks
+        )
+        for category in categories
+    }
+    ready = not any(failures.values())
+    result = {
+        "command": "doctor",
+        "status": "passed" if ready else "failed",
+        "ready": ready,
+        "mode": mode,
+        "input_kind": input_kind,
+        "checks": checks,
+        "failures_by_category": failures,
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if ready else 1
+
+
+def cmd_delivery_check(args: argparse.Namespace) -> int:
+    """Return FINAL only for a current usable passed finalization record."""
+    root = args.root.resolve()
+    try:
+        freshness = check_finalization_freshness(root)
+        usable = freshness.get("usable_finalization") is True
+        reasons = list(freshness.get("stale_reasons", []))
+        if not usable:
+            reasons.extend(freshness.get("current_gate_errors", []))
+            if not reasons:
+                reasons.append("No current usable passed FINALIZATION record")
+        record_status = str(freshness.get("record_status", "unknown"))
+        freshness_status = str(freshness.get("freshness", "unknown"))
+    except Exception as exc:
+        usable = False
+        record_status = "invalid"
+        freshness_status = "unknown"
+        reasons = [f"Delivery preflight could not be completed: {exc}"]
+    result = {
+        "command": "delivery-check",
+        "audit_root": root.as_posix(),
+        "delivery_status": "FINAL" if usable else "NONFINAL",
+        "usable_finalization": usable,
+        "record_status": record_status,
+        "freshness": freshness_status,
+        "reasons": list(dict.fromkeys(str(reason) for reason in reasons)),
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if usable else 1
 
 
 def add_output_arguments(parser: argparse.ArgumentParser) -> None:
@@ -11480,7 +20109,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     scaffold = subparsers.add_parser("scaffold", help="Create a new audit workspace")
     scaffold.add_argument("--paper", type=Path, required=True)
+    scaffold.add_argument(
+        "--input-kind", choices=("latex", "pdf_transcription"), required=True
+    )
     scaffold.add_argument("--output", type=Path, required=True)
+    scaffold.add_argument("--publisher-pdf", type=Path)
+    scaffold.add_argument(
+        "--visual-review-status",
+        choices=("not_started", "partial"),
+        default="not_started",
+    )
+    scaffold.add_argument("--visual-review-notes", default="")
+    scaffold.add_argument(
+        "--portable-sources",
+        action="store_true",
+        help="Copy and hash-lock the authoritative source closure inside the audit",
+    )
     scaffold.add_argument(
         "--additional-source",
         action="append",
@@ -11530,6 +20174,18 @@ def build_parser() -> argparse.ArgumentParser:
     extract.add_argument("--force", action="store_true")
     extract.set_defaults(func=cmd_extract)
 
+    migrate = subparsers.add_parser(
+        "migrate-ledger",
+        help=(
+            "Create a schema-5 recheck skeleton from a legacy schema-4 ledger "
+            "without overwriting it"
+        ),
+    )
+    migrate.add_argument("ledger", type=Path)
+    migrate.add_argument("--output", type=Path, required=True)
+    migrate.add_argument("--force", action="store_true")
+    migrate.set_defaults(func=cmd_migrate_ledger)
+
     ledger = subparsers.add_parser(
         "ledger-check", help="Validate source coverage and proof-step evidence"
     )
@@ -11542,8 +20198,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     issues.add_argument("--root", type=Path, required=True)
     issues.add_argument("--write-summary", action="store_true")
+    issues.add_argument(
+        "--write-report-views",
+        action="store_true",
+        help=(
+            "Regenerate the canonical Issue index and Detailed findings sections; "
+            "requires --final"
+        ),
+    )
     issues.add_argument("--final", action="store_true")
     issues.set_defaults(func=cmd_issues)
+
+    archive_issue = subparsers.add_parser(
+        "archive-issue",
+        help=(
+            "Seal a currently finalized unresolved issue before applying its "
+            "source repair"
+        ),
+    )
+    archive_issue.add_argument("--root", type=Path, required=True)
+    archive_issue.add_argument("--issue-id", required=True)
+    archive_issue.set_defaults(func=cmd_archive_issue)
 
     checkpoint = subparsers.add_parser(
         "checkpoint", help="Synchronize canonical resumable audit progress"
@@ -11577,6 +20252,39 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_output_arguments(status)
     status.set_defaults(func=cmd_status)
+    revalidate_protocol = subparsers.add_parser(
+        "revalidate-protocol",
+        help=(
+            "Explicitly bind a current-schema audit to the current validator "
+            "after source and record freshness checks"
+        ),
+    )
+    revalidate_protocol.add_argument("--root", type=Path, required=True)
+    revalidate_protocol.set_defaults(func=cmd_revalidate_protocol)
+    doctor = subparsers.add_parser(
+        "doctor", help="Classify input, source-read, and output-commit readiness"
+    )
+    doctor.add_argument(
+        "--mode",
+        choices=("new", "resume"),
+        default="new",
+        help="Check a new scaffold destination or an existing audit root",
+    )
+    doctor.add_argument("--paper", type=Path, required=True)
+    doctor.add_argument("--output", type=Path, required=True)
+    doctor.add_argument(
+        "--input-kind", choices=("latex", "pdf_transcription"), required=True
+    )
+    doctor.add_argument("--publisher-pdf", type=Path)
+    doctor.add_argument("--portable-sources", action="store_true")
+    doctor.set_defaults(func=cmd_doctor)
+
+    delivery = subparsers.add_parser(
+        "delivery-check",
+        help="Fail closed unless a current usable passed FINALIZATION exists",
+    )
+    delivery.add_argument("--root", type=Path, required=True)
+    delivery.set_defaults(func=cmd_delivery_check)
     return parser
 
 
@@ -11586,7 +20294,13 @@ def main() -> int:
     args = parser.parse_args()
     try:
         return int(args.func(args))
-    except (FileExistsError, FileNotFoundError, ValueError, OSError) as exc:
+    except (
+        FileExistsError,
+        FileNotFoundError,
+        ValueError,
+        OSError,
+        UnicodeError,
+    ) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 

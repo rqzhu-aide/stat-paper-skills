@@ -7,28 +7,25 @@
 - Target results:
 - Checked scope:
 - Source revision:
-- Skill version:
-- Artifact schema version:
-- Evidence contract version:
-- Closure contract version:
-- Method-interface schema version:
+- Skill version: 1.0
+- Artifact schema version: 5
+- Evidence contract version: 4
+- Closure contract version: 3
+- Method-interface schema version: 1
 - Source snapshot ID:
 - Finalization record: audit/06_reports/FINALIZATION.json
 - Highest-consequence issue:
 - Final confidence:
+- Independence level of the critical-path challenge:
 
-Set `Overall assessment code` to exactly `no_defect_found`, `defects_found`, or
-`inconclusive`, matching the manifest and evidence. Set `Closure contract
-version` to `2`. State the corresponding judgment in prose. Do not describe
-this report as a machine-checked proof certificate.
+Use exactly `no_defect_found`, `defects_found`, or `inconclusive` for the
+assessment code. Keep the judgment conditional on the checked source and
+recorded assumptions. Do not call this a formal proof certificate.
 
-For `Target results`, `Checked scope`, `Results not checked`, `External results checked`,
-`External results not checked`, and `Highest-consequence issue`, write the exact
-canonical IDs in sorted order, separated by a comma and one space, with no
-trailing punctuation. Write exactly `none` for an empty set. Use `none` for
-`Tooling, extraction, or rendering limitations` only when the canonical scope
-records no limitation. Use exact independence enum values only:
-`none`, `fresh_context_same_model`, `different_model`, or `independent_human`.
+For every canonical ID list, sort IDs, separate them with a comma and one
+space, and write `none` for an empty set. Use only these independence values:
+`none`, `fresh_context_same_model`, `different_model`, or
+`independent_human`.
 
 ## Audit boundary and limitations
 
@@ -37,7 +34,7 @@ records no limitation. Use exact independence enum values only:
 - External results checked:
 - External results not checked:
 - Tooling, extraction, or rendering limitations:
-- Independence level of the critical-path challenge:
+- Declared external deliverables:
 
 ## Main theorem chain
 
@@ -46,64 +43,128 @@ records no limitation. Use exact independence enum values only:
 
 ## Conclusion judgments
 
-Include exactly one row for every ordered `Cxxx` conclusion in every in-scope
-ledger. Match the conclusion ID, support `step_id/move_id`, component judgments,
-dependency-use closure, and issues exactly. The exact claim remains canonical in
-the ledger's obligation record.
+Include one row per ordered `Cxxx` conclusion in every in-scope ledger.
 
 | Result | Conclusion | Contract fidelity | Argument status | Statement status | Dependency closure | Use-site sufficiency | Support | Dependency use IDs | Issue IDs |
 |---|---|---|---|---|---|---|---|---|---|
 
 ## Dependency closure
 
-Include exactly one row per canonical internal or external use.
+Include one row per canonical internal or external dependency use.
 
 | Dependent | Use ID | Dependency | Dependency conclusion | Kind | Source status | Applicability status | Effective status | Issue IDs |
 |---|---|---|---|---|---|---|---|---|
 
-## Independent critical-path challenge
+## Issue index
 
-Include exactly one row per critical unit. For disagreements, use `none` or
-join the exact ordered ledger entries with `; `. Use `none` when resolution is
-empty.
+This canonical section is rewritten from validated records by
+`issues --write-report-views --final`. Do not edit it manually. If the issue
+log is empty, the generator writes exactly `No issues.`
 
-| Result | Challenge status | Independence level | Challenger verdict | Reconciled verdict | Disagreements | Resolution | Artifact |
+| Issue | Severity | Load-bearing | Confidence | Lifecycle | Finding | Invalidation kind | Origin ref | Contract refs | Affected results |
+|---|---|---|---|---|---|---|---|---|---|
+
+## Detailed findings
+
+This canonical section is rewritten by `issues --write-report-views --final`.
+The generator emits one block per issue in severity order, then by issue ID.
+
+### I-001 [S1] summary
+
+#### 1. Exact failure site and contract
+
+Generate the failure site, failed move, exact premises, and recorded failure
+evidence by dereferencing `origin_ref`.
+Generate the normalized conclusion and assumptions from `contract_refs`. The
+quote must come from the locked source span.
+
+For a resolved issue, obtain the exact failure row from its validated
+historical archive, not from a repaired current move. Obtain the contract rows,
+propagation, current effects, and repair closure from current canonical
+records.
+
+| File and lines | Span SHA256 | Exact locked quote | Result | Step and move | Claim | Rule attempted | Premises | Failure evidence | Failure kind |
+|---|---|---|---|---|---|---|---|---|---|
+
+| Contract ref | Normalized claim or assumption | Scope, model, and regime | Evidence |
+|---|---|---|---|
+
+#### 2. Downstream consequences
+
+Generate the origin and every exact transitive dependent from the dependency
+registry and conclusion statuses. Every downstream row needs a locked use-site
+quote. For a non-load-bearing issue, do not invent downstream proof
+invalidation.
+
+| Affected result | Relation | Use ID | Dependency conclusion | Use-site file and lines | Use-site SHA256 | Exact use-site quote | Propagated effect |
 |---|---|---|---|---|---|---|---|
 
-## Issue summary
+#### 3. Severity and validity effect
 
-Copy the canonical full-field Issues table from generated
-`ISSUE_SUMMARY.md`. If the issue log is empty, write exactly `No issues.` Do
-not substitute a link or create separate manual issue rows.
+| Severity | Load-bearing | Confidence | Invalidation kind | Current unit effect | Current conclusion effect | Overall assessment effect |
+|---|---|---|---|---|---|---|
+
+#### 4. Suggested changes and recheck
+
+Copy the issue's structured `suggested_changes`. Keep diagnosis and repair
+separate. Do not claim sufficiency before the required rechecks pass.
+
+| Target | Action | Proposal | Verification status | Required rechecks |
+|---|---|---|---|---|
+
+Derive full closure from the union of archived and current affected results,
+dependency uses, critical challenges, and `report_deliverables`. Record
+every retired dependency use with its archived edge hash and recheck evidence.
+An issue is not resolved merely because source text changed.
+
+| Required units | Rechecked units | Required dependency uses | Rechecked dependency uses | Required challenges | Reconciled challenges | Required deliverables | Reconciled deliverables | Closure status |
+|---|---|---|---|---|---|---|---|---|
+
+## Independent critical-path challenges
+
+Include every declared or issue-promoted critical unit. A challenge covering an
+open, deferred, or resolved S0 or S1 issue must list that issue in
+`covered_issue_ids` and must be fresh for the current source snapshot and
+challenged ledger. Do not reuse a pre-repair challenge for a resolved issue.
+
+| Result | Challenge status | Independence | Covered issue IDs | Challenger verdict | Reconciled verdict | Disagreements | Artifact | Source snapshot SHA256 | Challenged ledger SHA256 | Artifact SHA256 | Generated UTC | Resolution |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
 
 ## Method-interface findings
 
-Use one exact row per canonical method-interface issue. In the final cell, write
-`Evidence: <ordered evidence joined by ; > Consequences: <ordered downstream_consequences joined by ; >`
-from `ISSUE_LOG.json`.
+Use one row per canonical method-interface issue. Preserve estimator-target,
+implementation, inspection-mode, code-comparison, and execution-provenance
+statuses exactly.
 
-| Issue ID | Finding class | Interface ID | Estimator-target status | Implementation inspection | Code to documented estimator | Code to required target | Execution provenance | Affected layer | Evidence scope and consequence |
+| Issue | Finding class | Interface ID | Estimator-target status | Implementation inspection | Inspection mode | Code to documented estimator | Code to required target | Execution provenance | Affected layer |
 |---|---|---|---|---|---|---|---|---|---|
 
 If none are in scope, write exactly `None.`
 
-## Proposed repairs
+## Declared external deliverables
 
-Keep repairs separate from findings. State whether a repair has been proved sufficient or is only a candidate.
+This section is optional. Include it only when the manifest's
+`report_deliverables` list is nonempty. Its row IDs must equal the
+mandatory `Declared external deliverables` scalar exactly.
+
+| Deliverable ID | Role | Path | SHA256 | Issue IDs | Overall verdict |
+|---|---|---|---|---|---|
 
 ## Computational evidence
 
-For each computational check, record the encoded claim, assumptions, domain, tool and version, exact command, seed or precision, output, and the narrow conclusion it supports. Distinguish exact certificates from falsification-only tests.
+For each computational check, record the claim, assumptions, domain, tool and
+version, exact command, seed or precision, output, and narrow conclusion.
+Distinguish exact certificates from falsification-only tests.
 
 ## Unchecked scope
 
-State every material proof unit, dependency, external theorem, or source region not checked.
+State every material proof unit, dependency, external theorem, source region,
+implementation component, or deliverable not checked.
 
 ## Assurance boundary
 
 This is a non-formal audit. A passing finalization gate means that the required
-source, scope, evidence, dependency-use, compatibility, global-consistency,
-interface, issue-propagation, progress, report, and challenger records passed
-the mechanical closure checks. Their mathematical content still depends on
-reviewer judgment. This does not provide the soundness guarantee of a
-proof-assistant kernel.
+source, scope, atomic evidence, dependency, issue propagation, challenge,
+recheck, progress, report, and deliverable records passed mechanical closure
+checks. Mathematical correctness still depends on reviewer judgment. This does
+not provide the soundness guarantee of a proof-assistant kernel.

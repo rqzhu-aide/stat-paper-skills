@@ -1,7 +1,7 @@
 # Proof Dependency Record
 
 Ledger `direct_dependencies` and `DEPENDENCY_REGISTRY.json` are canonical for
-proof dependencies. Use `closure_contract_version: 2`, and bind the registry
+proof dependencies. Use `closure_contract_version: 3`, and bind the registry
 review to the current source snapshot, theorem-inventory hash, and exact in-scope
 unit list. `METHOD_INTERFACE_REGISTRY.json` remains canonical for load-bearing
 estimator and implementation relations. This table and graph are reviewed

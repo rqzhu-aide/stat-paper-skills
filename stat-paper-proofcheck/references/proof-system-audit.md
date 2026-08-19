@@ -18,6 +18,13 @@ Source-lock and rescan any changed span, reject overlaps, and reconcile its
 exact reference occurrences, dependencies, and citations. Do not carry parser
 evidence over from the old span.
 
+Treat the analyzer's proof region as canonical. Every automatic or reviewed
+proof span must equal either a complete proof environment or one uniquely
+targeted named-heading region with a recognized boundary. A replacement uses
+the existing hash-bound `reviewed_manual` path and must preserve explicit
+target and boundary review evidence. An arbitrary excerpt, convenient stopping
+point, or unbounded appendix remainder is not a proof region.
+
 Treat parser-generated internal-dependency candidates as advisory evidence that
 must be reconciled, not as declared dependency uses. Candidates may come from
 owned proof references, references in the formal statement, or a reference to a
@@ -59,7 +66,7 @@ if it omits a reachable prerequisite or includes an unrelated result.
 
 Use ledger `direct_dependencies` plus
 `audit/03_dependencies/DEPENDENCY_REGISTRY.json` as the machine-readable
-canonical record. Use `closure_contract_version: 2`. Treat the Markdown table
+canonical record. Use `closure_contract_version: 3`. Treat the Markdown table
 and graph as reviewed views, not alternate records.
 
 Set the registry `review` object only after reviewing the complete current
@@ -89,6 +96,11 @@ dependent ledger. Each row must contain:
 - the same substantive `compatibility_check` used by the ledger;
 - `compatibility_checks`, with exactly one row for each required aspect;
 - the mechanically derived `status` and all canonical `issue_ids`.
+
+Make every `Dxxx` identifier audit-globally unique across all internal and
+external uses. Historical-current closure, issue reports, and resolution
+archives carry bare use IDs and therefore cannot disambiguate a reused ID by
+unit.
 
 Use these eight compatibility aspects exactly:
 
@@ -131,11 +143,11 @@ Reject unused or stale registry rows.
 
 Build the internal graph from the reviewed use rows. Draw arrows from each
 prerequisite to its dependent result. Reject unknown IDs, namespace collisions,
-self-dependencies, duplicate uses, cycles, stale obligation hashes, and status
-mismatches. Propagate every nonverified dependency status and every open or
-deferred load-bearing issue through the dependent closure. A downstream result
-cannot remain verified after a load-bearing prerequisite becomes conditional,
-gap, incorrect, unclear, or unchecked.
+self-dependencies, duplicate uses, cycles, stale conclusion contract hashes,
+and status mismatches. Propagate every nonverified dependency status and every
+open or deferred load-bearing issue through the dependent closure. A downstream
+result cannot remain verified after a load-bearing prerequisite becomes
+conditional, gap, incorrect, unclear, or unchecked.
 
 Reconcile the parser's proof-level reference occurrences and citation lists
 against the registry and each ledger. Every reference occurrence has one exact
@@ -147,6 +159,7 @@ local-step, obligation-context, and non-load-bearing occurrences require their
 specific evidence and links. Do not allow omission from a ledger or registry
 to erase a source-declared dependency, and do not create a self-edge from a
 header or navigation occurrence.
+
 ## 3. Maintain cross-cutting ledgers
 
 Maintain only ledgers that the paper needs:
@@ -163,6 +176,13 @@ Update ledgers during local checking. Do not build exhaustive tables that never 
 ## 4. Check the critical path first
 
 Trace the main theorem backward to base assumptions. Prioritize the final assembly proof, highly reused lemmas, and results carrying probability, rates, optimization, or external-theorem dependence.
+
+Compute the effective critical set as the manifest `critical_units` union
+every in-scope unit in `affected_results` for an open, deferred, or
+resolved load-bearing S0 or S1 issue. This promotion is derived from canonical
+issues and cannot be disabled by leaving a unit out of the manifest list.
+Resolved severe issues remain promoted until their current repaired state has
+a fresh issue-aware challenge.
 
 If a critical dependency fails, mark downstream units blocked or conditional. Continue only when checking them can independently expose useful issues.
 
@@ -206,7 +226,16 @@ Remove or weaken each assumption and identify the first proof step that fails. S
 
 Use [domain-risk-checks.md](domain-risk-checks.md) only for domains actually present.
 
-For the main theorem chain, highly reused lemmas, and units carrying an S0 or S1 concern, run a fresh-context challenger without exposing the primary verdict or proposed repair. Preserve the challenger artifact and reconcile disagreements. If a second pass is unavailable, disclose the audit as single-pass and do not claim independent confirmation.
+For every effective-critical unit, run a fresh-context challenger without
+exposing the primary verdict or proposed repair. Make it issue-aware by
+requiring `covered_issue_ids` to equal the exact triggering open,
+deferred, or resolved load-bearing S0 or S1 issue set for that unit. A
+manifest-only critical unit has an empty triggering set. Bind the challenge to
+the current source snapshot,
+canonical ledger content excluding `independent_check`, and challenger artifact
+with the required hashes and generation time. Preserve the artifact and
+reconcile disagreements. If a second pass is unavailable, disclose the audit
+as single-pass and do not claim independent confirmation.
 
 ## 7. Apply completion gates
 
@@ -227,12 +256,17 @@ A full audit is complete only when:
 - the exact global consistency matrix is complete;
 - every open or deferred load-bearing issue is propagated to the exact affected
   result set;
-- every critical unit has a reconciled independent challenger record;
+- every resolved issue preserves a validated historical archive and clean
+  current resolution, and its historical-current unit, dependency-use,
+  challenge, and deliverable closure is fully rechecked;
+- every effective-critical unit has a reconciled, issue-complete, fresh
+  independent challenger record;
 - canonical issue and method-interface consistency passes;
 - `PROGRESS.json` exactly matches the source snapshot, scope, unit statuses, and
   open S0 and S1 issue set;
-- the final report exactly reconciles canonical unit, dependency, issue, scope,
-  and protocol fields;
+- the canonical final report and every manifest-declared user-facing report
+  exactly reconcile canonical unit, dependency, issue, scope, protocol, and
+  overall-verdict fields;
 - checked and unchecked scope is explicit.
 
 Run `proofcheck.py finalize --root <audit-root>` after completing the final report and progress state. A passing result means the declared non-formal audit records passed the mechanical closure checks. It does not certify kernel-checked mathematical truth.

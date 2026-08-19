@@ -26,7 +26,7 @@
 
 ## Closure checkpoint
 
-- Closure contract version: 2
+- Closure contract version: 3
 - Registry review binding current:
 - Internal and external `Dxxx` use bijections complete:
 - Internal uses bind exact `Cxxx` dependency conclusions and contract hashes:
