@@ -208,3 +208,6 @@ challenges, and reconcile every required report deliverable.
 - [ ] Final report exactly reconciles canonical scope, unit, dependency, external, issue, and protocol fields
 - [ ] Explicit unchecked scope
 - [ ] `proofcheck.py finalize` passes
+- [ ] `audit/06_reports` contains no undeclared Markdown report, and the canonical report no longer contains the `NONFINAL SCAFFOLD` notice
+- [ ] `proofcheck.py status --require-finalized` returns zero with `audit_complete: true` and `delivery_status: FINAL`
+- [ ] `proofcheck.py delivery-check` returns zero with `delivery_status: FINAL` and `usable_finalization: true`

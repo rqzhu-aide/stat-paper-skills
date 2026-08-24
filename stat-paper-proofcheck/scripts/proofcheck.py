@@ -293,7 +293,7 @@ REFERENCE_CONFIGURATION_COMMANDS = {
 }
 SECTION_COMMAND_START_RE = re.compile(
     r"\\(?P<command>part|chapter|section|subsection|subsubsection)"
-    r"\*?\s*\{"
+    r"\*?(?![A-Za-z@])"
 )
 DISPLAY_MATH_ENVIRONMENTS = {
     "align",
@@ -2088,7 +2088,16 @@ def scan_section_headings(text: str) -> list[dict[str, Any]]:
     masked = mask_structural_tex(text)
     headings: list[dict[str, Any]] = []
     for match in SECTION_COMMAND_START_RE.finditer(masked):
-        opening = match.end() - 1
+        opening = skip_tex_whitespace(masked, match.end())
+        if opening < len(masked) and masked[opening] == "[":
+            short_title_end = consume_balanced_tex_group(
+                masked, opening, "[", "]"
+            )
+            if short_title_end is None:
+                continue
+            opening = skip_tex_whitespace(masked, short_title_end)
+        if opening >= len(masked) or masked[opening] != "{":
+            continue
         group_end = consume_balanced_tex_group(masked, opening, "{", "}")
         if group_end is None:
             continue
@@ -3775,10 +3784,12 @@ def scan_formal_units(
         return candidate
 
     # Add uniquely targeted manual proof headings through the same canonical
-    # region analyzer used by finalization. Explicit proof environments keep
-    # precedence when they occur inside the named region.
+    # region analyzer used by finalization. When a named section contains one
+    # unnamed explicit proof environment, retain that exact environment as the
+    # proof span and use the section title only as association evidence.
     for path, lines in source_lines.items():
-        for heading in scan_section_headings("\n".join(lines)):
+        headings = scan_section_headings("\n".join(lines))
+        for heading in headings:
             if not re.search(r"\bproofs?\b", heading["title"], re.IGNORECASE):
                 continue
             targets = [
@@ -3794,6 +3805,53 @@ def scan_formal_units(
                 )
                 continue
             target = targets[0]
+            next_heading = next(
+                (
+                    other
+                    for other in headings
+                    if other["start_line"] > heading["start_line"]
+                ),
+                None,
+            )
+            direct_body_end = (
+                next_heading["start_line"] - 1
+                if next_heading is not None
+                else len(lines)
+            )
+            unnamed_environments = [
+                proof
+                for proof in proofs
+                if proof["file_path"].resolve() == path.resolve()
+                and proof.get("title") is None
+                and heading["end_line"] < proof["start_line"]
+                and proof["end_line"] <= direct_body_end
+            ]
+            if len(unnamed_environments) == 1:
+                proof = unnamed_environments[0]
+                heading_evidence = scan_span_evidence(
+                    path,
+                    heading["start_line"],
+                    heading["end_line"],
+                    base,
+                    structural_context="proof_header",
+                )
+                warnings.extend(heading_evidence["warnings"])
+                header_span = {
+                    "start_line": heading["start_line"],
+                    "start_column": heading["start_column"],
+                    "end_line": heading["end_line"],
+                    "end_column": heading["end_column"],
+                }
+                proof["title"] = heading["title"]
+                proof["title_targets"] = [target]
+                proof["association_method"] = "named_heading"
+                proof["association_evidence_occurrence_ids"] = sorted(
+                    occurrence["occurrence_id"]
+                    for occurrence in heading_evidence["reference_occurrences"]
+                    if occurrence.get("target") == target
+                    and occurrence_in_title(occurrence, header_span)
+                )
+                continue
             region = analyze_proof_region(
                 path,
                 heading["start_line"],
@@ -3865,12 +3923,14 @@ def scan_formal_units(
                 f"{proof_file}:{proof['start_line']}"
             )
             continue
-        evidence_ids = [
-            row["occurrence_id"]
-            for row in proof["evidence"]["reference_occurrences"]
-            if row.get("target") == unit["id"]
-            and row.get("structural_context") == "proof_header"
-        ]
+        evidence_ids = proof.get("association_evidence_occurrence_ids")
+        if not isinstance(evidence_ids, list):
+            evidence_ids = [
+                row["occurrence_id"]
+                for row in proof["evidence"]["reference_occurrences"]
+                if row.get("target") == unit["id"]
+                and row.get("structural_context") == "proof_header"
+            ]
         attach_proof(
             unit,
             proof,
@@ -13598,6 +13658,54 @@ REPORT_SCALAR_FIELDS = (
 )
 
 
+REPORT_SCAFFOLD_MARKER = "NONFINAL SCAFFOLD"
+CANONICAL_REPORT_MARKDOWN = frozenset({"FINAL_REPORT.md", "ISSUE_SUMMARY.md"})
+
+
+def contains_report_scaffold_marker(text: str) -> bool:
+    return REPORT_SCAFFOLD_MARKER.casefold() in text.casefold()
+
+
+def declared_report_paths(value: Any, root: Path) -> set[Path]:
+    paths: set[Path] = set()
+    if not isinstance(value, list):
+        return paths
+    for record in value:
+        if not isinstance(record, dict) or not is_nonempty_string(record.get("path")):
+            continue
+        try:
+            paths.add(resolve_stored_path(record["path"], root).resolve())
+        except (OSError, ValueError):
+            continue
+    return paths
+
+
+def undeclared_report_markdown_files(value: Any, root: Path) -> list[str]:
+    reports_dir = root / "audit" / "06_reports"
+    if not reports_dir.is_dir():
+        return []
+    allowed = {
+        (reports_dir / name).resolve()
+        for name in CANONICAL_REPORT_MARKDOWN
+    }
+    allowed.update(declared_report_paths(value, root))
+    return [
+        path.relative_to(root).as_posix()
+        for path in sorted(reports_dir.iterdir(), key=lambda item: item.name.lower())
+        if path.is_file()
+        and path.suffix.lower() == ".md"
+        and path.resolve() not in allowed
+    ]
+
+
+def undeclared_report_error(path: str) -> str:
+    return (
+        "Undeclared Markdown report artifact in audit/06_reports: "
+        f"{path}. Move non-deliverable working notes outside audit/06_reports, "
+        "or declare a complete user_facing_report in report_deliverables."
+    )
+
+
 def validate_report_deliverables(
     value: Any,
     root: Path,
@@ -13706,6 +13814,11 @@ def validate_report_deliverables(
         if ACTIVE_HIDDEN_HTML_MARKER in text:
             errors.append(
                 f"{prefix}: user-facing report contains active raw HTML"
+            )
+        if contains_report_scaffold_marker(text):
+            errors.append(
+                f"{prefix}: user-facing report still contains the "
+                "NONFINAL scaffold marker"
             )
         validate_report_assurance_language(
             raw_text, f"{prefix} user-facing report", errors
@@ -16435,6 +16548,10 @@ def _check_audit_finalization(
     elif final_report_path_valid and completion.get("final_report_ready") is True:
         raw_report_text = read_text(final_report)
         report_text = active_markdown_text(raw_report_text)
+        if contains_report_scaffold_marker(report_text):
+            errors.append(
+                "Final report still contains the NONFINAL scaffold marker"
+            )
         if ACTIVE_HIDDEN_HTML_MARKER in report_text:
             errors.append(
                 "Final report contains active raw HTML"
@@ -17110,6 +17227,10 @@ def _check_audit_finalization(
         assessment,
         errors,
     )
+    for report_path in undeclared_report_markdown_files(
+        manifest.get("report_deliverables"), root
+    ):
+        errors.append(undeclared_report_error(report_path))
     critical, severe_issue_ids_by_unit = effective_critical_requirements(
         manifest, issues_by_id.values()
     )
@@ -19147,6 +19268,11 @@ def status_markdown(data: dict[str, Any]) -> str:
         "",
         f"- Audit root: {data['audit_root']}",
         f"- Workflow state: {data['workflow_state']}",
+        f"- Audit complete: {str(data['audit_complete']).lower()}",
+        f"- Delivery status: {data['delivery_status']}",
+        f"- Finalization-gate errors: {data['finalization_gate_error_count']}",
+        f"- Candidate completion-gate errors: {progress.get('candidate_completion_gate_error_count', 0)}",
+        f"- Report integrity: {data['report_integrity']['status']}",
         f"- Active unit: {progress.get('active_unit') or 'none'}",
         f"- Current pass: {progress.get('current_pass')}",
         f"- Next action: {progress.get('next_action') or 'none'}",
@@ -19311,6 +19437,26 @@ def cmd_status(args: argparse.Namespace) -> int:
             structural_errors.extend(derive_errors)
             drift = progress_drift(manifest, recorded_progress, derived)
 
+    report_deliverables_value = manifest.get("report_deliverables")
+    undeclared_report_files = undeclared_report_markdown_files(
+        report_deliverables_value, root
+    )
+    for report_path in undeclared_report_files:
+        error = undeclared_report_error(report_path)
+        if error not in structural_errors:
+            structural_errors.append(error)
+    canonical_report = root / "audit" / "06_reports" / "FINAL_REPORT.md"
+    canonical_report_scaffold = False
+    if canonical_report.is_file():
+        try:
+            canonical_report_scaffold = (
+                contains_report_scaffold_marker(
+                    active_markdown_text(read_text(canonical_report))
+                )
+            )
+        except TextArtifactReadError as exc:
+            structural_errors.append(str(exc))
+
     finalization = check_finalization_freshness(root)
     protocol_view = status_protocol_view(manifest, summaries)
     protocol_mismatch = protocol_view["status"] == "mismatch"
@@ -19474,6 +19620,9 @@ def cmd_status(args: argparse.Namespace) -> int:
             if coherent_legacy_upgrade or coherent_validator_revalidation
             else drift
         ),
+        "candidate_completion_gate_error_count": len(
+            derived.get("completion_gate_errors", [])
+        ),
         "completion_gate_error_count": len(derived.get("completion_gate_errors", [])),
     }
     visible_structural, structural_omitted = (
@@ -19481,9 +19630,25 @@ def cmd_status(args: argparse.Namespace) -> int:
         if verbose
         else bounded_errors(structural_errors, 12)
     )
+    audit_complete = finalization_view.get("usable_finalization") is True
+    report_integrity = {
+        "status": (
+            "failed"
+            if undeclared_report_files
+            else "scaffold"
+            if canonical_report_scaffold
+            else "clear"
+        ),
+        "canonical_report_scaffold": canonical_report_scaffold,
+        "undeclared_markdown_files": undeclared_report_files,
+    }
     result = {
         "audit_root": str(root),
         "workflow_state": workflow_state,
+        "audit_complete": audit_complete,
+        "delivery_status": "FINAL" if audit_complete else "NONFINAL",
+        "finalization_gate_error_count": len(full_gate_errors),
+        "report_integrity": report_integrity,
         "protocol": protocol_view,
         "progress": progress_view,
         "ledgers": len(summaries),
@@ -19502,11 +19667,14 @@ def cmd_status(args: argparse.Namespace) -> int:
         else json.dumps(result, ensure_ascii=False, indent=2) + "\n"
     )
     write_or_print(text, output, getattr(args, "force", False))
-    return 1 if workflow_state in {
+    status_code = 1 if workflow_state in {
         "malformed_or_stale",
         "upgrade_required",
         "validator_revalidation_required",
     } else 0
+    if getattr(args, "require_finalized", False) and not audit_complete:
+        return 1
+    return status_code
 
 
 def cmd_revalidate_protocol(args: argparse.Namespace) -> int:
@@ -20249,6 +20417,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--verbose",
         action="store_true",
         help="Show every finalization-gate and structural diagnostic",
+    )
+    status.add_argument(
+        "--require-finalized",
+        action="store_true",
+        help="Return nonzero unless a current usable passed finalization exists",
     )
     add_output_arguments(status)
     status.set_defaults(func=cmd_status)

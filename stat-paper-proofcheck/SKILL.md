@@ -242,6 +242,13 @@ issue to `resolved`.
 
 Use the concise, work-in-progress-aware `status` preflight to identify the current state and next action. Add `--verbose` when full gate diagnostics are needed. Concise output does not weaken strict validation. Do not trust stale source, evidence, registry, progress, or finalization hashes.
 
+A zero exit from bare `status` means that the resumable state is coherent; it
+does not mean that the audit is complete. Inspect the top-level
+`audit_complete`, `delivery_status`, and `finalization_gate_error_count`
+fields. Automation that requires completion must use
+`status --require-finalized` or, for release, `delivery-check`. The nested
+progress candidate gate count is not the full finalization-gate count.
+
 If status reports `validator_revalidation_required` while the schema and
 contract versions remain current, run
 `python "<skill-root>/scripts/proofcheck.py" revalidate-protocol --root proofcheck-audit`.
@@ -274,6 +281,13 @@ Deliver a proofcheck report only when `delivery-check` returns
 `delivery_status: FINAL` and `usable_finalization: true`. Otherwise label the
 report `NONFINAL`, even when an earlier finalization file or a plausible
 diagnostic judgment exists.
+
+Keep non-deliverable drafts and working notes outside `audit/06_reports`.
+That directory may contain only the canonical Markdown reports and complete
+user-facing reports declared in `report_deliverables`. The copied
+`FINAL_REPORT.md` starts with a visible `NONFINAL SCAFFOLD` notice. Remove
+that notice only when the canonical report is complete and ready for
+finalization; leaving it in place blocks finalization.
 
 Build the report from canonical records using [state-and-reporting.md](references/state-and-reporting.md) and [FINAL_REPORT.md](assets/templates/FINAL_REPORT.md). Generate exact finding locations, mathematical contracts, failed moves with their premises and recorded failure evidence, downstream quotations, invalidation effects, and suggested changes from canonical issue references and locked source. Preserve exact result, conclusion, dependency, issue, protocol, and checked-scope judgments. Keep suggested changes separate from findings, and reconcile every manifest-declared user-facing report before delivery.
 

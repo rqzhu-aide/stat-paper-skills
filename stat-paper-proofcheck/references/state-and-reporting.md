@@ -147,6 +147,14 @@ different title and extra orientation prose are allowed. Do not declare a
 draft, partial export, or summary that does not meet this contract as a
 delivered report.
 
+Reserve the top level of `audit/06_reports/` for
+`FINAL_REPORT.md`, `ISSUE_SUMMARY.md`, and complete manifest-declared
+user-facing reports. Move drafts, partial reports, and working notes elsewhere.
+An undeclared Markdown file in this directory is a report-integrity error and
+makes `status` nonzero. The scaffolded `FINAL_REPORT.md` contains a visible
+`NONFINAL SCAFFOLD` notice. Remove it only after the canonical report is
+complete and ready for finalization; the finalization gate rejects the marker.
+
 The `source_discovery` record distinguishes recursively discovered LaTeX inputs, local class and package files, explicitly declared sources, and supplemental project-local `.fls` inputs. An outside-project recorder input remains excluded until it is explicitly promoted as an additional source with a reason and evidence. Treat an `.fls` trace as evidence from one compilation path, not as a completeness certificate.
 
 `parser_warning_reviews` must be a one-to-one review of the exact current warning set. Use `confirmed_non_load_bearing` only with concrete evidence, `scope_limitation` when the unresolved reach is bounded and declared, and `unresolved` otherwise. An unresolved warning, or a limitation that may affect in-scope units, cannot support `no_defect_found`.
@@ -228,6 +236,14 @@ On resumption:
 healthy incomplete audit from stale or malformed state and from an audit that
 is finalizable now. Use `status --verbose` to show the full gate errors. Both
 modes apply the same strict validation and finalization gates.
+
+A zero exit from bare `status` means that the audit is coherent enough to
+resume. It does not mean that the audit is complete. Read the top-level
+`audit_complete`, `delivery_status`, and `finalization_gate_error_count`
+fields. The nested progress candidate gate count is evaluated only when a
+pass-8 completion candidate exists and is not the full gate count. Use
+`status --require-finalized` when an orchestration step must fail unless a
+current usable passed finalization exists. Use `delivery-check` for release.
 
 If source drift affects a checked unit, mark that unit stale and re-extract it. Preserve unaffected audit records. If the paper's theorem statement changes, re-evaluate downstream dependencies even when proof text is unchanged.
 

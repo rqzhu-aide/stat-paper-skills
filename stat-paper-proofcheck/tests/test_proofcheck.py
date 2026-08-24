@@ -6794,6 +6794,9 @@ class FinalizationTests(unittest.TestCase):
         self.assertEqual("passed", payload["finalization"]["record_status"])
         self.assertEqual("current", payload["finalization"]["freshness"])
         self.assertTrue(payload["finalization"]["usable_finalization"])
+        self.assertTrue(payload["audit_complete"])
+        self.assertEqual("FINAL", payload["delivery_status"])
+        self.assertEqual(0, payload["finalization_gate_error_count"])
 
     def test_status_marks_changed_audit_artifact_as_stale(self) -> None:
         self.make_complete_audit()
@@ -6865,6 +6868,37 @@ class FinalizationTests(unittest.TestCase):
         self.assertEqual("missing", payload["finalization"]["record_status"])
         self.assertEqual("not_applicable", payload["finalization"]["freshness"])
         self.assertFalse(payload["finalization"]["usable_finalization"])
+        self.assertFalse(payload["audit_complete"])
+        self.assertEqual("NONFINAL", payload["delivery_status"])
+        self.assertEqual(0, payload["finalization_gate_error_count"])
+
+    def test_status_require_finalized_uses_strict_exit_code(self) -> None:
+        self.make_complete_audit()
+        parser = proofcheck.build_parser()
+
+        def run_status() -> tuple[int, dict]:
+            args = parser.parse_args(
+                ["status", "--root", str(self.audit), "--require-finalized"]
+            )
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = args.func(args)
+            return status, json.loads(output.getvalue())
+
+        status, payload = run_status()
+        self.assertEqual(1, status)
+        self.assertFalse(payload["audit_complete"])
+        self.assertEqual("NONFINAL", payload["delivery_status"])
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(
+                0, proofcheck.cmd_finalize(argparse.Namespace(root=self.audit))
+            )
+
+        status, payload = run_status()
+        self.assertEqual(0, status)
+        self.assertTrue(payload["audit_complete"])
+        self.assertEqual("FINAL", payload["delivery_status"])
 
     def test_status_exposes_a_healthy_checkpointed_work_in_progress(self) -> None:
         ledger_path = (
@@ -6911,12 +6945,60 @@ class FinalizationTests(unittest.TestCase):
 
         self.assertEqual(0, status)
         self.assertEqual("healthy_wip", payload["workflow_state"])
+        self.assertFalse(payload["audit_complete"])
+        self.assertEqual("NONFINAL", payload["delivery_status"])
+        self.assertGreater(payload["finalization_gate_error_count"], 0)
+        self.assertEqual(
+            0, payload["progress"]["candidate_completion_gate_error_count"]
+        )
         self.assertEqual("lem:main", payload["progress"]["active_unit"])
         self.assertEqual(next_action, payload["progress"]["next_action"])
         self.assertEqual([], payload["progress"]["drift"])
         self.assertCountEqual(
             ["lem:main"], payload["progress"]["not_started_units"]
         )
+
+    def test_undeclared_markdown_report_blocks_finalization_and_status(self) -> None:
+        self.make_complete_audit()
+        report_path = (
+            self.audit / "audit" / "06_reports" / "NONFINAL_AUDIT_REPORT.md"
+        )
+        report_path.write_text(
+            "# Nonfinal audit report\n\n"
+            "The source-line audit and independent challenges are complete.\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        relative_report = "audit/06_reports/NONFINAL_AUDIT_REPORT.md"
+        expected_error = proofcheck.undeclared_report_error(relative_report)
+
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+        self.assertIn(expected_error, errors)
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            status = proofcheck.cmd_status(
+                argparse.Namespace(
+                    root=self.audit,
+                    format="json",
+                    output=None,
+                    force=False,
+                    verbose=False,
+                )
+            )
+        payload = json.loads(output.getvalue())
+
+        self.assertEqual(1, status)
+        self.assertEqual("malformed_or_stale", payload["workflow_state"])
+        self.assertFalse(payload["audit_complete"])
+        self.assertEqual("NONFINAL", payload["delivery_status"])
+        self.assertGreater(payload["finalization_gate_error_count"], 0)
+        self.assertEqual("failed", payload["report_integrity"]["status"])
+        self.assertEqual(
+            [relative_report],
+            payload["report_integrity"]["undeclared_markdown_files"],
+        )
+        self.assertIn(expected_error, payload["structural_errors"])
 
     def test_status_marks_stale_checkpoint_as_malformed_or_stale(self) -> None:
         progress_path = self.audit / "PROGRESS.json"
@@ -10027,10 +10109,30 @@ class FinalizationTests(unittest.TestCase):
         )
 
     def test_fresh_report_template_has_no_active_raw_html_placeholder(self) -> None:
+        report = (
+            self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn(proofcheck.REPORT_SCAFFOLD_MARKER, report)
         errors, _ = proofcheck.check_audit_finalization(self.audit)
 
         self.assertFalse(
             any("active raw HTML" in error for error in errors), errors
+        )
+
+    def test_final_report_ready_rejects_nonfinal_scaffold_marker(self) -> None:
+        self.make_complete_audit()
+        report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
+        report_path.write_text(
+            f"> **{proofcheck.REPORT_SCAFFOLD_MARKER}:** Working template.\n\n"
+            + report_path.read_text(encoding="utf-8"),
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+
+        self.assertIn(
+            "Final report still contains the NONFINAL scaffold marker", errors
         )
 
     def test_issue_report_views_order_by_severity_then_issue_id(self) -> None:
@@ -11423,6 +11525,131 @@ class FinalizationTests(unittest.TestCase):
         )
         self.assertEqual("proof_header", occurrence["structural_context"])
         self.assertEqual([], inventory["warnings"], inventory)
+
+    def test_named_proof_section_accepts_optional_short_title(self) -> None:
+        source = self.base / "named-proof-short-title.tex"
+        source.write_text(
+            "\\newtheorem{theorem}{Theorem}\n"
+            "\\begin{theorem}\\label{thm:x}\n"
+            "Claim.\n"
+            "\\end{theorem}\n"
+            "\\subsection[Short proof title]{Proof of Theorem \\ref{thm:x}}\n"
+            "\\begin{proof}\n"
+            "Proof body.\n"
+            "\\end{proof}\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        inventory = proofcheck.scan_formal_units(source)
+        unit = inventory["units"][0]
+
+        self.assertEqual(
+            {"file": source.name, "start_line": 6, "end_line": 8},
+            unit["proof"],
+        )
+        self.assertEqual("named_heading", unit["proof_association"]["method"])
+        self.assertTrue(
+            unit["proof_association"]["evidence_occurrence_ids"], inventory
+        )
+        self.assertEqual([], inventory["warnings"], inventory)
+
+    def test_named_section_can_target_one_unnamed_proof_among_named_proofs(
+        self,
+    ) -> None:
+        source = self.base / "named-section-multiple-proof-environments.tex"
+        source.write_text(
+            "\\newtheorem{theorem}{Theorem}\n"
+            "\\newtheorem{corollary}{Corollary}\n"
+            "\\begin{theorem}\\label{thm:x}\n"
+            "The theorem claim.\n"
+            "\\end{theorem}\n"
+            "\\begin{corollary}\\label{cor:y}\n"
+            "The corollary claim.\n"
+            "\\end{corollary}\n"
+            "\\subsection{Proof of Theorem \\ref{thm:x}}\n"
+            "We first prove the theorem and then its corollary.\n"
+            "\\begin{proof}\n"
+            "The theorem proof.\n"
+            "\\end{proof}\n"
+            "\\begin{proof}[Proof of Corollary \\ref{cor:y}]\n"
+            "The corollary proof.\n"
+            "\\end{proof}\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        inventory = proofcheck.scan_formal_units(source)
+        units = {unit["id"]: unit for unit in inventory["units"]}
+
+        self.assertEqual(
+            {"file": source.name, "start_line": 11, "end_line": 13},
+            units["thm:x"]["proof"],
+        )
+        self.assertEqual(
+            "named_heading", units["thm:x"]["proof_association"]["method"]
+        )
+        self.assertEqual(
+            {"file": source.name, "start_line": 14, "end_line": 16},
+            units["cor:y"]["proof"],
+        )
+        self.assertEqual(
+            "named_environment", units["cor:y"]["proof_association"]["method"]
+        )
+        self.assertFalse(
+            any(
+                "multiple_terminal_markers" in warning
+                for warning in inventory["warnings"]
+            ),
+            inventory,
+        )
+
+    def test_outer_named_heading_does_not_claim_nested_section_proof(
+        self,
+    ) -> None:
+        source = self.base / "nested-named-proof-sections.tex"
+        source.write_text(
+            "\\newtheorem{theorem}{Theorem}\n"
+            "\\begin{theorem}\\label{thm:outer}\n"
+            "The outer theorem claim.\n"
+            "\\end{theorem}\n"
+            "\\begin{theorem}\\label{thm:inner}\n"
+            "The inner theorem claim.\n"
+            "\\end{theorem}\n"
+            "\\section{Proof of Theorem \\ref{thm:outer}}\n"
+            "The outer proof is not supplied here.\n"
+            "\\subsection{Proof of Theorem \\ref{thm:inner}}\n"
+            "\\begin{proof}\n"
+            "The inner theorem proof.\n"
+            "\\end{proof}\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        inventory = proofcheck.scan_formal_units(source)
+        units = {unit["id"]: unit for unit in inventory["units"]}
+
+        self.assertIsNone(units["thm:outer"]["proof"])
+        self.assertEqual(
+            "unassociated",
+            units["thm:outer"]["proof_association"]["status"],
+        )
+        self.assertEqual(
+            {"file": source.name, "start_line": 11, "end_line": 13},
+            units["thm:inner"]["proof"],
+        )
+        self.assertEqual(
+            "named_heading",
+            units["thm:inner"]["proof_association"]["method"],
+        )
+        self.assertTrue(
+            any(
+                "Proof-required result has no associated proof: thm:outer"
+                in warning
+                for warning in inventory["warnings"]
+            ),
+            inventory,
+        )
 
     def test_bracket_hyperref_is_recognized_as_an_exact_occurrence(self) -> None:
         source = self.base / "hyperref-occurrence.tex"
@@ -14629,6 +14856,44 @@ class FinalizationTests(unittest.TestCase):
                 and "correctness overclaim" in error
                 for error in errors
             ),
+            errors,
+        )
+
+    def test_declared_user_report_rejects_nonfinal_scaffold_marker(
+        self,
+    ) -> None:
+        canonical_report, user_report = (
+            self.install_declared_user_report_with_orientation(
+                "This orientation paragraph is reader-facing only."
+            )
+        )
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        old_digest = manifest["report_deliverables"][0]["sha256"]
+        user_report.write_text(
+            f"> **{proofcheck.REPORT_SCAFFOLD_MARKER}:** Working report.\n\n"
+            + user_report.read_text(encoding="utf-8"),
+            encoding="utf-8",
+            newline="\n",
+        )
+        new_digest = proofcheck.sha256_file(user_report)
+        manifest["report_deliverables"][0]["sha256"] = new_digest
+        write_json(manifest_path, manifest)
+        canonical_report.write_text(
+            canonical_report.read_text(encoding="utf-8").replace(
+                old_digest,
+                new_digest,
+                1,
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+
+        self.assertIn(
+            "report_deliverables[1]: user-facing report still contains the "
+            "NONFINAL scaffold marker",
             errors,
         )
 

@@ -1,5 +1,8 @@
 # Final Proof-Check Report
 
+> **NONFINAL SCAFFOLD:** This working template is not a completed audit report.
+> Remove this notice only when the report is complete and ready for finalization.
+
 ## Verdict
 
 - Overall assessment code:
