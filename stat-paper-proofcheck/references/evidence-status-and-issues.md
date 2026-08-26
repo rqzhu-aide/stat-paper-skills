@@ -252,6 +252,14 @@ use or promote uncertainty into a definite defect. A `statement_refuted` issue
 requires a backlinked counterexample or contradiction move. A
 `scope_inconclusive` issue requires `finding_status: inconclusive`.
 
+Treat missing or imprecise attribution separately from mathematical support.
+When an exact external result contract and its application are verified, the
+absence of an inline citation command can support a bibliographic or
+`presentation_only` issue, but not `proof_gap`, `proof_invalid`, or a weaker
+dependency status by itself. If the source contract or applicability is not
+verified, record that substantive uncertainty under the corresponding
+dependency status instead.
+
 Each suggested-change `target_ref` uses `kind: source_span` with exact
 `file`, `start_line`, `end_line`, and `sha256`. Use `action` equal to
 `repair_step`, `strengthen_assumption`, `weaken_claim`,
@@ -367,6 +375,16 @@ and every in-scope transitive dependent reached by that load-bearing finding.
 Do not leave out a downstream result because its ledger predates the issue.
 Every reached result must carry a status no stronger than the propagated
 finding. For a non-load-bearing issue, do not invent downstream propagation.
+
+Propagate the effect conclusion by conclusion and keep one canonical issue ID
+for the one root finding. Do not create a new issue merely because that finding
+weakens a downstream result. Put the root ID on the canonical origin and on
+the exact dependency or global records whose schemas carry that propagation.
+If an affected dependency makes its invoking downstream step conditional or
+failed, reuse the root ID only on that exact step named by the canonical `Dxxx`
+edge. Do not attach it to an unrelated or otherwise valid downstream step.
+Represent the full effect through the same issue's `affected_results`, the
+affected `Cxxx` conclusion status, and the exact dependency closure.
 
 A method-interface issue also records:
 

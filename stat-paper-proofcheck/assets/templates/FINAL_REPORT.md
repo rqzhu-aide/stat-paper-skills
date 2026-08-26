@@ -1,7 +1,9 @@
-# Final Proof-Check Report
+# NONFINAL Proof-Check Working Report
 
 > **NONFINAL SCAFFOLD:** This working template is not a completed audit report.
-> Remove this notice only when the report is complete and ready for finalization.
+> Keep this title and notice until `completion.final_report_ready` is true.
+> Then rename the title to `Final Proof-Check Report`, remove this notice, and
+> run the full finalization and delivery sequence.
 
 ## Verdict
 

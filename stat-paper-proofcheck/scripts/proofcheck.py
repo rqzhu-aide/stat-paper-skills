@@ -3085,16 +3085,30 @@ def reviewed_span_evidence(
     base: Path,
     label_owners: dict[str, dict[str, Any]],
     support_index: dict[str, dict[str, Any]] | None = None,
+    *,
+    statement_as_primary: bool = False,
 ) -> dict[str, Any]:
     statement_evidence = scan_unit_statement_evidence(unit, base)
     proof = unit.get("proof")
     if not isinstance(proof, dict):
-        evidence = {
-            "reference_occurrences": [],
-            "dependencies": [],
-            "citations": [],
-            "warnings": [],
-        }
+        evidence = (
+            {
+                field: list(statement_evidence[field])
+                for field in (
+                    "reference_occurrences",
+                    "dependencies",
+                    "citations",
+                    "warnings",
+                )
+            }
+            if statement_as_primary
+            else {
+                "reference_occurrences": [],
+                "dependencies": [],
+                "citations": [],
+                "warnings": [],
+            }
+        )
         title_span = None
     else:
         path = resolve_stored_path(str(proof.get("file")), base)
@@ -3154,7 +3168,8 @@ def reviewed_span_evidence(
             support_index or {},
         )
     )
-    evidence["warnings"].extend(statement_evidence["warnings"])
+    if not statement_as_primary:
+        evidence["warnings"].extend(statement_evidence["warnings"])
     evidence["warnings"] = sorted(set(evidence["warnings"]))
     return evidence
 
@@ -6742,8 +6757,28 @@ def check_ledger_data(
     if not is_enum_value(coverage_mode, {
         "statement_and_proof",
         "proof_with_separate_statement",
+        "external_restatement",
     }):
         errors.append("source.coverage_mode is invalid or missing")
+    external_restatement_use_id = source_info.get(
+        "external_dependency_use_id"
+    )
+    if coverage_mode == "external_restatement":
+        if (
+            not is_nonempty_string(external_restatement_use_id)
+            or not DEPENDENCY_USE_ID_RE.fullmatch(
+                str(external_restatement_use_id)
+            )
+        ):
+            errors.append(
+                "source.external_dependency_use_id must match D001 for "
+                "external_restatement coverage"
+            )
+    elif external_restatement_use_id is not None:
+        errors.append(
+            "source.external_dependency_use_id is allowed only for "
+            "external_restatement coverage"
+        )
     if (
         final
         and coverage_mode == "proof_with_separate_statement"
@@ -7072,6 +7107,26 @@ def check_ledger_data(
 
         checks = step.get("checks")
         atomicity_status: str | None = None
+        if isinstance(checks, dict):
+            draft_atomicity = checks.get("atomicity")
+            if isinstance(draft_atomicity, dict):
+                candidate = draft_atomicity.get("status")
+                if is_enum_value(candidate, ATOMICITY_STATUSES):
+                    atomicity_status = candidate
+                elif (
+                    not final
+                    and schema_version == SCHEMA_VERSION
+                    and candidate is not None
+                ):
+                    errors.append(
+                        f"{prefix}.checks.atomicity.status is invalid"
+                    )
+            elif (
+                not final
+                and schema_version == SCHEMA_VERSION
+                and draft_atomicity is not None
+            ):
+                errors.append(f"{prefix}.checks.atomicity must be an object")
         if final and status != "not_checked":
             if not isinstance(checks, dict):
                 errors.append(f"{prefix}.checks must be an object")
@@ -8409,6 +8464,11 @@ def check_ledger_data(
         "source_end": end,
         "source_range": f"{start}-{end}",
         "coverage_mode": coverage_mode,
+        "external_restatement_use_id": (
+            external_restatement_use_id
+            if coverage_mode == "external_restatement"
+            else None
+        ),
         "physical_lines": max(0, end - start + 1),
         "steps": len(steps),
         "source_units": len(source_units) if schema_version == SCHEMA_VERSION else None,
@@ -10401,16 +10461,26 @@ def validate_issues(
         if reverse_graph is not None and is_nonempty_string(affected_result):
             expected_affected = {affected_result}
             if issue.get("load_bearing") is True:
-                frontier = [affected_result]
-                while frontier:
-                    current = frontier.pop()
-                    for dependent in reverse_graph.get(current, set()):
-                        if dependent not in expected_affected:
-                            expected_affected.add(dependent)
-                            frontier.append(dependent)
+                if dependency_edges is not None:
+                    expected_affected.update(
+                        str(edge.get("dependent_unit"))
+                        for edge in dependency_edges
+                        if isinstance(edge, dict)
+                        and issue_id in edge.get("issue_ids", [])
+                        and is_nonempty_string(edge.get("dependent_unit"))
+                    )
+                else:
+                    frontier = [affected_result]
+                    while frontier:
+                        current = frontier.pop()
+                        for dependent in reverse_graph.get(current, set()):
+                            if dependent not in expected_affected:
+                                expected_affected.add(dependent)
+                                frontier.append(dependent)
             if affected_results != sorted(expected_affected):
                 errors.append(
-                    f"{issue_id}.affected_results must equal the reverse dependency closure: "
+                    f"{issue_id}.affected_results must equal the "
+                    "conclusion-specific dependency closure: "
                     + ", ".join(sorted(expected_affected))
                 )
         if final:
@@ -13250,6 +13320,7 @@ def validate_dependency_closure(
                     "source_status": source_status,
                     "applicability_status": applicability,
                     "effective_status": effective,
+                    "step_ids": use.get("step_ids", []),
                     "issue_ids": use_issues,
                     "compatibility_checks": use.get(
                         "compatibility_checks", []
@@ -13365,6 +13436,7 @@ def validate_dependency_closure(
                 use.get("citation_keys"),
                 f"{prefix}.citation_keys",
                 errors,
+                allow_empty=True,
             )
             if len(citation_keys) != len(set(citation_keys)):
                 errors.append(f"{prefix}.citation_keys contains duplicates")
@@ -13393,6 +13465,7 @@ def validate_dependency_closure(
                         "source_status": source_status,
                         "applicability_status": applicability,
                         "effective_status": effective,
+                        "step_ids": use.get("step_ids", []),
                         "issue_ids": use_issues,
                         "compatibility_checks": use.get(
                             "compatibility_checks", []
@@ -13659,11 +13732,41 @@ REPORT_SCALAR_FIELDS = (
 
 
 REPORT_SCAFFOLD_MARKER = "NONFINAL SCAFFOLD"
+WORKING_REPORT_TITLE = "# NONFINAL Proof-Check Working Report"
+FINAL_REPORT_TITLE = "# Final Proof-Check Report"
 CANONICAL_REPORT_MARKDOWN = frozenset({"FINAL_REPORT.md", "ISSUE_SUMMARY.md"})
 
 
 def contains_report_scaffold_marker(text: str) -> bool:
     return REPORT_SCAFFOLD_MARKER.casefold() in text.casefold()
+
+
+def markdown_h1_lines(text: str) -> list[str]:
+    """Return active Markdown H1 lines in document order."""
+    lines = text.splitlines()
+    headings: list[str] = []
+    for index, line in enumerate(lines):
+        if re.fullmatch(r"[ ]{0,3}#(?!#)[ \t]+.*\S[ \t]*", line):
+            headings.append(line.strip())
+            continue
+        if (
+            re.fullmatch(r"[ ]{0,3}=+[ \t]*", line)
+            and index > 0
+            and lines[index - 1].strip()
+            and re.fullmatch(
+                r"[ ]{0,3}#{1,6}(?:[ \t]+.*)?",
+                lines[index - 1],
+            )
+            is None
+        ):
+            headings.append(
+                f"{lines[index - 1].strip()}\n{line.strip()}"
+            )
+    return headings
+
+
+def report_has_exact_title(text: str, title: str) -> bool:
+    return markdown_h1_lines(text) == [title]
 
 
 def declared_report_paths(value: Any, root: Path) -> set[Path]:
@@ -15904,6 +16007,7 @@ def _check_audit_finalization(
     )
     overrides = scope.get("inventory_overrides")
     override_keys: set[tuple[str, str]] = set()
+    external_restatements: dict[str, str] = {}
     if not isinstance(overrides, list):
         errors.append("audit_scope.inventory_overrides must be a list")
         overrides = []
@@ -15915,7 +16019,13 @@ def _check_audit_finalization(
         unit_id = override.get("unit_id")
         kind = override.get("kind")
         if not is_nonempty_string(unit_id) or not is_enum_value(
-            kind, {"manual_unit", "proof_location", "proof_association"}
+            kind,
+            {
+                "manual_unit",
+                "proof_location",
+                "proof_association",
+                "external_restatement",
+            },
         ):
             errors.append(f"{prefix} needs a valid unit_id and kind")
             continue
@@ -16140,13 +16250,93 @@ def _check_audit_finalization(
                 errors.append(
                     f"{prefix}: a changed proof span requires reviewed_manual"
                 )
+        elif kind == "external_restatement":
+            valid_external_restatement = True
+            if unit_id not in in_scope:
+                errors.append(
+                    f"{prefix}: external_restatement unit must be in scope"
+                )
+                valid_external_restatement = False
+            if fresh_unit is None or reviewed_unit is None:
+                errors.append(
+                    f"{prefix}: external_restatement requires one "
+                    "parser-discovered reviewed unit"
+                )
+                valid_external_restatement = False
+            elif (
+                fresh_unit.get("proof_required") is not True
+                or reviewed_unit.get("proof_required") is not True
+                or fresh_unit.get("proof") is not None
+                or reviewed_unit.get("proof") is not None
+            ):
+                errors.append(
+                    f"{prefix}: external_restatement requires a proof-required "
+                    "unit with no local proof"
+                )
+                valid_external_restatement = False
+            elif reviewed_unit.get("proof_association") != fresh_unit.get(
+                "proof_association"
+            ):
+                errors.append(
+                    f"{prefix}: external_restatement cannot alter the parser "
+                    "proof association"
+                )
+                valid_external_restatement = False
+            external_use_id = override.get("external_dependency_use_id")
+            if (
+                not is_nonempty_string(external_use_id)
+                or not DEPENDENCY_USE_ID_RE.fullmatch(str(external_use_id))
+            ):
+                errors.append(
+                    f"{prefix}.external_dependency_use_id must match D001"
+                )
+                valid_external_restatement = False
+            statement = (
+                reviewed_unit.get("statement")
+                if isinstance(reviewed_unit, dict)
+                else None
+            )
+            if not isinstance(statement, dict):
+                errors.append(
+                    f"{prefix}: external_restatement statement range is invalid"
+                )
+                valid_external_restatement = False
+            else:
+                try:
+                    statement_path = resolve_stored_path(
+                        str(statement["file"]), paper.parent
+                    )
+                    statement_start = statement["start_line"]
+                    statement_end = statement["end_line"]
+                    statement_sha256 = source_span_sha256(
+                        statement_path, statement_start, statement_end
+                    )
+                except (KeyError, TypeError, OSError, UnicodeError, ValueError):
+                    errors.append(
+                        f"{prefix}: external_restatement statement range "
+                        "cannot be source-locked"
+                    )
+                    valid_external_restatement = False
+                else:
+                    if override.get("statement_sha256") != statement_sha256:
+                        errors.append(f"{prefix}.statement_sha256 is stale")
+                        valid_external_restatement = False
+            if valid_external_restatement:
+                external_restatements[str(unit_id)] = str(external_use_id)
     missing_overrides = required_inventory_overrides - override_keys
     if missing_overrides:
         errors.append(
             "Reviewed inventory additions lack explicit overrides: "
             + ", ".join(f"{unit_id}/{kind}" for unit_id, kind in sorted(missing_overrides))
         )
-    stale_overrides = override_keys - required_inventory_overrides
+    reviewed_exception_overrides = {
+        key for key in override_keys if key[1] == "external_restatement"
+    }
+    stale_overrides = (
+        override_keys
+        - required_inventory_overrides
+        - reviewed_exception_overrides
+    )
     if stale_overrides:
         errors.append(
             "Inventory overrides do not match a parser omission: "
@@ -16277,6 +16467,7 @@ def _check_audit_finalization(
                 errors.append(f"{unit_id}: cannot rescan reviewed proof span: {exc}")
                 continue
             canonical_evidence_by_unit[unit_id] = evidence
+            inventory_evidence = evidence
             reviewed_proof_spans.append(
                 (unit_id, proof_path.resolve(), proof_start, proof_end)
             )
@@ -16290,6 +16481,7 @@ def _check_audit_finalization(
                 "warnings": [],
             }
             canonical_evidence_by_unit[unit_id] = evidence
+            inventory_evidence = evidence
         else:
             if (
                 isinstance(proof_association, dict)
@@ -16305,6 +16497,18 @@ def _check_audit_finalization(
                     paper.parent,
                     label_owners,
                     support_index,
+                    statement_as_primary=unit_id in external_restatements,
+                )
+                inventory_evidence = (
+                    reviewed_span_evidence(
+                        unit_id,
+                        unit,
+                        paper.parent,
+                        label_owners,
+                        support_index,
+                    )
+                    if unit_id in external_restatements
+                    else evidence
                 )
             except (OSError, UnicodeError, ValueError) as exc:
                 errors.append(
@@ -16319,7 +16523,7 @@ def _check_audit_finalization(
             "candidate_internal_dependencies",
             "citations",
         ):
-            if unit.get(field) != evidence.get(field):
+            if unit.get(field) != inventory_evidence.get(field):
                 errors.append(
                     f"{unit_id}: reviewed inventory {field} disagrees with the "
                     "canonical rescan"
@@ -16371,6 +16575,7 @@ def _check_audit_finalization(
         errors.append("manifest.parser_warning_reviews must be a list")
         warning_reviews = []
     reviewed_warning_messages: list[str] = []
+    reviewed_external_restatement_warnings: set[str] = set()
     for index, review in enumerate(warning_reviews, 1):
         prefix = f"parser_warning_reviews[{index}]"
         if not isinstance(review, dict):
@@ -16387,6 +16592,7 @@ def _check_audit_finalization(
             {
                 "unreviewed",
                 "confirmed_non_load_bearing",
+                "external_restatement",
                 "scope_limitation",
                 "unresolved",
             },
@@ -16414,6 +16620,25 @@ def _check_audit_finalization(
             errors.append(
                 f"{prefix}: an unresolved parser warning blocks no_defect_found"
             )
+        if disposition == "external_restatement":
+            invalid_external_warning = bool(
+                len(affected_units) != 1
+                or affected_units[0] not in external_restatements
+                or not warning.startswith(
+                    "Proof-required result has no associated proof: "
+                    f"{affected_units[0] if affected_units else ''} at "
+                )
+            )
+            if invalid_external_warning:
+                errors.append(
+                    f"{prefix}: external_restatement must review the "
+                    "missing-proof warning for exactly one explicitly "
+                    "overridden unit"
+                )
+            else:
+                reviewed_external_restatement_warnings.add(
+                    affected_units[0]
+                )
         if disposition == "scope_limitation":
             if not scope.get("source_or_parser_limits"):
                 errors.append(
@@ -16432,6 +16657,16 @@ def _check_audit_finalization(
         errors.append(
             "manifest.parser_warning_reviews must be a one-to-one review of "
             "manifest.parser_warnings"
+        )
+    missing_external_warning_reviews = (
+        set(external_restatements)
+        - reviewed_external_restatement_warnings
+    )
+    if missing_external_warning_reviews:
+        errors.append(
+            "External restatement overrides lack matching missing-proof "
+            "warning reviews: "
+            + ", ".join(sorted(missing_external_warning_reviews))
         )
 
     exclusions = scope.get("excluded_units")
@@ -16545,12 +16780,38 @@ def _check_audit_finalization(
     report_fields: dict[str, str] = {}
     if final_report_path_valid and not final_report.is_file():
         errors.append(f"Final report not found: {final_report}")
+    elif (
+        final_report_path_valid
+        and completion.get("final_report_ready") is not True
+    ):
+        nonfinal_report_text = active_markdown_text(read_text(final_report))
+        if not contains_report_scaffold_marker(nonfinal_report_text):
+            errors.append(
+                "Final report removed the NONFINAL scaffold marker before "
+                "completion.final_report_ready is true"
+            )
+        if (
+            not report_has_exact_title(
+                nonfinal_report_text, WORKING_REPORT_TITLE
+            )
+        ):
+            errors.append(
+                "Nonfinal report must use the working title as its sole H1: "
+                f"{WORKING_REPORT_TITLE}"
+            )
     elif final_report_path_valid and completion.get("final_report_ready") is True:
         raw_report_text = read_text(final_report)
         report_text = active_markdown_text(raw_report_text)
         if contains_report_scaffold_marker(report_text):
             errors.append(
                 "Final report still contains the NONFINAL scaffold marker"
+            )
+        if (
+            not report_has_exact_title(report_text, FINAL_REPORT_TITLE)
+        ):
+            errors.append(
+                "Final report must use the final title as its sole H1: "
+                f"{FINAL_REPORT_TITLE}"
             )
         if ACTIVE_HIDDEN_HTML_MARKER in report_text:
             errors.append(
@@ -16678,6 +16939,7 @@ def _check_audit_finalization(
     for unit_id in sorted(set(in_scope) & set(summaries_by_id) & set(unit_inventory)):
         summary = summaries_by_id[unit_id]
         unit = unit_inventory[unit_id]
+        external_restatement_use_id = external_restatements.get(unit_id)
         statement = unit.get("statement")
         if not isinstance(statement, dict):
             errors.append(f"{unit_id}: invalid inventory statement location")
@@ -16713,6 +16975,7 @@ def _check_audit_finalization(
         if (
             unit.get("proof_required") is True
             and proof_location is None
+            and external_restatement_use_id is None
             and not is_enum_value(
                 summary.get("declared_unit_status"),
                 {"gap", "incorrect", "unclear"},
@@ -16738,6 +17001,35 @@ def _check_audit_finalization(
         except (KeyError, TypeError, ValueError):
             errors.append(f"{unit_id}: invalid inventoried proof range")
         else:
+            if external_restatement_use_id is not None:
+                if summary.get("coverage_mode") != "external_restatement":
+                    errors.append(
+                        f"{unit_id}: explicit external_restatement override "
+                        "requires matching ledger coverage"
+                    )
+                if (
+                    summary.get("external_restatement_use_id")
+                    != external_restatement_use_id
+                ):
+                    errors.append(
+                        f"{unit_id}: ledger external_dependency_use_id does "
+                        "not match the reviewed override"
+                    )
+                if (
+                    Path(summary.get("source_file", "")).resolve()
+                    != statement_source
+                    or summary.get("source_start") != statement_start
+                    or summary.get("source_end") != statement_end
+                ):
+                    errors.append(
+                        f"{unit_id}: external_restatement ledger range must "
+                        "exactly equal the formal statement span"
+                    )
+            elif summary.get("coverage_mode") == "external_restatement":
+                errors.append(
+                    f"{unit_id}: external_restatement ledger coverage requires "
+                    "an explicit reviewed inventory override"
+                )
             if (
                 target_source != statement_source
                 and summary.get("coverage_mode") != "proof_with_separate_statement"
@@ -16955,7 +17247,9 @@ def _check_audit_finalization(
         }
         source_citations = {
             citation
-            for citation in unit.get("citations", [])
+            for citation in canonical_evidence_by_unit.get(unit_id, {}).get(
+                "citations", []
+            )
             if is_nonempty_string(citation)
         }
         missing_citation_dispositions = source_citations - set(citation_dispositions)
@@ -17000,6 +17294,31 @@ def _check_audit_finalization(
                 and summary.get("declared_unit_status") == "verified"
             ):
                 errors.append(f"{unit_id}: verified unit has unresolved citation {citation}")
+        if external_restatement_use_id is not None:
+            designated_dependency = direct_by_use.get(
+                external_restatement_use_id
+            )
+            designated_dependency_id = (
+                designated_dependency.get("id")
+                if isinstance(designated_dependency, dict)
+                and designated_dependency.get("kind") == "external_result"
+                else None
+            )
+            for citation in sorted(source_citations):
+                disposition = citation_dispositions.get(citation)
+                if (
+                    not isinstance(disposition, dict)
+                    or disposition.get("disposition") != "external_result"
+                    or disposition.get("dependency_use_id")
+                    != external_restatement_use_id
+                    or disposition.get("dependency_id")
+                    != designated_dependency_id
+                ):
+                    errors.append(
+                        f"{unit_id}: external_restatement citation {citation} "
+                        "must map to its designated external dependency use "
+                        f"{external_restatement_use_id}"
+                    )
 
         occurrence_context = {
             occurrence.get("occurrence_id"): occurrence.get(
@@ -17115,6 +17434,43 @@ def _check_audit_finalization(
     dependency_edges = closure_result["edges"]
     unit_graph = closure_result["unit_graph"]
     referenced.update(closure_result["issue_ids"])
+    for unit_id, external_use_id in sorted(external_restatements.items()):
+        if unit_id not in in_scope:
+            continue
+        summary = summaries_by_id.get(unit_id, {})
+        matching_edges = [
+            edge
+            for edge in dependency_edges
+            if isinstance(edge, dict)
+            and edge.get("dependent_unit") == unit_id
+            and edge.get("use_id") == external_use_id
+            and edge.get("kind") == "external_result"
+        ]
+        if len(matching_edges) != 1:
+            errors.append(
+                f"{unit_id}: external_restatement requires exactly one "
+                f"canonical external dependency edge for {external_use_id}"
+            )
+        elif (
+            summary.get("declared_unit_status") == "verified"
+            and matching_edges[0].get("effective_status") != "verified"
+        ):
+            errors.append(
+                f"{unit_id}: verified external_restatement requires a "
+                "verified external dependency edge"
+            )
+        for result in summary.get("conclusion_results", []):
+            if (
+                isinstance(result, dict)
+                and result.get("statement_status")
+                in {"established", "conditional"}
+                and external_use_id not in result.get("dependency_use_ids", [])
+            ):
+                errors.append(
+                    f"{unit_id}:{result.get('conclusion_id')}: "
+                    "external_restatement dependency is absent from the "
+                    "conclusion support closure"
+                )
     if scope.get("depth") == "focused":
         required_scope: set[str] = set()
         pending_targets = list(target_units)
@@ -17914,9 +18270,29 @@ def _check_audit_finalization(
             if issue is None:
                 continue
             links_by_step[link.get("step_id")].append(issue)
-            if issue.get("scope") == "unit" and issue.get("affected_result") != unit_id:
+            if (
+                issue.get("scope") == "unit"
+                and unit_id not in issue.get("affected_results", [])
+            ):
                 errors.append(
-                    f"{issue.get('id')}: affected_result does not match ledger {unit_id}"
+                    f"{issue.get('id')}: affected_results omits linked "
+                    f"ledger {unit_id}"
+                )
+            elif (
+                issue.get("scope") == "unit"
+                and issue.get("affected_result") != unit_id
+                and not any(
+                    edge.get("dependent_unit") == unit_id
+                    and link.get("step_id") in edge.get("step_ids", [])
+                    and issue.get("id") in edge.get("issue_ids", [])
+                    for edge in dependency_edges
+                    if isinstance(edge, dict)
+                )
+            ):
+                errors.append(
+                    f"{issue.get('id')}: downstream ledger issue link "
+                    f"{unit_id}:{link.get('step_id')} lacks a matching "
+                    "canonical dependency edge"
                 )
             if (
                 is_enum_value(issue.get("status"), {"open", "deferred"})
@@ -19447,13 +19823,40 @@ def cmd_status(args: argparse.Namespace) -> int:
             structural_errors.append(error)
     canonical_report = root / "audit" / "06_reports" / "FINAL_REPORT.md"
     canonical_report_scaffold = False
+    prematurely_unmarked_report = False
+    invalid_nonfinal_report_title = False
     if canonical_report.is_file():
         try:
-            canonical_report_scaffold = (
-                contains_report_scaffold_marker(
-                    active_markdown_text(read_text(canonical_report))
+            canonical_report_text = active_markdown_text(
+                read_text(canonical_report)
+            )
+            canonical_report_scaffold = contains_report_scaffold_marker(
+                canonical_report_text
+            )
+            completion = manifest.get("completion")
+            report_ready = bool(
+                isinstance(completion, dict)
+                and completion.get("final_report_ready") is True
+            )
+            prematurely_unmarked_report = bool(
+                not canonical_report_scaffold and not report_ready
+            )
+            if prematurely_unmarked_report:
+                structural_errors.append(
+                    "Final report removed the NONFINAL scaffold marker before "
+                    "completion.final_report_ready is true"
+                )
+            invalid_nonfinal_report_title = bool(
+                not report_ready
+                and not report_has_exact_title(
+                    canonical_report_text, WORKING_REPORT_TITLE
                 )
             )
+            if invalid_nonfinal_report_title:
+                structural_errors.append(
+                    "Nonfinal report must use the working title as its sole H1: "
+                    f"{WORKING_REPORT_TITLE}"
+                )
         except TextArtifactReadError as exc:
             structural_errors.append(str(exc))
 
@@ -19634,12 +20037,18 @@ def cmd_status(args: argparse.Namespace) -> int:
     report_integrity = {
         "status": (
             "failed"
-            if undeclared_report_files
+            if (
+                undeclared_report_files
+                or prematurely_unmarked_report
+                or invalid_nonfinal_report_title
+            )
             else "scaffold"
             if canonical_report_scaffold
             else "clear"
         ),
         "canonical_report_scaffold": canonical_report_scaffold,
+        "prematurely_unmarked": prematurely_unmarked_report,
+        "invalid_nonfinal_title": invalid_nonfinal_report_title,
         "undeclared_markdown_files": undeclared_report_files,
     }
     result = {

@@ -110,7 +110,7 @@ Before deep checking a broad source, inspect the static source closure, rendered
 
 In Triage, inspect these outputs only to produce a nonfinal architecture map and verification plan. In Focused or Full depth, review them and follow [proof-system-audit.md](references/proof-system-audit.md) and [state-and-reporting.md](references/state-and-reporting.md) for exact reconciliation and override rules.
 
-Treat parser output as an index, not verification. Do not delete or weaken parser-discovered facts. Source-lock and rescan any reviewed replacement proof span. A proof-required result with no genuine proof is a checked gap or unclear result, not an exclusion.
+Treat parser output as an index, not verification. Do not delete or weaken parser-discovered facts. Source-lock and rescan any reviewed replacement proof span. A proof-required result with no genuine proof is a checked gap or unclear result, not an exclusion. The only exception is an explicit `external_restatement` inventory override for a result that restates one externally verified result instead of giving a local proof. Keep that unit proof-required and in scope, use exact statement-only ledger coverage, and designate exactly one external dependency use as specified in [proof-system-audit.md](references/proof-system-audit.md).
 
 For Focused depth, set scope to the target units plus exactly their transitive internal prerequisites. For Full depth, include every proof-required inventory unit.
 
@@ -242,6 +242,12 @@ issue to `resolved`.
 
 Use the concise, work-in-progress-aware `status` preflight to identify the current state and next action. Add `--verbose` when full gate diagnostics are needed. Concise output does not weaken strict validation. Do not trust stale source, evidence, registry, progress, or finalization hashes.
 
+Draft ledger validation relaxes final completeness only. It must still reject
+malformed populated records, stale source locks, broken links, and an
+inferential step that does not contain exactly one atomic move. A clean draft
+check means only that the recorded work is structurally coherent so far. It is
+not a verification judgment.
+
 A zero exit from bare `status` means that the resumable state is coherent; it
 does not mean that the audit is complete. Inspect the top-level
 `audit_complete`, `delivery_status`, and `finalization_gate_error_count`
@@ -285,9 +291,13 @@ diagnostic judgment exists.
 Keep non-deliverable drafts and working notes outside `audit/06_reports`.
 That directory may contain only the canonical Markdown reports and complete
 user-facing reports declared in `report_deliverables`. The copied
-`FINAL_REPORT.md` starts with a visible `NONFINAL SCAFFOLD` notice. Remove
-that notice only when the canonical report is complete and ready for
-finalization; leaving it in place blocks finalization.
+`FINAL_REPORT.md` starts with the title `NONFINAL Proof-Check Working Report`
+and a visible `NONFINAL SCAFFOLD` notice. Keep both while
+`completion.final_report_ready` is not true. After the canonical report and
+generated issue views are complete, set that field to true, rename the title
+to `Final Proof-Check Report`, remove the notice, and run the full status,
+issue-reconciliation, finalization, and delivery sequence. Leaving the notice
+or the nonfinal title in place blocks finalization.
 
 Build the report from canonical records using [state-and-reporting.md](references/state-and-reporting.md) and [FINAL_REPORT.md](assets/templates/FINAL_REPORT.md). Generate exact finding locations, mathematical contracts, failed moves with their premises and recorded failure evidence, downstream quotations, invalidation effects, and suggested changes from canonical issue references and locked source. Preserve exact result, conclusion, dependency, issue, protocol, and checked-scope judgments. Keep suggested changes separate from findings, and reconcile every manifest-declared user-facing report before delivery.
 

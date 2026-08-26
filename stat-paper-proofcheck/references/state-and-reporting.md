@@ -80,7 +80,7 @@ hard-link support or shared inode identity. If interruption recovery cannot be
 validated, keep the audit `NONFINAL` and report the exact stale or malformed
 artifact.
 
-`AUDIT_MANIFEST.json` is the machine-readable scope and completion contract. Before finalization, set its reviewed depth, overall assessment, targets, in-scope and critical units, in-scope method interfaces, explicit exclusions with reasons, source or parser limits, inventory overrides, and completion evidence. For Focused depth, `target_units` must be nonempty and `in_scope_units` must equal the targets plus their exact transitive internal dependency closure. An inventory override may add a parser-missed manual unit, correct or reject a proof location, or confirm, replace, or reject a proof association only when it records a reason and rendered-source evidence. A manual unit binds `reviewed_unit_sha256`. An explicit rejection uses a null reviewed proof and a reviewed association with status `rejected`, method `reviewed_rejection`, the same target, and no evidence occurrences. Source-lock and rescan every changed proof span, then reconcile its exact reference occurrences, dependencies, and citations. Do not edit the source snapshot to make drift disappear. Re-scaffold or deliberately update and recheck affected work after a source change.
+`AUDIT_MANIFEST.json` is the machine-readable scope and completion contract. Before finalization, set its reviewed depth, overall assessment, targets, in-scope and critical units, in-scope method interfaces, explicit exclusions with reasons, source or parser limits, inventory overrides, and completion evidence. For Focused depth, `target_units` must be nonempty and `in_scope_units` must equal the targets plus their exact transitive internal dependency closure. An inventory override may add a parser-missed manual unit, correct or reject a proof location, confirm, replace, or reject a proof association, or designate an exact external restatement only when it records the required source-bound evidence. A manual unit binds `reviewed_unit_sha256`. An explicit rejection uses a null reviewed proof and a reviewed association with status `rejected`, method `reviewed_rejection`, the same target, and no evidence occurrences. An external restatement override uses `kind: external_restatement`, exact `unit_id`, `external_dependency_use_id`, `statement_sha256` equal to the hash of the exact reviewed formal statement span, substantive `reason`, and substantive `evidence`. Keep the unit proof-required and its proof null. Its ledger uses `coverage_mode: external_restatement`, repeats the designated use ID, and covers exactly the statement. That ID must name one external direct dependency of the unit and exactly one matching registry use. Citation keys equal the statement citations mapped to it, or the empty set when no citation command exists. Source-lock and rescan every changed proof span or statement-only restatement, then reconcile its exact reference occurrences, dependencies, and citations. Do not edit the source snapshot to make drift disappear. Re-scaffold or deliberately update and recheck affected work after a source change.
 
 The manifest records the skill version, artifact schemas, closure contract
 version, validator hash, and source snapshot identifier. When only the
@@ -152,12 +152,16 @@ Reserve the top level of `audit/06_reports/` for
 user-facing reports. Move drafts, partial reports, and working notes elsewhere.
 An undeclared Markdown file in this directory is a report-integrity error and
 makes `status` nonzero. The scaffolded `FINAL_REPORT.md` contains a visible
-`NONFINAL SCAFFOLD` notice. Remove it only after the canonical report is
-complete and ready for finalization; the finalization gate rejects the marker.
+`NONFINAL SCAFFOLD` notice and the title `NONFINAL Proof-Check Working Report`.
+Keep both until the canonical report and generated issue views are complete
+and `completion.final_report_ready` is true. Then rename the title to
+`Final Proof-Check Report`, remove the notice, and run the status,
+issue-reconciliation, finalization, and delivery sequence. The finalization
+gate rejects either nonfinal marker.
 
 The `source_discovery` record distinguishes recursively discovered LaTeX inputs, local class and package files, explicitly declared sources, and supplemental project-local `.fls` inputs. An outside-project recorder input remains excluded until it is explicitly promoted as an additional source with a reason and evidence. Treat an `.fls` trace as evidence from one compilation path, not as a completeness certificate.
 
-`parser_warning_reviews` must be a one-to-one review of the exact current warning set. Use `confirmed_non_load_bearing` only with concrete evidence, `scope_limitation` when the unresolved reach is bounded and declared, and `unresolved` otherwise. An unresolved warning, or a limitation that may affect in-scope units, cannot support `no_defect_found`.
+`parser_warning_reviews` must be a one-to-one review of the exact current warning set. Use `confirmed_non_load_bearing` only with concrete evidence, `scope_limitation` when the unresolved reach is bounded and declared, and `unresolved` otherwise. Use `external_restatement` only for the missing-associated-proof warning of the same explicitly overridden unit, with `affected_units` containing exactly that unit and substantive evidence. An unresolved warning, or a limitation that may affect in-scope units, cannot support `no_defect_found`.
 
 Manifest `cross_reference_reviews` must be a one-to-one review of the exact
 current broken-reference and duplicate-label records. Orphan labels do not
@@ -490,6 +494,11 @@ summary; add `--verbose` for the complete current gate errors. It reports
 `preflight_status` and `finalizable_now` even when `FINALIZATION.json` is
 missing. A missing record is a normal work-in-progress state and does not alone
 make the command fail.
+
+Work-in-progress validation still checks every populated record. In particular,
+it rejects stale source locks, broken links, and inferential steps that do not
+contain exactly one atomic move. It relaxes only final completeness. A zero
+status for a coherent partial audit does not make it complete or final.
 
 After finalization, `proofcheck.py status --root <audit-root>` recomputes artifact
 hashes and the full gate, including source files, external source-evidence

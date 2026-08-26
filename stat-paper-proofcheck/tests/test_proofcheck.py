@@ -1000,6 +1000,334 @@ class FinalizationTests(unittest.TestCase):
         self.seal_schema5_challenge(ledger_path, read_json(ledger_path))
         return source_path, use
 
+    def make_external_restatement_audit(
+        self, *, with_statement_citation: bool = False
+    ) -> Path:
+        citation = "\\cite{smith}" if with_statement_citation else ""
+        self.paper = self.base / "imported-result.tex"
+        self.paper.write_text(
+            "\\input{definitions}\n"
+            "\\begin{lemma}\\label{lem:main}\n"
+            f"$x=x$ for every real $x$.{citation}\n"
+            "\\end{lemma}\n"
+            "% This imported result has no local proof.\n"
+            "\n"
+            "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        self.audit = self.base / "imported-result-audit"
+        with contextlib.redirect_stdout(io.StringIO()):
+            proofcheck.cmd_scaffold(
+                argparse.Namespace(paper=self.paper, output=self.audit)
+            )
+        ledger_path = self.make_complete_audit()
+        ledger = read_json(ledger_path)
+        old_challenge = dict(ledger["independent_check"])
+
+        source = ledger["source"]
+        source["end_line"] = 4
+        source["unit_sha256"] = proofcheck.source_span_sha256(
+            self.paper, 2, 4
+        )
+        source["coverage_mode"] = "external_restatement"
+        source["external_dependency_use_id"] = "D001"
+        source.pop("separate_statement_reason", None)
+        ledger["source_lines"] = ledger["source_lines"][:3]
+        ledger["source_units"] = [
+            {
+                "id": "U001",
+                "lines": [2, 4],
+                "kind": "continued_sentence",
+                "source_sha256": proofcheck.source_span_sha256(
+                    self.paper, 2, 4
+                ),
+                "partition_evidence": (
+                    "Lines 2-4 are one formal imported-result statement."
+                ),
+            }
+        ]
+
+        dependency = {
+            "id": "ext:reflexivity",
+            "use_id": "D001",
+            "kind": "external_result",
+            "status": "verified",
+            "needed_form": "For every real x, x equals x.",
+            "compatibility_check": (
+                "The external theorem has the same quantifier, domain, and "
+                "reflexive equality as the manuscript statement."
+            ),
+        }
+        statement_step = ledger["steps"][0]
+        conclusion_step = ledger["steps"][2]
+        conclusion_step["id"] = "S002"
+        conclusion_step["source_unit_id"] = "U001"
+        conclusion_step["goal"] = (
+            "Verify the imported manuscript result against the external theorem."
+        )
+        conclusion_step["restatement"] = "x equals x"
+        conclusion_step["premise_uses"] = [
+            {
+                "id": "P001",
+                "role": "fact",
+                "claim": dependency["needed_form"],
+                "origin": {
+                    "kind": "external_result",
+                    "reference": dependency["use_id"],
+                },
+                "evidence": (
+                    "The independently locked external source states this "
+                    "universal reflexivity result."
+                ),
+            },
+            {
+                "id": "P002",
+                "role": "assumption",
+                "claim": "For every real x.",
+                "origin": {
+                    "kind": "obligation",
+                    "reference": "/quantifier_scope",
+                    "anchor": {
+                        "kind": "statement_span",
+                        "index": 1,
+                    },
+                },
+                "evidence": (
+                    "The formal statement supplies the real-number quantifier."
+                ),
+            },
+        ]
+        conclusion_step["dependencies"] = [dict(dependency)]
+        conclusion_step["inference"] = {
+            "moves": [
+                {
+                    "id": "M001",
+                    "claim": "x equals x",
+                    "rule": "Verified external restatement",
+                    "premise_ids": ["P001", "P002"],
+                    "prior_move_ids": [],
+                    "justification": (
+                        "The verified external universal result establishes the "
+                        "same claim for the arbitrary real x."
+                    ),
+                }
+            ],
+            "conclusion_move": "M001",
+        }
+        conclusion_step["checks"]["literal"] = (
+            "The manuscript statement and external result assert the same "
+            "quantified equality."
+        )
+        conclusion_step["checks"]["atomicity"] = {
+            "status": "single_move",
+            "evidence": (
+                "This step performs one exact external-result application."
+            ),
+        }
+        conclusion_step["checks"]["adversarial"] = [
+            "The domain, quantifier, and equality were compared explicitly."
+        ]
+        ledger["steps"] = [statement_step, conclusion_step]
+        ledger["review"]["conclusion_step_id"] = "S002"
+        ledger["review"]["conclusion_results"][0]["support"] = {
+            "step_id": "S002",
+            "move_id": "M001",
+        }
+        ledger["review"]["conclusion_results"][0][
+            "dependency_use_ids"
+        ] = ["D001"]
+        ledger["review"]["direct_dependencies"] = [dict(dependency)]
+        ledger["review"]["source_reference_dispositions"] = []
+        ledger["review"]["citation_dispositions"] = (
+            [
+                {
+                    "key": "smith",
+                    "disposition": "external_result",
+                    "dependency_id": dependency["id"],
+                    "dependency_use_id": dependency["use_id"],
+                    "evidence": (
+                        "The statement citation identifies the exact external "
+                        "result designated by the override."
+                    ),
+                }
+            ]
+            if with_statement_citation
+            else []
+        )
+        ledger["review"]["verification_basis"] = [
+            "Exact statement ledger and independently verified external theorem"
+        ]
+        write_json(ledger_path, ledger)
+
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["audit_scope"]["inventory_overrides"] = [
+            {
+                "unit_id": "lem:main",
+                "kind": "external_restatement",
+                "external_dependency_use_id": "D001",
+                "statement_sha256": proofcheck.source_span_sha256(
+                    self.paper, 2, 4
+                ),
+                "reason": (
+                    "The manuscript deliberately states an imported theorem "
+                    "without supplying a local proof."
+                ),
+                "evidence": (
+                    "The exact statement is source-locked and checked against "
+                    "one independently verified external theorem contract."
+                ),
+            }
+        ]
+        for review in manifest["parser_warning_reviews"]:
+            if review["warning"].startswith(
+                "Proof-required result has no associated proof: lem:main at "
+            ):
+                review.update(
+                    {
+                        "disposition": "external_restatement",
+                        "affected_units": ["lem:main"],
+                        "evidence": (
+                            "The explicit override and external dependency "
+                            "supply the reviewed verification path."
+                        ),
+                    }
+                )
+            else:
+                review.update(
+                    {
+                        "disposition": "confirmed_non_load_bearing",
+                        "affected_units": [],
+                        "evidence": (
+                            "This parser warning does not affect the imported "
+                            "result verification path."
+                        ),
+                    }
+                )
+        write_json(manifest_path, manifest)
+
+        external_source = self.base / "external-imported-result.txt"
+        external_source.write_text(
+            "External Result 1\nFor every real x, x equals x.\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        source_evidence = [
+            {
+                "file": proofcheck.relative_or_absolute(
+                    external_source, self.audit
+                ),
+                "sha256": proofcheck.sha256_file(external_source),
+                "locator": "External Result 1, line 2",
+                "role": "authoritative_theorem_source",
+            }
+        ]
+        exact_statement = "For every real x, x equals x."
+        contract_payload = {
+            "source_identity": "doi:10.0000/imported-reflexivity",
+            "version": "version 1",
+            "theorem_location": "External Result 1",
+            "exact_statement": exact_statement,
+            "source_evidence": source_evidence,
+        }
+        use = {
+            "dependent_unit": "lem:main",
+            "use_id": "D001",
+            "dependency_id": "ext:reflexivity",
+            "step_ids": ["S002"],
+            "needed_form": dependency["needed_form"],
+            "dependency_conclusion": exact_statement,
+            "dependency_contract_sha256": proofcheck.canonical_sha256(
+                contract_payload
+            ),
+            "compatibility_check": dependency["compatibility_check"],
+            "compatibility_checks": make_compatibility_checks(),
+            "status": "verified",
+            "issue_ids": [],
+            "citation_keys": ["smith"] if with_statement_citation else [],
+            "prerequisite_map": [
+                {
+                    "prerequisite": "The manuscript variable x is real.",
+                    "manuscript_evidence": (
+                        "The formal statement quantifies x over the reals."
+                    ),
+                    "status": "satisfied",
+                    "evidence_spans": [
+                        proofcheck.locked_span(
+                            self.paper,
+                            2,
+                            4,
+                            self.audit,
+                            role="manuscript_prerequisite",
+                        )
+                    ],
+                    "issue_ids": [],
+                }
+            ],
+        }
+        registry = self.refresh_dependency_review()
+        registry["external_results"] = [
+            {
+                "id": "ext:reflexivity",
+                "status": "verified",
+                **contract_payload,
+                "issue_ids": [],
+                "uses": [use],
+            }
+        ]
+        registry_path = (
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        write_json(registry_path, registry)
+
+        self.seal_schema5_challenge(ledger_path, read_json(ledger_path))
+        new_challenge = read_json(ledger_path)["independent_check"]
+        report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
+        report = report_path.read_text(encoding="utf-8")
+        report = report.replace(
+            "paper.tex and lem:main",
+            f"{self.paper.name} and lem:main",
+        )
+        report = report.replace(
+            "- External results checked: none",
+            "- External results checked: ext:reflexivity",
+        )
+        report = report.replace(
+            "| lem:main | C001 | verified | valid | established | verified | "
+            "not_applicable | S003/M001 | none | none |",
+            "| lem:main | C001 | verified | valid | established | verified | "
+            "not_applicable | S002/M001 | D001 | none |",
+        )
+        empty_closure = (
+            "| Dependent | Use ID | Dependency | Dependency conclusion | Kind | "
+            "Source status | Applicability status | Effective status | Issue IDs |\n"
+            "|---|---|---|---|---|---|---|---|---|\n"
+            "None."
+        )
+        external_closure = (
+            "| Dependent | Use ID | Dependency | Dependency conclusion | Kind | "
+            "Source status | Applicability status | Effective status | Issue IDs |\n"
+            "|---|---|---|---|---|---|---|---|---|\n"
+            "| lem:main | D001 | ext:reflexivity | none | external_result | "
+            "verified | passed | verified | none |"
+        )
+        report = report.replace(empty_closure, external_closure)
+        for field in (
+            "challenged_ledger_sha256",
+            "challenge_artifact_sha256",
+            "generated_utc",
+        ):
+            report = report.replace(
+                str(old_challenge[field]),
+                str(new_challenge[field]),
+            )
+        report_path.write_text(report, encoding="utf-8", newline="\n")
+        return ledger_path
+
     def migrate_issue_fixture_to_schema5(
         self,
         issue: dict,
@@ -2127,6 +2455,49 @@ class FinalizationTests(unittest.TestCase):
                 in error
                 for error in errors
             ),
+            errors,
+        )
+
+    def test_draft_validation_respects_recorded_noninferential_atomicity(self) -> None:
+        ledger_path = self.make_complete_audit()
+
+        errors, summary = proofcheck.check_ledger_data(ledger_path, False)
+
+        self.assertEqual([], errors)
+        self.assertEqual("draft", summary["validation_mode"])
+
+    def test_draft_validation_keeps_the_schema5_one_move_contract(self) -> None:
+        ledger_path = self.make_complete_audit()
+        ledger = read_json(ledger_path)
+        ledger["steps"][2]["inference"]["moves"] = []
+        ledger["steps"][2]["inference"]["conclusion_move"] = None
+        write_json(ledger_path, ledger)
+
+        errors, summary = proofcheck.check_ledger_data(ledger_path, False)
+
+        self.assertEqual("draft", summary["validation_mode"])
+        self.assertTrue(
+            any(
+                "schema-5 inferential step must contain exactly one move"
+                in error
+                for error in errors
+            ),
+            errors,
+        )
+
+    def test_draft_validation_rejects_populated_invalid_atomicity(self) -> None:
+        ledger_path = self.make_complete_audit()
+        ledger = read_json(ledger_path)
+        ledger["steps"][2]["checks"]["atomicity"]["status"] = (
+            "invented_status"
+        )
+        write_json(ledger_path, ledger)
+
+        errors, summary = proofcheck.check_ledger_data(ledger_path, False)
+
+        self.assertEqual("draft", summary["validation_mode"])
+        self.assertIn(
+            "S003.checks.atomicity.status is invalid",
             errors,
         )
 
@@ -7000,6 +7371,108 @@ class FinalizationTests(unittest.TestCase):
         )
         self.assertIn(expected_error, payload["structural_errors"])
 
+    def test_status_rejects_a_prematurely_unmarked_final_report(self) -> None:
+        report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
+        report = report_path.read_text(encoding="utf-8").replace(
+            proofcheck.REPORT_SCAFFOLD_MARKER,
+            "WORKING REPORT",
+            1,
+        )
+        report_path.write_text(report, encoding="utf-8")
+
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+        expected_error = (
+            "Final report removed the NONFINAL scaffold marker before "
+            "completion.final_report_ready is true"
+        )
+        self.assertIn(expected_error, errors)
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            status = proofcheck.cmd_status(
+                argparse.Namespace(
+                    root=self.audit,
+                    format="json",
+                    output=None,
+                    force=False,
+                    verbose=False,
+                )
+            )
+        payload = json.loads(output.getvalue())
+
+        self.assertEqual(1, status)
+        self.assertEqual("malformed_or_stale", payload["workflow_state"])
+        self.assertEqual("NONFINAL", payload["delivery_status"])
+        self.assertEqual("failed", payload["report_integrity"]["status"])
+        self.assertTrue(payload["report_integrity"]["prematurely_unmarked"])
+        self.assertIn(expected_error, payload["structural_errors"])
+
+    def test_status_rejects_an_additional_nonfinal_h1(self) -> None:
+        report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
+        report = report_path.read_text(encoding="utf-8")
+        report_path.write_text(
+            "# Misleading Draft Heading\n\n" + report,
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+        expected_error = (
+            "Nonfinal report must use the working title as its sole H1: "
+            f"{proofcheck.WORKING_REPORT_TITLE}"
+        )
+        self.assertIn(expected_error, errors)
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            status = proofcheck.cmd_status(
+                argparse.Namespace(
+                    root=self.audit,
+                    format="json",
+                    output=None,
+                    force=False,
+                    verbose=False,
+                )
+            )
+        payload = json.loads(output.getvalue())
+
+        self.assertEqual(1, status)
+        self.assertEqual("failed", payload["report_integrity"]["status"])
+        self.assertTrue(payload["report_integrity"]["invalid_nonfinal_title"])
+        self.assertIn(expected_error, payload["structural_errors"])
+
+    def test_status_rejects_an_additional_setext_nonfinal_h1(self) -> None:
+        report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
+        report = report_path.read_text(encoding="utf-8")
+        report_path.write_text(
+            "Misleading Draft Heading\n=========================\n\n" + report,
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+        expected_error = (
+            "Nonfinal report must use the working title as its sole H1: "
+            f"{proofcheck.WORKING_REPORT_TITLE}"
+        )
+        self.assertIn(expected_error, errors)
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            status = proofcheck.cmd_status(
+                argparse.Namespace(
+                    root=self.audit,
+                    format="json",
+                    output=None,
+                    force=False,
+                    verbose=False,
+                )
+            )
+        payload = json.loads(output.getvalue())
+
+        self.assertEqual(1, status)
+        self.assertTrue(payload["report_integrity"]["invalid_nonfinal_title"])
+
     def test_status_marks_stale_checkpoint_as_malformed_or_stale(self) -> None:
         progress_path = self.audit / "PROGRESS.json"
         progress = read_json(progress_path)
@@ -9457,6 +9930,146 @@ class FinalizationTests(unittest.TestCase):
 
         self.assertEqual([], errors)
 
+    def test_external_restatement_without_inline_citation_passes(self) -> None:
+        self.make_external_restatement_audit()
+
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+
+        self.assertEqual([], errors)
+
+    def test_external_restatement_with_bound_inline_citation_passes(self) -> None:
+        self.make_external_restatement_audit(with_statement_citation=True)
+
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+
+        self.assertEqual([], errors)
+
+    def test_external_restatement_citation_must_bind_to_designated_use(
+        self,
+    ) -> None:
+        ledger_path = self.make_external_restatement_audit(
+            with_statement_citation=True
+        )
+        ledger = read_json(ledger_path)
+        ledger["review"]["citation_dispositions"] = [
+            {
+                "key": "smith",
+                "disposition": "bibliographic_only",
+                "evidence": (
+                    "The citation was deliberately misclassified for this "
+                    "negative control."
+                ),
+            }
+        ]
+        write_json(ledger_path, ledger)
+        registry_path = (
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        registry = read_json(registry_path)
+        registry["external_results"][0]["uses"][0]["citation_keys"] = []
+        write_json(registry_path, registry)
+
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+
+        self.assertIn(
+            "lem:main: external_restatement citation smith must map to its "
+            "designated external dependency use D001",
+            errors,
+        )
+
+    def test_external_restatement_requires_an_explicit_override(self) -> None:
+        self.make_external_restatement_audit()
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["audit_scope"]["inventory_overrides"] = []
+        write_json(manifest_path, manifest)
+
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+
+        self.assertTrue(
+            any(
+                "external_restatement ledger coverage requires an explicit "
+                "reviewed inventory override" in error
+                for error in errors
+            ),
+            errors,
+        )
+
+    def test_external_restatement_override_is_source_and_use_bound(self) -> None:
+        self.make_external_restatement_audit()
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        original = read_json(manifest_path)
+        cases = {
+            "statement_sha256": (
+                "0" * 64,
+                "statement_sha256 is stale",
+            ),
+            "external_dependency_use_id": (
+                "D002",
+                "ledger external_dependency_use_id does not match",
+            ),
+        }
+        for field, (value, expected) in cases.items():
+            with self.subTest(field=field):
+                manifest = json.loads(json.dumps(original))
+                manifest["audit_scope"]["inventory_overrides"][0][field] = value
+                write_json(manifest_path, manifest)
+
+                errors, _ = proofcheck.check_audit_finalization(self.audit)
+
+                self.assertTrue(
+                    any(expected in error for error in errors),
+                    errors,
+                )
+
+    def test_external_restatement_must_support_each_conclusion(self) -> None:
+        ledger_path = self.make_external_restatement_audit()
+        ledger = read_json(ledger_path)
+        ledger["review"]["conclusion_results"][0][
+            "dependency_use_ids"
+        ] = []
+        write_json(ledger_path, ledger)
+
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+
+        self.assertTrue(
+            any(
+                "external_restatement dependency is absent from the "
+                "conclusion support closure" in error
+                for error in errors
+            ),
+            errors,
+        )
+
+    def test_external_restatement_requires_its_missing_proof_warning_review(
+        self,
+    ) -> None:
+        self.make_external_restatement_audit()
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        review = next(
+            row
+            for row in manifest["parser_warning_reviews"]
+            if row["disposition"] == "external_restatement"
+        )
+        review["disposition"] = "confirmed_non_load_bearing"
+        review["affected_units"] = []
+        write_json(manifest_path, manifest)
+
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+
+        self.assertTrue(
+            any(
+                "External restatement overrides lack matching missing-proof "
+                "warning reviews" in error
+                for error in errors
+            ),
+            errors,
+        )
+
     def test_external_result_requires_substantive_source_evidence(self) -> None:
         ledger_path = self.make_complete_audit()
         self.install_external_dependency(ledger_path)
@@ -9658,11 +10271,90 @@ class FinalizationTests(unittest.TestCase):
         errors, _ = proofcheck.check_audit_finalization(self.audit)
 
         self.assertTrue(
-            any("affected_result" in error for error in errors),
+            any(
+                "affected_results omits linked ledger lem:main" in error
+                for error in errors
+            ),
             errors,
         )
 
-    def test_issue_affected_results_follow_reverse_dependency_closure(self) -> None:
+    def test_downstream_ledger_can_reuse_one_canonical_issue_id(self) -> None:
+        ledger_path = self.make_complete_audit()
+        prior_path, _ = self.install_internal_dependency(ledger_path)
+        issue = {
+            "id": "I-001",
+            "severity": "S3",
+            "confidence": "high",
+            "status": "open",
+            "finding_status": "inconclusive",
+            "scope": "unit",
+            "load_bearing": True,
+            "affected_result": "lem:prior",
+            "affected_results": ["lem:main", "lem:prior"],
+            "summary": (
+                "One canonical prerequisite issue is propagated to its dependent."
+            ),
+        }
+        self.install_canonical_issue(issue, ledger_path=prior_path)
+
+        prior = read_json(prior_path)
+        prior["steps"][0]["status"] = "conditionally_verified"
+        prior["review"]["unit_status"] = "conditionally_verified"
+        prior["review"]["argument_status"] = "conditional"
+        prior_result = prior["review"]["conclusion_results"][0]
+        prior_result["argument_status"] = "conditional"
+        write_json(prior_path, prior)
+
+        ledger = read_json(ledger_path)
+        downstream_step = next(
+            step for step in ledger["steps"] if step["id"] == "S003"
+        )
+        downstream_step["status"] = "conditionally_verified"
+        downstream_step["issue_ids"] = ["I-001"]
+        downstream_step["dependencies"][0]["status"] = "conditional"
+        ledger["review"]["unit_status"] = "conditionally_verified"
+        ledger["review"]["dependency_closure"] = "conditionally_verified"
+        ledger["review"]["direct_dependencies"][0]["status"] = "conditional"
+        downstream_result = ledger["review"]["conclusion_results"][0]
+        downstream_result["dependency_closure"] = "conditionally_verified"
+        downstream_result["issue_ids"] = ["I-001"]
+        write_json(ledger_path, ledger)
+
+        registry_path = (
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        registry = read_json(registry_path)
+        registry["internal_uses"][0]["status"] = "conditional"
+        registry["internal_uses"][0]["issue_ids"] = ["I-001"]
+        write_json(registry_path, registry)
+
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+
+        self.assertFalse(
+            any(
+                "downstream ledger issue link lem:main:S003 lacks a matching "
+                "canonical dependency edge" in error
+                for error in errors
+            ),
+            errors,
+        )
+
+        ledger = read_json(ledger_path)
+        ledger["steps"][0]["issue_ids"] = ["I-001"]
+        write_json(ledger_path, ledger)
+
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+
+        self.assertIn(
+            "I-001: downstream ledger issue link lem:main:S001 lacks a "
+            "matching canonical dependency edge",
+            errors,
+        )
+
+    def test_issue_does_not_propagate_through_an_unaffected_conclusion(self) -> None:
         ledger_path = self.make_complete_audit()
         self.install_internal_dependency(ledger_path)
         issue = {
@@ -9685,8 +10377,51 @@ class FinalizationTests(unittest.TestCase):
 
         errors, _ = proofcheck.check_audit_finalization(self.audit)
 
+        self.assertFalse(
+            any("affected_results" in error for error in errors),
+            errors,
+        )
+
+    def test_issue_propagates_through_an_affected_conclusion_edge(self) -> None:
+        ledger_path = self.make_complete_audit()
+        self.install_internal_dependency(ledger_path)
+        _, summaries, _ = proofcheck.audit_ledgers(self.audit, True)
+        issue = self.make_global_issue(
+            finding_status="inconclusive",
+            load_bearing=True,
+            affected_result="lem:prior",
+            affected_results=["lem:prior"],
+            severity="S3",
+        )
+        reverse_graph = {
+            "lem:main": set(),
+            "lem:prior": {"lem:main"},
+        }
+        dependency_edges = [
+            {
+                "dependent_unit": "lem:main",
+                "dependency_id": "lem:prior",
+                "dependency_conclusion_id": "C001",
+                "issue_ids": ["I-001"],
+            }
+        ]
+
+        errors, _ = proofcheck.validate_issues(
+            [issue],
+            set(),
+            True,
+            evidence_base=self.audit,
+            in_scope=["lem:main", "lem:prior"],
+            reverse_graph=reverse_graph,
+            ledger_summaries=summaries,
+            dependency_edges=dependency_edges,
+        )
+
         self.assertTrue(
-            any("affected_results" in error and "lem:main" in error for error in errors),
+            any(
+                "affected_results" in error and "lem:main" in error
+                for error in errors
+            ),
             errors,
         )
 
@@ -9743,7 +10478,7 @@ class FinalizationTests(unittest.TestCase):
             ledger_summaries=summaries,
         )
         self.assertTrue(
-            any("reverse dependency closure" in error for error in errors),
+            any("conclusion-specific dependency closure" in error for error in errors),
             errors,
         )
 
@@ -10113,6 +10848,10 @@ class FinalizationTests(unittest.TestCase):
             self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
         ).read_text(encoding="utf-8")
         self.assertIn(proofcheck.REPORT_SCAFFOLD_MARKER, report)
+        self.assertEqual(
+            proofcheck.WORKING_REPORT_TITLE,
+            report.splitlines()[0],
+        )
         errors, _ = proofcheck.check_audit_finalization(self.audit)
 
         self.assertFalse(
@@ -10133,6 +10872,60 @@ class FinalizationTests(unittest.TestCase):
 
         self.assertIn(
             "Final report still contains the NONFINAL scaffold marker", errors
+        )
+
+    def test_final_report_ready_requires_the_exact_final_title(self) -> None:
+        self.make_complete_audit()
+        report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
+        report = report_path.read_text(encoding="utf-8").replace(
+            proofcheck.FINAL_REPORT_TITLE,
+            proofcheck.WORKING_REPORT_TITLE,
+            1,
+        )
+        report_path.write_text(report, encoding="utf-8")
+
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+
+        self.assertIn(
+            "Final report must use the final title as its sole H1: "
+            f"{proofcheck.FINAL_REPORT_TITLE}",
+            errors,
+        )
+
+    def test_final_report_rejects_an_additional_h1(self) -> None:
+        self.make_complete_audit()
+        report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
+        report = report_path.read_text(encoding="utf-8")
+        report_path.write_text(
+            "# Misleading Final Heading\n\n" + report,
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+
+        self.assertIn(
+            "Final report must use the final title as its sole H1: "
+            f"{proofcheck.FINAL_REPORT_TITLE}",
+            errors,
+        )
+
+    def test_final_report_rejects_an_additional_setext_h1(self) -> None:
+        self.make_complete_audit()
+        report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
+        report = report_path.read_text(encoding="utf-8")
+        report_path.write_text(
+            "Misleading Final Heading\n=========================\n\n" + report,
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+
+        self.assertIn(
+            "Final report must use the final title as its sole H1: "
+            f"{proofcheck.FINAL_REPORT_TITLE}",
+            errors,
         )
 
     def test_issue_report_views_order_by_severity_then_issue_id(self) -> None:

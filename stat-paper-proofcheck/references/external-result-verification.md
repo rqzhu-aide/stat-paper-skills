@@ -1,7 +1,8 @@
 # External Result Verification
 
-Use this workflow whenever a cited theorem, lemma, inequality, or technical fact
-is load-bearing.
+Use this workflow whenever an external theorem, lemma, inequality, or technical
+fact is load-bearing, whether or not the manuscript supplies an inline citation
+command.
 
 Store each external result once in
 `audit/03_dependencies/DEPENDENCY_REGISTRY.json`. Use
@@ -76,6 +77,20 @@ Require `use_id` to equal the invoking ledger's `Dxxx` result use and
 `step_ids`, `needed_form`, `compatibility_check`, status, and issues to match the
 invoking ledgers exactly. Require `citation_keys` to equal the load-bearing
 citation dispositions whose `dependency_use_id` resolves to this use.
+
+An exact named result may be load-bearing even when its statement has no
+citation command. In that case, verify its source contract and application in
+the same way and record `citation_keys: []`. If citation commands are present,
+every load-bearing statement citation must map to the designated use and the
+key set must match exactly. Missing or imprecise attribution alone is a
+bibliographic or `presentation_only` issue. It is not a mathematical proof gap
+when the exact external contract and its applicability have been verified.
+
+For a proof-required manuscript result that only restates an external result,
+use the explicit `external_restatement` workflow in
+[proof-system-audit.md](proof-system-audit.md). The manuscript statement is
+the object being checked, not a premise for itself. Its conclusion is supported
+by the one designated external `Dxxx` use.
 
 For every external prerequisite, add one `prerequisite_map` row with:
 

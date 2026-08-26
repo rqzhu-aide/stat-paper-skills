@@ -183,6 +183,7 @@ challenges, and reconcile every required report deliverable.
 - [ ] Every internal use binds exact invoking steps, needed form, dependency conclusion, and conclusion contract SHA256
 - [ ] Every internal and external use has all eight compatibility aspects and a derived status
 - [ ] Every external use has exact citation keys, prerequisite maps, and current evidence spans
+- [ ] Every `external_restatement` has one source-bound override, exact statement-only ledger coverage, one designated external use, and a matching missing-proof warning review
 - [ ] Broken references and duplicate labels have exact reviewed records
 - [ ] Dependency cycles, stale or unused records, and status mismatches are absent
 - [ ] Method-interface trigger and registry reviewed
@@ -198,6 +199,7 @@ challenges, and reconcile every required report deliverable.
 - [ ] Every declared user-facing report exactly reconciles all canonical scalar metadata and semantic sections, including Computational evidence, using active Markdown without raw HTML
 - [ ] The final-report Declared external deliverables scalar and table exactly reconcile with manifest report_deliverables
 - [ ] Canonical issue finding status and affected-result propagation agree
+- [ ] Each downstream consequence reuses its root issue ID only in canonical propagation records and does not copy it into an otherwise valid proof step
 - [ ] Every resolved issue was archived before repair and has a hash-current `historical_origin` bound to a passed prior finalization
 - [ ] Every resolution archive has byte-exact manifest, issue-log, final-report, inventory, dependency-registry, method-interface-registry, and required-ledger members under `prior_artifacts`, and `prior_sources` exactly matches the prior source snapshot
 - [ ] Every archived ledger, method-interface, or global-check failure projection is recomputed from its sealed canonical origin record
@@ -207,7 +209,8 @@ challenges, and reconcile every required report deliverable.
 - [ ] `proofcheck.py status` preflight reports `finalizable_now: true` and no current gate errors
 - [ ] Final report exactly reconciles canonical scope, unit, dependency, external, issue, and protocol fields
 - [ ] Explicit unchecked scope
+- [ ] `completion.final_report_ready` is true before changing the report title to `Final Proof-Check Report` and removing the nonfinal notice
 - [ ] `proofcheck.py finalize` passes
-- [ ] `audit/06_reports` contains no undeclared Markdown report, and the canonical report no longer contains the `NONFINAL SCAFFOLD` notice
+- [ ] `audit/06_reports` contains no undeclared Markdown report, and the canonical report contains neither the `NONFINAL SCAFFOLD` notice nor the nonfinal working title
 - [ ] `proofcheck.py status --require-finalized` returns zero with `audit_complete: true` and `delivery_status: FINAL`
 - [ ] `proofcheck.py delivery-check` returns zero with `delivery_status: FINAL` and `usable_finalization: true`

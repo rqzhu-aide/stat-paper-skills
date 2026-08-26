@@ -18,6 +18,35 @@ Source-lock and rescan any changed span, reject overlaps, and reconcile its
 exact reference occurrences, dependencies, and citations. Do not carry parser
 evidence over from the old span.
 
+A proof-required result may use external-restatement verification only through
+one manifest `audit_scope.inventory_overrides` row with
+`kind: external_restatement`, exact `unit_id`,
+`external_dependency_use_id`, `statement_sha256` equal to the hash of the exact
+reviewed formal statement span, substantive `reason`, and substantive
+`evidence`. Keep `proof_required: true`, keep the unit in scope,
+and require its reviewed proof to be null. The ledger source must use
+`coverage_mode: external_restatement`, repeat the same
+`external_dependency_use_id`, and cover exactly the locked statement span,
+with no local proof lines. The designated `Dxxx` use must be one external
+direct dependency of that unit and have exactly one matching registry use.
+Every established or conditional conclusion must include it in its support
+closure. The statement
+does not serve as its own premise; the verified external use supplies the
+conclusion. An absent override retains the ordinary local-proof rule.
+
+Statement citation commands, when present, must all be exposed by statement
+evidence and disposed to that designated external use. The registry
+`citation_keys` must equal those keys exactly. When the statement has no
+citation command, the exact set is empty. The source-locked override plus the
+verified external contract and applicability supplies the audit evidence; an
+empty citation-key list is not itself a proof gap.
+
+The missing-associated-proof parser warning remains visible. Give its matching
+`parser_warning_reviews` row disposition `external_restatement` only when it
+names the same explicitly overridden unit, `affected_units` contains exactly
+that unit, and the row provides substantive source-review evidence. No other
+warning may use this disposition.
+
 Treat the analyzer's proof region as canonical. Every automatic or reviewed
 proof span must equal either a complete proof environment or one uniquely
 targeted named-heading region with a recognized boundary. A replacement uses
@@ -149,6 +178,15 @@ open or deferred load-bearing issue through the dependent closure. A downstream
 result cannot remain verified after a load-bearing prerequisite becomes
 conditional, gap, incorrect, unclear, or unchecked.
 
+Perform this propagation for the exact affected `Cxxx` conclusion and its
+transitive dependents. Reuse the root issue ID in the canonical dependency and
+global records that represent the same finding; do not create a second issue
+for a downstream consequence. If the dependency makes its invoking downstream
+step conditional or failed, reuse the root ID only on that exact step recorded
+by the canonical `Dxxx` edge. Do not attach it to an unrelated or otherwise
+valid downstream step. Record the full effect in `affected_results`, conclusion
+status, and dependency closure.
+
 Reconcile the parser's proof-level reference occurrences and citation lists
 against the registry and each ledger. Every reference occurrence has one exact
 disposition keyed by its parser `occurrence_id`, target, and command.
@@ -242,7 +280,8 @@ as single-pass and do not claim independent confirmation.
 A full audit is complete only when:
 
 - every proof-required inventory unit is in scope and has one current,
-  source-locked ledger;
+  source-locked ledger, using a complete local proof or the exact
+  `external_restatement` contract above;
 - every physical line is covered exactly once;
 - the closure registry is reviewed against the exact source snapshot, inventory
   hash, and in-scope unit set;

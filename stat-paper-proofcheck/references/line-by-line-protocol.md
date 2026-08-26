@@ -34,6 +34,14 @@ boundary and target evidence in the override records. Rescan the complete
 replacement span and reconcile all references, dependencies, citations, and
 warnings. Do not trim or widen a proof span merely to simplify the ledger.
 
+For an explicit `external_restatement` inventory override, there is no local
+proof region. Lock exactly the formal statement, set ledger source
+`coverage_mode: external_restatement`, and repeat the override's
+`external_dependency_use_id`. Cover only that statement span. The one
+designated external `Dxxx` use must support every established or conditional
+conclusion through the ordinary move and premise links. Never use the
+manuscript statement as its own premise.
+
 ## 2. Normalize the proof obligation
 
 Before judging the argument, rewrite the target without strengthening or weakening it. Record:
@@ -343,6 +351,12 @@ forwarding stub, and exclude structural navigation. Do not replace distinct
 locations with a range.
 
 ## 9. Enforce the coverage gate
+
+Without `--final`, use `ledger-check` as a work-in-progress validator. Draft
+mode permits incomplete checking and `not_checked` outcomes, but it does not
+waive source-lock integrity, closure of populated links, or the exactly-one-move
+rule for inferential steps. Fix those errors as soon as they appear. A clean
+draft result says only that the current partial record is coherent.
 
 Run `ledger-check --final`. Resolve every uncovered or multiply covered source
 line, stale or unrepresented source unit, missing or invalid source-unit
