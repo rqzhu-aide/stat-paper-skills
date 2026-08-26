@@ -10,6 +10,12 @@ Store each external result once in
 manuscript use separately. Ledger rows and direct-dependency records refer to
 the external result's unique ID and to the exact `Dxxx` use ID.
 
+Audit granularity and model-call granularity are separate here as well. Inspect
+one unique current external theorem contract once, and assess all of its
+current manuscript uses in one compact work packet when their complete
+evidence fits. This saves repeated source reading but never merges per-use
+applicability judgments.
+
 ## 1. Identify the exact result and every use
 
 Record the exact fact needed at each manuscript line, the cited source, theorem
@@ -17,6 +23,11 @@ or equation number, edition or version, and whether the paper uses the result
 directly or through a reformulation. Do not merge several uses merely because
 they cite the same source. Different uses may require different prerequisites
 or conclusion forms.
+
+The uses may share one verification call, but the output must retain one exact
+`Dxxx` row, prerequisite map, compatibility matrix, invoking-step set, status,
+and issue set for each use. If the complete source contract or any use context
+does not fit, split at use boundaries rather than omitting evidence.
 
 Do not search only by topic. Retrieve the actual publication or authoritative
 source containing the cited result.
@@ -40,6 +51,12 @@ source evidence. Hash the actual PDF, text, or authoritative downloaded
 artifact, not a search-result page. Metadata verifies identity, not theorem
 content. If the required full source is unavailable, use `status: unchecked`
 and record a substantive `reason`.
+
+Reuse the locked source inspection only while its evidence file hash, source
+identity, version, theorem locator, and normalized theorem contract remain
+current. A changed source or contract requires renewed inspection. Similar
+wording, a stable citation key, or an unchanged result ID does not authorize
+cross-revision reuse.
 
 ## 3. Record the external result contract
 
@@ -104,6 +121,11 @@ Do not use an empty map. If the theorem has no substantive prerequisites,
 include an explicit domain and no-prerequisites row. A `satisfied` row requires
 current evidence spans. Link every `not_satisfied`, `partial`, or `unclear` row
 to the issues required by its effect.
+
+Within a batched check, share only the locked external contract and common
+definitions. Test every manuscript use against its own source spans, needed
+form, probability model, hypotheses, transformation, and downstream role.
+Record a separate failure even when another use of the same theorem passes.
 
 Also complete `compatibility_checks` with exactly one row for each of:
 

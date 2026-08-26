@@ -40,6 +40,11 @@
       "repaired",
       "replaced",
       "removed"
+    ],
+    "candidate_dependency_disposition": [
+      "internal_result",
+      "navigation",
+      "non_load_bearing"
     ]
   },
   "ledger_example": {
@@ -233,6 +238,7 @@
       "inherited_assumptions": [],
       "direct_dependencies": [],
       "source_reference_dispositions": [],
+      "candidate_dependency_dispositions": [],
       "citation_dispositions": [],
       "use_sites": [
         "paper.tex:210"
@@ -255,8 +261,18 @@
       "reconciled_verdict": "incorrect",
       "source_snapshot_sha256": "copy-from-AUDIT_MANIFEST.json",
       "challenged_ledger_sha256": "sha256-of-the-challenged-ledger",
+      "challenge_context_sha256": "copy-from-challenge-packet-context-binding-sha256",
       "artifact": "audit/05_adversarial/lem-target-challenge.md",
       "challenge_artifact_sha256": "sha256-of-the-challenge-artifact",
+      "issue_assessments": [
+        {
+          "issue_id": "I-001",
+          "target_contract_sha256": "copy-from-challenge-packet-issue-trigger",
+          "assessment": "confirmed",
+          "target_assessment": "The challenger independently reconstructed the growing-grid failure at the exact source-locked target.",
+          "downstream_assessment": "The failed conclusion remains load-bearing for the recorded downstream result."
+        }
+      ],
       "generated_utc": "2026-08-09T00:00:00+00:00",
       "disagreements": [],
       "resolution": "The challenger reproduced the growing-grid counterexample and agreed that the move is invalid."
@@ -710,8 +726,18 @@
     "reconciled_verdict": "incorrect",
     "source_snapshot_sha256": "copy-from-AUDIT_MANIFEST.json",
     "challenged_ledger_sha256": "sha256-of-thm-main-ledger",
+    "challenge_context_sha256": "copy-from-challenge-packet-context-binding-sha256",
     "artifact": "audit/05_adversarial/thm-main-I-001-challenge.md",
     "challenge_artifact_sha256": "sha256-of-thm-main-challenge-artifact",
+    "issue_assessments": [
+      {
+        "issue_id": "I-001",
+        "target_contract_sha256": "copy-from-challenge-packet-issue-trigger",
+        "assessment": "confirmed",
+        "target_assessment": "The challenger independently confirmed the source-locked dependency failure targeted by I-001.",
+        "downstream_assessment": "The D001 use is load-bearing for thm:main and preserves the recorded downstream invalidation."
+      }
+    ],
     "generated_utc": "2026-08-09T00:00:00+00:00",
     "disagreements": [],
     "resolution": "The challenger confirmed that D001 is load-bearing and the recorded downstream proof remains invalid until I-001 is fully rechecked and resolved; this does not by itself refute the downstream conclusion."
@@ -927,8 +953,18 @@
         "reconciled_verdict": "verified",
         "source_snapshot_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
         "challenged_ledger_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+        "challenge_context_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
         "artifact": "audit/05_adversarial/lem-target-post-repair-challenge.md",
         "challenge_artifact_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+        "issue_assessments": [
+          {
+            "issue_id": "I-001",
+            "target_contract_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "assessment": "not_confirmed",
+            "target_assessment": "The fresh challenger found that the repaired root move now follows from the strengthened current contract.",
+            "downstream_assessment": "The repaired conclusion is available to the current downstream dependency use."
+          }
+        ],
         "generated_utc": "2026-08-09T00:00:00+00:00",
         "disagreements": [],
         "resolution": "The fresh challenger verified the repaired root move under the current contract."
@@ -945,8 +981,18 @@
         "reconciled_verdict": "verified",
         "source_snapshot_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
         "challenged_ledger_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+        "challenge_context_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "artifact": "audit/05_adversarial/thm-main-post-repair-challenge.md",
         "challenge_artifact_sha256": "8888888888888888888888888888888888888888888888888888888888888888",
+        "issue_assessments": [
+          {
+            "issue_id": "I-001",
+            "target_contract_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "assessment": "not_confirmed",
+            "target_assessment": "The fresh challenger found no remaining failure in the repaired dependency contract used by thm:main.",
+            "downstream_assessment": "The current D001 use supports the downstream theorem under its recorded conditions."
+          }
+        ],
         "generated_utc": "2026-08-09T00:00:00+00:00",
         "disagreements": [],
         "resolution": "The fresh challenger verified current D001 and the downstream support closure."

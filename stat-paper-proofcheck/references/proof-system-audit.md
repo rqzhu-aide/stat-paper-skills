@@ -4,6 +4,20 @@
 
 Index every formal statement, definition, assumption, named event, important equation, proof range, label, and external theorem citation. Record exact locations and parser limitations. Snapshot every file in the static LaTeX include closure. Reconcile the generated inventory against custom theorem environments, macros, generated content, and the rendered document before marking it reviewed.
 
+Keep reviewed depth, targets, scope, critical units, exclusions, parser limits,
+and the few genuinely judgmental planning notes in canonical JSON. Do not
+rewrite those facts into a separate authored plan. Generate the concise plan,
+execution order, and dependency view after relevant canonical state changes:
+
+```bash
+python "<skill-root>/scripts/proofcheck.py" sync-views --root <audit-root>
+```
+
+`CHECK_PLAN.md`, `EXECUTION_ORDER.md`, and
+`audit/03_dependencies/dependency_graph.md` are reviewed projections, not
+alternate evidence sources. A blank scaffold or stale projection cannot
+support completion.
+
 Review proof associations in the parser's precedence order: explicit named
 proof headers, strict navigation-only forwarding proofs, then physical
 adjacency. Treat a forwarding association marked `review_required` as
@@ -98,6 +112,13 @@ Use ledger `direct_dependencies` plus
 canonical record. Use `closure_contract_version: 3`. Treat the Markdown table
 and graph as reviewed views, not alternate records.
 
+Let deterministic tooling build repeated mirror fields, graph edges,
+topological layers, and Markdown rows from canonical IDs and hashes. Human or
+model review still supplies each needed form, dependency conclusion choice,
+compatibility judgment and evidence, use status, and issue link. Generation
+must fail or retain an unchecked state when any of those semantic inputs is
+absent.
+
 Set the registry `review` object only after reviewing the complete current
 assembly. Record:
 
@@ -170,6 +191,13 @@ all internal and external use rows one-to-one with ledger direct dependencies,
 invoking steps, citation dispositions, needed forms, statuses, and issues.
 Reject unused or stale registry rows.
 
+Inspect one current external theorem contract once and batch its current uses
+in the same verification packet when complete evidence for all uses fits. The
+output still contains a separate prerequisite map, compatibility matrix,
+needed form, invoking-step set, status, and issue set for each `Dxxx` use.
+Source-evidence or contract drift invalidates the shared inspection and every
+affected use; do not transfer the old applicability judgments across revisions.
+
 Build the internal graph from the reviewed use rows. Draw arrows from each
 prerequisite to its dependent result. Reject unknown IDs, namespace collisions,
 self-dependencies, duplicate uses, cycles, stale conclusion contract hashes,
@@ -198,6 +226,17 @@ specific evidence and links. Do not allow omission from a ledger or registry
 to erase a source-declared dependency, and do not create a self-edge from a
 header or navigation occurrence.
 
+Also reconcile every parser candidate internal dependency through its exact
+packet provenance paths. Each `candidate_dependency_paths` row has one stable
+`CPxxx` ID and preserves the statement-only or transitive label-reference
+chain that made the foreign result a candidate. Cover every candidate ID and
+all of its path IDs exactly once in
+`review.candidate_dependency_dispositions`. A load-bearing candidate must map
+to its exact internal `Dxxx` registry use. A candidate without a registry edge
+may be only `navigation` or `non_load_bearing`, with specific evidence that is
+valid for every named path. Reject omitted, extra, or stale candidate paths and
+ledger-only internal dependencies.
+
 ## 3. Maintain cross-cutting ledgers
 
 Maintain only ledgers that the paper needs:
@@ -214,6 +253,13 @@ Update ledgers during local checking. Do not build exhaustive tables that never 
 ## 4. Check the critical path first
 
 Trace the main theorem backward to base assumptions. Prioritize the final assembly proof, highly reused lemmas, and results carrying probability, rates, optimization, or external-theorem dependence.
+
+Generate the current dependency layers and execution order with `sync-views`.
+Use one complete primary packet per ordinary unit. Short adjacent units in the
+same ready layer may share one model call only when each unit's full statement,
+proof, assumptions, and dependency contracts fit and the output keeps their
+records separate. A full audit still checks every scoped unit; prioritization
+and batching do not sample or omit routine units.
 
 Compute the effective critical set as the manifest `critical_units` union
 every in-scope unit in `affected_results` for an open, deferred, or
@@ -266,14 +312,55 @@ Use [domain-risk-checks.md](domain-risk-checks.md) only for domains actually pre
 
 For every effective-critical unit, run a fresh-context challenger without
 exposing the primary verdict or proposed repair. Make it issue-aware by
-requiring `covered_issue_ids` to equal the exact triggering open,
-deferred, or resolved load-bearing S0 or S1 issue set for that unit. A
-manifest-only critical unit has an empty triggering set. Bind the challenge to
-the current source snapshot,
-canonical ledger content excluding `independent_check`, and challenger artifact
-with the required hashes and generation time. Preserve the artifact and
-reconcile disagreements. If a second pass is unavailable, disclose the audit
-as single-pass and do not claim independent confirmation.
+requiring `covered_issue_ids` to equal the exact triggering open, deferred, or
+resolved load-bearing S0 or S1 issue set for that unit. A manifest-only
+critical unit has an empty triggering set. Bind the challenge to the current
+source snapshot, canonical ledger content excluding `independent_check`, exact
+challenge packet context, and challenger artifact with the required hashes and
+generation time. Preserve the artifact and reconcile disagreements. If a
+second pass is unavailable, disclose the audit as single-pass and do not claim
+independent confirmation.
+
+Use `packet --mode challenge` to project only its schema and mode, unit and
+source-snapshot identity, locked source, normalized obligation, inventory row,
+exact dependency contracts, neutral issue triggers, and risk aspects. Each
+trigger contains `id`, `severity`, a structured `target_contract`, and its
+`target_contract_sha256`. Exclude the primary review, steps, verdicts, finding
+summary, repair proposals, reports, unrelated ledgers, and prior conversation.
+If a historical required challenge is no longer in the current affected set
+because its downstream path was retired, reconstruct the sealed prior
+dependency registry. Include only neutral retired edge identities that cut a
+prior root-to-challenged-unit path, the exact neutral current structural route
+when present, and current retirement source anchors. Record explicitly when no
+current structural route exists. Do not require physical deletion from the
+registry: retirement means absence from the current issue-specific closure.
+Do not expose archived statuses, compatibility verdicts, or issue backlinks.
+Project source-locked code, configuration, and other valid external evidence
+as self-contained lines and hashes without a host-specific path.
+One challenger pass should assess all triggering issues for that unit. The
+challenger reports a separate verdict and exact source-anchored disagreements,
+not a duplicate full atomic ledger. Reconciliation occurs only after the
+blinded output is fixed.
+
+Store the challenge packet `context_binding_sha256` as
+`independent_check.challenge_context_sha256`. For every covered issue, add one
+`issue_assessments` row containing exactly its issue ID, packet target-contract
+hash, `assessment` in `confirmed`, `not_confirmed`, or `unclear`, and
+substantive `target_assessment` and `downstream_assessment`. The assessment ID
+set must equal `covered_issue_ids`; both sets are empty for a manifest-only
+critical unit. Finalization reconstructs the challenge packet and rejects a
+stale context or target hash.
+
+After the blinded artifact and ledger assessment are fixed, insert the exact
+machine-readable artifact binding and update its hash with:
+
+```bash
+python "<skill-root>/scripts/proofcheck.py" bind-challenge --root proofcheck-audit --unit-id <unit-id>
+```
+
+The command preserves the Markdown narrative, replaces any prior binding
+block, verifies current packet semantics, and writes the artifact and ledger
+as one transaction. Rerun it whenever the artifact or assessment changes.
 
 ## 7. Apply completion gates
 
@@ -307,5 +394,7 @@ A full audit is complete only when:
   exactly reconcile canonical unit, dependency, issue, scope, protocol, and
   overall-verdict fields;
 - checked and unchecked scope is explicit.
+- every generated plan, execution-order, and dependency Markdown view is a
+  current deterministic projection of the canonical records.
 
 Run `proofcheck.py finalize --root <audit-root>` after completing the final report and progress state. A passing result means the declared non-formal audit records passed the mechanical closure checks. It does not certify kernel-checked mathematical truth.

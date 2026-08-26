@@ -8,6 +8,7 @@ import io
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -307,6 +308,13 @@ class FinalizationTests(unittest.TestCase):
             "challenger_verdict": "verified",
             "reconciled_verdict": "verified",
             "artifact": "audit/05_adversarial/lem-main-challenge.md",
+            "covered_issue_ids": [],
+            "source_snapshot_sha256": "0" * 64,
+            "challenged_ledger_sha256": "0" * 64,
+            "challenge_context_sha256": "0" * 64,
+            "challenge_artifact_sha256": "0" * 64,
+            "issue_assessments": [],
+            "generated_utc": "2026-08-09T00:00:00+00:00",
             "disagreements": [],
             "resolution": "",
         }
@@ -579,9 +587,9 @@ class FinalizationTests(unittest.TestCase):
             "## Issue index\n\nNo issues.\n\n"
             "## Detailed findings\n\nNo issues.\n\n"
             "## Independent critical-path challenges\n\n"
-            "| Result | Challenge status | Independence | Covered issue IDs | Challenger verdict | Reconciled verdict | Disagreements | Artifact | Source snapshot SHA256 | Challenged ledger SHA256 | Artifact SHA256 | Generated UTC | Resolution |\n"
-            "|---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
-            f"| lem:main | agreed | fresh_context_same_model | none | verified | verified | [] | {challenge_record['artifact']} | {challenge_record['source_snapshot_sha256']} | {challenge_record['challenged_ledger_sha256']} | {challenge_record['challenge_artifact_sha256']} | {challenge_record['generated_utc']} | none |\n\n"
+            "| Result | Challenge status | Independence | Covered issue IDs | Issue assessments | Challenger verdict | Reconciled verdict | Disagreements | Artifact | Source snapshot SHA256 | Challenged ledger SHA256 | Challenge context SHA256 | Artifact SHA256 | Generated UTC | Resolution |\n"
+            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
+            f"| lem:main | agreed | fresh_context_same_model | none | [] | verified | verified | [] | {challenge_record['artifact']} | {challenge_record['source_snapshot_sha256']} | {challenge_record['challenged_ledger_sha256']} | {challenge_record['challenge_context_sha256']} | {challenge_record['challenge_artifact_sha256']} | {challenge_record['generated_utc']} | none |\n\n"
             "## Method-interface findings\n\nNone.\n\n"
             "## Computational evidence\n\nNone.\n\n"
             "## Unchecked scope\n\nNone.\n\n"
@@ -1318,6 +1326,7 @@ class FinalizationTests(unittest.TestCase):
         report = report.replace(empty_closure, external_closure)
         for field in (
             "challenged_ledger_sha256",
+            "challenge_context_sha256",
             "challenge_artifact_sha256",
             "generated_utc",
         ):
@@ -1503,12 +1512,13 @@ class FinalizationTests(unittest.TestCase):
                         set([*result.get("issue_ids", []), issue["id"]])
                     )
             write_json(ledger_path, ledger)
-            self.seal_schema5_challenge(ledger_path, read_json(ledger_path))
         issue_path = self.audit / "audit" / "06_reports" / "ISSUE_LOG.json"
         write_json(
             issue_path,
             {"schema_version": proofcheck.SCHEMA_VERSION, "issues": [issue]},
         )
+        if ledger_path is not None:
+            self.seal_schema5_challenge(ledger_path, read_json(ledger_path))
         summary_path = self.audit / "audit" / "06_reports" / "ISSUE_SUMMARY.md"
         summary_path.write_text(
             proofcheck.render_issue_summary([issue]),
@@ -1696,12 +1706,14 @@ class FinalizationTests(unittest.TestCase):
                 "Challenge status",
                 "Independence",
                 "Covered issue IDs",
+                "Issue assessments",
                 "Challenger verdict",
                 "Reconciled verdict",
                 "Disagreements",
                 "Artifact",
                 "Source snapshot SHA256",
                 "Challenged ledger SHA256",
+                "Challenge context SHA256",
                 "Artifact SHA256",
                 "Generated UTC",
                 "Resolution",
@@ -1714,6 +1726,13 @@ class FinalizationTests(unittest.TestCase):
                     proofcheck.canonical_id_field(
                         check.get("covered_issue_ids", [])
                     ),
+                    json.dumps(
+                        proofcheck.canonical_challenge_issue_assessments(
+                            check.get("issue_assessments", [])
+                        ),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
                     check["challenger_verdict"],
                     check["reconciled_verdict"],
                     json.dumps(
@@ -1724,6 +1743,7 @@ class FinalizationTests(unittest.TestCase):
                     check["artifact"],
                     check["source_snapshot_sha256"],
                     check["challenged_ledger_sha256"],
+                    check["challenge_context_sha256"],
                     check["challenge_artifact_sha256"],
                     check["generated_utc"],
                     check.get("resolution") or "none",
@@ -4921,7 +4941,9 @@ class FinalizationTests(unittest.TestCase):
             "covered_issue_ids",
             "source_snapshot_sha256",
             "challenged_ledger_sha256",
+            "challenge_context_sha256",
             "challenge_artifact_sha256",
+            "issue_assessments",
             "generated_utc",
         ):
             ledger["independent_check"].pop(field, None)
@@ -4945,7 +4967,9 @@ class FinalizationTests(unittest.TestCase):
             "covered_issue_ids",
             "source_snapshot_sha256",
             "challenged_ledger_sha256",
+            "challenge_context_sha256",
             "challenge_artifact_sha256",
+            "issue_assessments",
             "generated_utc",
         ):
             self.assertFalse(
@@ -4988,6 +5012,32 @@ class FinalizationTests(unittest.TestCase):
             final_errors,
         )
         self.assertIn("upgrade_required", stderr.getvalue())
+
+    def test_legacy_finalize_does_not_overwrite_authored_workflow_views(
+        self,
+    ) -> None:
+        self.make_complete_audit()
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["schema_version"] = proofcheck.LEGACY_SCHEMA_VERSION
+        manifest["protocol"]["artifact_schema_version"] = (
+            proofcheck.LEGACY_SCHEMA_VERSION
+        )
+        write_json(manifest_path, manifest)
+        plan_path = self.audit / "CHECK_PLAN.md"
+        authored = (
+            "# Legacy authored plan\n\n"
+            "This central claim and risk analysis must be preserved.\n"
+        )
+        plan_path.write_text(authored, encoding="utf-8", newline="\n")
+
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+            io.StringIO()
+        ):
+            status = proofcheck.cmd_finalize(argparse.Namespace(root=self.audit))
+
+        self.assertEqual(1, status)
+        self.assertEqual(authored, plan_path.read_text(encoding="utf-8"))
 
     def test_obligation_context_reference_requires_a_premise_link(self) -> None:
         ledger_path = self.make_complete_audit()
@@ -6839,6 +6889,15 @@ class FinalizationTests(unittest.TestCase):
         moved = self.base / "relocated portable final audit"
         self.audit.rename(moved)
         self.audit = moved
+        moved_ledger = next(self.audit.rglob("lem-main.ledger.json"))
+        moved_challenge = read_json(moved_ledger)["independent_check"]
+        moved_artifact = self.audit / moved_challenge["artifact"]
+        self.assertEqual(
+            [],
+            proofcheck.challenge_artifact_binding_errors(
+                moved_artifact, "lem:main", moved_challenge
+            ),
+        )
         freshness = proofcheck.check_finalization_freshness(self.audit)
 
         self.assertEqual("current", freshness["freshness"])
@@ -9557,9 +9616,17 @@ class FinalizationTests(unittest.TestCase):
     def test_independent_challenge_report_row_must_match_ledger(self) -> None:
         self.make_complete_audit()
         report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
-        report = report_path.read_text(encoding="utf-8").replace(
-            "| lem:main | agreed | fresh_context_same_model | none | verified | verified |",
-            "| lem:main | agreed | fresh_context_same_model | none | incorrect | verified |",
+        report = report_path.read_text(encoding="utf-8")
+        heading = "## Independent critical-path challenges"
+        rows = proofcheck.markdown_table_rows(
+            proofcheck.report_section(report, heading) or ""
+        )
+        changed_row = list(rows[2])
+        changed_row[5] = "incorrect"
+        report = proofcheck.replace_report_section_text(
+            report,
+            heading,
+            proofcheck.render_markdown_table(rows[0], [changed_row]),
         )
         report_path.write_text(report, encoding="utf-8", newline="\n")
 
@@ -9624,15 +9691,15 @@ class FinalizationTests(unittest.TestCase):
             )
             or ""
         )
-        self.assertEqual("[]", section_rows[2][6])
+        self.assertEqual("[]", section_rows[2][7])
         self.assertEqual(
             ledger["independent_check"]["artifact"],
-            section_rows[2][7],
+            section_rows[2][8],
         )
 
         for field, column, changed_value in (
-            ("disagreements", 6, "[\"fabricated disagreement\"]"),
-            ("artifact", 7, "audit/05_adversarial/wrong-artifact.md"),
+            ("disagreements", 7, "[\"fabricated disagreement\"]"),
+            ("artifact", 8, "audit/05_adversarial/wrong-artifact.md"),
         ):
             with self.subTest(field=field):
                 changed_row = list(section_rows[2])
@@ -9705,6 +9772,7 @@ class FinalizationTests(unittest.TestCase):
     def test_complete_internal_dependency_closure_passes(self) -> None:
         ledger_path = self.make_complete_audit()
         self.install_internal_dependency(ledger_path)
+        self.seal_schema5_challenge(ledger_path, read_json(ledger_path))
 
         errors, _ = proofcheck.check_audit_finalization(self.audit)
 
@@ -11043,10 +11111,16 @@ class FinalizationTests(unittest.TestCase):
         for failed_path in (report_path, summary_path):
             with self.subTest(failed_destination=failed_path.name):
                 events: list[tuple[str, Path]] = []
+                injected = False
 
                 def fail_commit(source: Path, destination: Path) -> None:
+                    nonlocal injected
                     destination_path = Path(destination).resolve()
-                    if destination_path == failed_path.resolve():
+                    if (
+                        destination_path == failed_path.resolve()
+                        and not injected
+                    ):
+                        injected = True
                         events.append(("failed", destination_path))
                         raise OSError(
                             f"simulated {failed_path.name} commit failure"
@@ -11080,14 +11154,46 @@ class FinalizationTests(unittest.TestCase):
                         [
                             ("replaced", report_path.resolve()),
                             ("failed", summary_path.resolve()),
+                            ("replaced", summary_path.resolve()),
                             ("replaced", report_path.resolve()),
                         ],
                         events,
                     )
                 else:
                     self.assertEqual(
-                        [("failed", report_path.resolve())], events
+                        [
+                            ("failed", report_path.resolve()),
+                            ("replaced", report_path.resolve()),
+                        ],
+                        events,
                     )
+
+    def test_transaction_rolls_back_when_replace_raises_after_rename(self) -> None:
+        first = self.base / "first.txt"
+        second = self.base / "second.txt"
+        first.write_text("old first\n", encoding="utf-8", newline="\n")
+        second.write_text("old second\n", encoding="utf-8", newline="\n")
+        original_replace = proofcheck.os.replace
+        injected = False
+
+        def replace_then_raise(source: Path, destination: Path) -> None:
+            nonlocal injected
+            original_replace(source, destination)
+            if not injected:
+                injected = True
+                raise OSError("simulated post-rename interruption")
+
+        with mock.patch.object(
+            proofcheck.os, "replace", side_effect=replace_then_raise
+        ):
+            with self.assertRaisesRegex(OSError, "post-rename interruption"):
+                proofcheck.transactional_write_texts(
+                    [(first, "new first\n"), (second, "new second\n")]
+                )
+
+        self.assertEqual(b"old first\n", first.read_bytes())
+        self.assertEqual(b"old second\n", second.read_bytes())
+        self.assertEqual([], list(self.base.glob(".*.proofcheck.tmp")))
 
     def test_issue_report_views_generate_exact_empty_sections_only(
         self,
@@ -11287,11 +11393,689 @@ class FinalizationTests(unittest.TestCase):
                     ),
                     errors,
                 )
-                report_path.write_text(
-                    baseline,
-                    encoding="utf-8",
-                    newline="\n",
+
+    def test_challenge_issue_target_is_exact_neutral_and_relevantly_bound(
+        self,
+    ) -> None:
+        ledger_path, issue, failure_evidence = (
+            self.make_ledger_move_defect_audit()
+        )
+        issue_path = self.audit / "audit" / "06_reports" / "ISSUE_LOG.json"
+        issue_record = read_json(issue_path)
+        issue_record["issues"][0]["severity"] = "S1"
+        write_json(issue_path, issue_record)
+        ledger = read_json(ledger_path)
+        self.seal_schema5_challenge(
+            ledger_path, ledger, covered_issue_ids=["I-001"]
+        )
+
+        packet = proofcheck.build_context_packet(
+            self.audit, "lem:main", "challenge"
+        )
+        self.assertEqual(1, len(packet["issue_triggers"]))
+        trigger = packet["issue_triggers"][0]
+        target = trigger["target_contract"]
+        current = target["current_target"]
+        self.assertEqual("I-001", trigger["id"])
+        self.assertEqual("S1", trigger["severity"])
+        self.assertEqual(
+            trigger["target_contract_sha256"],
+            proofcheck.canonical_sha256(target),
+        )
+        self.assertEqual("ledger_move", current["reference"]["kind"])
+        self.assertEqual("x equals x", current["claim"])
+        self.assertEqual("Reflexivity of equality", current["rule"])
+        self.assertEqual(["For every real x."], [
+            row["claim"] for row in current["premises"]
+        ])
+        premise_origin = current["premises"][0]["origin"]
+        self.assertEqual("obligation", premise_origin["kind"])
+        self.assertTrue(premise_origin["anchor"]["source"]["lines"])
+        self.assertTrue(current["source_anchor"]["lines"])
+        self.assertEqual([], target["propagation"]["uses"])
+        self.assertTrue(target["contracts"][0]["source_anchors"])
+        serialized = json.dumps(trigger, ensure_ascii=False)
+        self.assertNotIn(issue["summary"], serialized)
+        self.assertNotIn(failure_evidence, serialized)
+        for forbidden in (
+            "finding_status",
+            "invalidation_kind",
+            "suggested_changes",
+            "failure",
+            "justification",
+        ):
+            self.assertNotIn(f'"{forbidden}"', serialized)
+
+        original_context = packet["context_binding_sha256"]
+        issue_record = read_json(issue_path)
+        issue_record["issues"][0]["contract_refs"].append(
+            {
+                "kind": "obligation_pointer",
+                "unit_id": "lem:main",
+                "pointer": "/quantifier_scope",
+            }
+        )
+        write_json(issue_path, issue_record)
+        ordered_context = proofcheck.build_context_packet(
+            self.audit, "lem:main", "challenge"
+        )["context_binding_sha256"]
+        self.assertNotEqual(original_context, ordered_context)
+        issue_record["issues"][0]["contract_refs"].reverse()
+        write_json(issue_path, issue_record)
+        reordered_context = proofcheck.build_context_packet(
+            self.audit, "lem:main", "challenge"
+        )["context_binding_sha256"]
+        self.assertEqual(ordered_context, reordered_context)
+
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["notes"].append(
+            "This unrelated administrative note must not stale a challenge."
+        )
+        write_json(manifest_path, manifest)
+        self.assertEqual(
+            reordered_context,
+            proofcheck.build_context_packet(
+                self.audit, "lem:main", "challenge"
+            )["context_binding_sha256"],
+        )
+
+        issue_record = read_json(issue_path)
+        issue_record["issues"][0]["severity"] = "S0"
+        write_json(issue_path, issue_record)
+        self.assertNotEqual(
+            reordered_context,
+            proofcheck.build_context_packet(
+                self.audit, "lem:main", "challenge"
+            )["context_binding_sha256"],
+        )
+
+    def test_premise_dependency_origin_is_resolved_within_its_step(self) -> None:
+        dependency = {
+            "id": "lem:prior",
+            "use_id": "D001",
+            "kind": "internal_result",
+            "conclusion_id": "C001",
+            "status": "verified",
+            "needed_form": "The prior conclusion in the needed form.",
+            "compatibility_check": "The result has the exact needed form.",
+        }
+        first_step = {"id": "S001", "dependencies": [dict(dependency)]}
+        colliding_dependency = {
+            **dependency,
+            "id": "D001",
+            "use_id": "D002",
+        }
+        second_step = {
+            "id": "S002",
+            "dependencies": [dict(dependency), colliding_dependency],
+        }
+        ledger = {"steps": [first_step, second_step]}
+        premise = {
+            "origin": {"kind": "internal_result", "reference": "D001"}
+        }
+
+        projected = proofcheck.packet_issue_premise_origin(
+            self.audit,
+            self.audit / "audit" / "04_local_checks" / "unit.ledger.json",
+            ledger,
+            second_step,
+            premise,
+            [],
+        )
+
+        self.assertEqual("D001", projected["use_id"])
+        self.assertEqual("lem:prior", projected["dependency_id"])
+        self.assertEqual("C001", projected["dependency_conclusion_id"])
+
+    def test_historical_challenges_receive_only_their_exact_retired_path_cut(
+        self,
+    ) -> None:
+        manifest = read_json(self.audit / "AUDIT_MANIFEST.json")
+        members = proofcheck.packet_source_members(self.audit, manifest)
+        evidence_span = proofcheck.locked_span(
+            self.paper,
+            6,
+            6,
+            self.audit,
+            role="retirement_verification",
+        )
+        common = {
+            "dependency_conclusion_id": "C001",
+            "needed_form": "The dependency supplies the exact needed result.",
+            "dependency_conclusion": "The dependency result holds.",
+            "dependency_contract_sha256": "a" * 64,
+            "step_ids": ["S001"],
+            "status": "verified",
+            "compatibility_check": "The prior edge was applicable.",
+            "compatibility_checks": [],
+            "issue_ids": ["I-001"],
+        }
+        shared = {
+            **common,
+            "use_id": "D001",
+            "dependency_id": "lem:root",
+            "dependent_unit": "lem:middle",
+        }
+        cut_a = {
+            **common,
+            "use_id": "D002",
+            "dependency_id": "lem:middle",
+            "dependent_unit": "lem:a",
+        }
+        cut_b = {
+            **common,
+            "use_id": "D003",
+            "dependency_id": "lem:middle",
+            "dependent_unit": "lem:b",
+        }
+        route_a_1 = {
+            **common,
+            "use_id": "D004",
+            "dependency_id": "lem:root",
+            "dependent_unit": "lem:x",
+        }
+        route_a_2 = {
+            **common,
+            "use_id": "D005",
+            "dependency_id": "lem:x",
+            "dependent_unit": "lem:a",
+        }
+        route_b_1 = {
+            **common,
+            "use_id": "D006",
+            "dependency_id": "lem:root",
+            "dependent_unit": "lem:y",
+        }
+        route_b_2 = {
+            **common,
+            "use_id": "D007",
+            "dependency_id": "lem:y",
+            "dependent_unit": "lem:b",
+        }
+        archived_hashes = {
+            "D001": "1" * 64,
+            "D002": "2" * 64,
+            "D003": "3" * 64,
+        }
+        issue = {
+            "id": "I-001",
+            "status": "resolved",
+            "affected_result": "lem:root",
+            "affected_results": ["lem:root", "lem:middle"],
+            "origin_ref": {
+                "kind": "ledger_move",
+                "unit_id": "lem:root",
+                "step_id": "S001",
+                "move_id": "M001",
+            },
+            "historical_origin": {
+                "required_challenges": ["lem:a", "lem:b"]
+            },
+            "current_resolution": {
+                "evidence_spans": [evidence_span],
+                "retired_dependency_uses": [
+                    {
+                        "use_id": "D002",
+                        "prior_edge_sha256": archived_hashes["D002"],
+                    },
+                    {
+                        "use_id": "D003",
+                        "prior_edge_sha256": archived_hashes["D003"],
+                    },
+                ],
+            },
+        }
+        prior_registry = {"internal_uses": [shared, cut_a, cut_b]}
+        archive = {
+            "issue_record": {
+                "origin_ref": issue["origin_ref"],
+                "affected_results": [
+                    "lem:root",
+                    "lem:middle",
+                    "lem:a",
+                    "lem:b",
+                ],
+            },
+            "prior_artifacts": {"dependency_registry": {}},
+            "required_closure": {
+                "dependency_uses": [
+                    {"use_id": use_id, "edge_sha256": digest}
+                    for use_id, digest in archived_hashes.items()
+                ]
+            },
+        }
+        current_registry = {
+            "internal_uses": [route_a_1, route_a_2, route_b_1, route_b_2],
+            "external_results": [],
+        }
+
+        with mock.patch.object(
+            proofcheck, "load_resolution_archive", return_value=archive
+        ), mock.patch.object(
+            proofcheck,
+            "sealed_json_object",
+            return_value=("prior-registry.json", "f" * 64, prior_registry),
+        ), mock.patch.object(
+            proofcheck,
+            "packet_issue_ledger",
+            side_effect=lambda _root, unit_id: (
+                self.audit / f"{unit_id}.ledger.json",
+                {"steps": [{"id": "S001"}]},
+            ),
+        ), mock.patch.object(
+            proofcheck,
+            "packet_issue_step_anchor",
+            return_value={
+                "file": "paper.tex",
+                "start_line": 1,
+                "end_line": 1,
+                "sha256": "f" * 64,
+            },
+        ):
+            propagation_a = proofcheck.packet_issue_propagation(
+                self.audit,
+                issue,
+                current_registry,
+                members,
+                "lem:a",
+            )
+            propagation_b = proofcheck.packet_issue_propagation(
+                self.audit,
+                issue,
+                current_registry,
+                members,
+                "lem:b",
+            )
+
+        cuts_a = propagation_a["retirement"]["retired_path_edges"]
+        cuts_b = propagation_b["retirement"]["retired_path_edges"]
+        self.assertEqual(["D002"], [row["use_id"] for row in cuts_a])
+        self.assertEqual(["D003"], [row["use_id"] for row in cuts_b])
+        self.assertEqual("lem:a", cuts_a[0]["dependent_unit"])
+        self.assertEqual("lem:middle", cuts_a[0]["dependency_id"])
+        self.assertEqual(
+            ["D002"],
+            propagation_a["retirement"][
+                "current_issue_closure_absent_use_ids"
+            ],
+        )
+        self.assertTrue(propagation_a["current_route"]["path_present"])
+        self.assertTrue(propagation_b["current_route"]["path_present"])
+        self.assertEqual(
+            ["D004", "D005"],
+            sorted(
+                row["use_id"]
+                for row in propagation_a["current_route"]["uses"]
+            ),
+        )
+        self.assertEqual(
+            ["D006", "D007"],
+            sorted(
+                row["use_id"]
+                for row in propagation_b["current_route"]["uses"]
+            ),
+        )
+        serialized = json.dumps(
+            [
+                cuts_a,
+                cuts_b,
+                propagation_a["current_route"]["uses"],
+                propagation_b["current_route"]["uses"],
+            ],
+            ensure_ascii=False,
+        )
+        for forbidden in ("status", "compatibility_check", "issue_ids"):
+            self.assertNotIn(f'"{forbidden}"', serialized)
+
+    def test_progress_gate_rejects_semantically_stale_challenge_target(
+        self,
+    ) -> None:
+        ledger_path, _, _ = self.make_ledger_move_defect_audit()
+        issue_path = self.audit / "audit" / "06_reports" / "ISSUE_LOG.json"
+        issue_log = read_json(issue_path)
+        issue_log["issues"][0]["severity"] = "S1"
+        write_json(issue_path, issue_log)
+        self.seal_schema5_challenge(
+            ledger_path,
+            read_json(ledger_path),
+            covered_issue_ids=["I-001"],
+        )
+        manifest = read_json(self.audit / "AUDIT_MANIFEST.json")
+        _, summaries, _ = proofcheck.audit_ledgers(self.audit, True)
+        summaries_by_id = {row["unit_id"]: row for row in summaries}
+        current_issues = read_json(issue_path)["issues"]
+        self.assertTrue(
+            proofcheck.critical_challenges_complete(
+                self.audit, manifest, summaries_by_id, current_issues
+            )
+        )
+
+        issue_log = read_json(issue_path)
+        issue_log["issues"][0]["severity"] = "S0"
+        write_json(issue_path, issue_log)
+        self.assertFalse(
+            proofcheck.critical_challenges_complete(
+                self.audit,
+                manifest,
+                summaries_by_id,
+                issue_log["issues"],
+            )
+        )
+
+    def test_validator_identity_normalizes_platform_newlines(self) -> None:
+        lf = self.base / "validator-lf.py"
+        crlf = self.base / "validator-crlf.py"
+        lf.write_bytes(b"first line\nsecond line\n")
+        crlf.write_bytes(b"first line\r\nsecond line\r\n")
+
+        self.assertNotEqual(
+            proofcheck.sha256_file(lf), proofcheck.sha256_file(crlf)
+        )
+        self.assertEqual(
+            proofcheck.sha256_portable_text_file(lf),
+            proofcheck.sha256_portable_text_file(crlf),
+        )
+
+    def test_issue_packet_projects_locked_external_evidence_portably(
+        self,
+    ) -> None:
+        external = self.base / "estimator.py"
+        external.write_text(
+            "def estimate(x):\n    return x\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        span = proofcheck.locked_span(
+            external,
+            1,
+            2,
+            self.audit,
+            role="implementation_snapshot",
+        )
+        manifest = read_json(self.audit / "AUDIT_MANIFEST.json")
+        members = proofcheck.packet_source_members(self.audit, manifest)
+
+        anchors = proofcheck.packet_issue_evidence_anchors(
+            self.audit, [span], members
+        )
+
+        self.assertEqual(1, len(anchors))
+        member = anchors[0]["source_member"]
+        self.assertEqual("locked_external_evidence", member["membership"])
+        self.assertIsNone(member["audit_relative_file"])
+        self.assertEqual("estimator.py", member["name"])
+        self.assertEqual(proofcheck.sha256_file(external), member["file_sha256"])
+        self.assertNotIn(str(self.base), json.dumps(anchors, ensure_ascii=False))
+
+    def test_required_challenge_artifact_rejects_nonportable_paths(self) -> None:
+        ledger_path = self.make_complete_audit()
+        baseline = read_json(ledger_path)
+        outside = self.base / "outside challenge.md"
+        outside.write_text(
+            "# External challenge\n\nThis file is outside the audit root.\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        cases = (
+            outside.resolve().as_posix(),
+            "audit/05_adversarial/../06_reports/FINAL_REPORT.md",
+            "audit\\05_adversarial\\lem-main-challenge.md",
+            "audit/05_adversarial/CON.md",
+            "audit/05_adversarial/challenge.",
+        )
+        for artifact in cases:
+            with self.subTest(artifact=artifact):
+                ledger = json.loads(json.dumps(baseline))
+                ledger["independent_check"]["artifact"] = artifact
+                write_json(ledger_path, ledger)
+
+                errors, _ = proofcheck.check_ledger_data(ledger_path, True)
+
+                self.assertTrue(
+                    any(
+                        "portable audit-relative path under "
+                        "audit/05_adversarial" in error
+                        for error in errors
+                    ),
+                    errors,
                 )
+
+    def test_finalization_rejects_redirected_challenge_artifact(self) -> None:
+        ledger_path = self.make_complete_audit()
+        target = self.base / "redirected challenge.md"
+        target.write_text(
+            "# Redirected challenge\n\nThis target is outside audit state.\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        link = (
+            self.audit
+            / "audit"
+            / "05_adversarial"
+            / "redirected-challenge.md"
+        )
+        try:
+            link.symlink_to(target)
+        except (NotImplementedError, OSError) as exc:
+            self.skipTest(f"Symlink creation is unavailable: {exc}")
+        ledger = read_json(ledger_path)
+        ledger["independent_check"]["artifact"] = (
+            "audit/05_adversarial/redirected-challenge.md"
+        )
+        ledger["independent_check"]["challenge_artifact_sha256"] = (
+            proofcheck.sha256_file(target)
+        )
+        write_json(ledger_path, ledger)
+
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+
+        self.assertTrue(
+            any(
+                "challenge artifact" in error.lower()
+                and "symlink" in error.lower()
+                for error in errors
+            ),
+            errors,
+        )
+
+    def test_finalization_rejects_unbound_challenge_artifact(self) -> None:
+        ledger_path = self.make_complete_audit()
+        ledger = read_json(ledger_path)
+        artifact = self.audit / ledger["independent_check"]["artifact"]
+        artifact.write_text(
+            "This file contains no structured challenge binding.\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        ledger["independent_check"]["challenge_artifact_sha256"] = (
+            proofcheck.sha256_file(artifact)
+        )
+        write_json(ledger_path, ledger)
+
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+
+        self.assertTrue(
+            any("challenge binding block" in error for error in errors),
+            errors,
+        )
+
+    def test_bind_challenge_writes_exact_artifact_binding(self) -> None:
+        ledger_path = self.make_complete_audit()
+        ledger = read_json(ledger_path)
+        artifact = self.audit / ledger["independent_check"]["artifact"]
+        artifact.write_text(
+            "# Independent challenge\n\nThe exact packet was checked.\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            status = proofcheck.cmd_bind_challenge(
+                argparse.Namespace(root=self.audit, unit_id="lem:main")
+            )
+
+        self.assertEqual(0, status)
+        ledger = read_json(ledger_path)
+        challenge = ledger["independent_check"]
+        self.assertEqual(
+            proofcheck.sha256_file(artifact),
+            challenge["challenge_artifact_sha256"],
+        )
+        self.assertEqual(
+            [],
+            proofcheck.challenge_artifact_binding_errors(
+                artifact, "lem:main", challenge
+            ),
+        )
+
+    def test_bind_challenge_rejects_malformed_blocks_without_mutation(
+        self,
+    ) -> None:
+        ledger_path = self.make_complete_audit()
+        baseline_ledger = ledger_path.read_bytes()
+        ledger = read_json(ledger_path)
+        artifact = self.audit / ledger["independent_check"]["artifact"]
+        valid_block = proofcheck.render_challenge_artifact_binding(
+            "lem:main", ledger["independent_check"]
+        )
+        cases = (
+            (
+                "unterminated",
+                "# Challenge\n\n<!-- proofcheck-challenge-binding-v1\n{}\n",
+                "unterminated",
+            ),
+            (
+                "duplicate",
+                f"# Challenge\n\n{valid_block}\n\n{valid_block}\n",
+                "duplicate",
+            ),
+        )
+        for name, artifact_text, message in cases:
+            with self.subTest(case=name):
+                artifact.write_text(
+                    artifact_text, encoding="utf-8", newline="\n"
+                )
+                baseline_artifact = artifact.read_bytes()
+
+                with self.assertRaisesRegex(ValueError, message):
+                    proofcheck.cmd_bind_challenge(
+                        argparse.Namespace(
+                            root=self.audit, unit_id="lem:main"
+                        )
+                    )
+
+                self.assertEqual(baseline_artifact, artifact.read_bytes())
+                self.assertEqual(baseline_ledger, ledger_path.read_bytes())
+
+    def test_bind_challenge_escapes_comment_delimiter_in_assessment(
+        self,
+    ) -> None:
+        ledger_path, _, _ = self.make_ledger_move_defect_audit()
+        issue_path = self.audit / "audit" / "06_reports" / "ISSUE_LOG.json"
+        issue_log = read_json(issue_path)
+        issue_log["issues"][0]["severity"] = "S1"
+        write_json(issue_path, issue_log)
+        progress_path = self.audit / "PROGRESS.json"
+        progress = read_json(progress_path)
+        progress["open_high_priority_issues"] = ["I-001"]
+        write_json(progress_path, progress)
+        self.seal_schema5_challenge(
+            ledger_path,
+            read_json(ledger_path),
+            covered_issue_ids=["I-001"],
+        )
+        ledger = read_json(ledger_path)
+        assessment = ledger["independent_check"]["issue_assessments"][0]
+        assessment["target_assessment"] = (
+            "The implication A --> B was independently checked."
+        )
+        write_json(ledger_path, ledger)
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            status = proofcheck.cmd_bind_challenge(
+                argparse.Namespace(root=self.audit, unit_id="lem:main")
+            )
+
+        self.assertEqual(0, status)
+        ledger = read_json(ledger_path)
+        challenge = ledger["independent_check"]
+        artifact = self.audit / challenge["artifact"]
+        artifact_text = artifact.read_text(encoding="utf-8")
+        self.assertIn("--\\u003e", artifact_text)
+        self.assertEqual(1, artifact_text.count("-->"))
+        self.assertEqual(
+            [],
+            proofcheck.challenge_artifact_binding_errors(
+                artifact, "lem:main", challenge
+            ),
+        )
+        self.sync_incorrect_main_report(ledger_path)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+            io.StringIO()
+        ):
+            issue_status = proofcheck.cmd_issues(
+                argparse.Namespace(
+                    root=self.audit,
+                    write_summary=True,
+                    write_report_views=True,
+                    final=True,
+                )
+            )
+        self.assertEqual(0, issue_status)
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+        self.assertEqual([], errors)
+
+    def test_progress_gate_rejects_empty_challenge_artifact(self) -> None:
+        ledger_path = self.make_complete_audit()
+        ledger = read_json(ledger_path)
+        artifact = self.audit / ledger["independent_check"]["artifact"]
+        artifact.write_bytes(b"")
+        ledger["independent_check"]["challenge_artifact_sha256"] = (
+            proofcheck.sha256_file(artifact)
+        )
+        write_json(ledger_path, ledger)
+        manifest = read_json(self.audit / "AUDIT_MANIFEST.json")
+        _, summaries, _ = proofcheck.audit_ledgers(self.audit, True)
+        summaries_by_id = {row["unit_id"]: row for row in summaries}
+        issues = read_json(
+            self.audit / "audit" / "06_reports" / "ISSUE_LOG.json"
+        )["issues"]
+
+        self.assertFalse(
+            proofcheck.critical_challenges_complete(
+                self.audit, manifest, summaries_by_id, issues
+            )
+        )
+
+    def test_challenge_dependency_projection_excludes_primary_verdicts(
+        self,
+    ) -> None:
+        ledger_path = self.make_complete_audit()
+        self.install_internal_dependency(ledger_path)
+
+        challenge = proofcheck.build_context_packet(
+            self.audit, "lem:main", "challenge"
+        )
+        primary = proofcheck.build_context_packet(
+            self.audit, "lem:main", "primary"
+        )
+        challenge_dependencies = json.dumps(
+            challenge["dependencies"], ensure_ascii=False
+        )
+        primary_dependencies = json.dumps(
+            primary["dependencies"], ensure_ascii=False
+        )
+        for forbidden in (
+            "source_status",
+            "status",
+            "compatibility_check",
+            "compatibility_checks",
+            "issue_ids",
+        ):
+            self.assertNotIn(f'"{forbidden}"', challenge_dependencies)
+        self.assertIn('"source_status"', primary_dependencies)
+        self.assertIn('"compatibility_checks"', primary_dependencies)
 
     def test_dependency_issue_report_views_use_derived_final_closure(
         self,
@@ -12932,7 +13716,9 @@ class FinalizationTests(unittest.TestCase):
                     "covered_issue_ids": [],
                     "source_snapshot_sha256": "",
                     "challenged_ledger_sha256": "",
+                    "challenge_context_sha256": "",
                     "challenge_artifact_sha256": "",
+                    "issue_assessments": [],
                     "generated_utc": "",
                 }
             )
@@ -12944,16 +13730,94 @@ class FinalizationTests(unittest.TestCase):
             artifact.parent.mkdir(parents=True, exist_ok=True)
             artifact.write_text(artifact_text, encoding="utf-8", newline="\n")
         manifest = read_json(self.audit / "AUDIT_MANIFEST.json")
+        issue_ids = sorted(covered_issue_ids or [])
         independent.update(
             {
-                "covered_issue_ids": sorted(covered_issue_ids or []),
+                "covered_issue_ids": issue_ids,
                 "source_snapshot_sha256": manifest["source_snapshot"]["sha256"],
                 "challenged_ledger_sha256": (
                     proofcheck.canonical_primary_ledger_sha256(ledger)
                 ),
-                "challenge_artifact_sha256": proofcheck.sha256_file(artifact),
+                "challenge_context_sha256": "0" * 64,
+                "challenge_artifact_sha256": "0" * 64,
+                "issue_assessments": [
+                    {
+                        "issue_id": issue_id,
+                        "target_contract_sha256": "0" * 64,
+                        "assessment": "confirmed",
+                        "target_assessment": (
+                            "The challenger independently checked the exact target "
+                            "contract associated with this issue."
+                        ),
+                        "downstream_assessment": (
+                            "The challenger independently traced the stated "
+                            "downstream consequences of this issue."
+                        ),
+                    }
+                    for issue_id in issue_ids
+                ],
                 "generated_utc": "2026-08-09T00:00:00+00:00",
             }
+        )
+        write_json(ledger_path, ledger)
+        try:
+            challenge_packet = proofcheck.build_context_packet(
+                self.audit, ledger["unit_id"], "challenge"
+            )
+        except ValueError:
+            # Some unit-level schema tests intentionally use a standalone ledger
+            # whose source binding disagrees with the canonical audit inventory.
+            # The placeholder remains structurally valid for those local checks.
+            challenge_packet = None
+        if challenge_packet is None:
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            narrative = (
+                artifact.read_text(encoding="utf-8")
+                if artifact.is_file()
+                else "# Independent challenge"
+            )
+            artifact.write_text(
+                proofcheck.upsert_challenge_artifact_binding(
+                    narrative, ledger["unit_id"], independent
+                ),
+                encoding="utf-8",
+                newline="\n",
+            )
+            independent["challenge_artifact_sha256"] = (
+                proofcheck.sha256_file(artifact)
+            )
+            write_json(ledger_path, ledger)
+            return
+        triggers = {
+            row["id"]: row
+            for row in challenge_packet.get("issue_triggers", [])
+            if isinstance(row, dict)
+            and isinstance(row.get("id"), str)
+        }
+        independent["challenge_context_sha256"] = challenge_packet[
+            "context_binding_sha256"
+        ]
+        for assessment in independent["issue_assessments"]:
+            trigger = triggers.get(assessment["issue_id"])
+            if isinstance(trigger, dict):
+                assessment["target_contract_sha256"] = trigger[
+                    "target_contract_sha256"
+                ]
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        narrative = (
+            artifact.read_text(encoding="utf-8")
+            if artifact.is_file()
+            else "# Independent challenge"
+        )
+        artifact.write_text(
+            proofcheck.upsert_challenge_artifact_binding(
+                narrative, ledger["unit_id"], independent
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+        independent["challenge_artifact_sha256"] = proofcheck.sha256_file(
+            artifact
         )
         write_json(ledger_path, ledger)
         report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
@@ -12970,12 +13834,14 @@ class FinalizationTests(unittest.TestCase):
                     f"| {unit_id} | {independent['status']} | "
                     f"{independent['independence_level']} | "
                     f"{proofcheck.canonical_id_field(independent['covered_issue_ids'])} | "
+                    f"{proofcheck.escape_markdown(json.dumps(proofcheck.canonical_challenge_issue_assessments(independent.get('issue_assessments', [])), ensure_ascii=False, separators=(',', ':')))} | "
                     f"{independent['challenger_verdict']} | "
                     f"{independent['reconciled_verdict']} | "
-                    f"{json.dumps(independent.get('disagreements', []), ensure_ascii=False, separators=(',', ':'))} | "
+                    f"{proofcheck.escape_markdown(json.dumps(independent.get('disagreements', []), ensure_ascii=False, separators=(',', ':')))} | "
                     f"{independent['artifact']} | "
                     f"{independent['source_snapshot_sha256']} | "
                     f"{independent['challenged_ledger_sha256']} | "
+                    f"{independent['challenge_context_sha256']} | "
                     f"{independent['challenge_artifact_sha256']} | "
                     f"{independent['generated_utc']} | "
                     f"{independent.get('resolution') or 'none'} |"
@@ -13018,7 +13884,9 @@ class FinalizationTests(unittest.TestCase):
             "covered_issue_ids",
             "source_snapshot_sha256",
             "challenged_ledger_sha256",
+            "challenge_context_sha256",
             "challenge_artifact_sha256",
+            "issue_assessments",
             "generated_utc",
         ):
             ledger["independent_check"].pop(field, None)
@@ -13159,7 +14027,9 @@ class FinalizationTests(unittest.TestCase):
                 "evidence_contract_version": 4,
                 "method_interface_schema_version": 1,
                 "closure_contract_version": 3,
-                "validator_sha256": proofcheck.sha256_file(SCRIPT),
+                "validator_sha256": proofcheck.protocol_identity()[
+                    "validator_sha256"
+                ],
             }
         )
         write_json(manifest_path, manifest)
@@ -16613,16 +17483,6 @@ class FinalizationTests(unittest.TestCase):
             }
         )
         write_json(main_path, current_ledger)
-        self.seal_schema5_challenge(
-            main_path,
-            read_json(main_path),
-            covered_issue_ids=["I-001"],
-            artifact_text=(
-                "# Post-repair challenge\n\n"
-                "A fresh context rechecked the clean S003/M001 move, the "
-                "D001 dependency use, and resolved issue I-001.\n"
-            ),
-        )
 
         resolved_issue = json.loads(json.dumps(historical_issue))
         resolved_issue.update(
@@ -16668,6 +17528,17 @@ class FinalizationTests(unittest.TestCase):
             }
         )
         self.install_canonical_issue(resolved_issue, migrate=False)
+        self.seal_schema5_challenge(
+            main_path,
+            read_json(main_path),
+            covered_issue_ids=["I-001"],
+            artifact_text=(
+                "# Post-repair challenge\n\n"
+                "A fresh context rechecked the clean S003/M001 move, the "
+                "D001 dependency use, and resolved issue I-001.\n"
+            ),
+        )
+        self.install_canonical_issue(resolved_issue, migrate=False)
         return main_path, archive_path, resolved_issue
 
     def convert_resolved_lifecycle_to_removed_move(
@@ -16701,17 +17572,6 @@ class FinalizationTests(unittest.TestCase):
             encoding="utf-8",
             newline="\n",
         )
-        self.seal_schema5_challenge(
-            main_path,
-            read_json(main_path),
-            covered_issue_ids=["I-001"],
-            artifact_text=(
-                "# Post-removal challenge\n\n"
-                "A fresh context verified the retained lem:main ledger after "
-                "the archived M001 move was removed and the clean M002 move "
-                "was reconstructed.\n"
-            ),
-        )
         issue["resolution"] = (
             "The archived failed M001 move was removed while lem:main was "
             "retained and rechecked through clean move M002."
@@ -16733,6 +17593,18 @@ class FinalizationTests(unittest.TestCase):
                     "same conclusion."
                 ),
             }
+        )
+        self.install_canonical_issue(issue, migrate=False)
+        self.seal_schema5_challenge(
+            main_path,
+            read_json(main_path),
+            covered_issue_ids=["I-001"],
+            artifact_text=(
+                "# Post-removal challenge\n\n"
+                "A fresh context verified the retained lem:main ledger after "
+                "the archived M001 move was removed and the clean M002 move "
+                "was reconstructed.\n"
+            ),
         )
         self.install_canonical_issue(issue, migrate=False)
         return issue
@@ -17135,6 +18007,21 @@ class FinalizationTests(unittest.TestCase):
 
         self.assertEqual([], errors)
 
+    def test_removed_issue_packet_rejects_mutated_current_origin(self) -> None:
+        main_path, _, issue = self.make_resolved_s1_lifecycle_audit()
+        self.convert_resolved_lifecycle_to_removed_move(main_path, issue)
+        issue_path = self.audit / "audit" / "06_reports" / "ISSUE_LOG.json"
+        issue_log = read_json(issue_path)
+        issue_log["issues"][0]["origin_ref"]["move_id"] = "M999"
+        write_json(issue_path, issue_log)
+
+        with self.assertRaisesRegex(
+            ValueError, "removed issue archive is invalid"
+        ):
+            proofcheck.build_context_packet(
+                self.audit, "lem:main", "challenge"
+            )
+
     def test_removed_disposition_rejects_whole_affected_unit_deletion(
         self,
     ) -> None:
@@ -17184,6 +18071,33 @@ class FinalizationTests(unittest.TestCase):
                 "historical_origin.sha256" in error
                 or "archive payload hash" in error
                 or "projection hash" in error
+                for error in errors
+            ),
+            errors,
+        )
+
+    def test_resolved_s1_rejects_false_archived_dependency_edge_hash(
+        self,
+    ) -> None:
+        _, archive_path, issue = self.make_resolved_s1_lifecycle_audit()
+        archive = read_json(archive_path)
+        dependency_uses = archive["required_closure"]["dependency_uses"]
+        self.assertTrue(dependency_uses)
+        dependency_uses[0]["edge_sha256"] = "0" * 64
+        archive["archive_payload_sha256"] = (
+            proofcheck.resolution_archive_payload_sha256(archive)
+        )
+        write_json(archive_path, archive)
+        issue["historical_origin"]["sha256"] = proofcheck.sha256_file(
+            archive_path
+        )
+        errors: list[str] = []
+
+        proofcheck.load_resolution_archive(issue, self.audit, errors)
+
+        self.assertTrue(
+            any(
+                "does not match the sealed normalized closure edge" in error
                 for error in errors
             ),
             errors,
@@ -17650,7 +18564,9 @@ class FinalizationTests(unittest.TestCase):
             "covered_issue_ids": [],
             "source_snapshot_sha256": "",
             "challenged_ledger_sha256": "",
+            "challenge_context_sha256": "",
             "challenge_artifact_sha256": "",
+            "issue_assessments": [],
             "generated_utc": "",
         }
         write_json(main_path, ledger)
@@ -17661,7 +18577,9 @@ class FinalizationTests(unittest.TestCase):
             "covered_issue_ids",
             "source_snapshot_sha256",
             "challenged_ledger_sha256",
+            "challenge_context_sha256",
             "challenge_artifact_sha256",
+            "issue_assessments",
             "generated_utc",
         ):
             self.assertTrue(
@@ -18166,12 +19084,14 @@ class FinalizationTests(unittest.TestCase):
                 "Challenge status",
                 "Independence",
                 "Covered issue IDs",
+                "Issue assessments",
                 "Challenger verdict",
                 "Reconciled verdict",
                 "Disagreements",
                 "Artifact",
                 "Source snapshot SHA256",
                 "Challenged ledger SHA256",
+                "Challenge context SHA256",
                 "Artifact SHA256",
                 "Generated UTC",
                 "Resolution",
@@ -18224,26 +19144,16 @@ class FinalizationTests(unittest.TestCase):
         check_plan = (template_root / "CHECK_PLAN.md").read_text(
             encoding="utf-8"
         )
-        for required_wording in (
-            "Every locked source_lines row contains its exact line text and "
-            "matching SHA256; every source_unit.source_sha256 matches the "
-            "newline-joined text of its exact range",
-            "Every review.use_sites entry is one canonical file:line reference "
-            "occurrence; every locked downstream use span, SHA256, and quote "
-            "is exact",
-            "Every generated finding reproduces the canonical locked quote, "
-            "exact premises, and recorded failure evidence without paraphrase",
-            "Downstream effects weaken dependency closure and proof support "
-            "only to the level established; they do not refute a downstream "
-            "conclusion without independent evidence",
-            "Every method-interface record reports both implementation "
-            "inspection status and inspection_mode",
-            "Every critical challenge reports disagreements, resolution, "
-            "artifact path, current artifact hash, and freshness fields",
-            "The final-report Declared external deliverables scalar and table "
-            "exactly reconcile with manifest report_deliverables",
+        self.assertIn("**GENERATED VIEW:**", check_plan)
+        self.assertIn("sync-views --root <audit-root>", check_plan)
+        for heading in (
+            "## Scope",
+            "## Proof-unit inventory",
+            "## Reviewed exceptions",
+            "## Method-interface scope",
+            "## Progress",
         ):
-            self.assertIn(required_wording, check_plan)
+            self.assertIn(heading, check_plan)
 
     def test_delivery_check_requires_current_usable_finalization(self) -> None:
         self.make_complete_audit()

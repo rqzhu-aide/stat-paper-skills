@@ -7,8 +7,8 @@ Use `proofcheck.py scaffold` to create a project outside the skill directory:
 ```text
 proofcheck-audit/
   AUDIT_MANIFEST.json
-  CHECK_PLAN.md
-  EXECUTION_ORDER.md
+  CHECK_PLAN.md                 generated projection
+  EXECUTION_ORDER.md            generated projection
   PROGRESS.json
   audit/
     01_index/
@@ -25,9 +25,28 @@ proofcheck-audit/
       ISSUE_SUMMARY.md
       FINAL_REPORT.md
       FINALIZATION.json
+    07_runtime/                 optional observational usage telemetry
 ```
 
 Do not store paper-specific work inside the installed skill.
+
+`AUDIT_MANIFEST.json`, `PROGRESS.json`, ledgers, registries, and
+`ISSUE_LOG.json` are canonical. `CHECK_PLAN.md`, `EXECUTION_ORDER.md`, and
+`audit/03_dependencies/dependency_graph.md` are concise deterministic views.
+Generate or refresh them instead of editing them:
+
+```bash
+python "<skill-root>/scripts/proofcheck.py" sync-views --root <audit-root>
+```
+
+The generated views must be current for finalization. The `finalize` command
+refreshes and seals them; run `sync-views` earlier when the projections are
+useful during work. They never supply a missing scope, dependency, status, or
+judgment. Keep temporary primary or challenge packets and compact annotation
+inputs outside the audit root. They are context-transfer aids, not canonical
+evidence or final deliverables. A primary packet is nevertheless a mandatory
+binding input to `compile-annotations`; the source-locked skeleton and compiled
+ledger remain inside `audit/04_local_checks`.
 
 ## Portable setup and environment boundary
 
@@ -94,7 +113,9 @@ python "<skill-root>/scripts/proofcheck.py" revalidate-protocol --root <audit-ro
 The command checks source freshness and current record readability before it
 updates only the validator hash. It invalidates any prior finalization and does
 not transfer a mathematical judgment. Resolve every current gate error and
-finalize again. A schema or contract-version change still requires deliberate
+finalize again. Validator hashing normalizes CRLF and CR text newlines to LF,
+so equivalent checkouts retain one validator identity across platforms. A
+schema or contract-version change still requires deliberate
 migration and rechecking. Keep proof, dependency-closure, and method-interface contracts distinct
 so a new registry or interface record does not silently reinterpret older proof
 ledgers.
@@ -228,18 +249,51 @@ fresh post-repair challenge with its issue ID in `covered_issue_ids`.
 
 On resumption:
 
-1. Read `AUDIT_MANIFEST.json` and `PROGRESS.json`.
-2. Run `proofcheck.py status --root <audit-root>`.
-3. Check source hashes before trusting prior ledgers.
-4. Check the dependency-registry review binding, obligation hashes, and locked
-   external source-evidence hashes.
-5. Read the active unit, its dependencies, and open issue records.
-6. Continue from the exact next action rather than repeating completed work.
+1. Run `proofcheck.py status --root <audit-root>` before loading substantive
+   audit content.
+2. Inspect the reported source and protocol freshness, active unit, bounded
+   gate errors, and exact next action.
+3. For an active or next unit, generate a current primary packet with
+   `packet --root <audit-root> --unit-id <unit-id> --mode primary --output
+   <packet.json>` outside the audit root and load that packet rather than the
+   whole workspace. If its obligation is absent, normalize the fresh extracted
+   skeleton or ledger before semantic checking and regenerate the packet.
+4. Inspect `resume.wip.included`. Reuse partial semantic work only when it is
+   true; otherwise recheck the affected work rather than reconstructing it
+   from conversation or prose notes.
+5. Load separately only external evidence or canonical issue records named by
+   that packet and needed for the next action.
+6. Continue from the recorded next action without rereading completed ledgers,
+   report artifacts, or unrelated source.
+7. If status reports source, obligation, dependency, external-evidence, or
+   protocol drift, identify and recheck the bounded affected set before
+   trusting its prior semantic judgments. Do not reuse a verdict across a
+   changed binding merely because the unit ID or prose appears unchanged.
 
 `status` is work-in-progress aware and concise by default. It distinguishes a
 healthy incomplete audit from stale or malformed state and from an audit that
 is finalizable now. Use `status --verbose` to show the full gate errors. Both
 modes apply the same strict validation and finalization gates.
+
+The packet is an optional minimal context projection for manual ledger work,
+but it is mandatory for `compile-annotations`. It is not a substitute for
+`status`. The compiler requires the exact current primary packet, rebuilds it
+from canonical audit state, and rejects a modified or stale copy. Compile only
+against a fresh `.skeleton.json` inside the audit root whose normalized
+obligation the annotations actually address. Keep the packet outside the audit
+root and bind the annotations to its exact `context_binding_sha256`.
+
+To make a partial canonical ledger resumable, copy the primary packet's
+`work_context_sha256` to the ledger's top level when saving the partial work.
+This digest binds the protocol, source and obligation, manifest, reviewed
+inventory, dependency registry, issue log, and their model-visible semantic
+projections. A regenerated packet includes partial work only when the ledger
+passes nonfinal local validation and this digest still matches. In that case,
+`resume.wip` contains `included: true`, the exact partial-ledger hash, and the
+full reusable semantic record with `source_units`, `steps`, and `review`.
+Treat any other WIP projection as navigation only. Do not reuse its semantic
+judgments after source, obligation, manifest, inventory, dependency, issue, or
+protocol drift.
 
 A zero exit from bare `status` means that the audit is coherent enough to
 resume. It does not mean that the audit is complete. Read the top-level
@@ -261,6 +315,34 @@ changed or missing evidence file makes its external record and every associated
 use stale even when the manuscript snapshot is unchanged.
 
 Method-interface records independently lock manuscript, pseudocode, code, and configuration spans. A code snapshot can support a code-to-target or code-to-documentation judgment without being part of the LaTeX include closure. If the inspected revision, configuration, preprocessing, or caller inputs are not tied to reported experiments, execution provenance remains not checked.
+
+## Optional usage telemetry
+
+Usage telemetry is observational only. It is not proof evidence and does not
+affect any mathematical or completion judgment. When the user requests it,
+record exactly one event for each actual model call. Set `work_packets` to the
+number of complete unit or external-result packet contexts processed in that
+call. Record a retry, correction call, or challenger call as a separate event;
+do not record deterministic `proofcheck.py` commands as model calls.
+
+For example:
+
+```bash
+python "<skill-root>/scripts/proofcheck_usage.py" record --root <audit-root> --event-id call-001 --stage primary --work-packets 1 --unit-id <unit-id> --input-tokens 12000 --cached-input-tokens 8000 --output-tokens 3000 --reasoning-tokens 1500 --token-source measured --cache-outcome hit
+python "<skill-root>/scripts/proofcheck_usage.py" summary --root <audit-root> --format markdown
+```
+
+Event IDs must be unique. Use `--token-source measured` for tool-reported
+counts, `reported` for another stated count, and `unavailable` when no token
+count exists. A measured or reported event needs at least one numeric token
+field; an unavailable event must omit all token counts. Record
+`--cache-outcome` as `hit`, `miss`, or `not_used` without inferring a hit from
+a lower token count.
+
+The helper writes `audit/07_runtime/RUN_USAGE.json`. Record events only before
+a current usable finalization. When present, the file is sealed in the audit
+artifact manifest. After usable finalization, run only the read-only `summary`
+command. Absence of telemetry neither weakens nor strengthens the audit.
 
 ## Resolve an issue without erasing its evidence
 
@@ -326,6 +408,15 @@ When user judgment is needed, isolate the smallest concrete choice and explain h
 
 Use `assets/templates/FINAL_REPORT.md`. Report:
 
+Treat the report as a reviewed projection of canonical records, not a second
+authored evidence store. Generate protocol metadata, exact ID sets, unit and
+conclusion statuses, dependency rows, issue views, challenger rows,
+method-interface rows, and deliverable rows directly from their canonical
+records whenever the bundled tooling provides that projection. Author only
+the concise overall interpretation, confidence, and limitations that require
+judgment. Do not load every completed ledger into a separate reporting model
+call merely to copy fields into Markdown.
+
 1. overall verdict, exact target results, and exact checked scope;
 2. source revision, closure contract version, and tooling limitations;
 3. main theorem chain, with the exact unit-level status and component judgments
@@ -367,12 +458,26 @@ For each row, `covered_issue_ids` must equal the exact sorted triggering
 open, deferred, or resolved S0 or S1 issue set, which is empty for a
 manifest-only critical unit. The
 recorded `source_snapshot_sha256`, `challenged_ledger_sha256`,
-`challenge_artifact_sha256`, and `generated_utc` must be current.
+`challenge_context_sha256`, `challenge_artifact_sha256`, and `generated_utc`
+must be current. `issue_assessments` must cover `covered_issue_ids` exactly and
+must preserve each current target-contract hash and substantive target and
+downstream assessment. Render `Issue assessments` as a compact JSON array sorted
+by `issue_id`. Within each object, use this exact key order: `issue_id`,
+`target_contract_sha256`, `assessment`, `target_assessment`,
+`downstream_assessment`. Render `Disagreements` as a compact JSON array in
+canonical ledger order. Escape a literal pipe inside either Markdown cell as
+`\|`.
+
+Before rendering this table, run `proofcheck.py bind-challenge --root
+<audit-root> --unit-id <unit-id>` for every required challenger. The command
+embeds the exact unit, context hash, challenger verdict, and canonical
+assessment rows in the artifact and updates `challenge_artifact_sha256`. The
+artifact binding and ledger must agree at both progress and finalization gates.
 
 Use this exact challenge table:
 
-| Result | Challenge status | Independence | Covered issue IDs | Challenger verdict | Reconciled verdict | Disagreements | Artifact | Source snapshot SHA256 | Challenged ledger SHA256 | Artifact SHA256 | Generated UTC | Resolution |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Result | Challenge status | Independence | Covered issue IDs | Issue assessments | Challenger verdict | Reconciled verdict | Disagreements | Artifact | Source snapshot SHA256 | Challenged ledger SHA256 | Challenge context SHA256 | Artifact SHA256 | Generated UTC | Resolution |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 
 Also include a method-interface table with the canonical issue ID, finding
 class, interface ID, estimator-target status, implementation inspection status,
@@ -472,6 +577,7 @@ then run the strict issue and finalization gates:
 ```bash
 python "<skill-root>/scripts/proofcheck.py" checkpoint --root <audit-root> --clear-active-unit --next-action "Run final issue reconciliation and finalization."
 python "<skill-root>/scripts/proofcheck.py" issues --root <audit-root> --write-summary --write-report-views --final
+python "<skill-root>/scripts/proofcheck.py" sync-views --root <audit-root>
 python "<skill-root>/scripts/proofcheck.py" finalize --root <audit-root>
 python "<skill-root>/scripts/proofcheck.py" delivery-check --root <audit-root>
 ```

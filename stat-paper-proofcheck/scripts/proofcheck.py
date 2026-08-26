@@ -34,6 +34,13 @@ METHOD_INTERFACE_SCHEMA_VERSION = 1
 CLOSURE_CONTRACT_VERSION = 3
 LEGACY_CLOSURE_CONTRACT_VERSION = 2
 RESOLUTION_ARCHIVE_SCHEMA_VERSION = 1
+SEMANTIC_ANNOTATION_SCHEMA_VERSION = 1
+CONTEXT_PACKET_SCHEMA_VERSION = 1
+WORKFLOW_VIEW_PATHS = (
+    "CHECK_PLAN.md",
+    "EXECUTION_ORDER.md",
+    "audit/03_dependencies/dependency_graph.md",
+)
 SKILL_NAME = "stat-paper-proofcheck"
 SKILL_VERSION = "1.0"
 MAX_UNIT_LINES = 100_000
@@ -674,7 +681,7 @@ def protocol_identity() -> dict[str, Any]:
         "artifact_schema_version": SCHEMA_VERSION,
         "method_interface_schema_version": METHOD_INTERFACE_SCHEMA_VERSION,
         "closure_contract_version": CLOSURE_CONTRACT_VERSION,
-        "validator_sha256": sha256_file(Path(__file__).resolve()),
+        "validator_sha256": sha256_portable_text_file(Path(__file__).resolve()),
     }
 
 
@@ -689,6 +696,12 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def sha256_portable_text_file(path: Path) -> str:
+    """Hash text bytes after normalizing platform newline conventions."""
+    payload = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def canonical_sha256(value: Any) -> str:
@@ -781,6 +794,7 @@ def transactional_write_texts(writes: list[tuple[Path, str]]) -> None:
     """Replace a group of text files, restoring prior bytes on commit failure."""
     entries: list[dict[str, Any]] = []
     identities: set[str] = set()
+    preserve_recovery_files = False
     try:
         for raw_path, text in writes:
             path = Path(raw_path)
@@ -826,8 +840,8 @@ def transactional_write_texts(writes: list[tuple[Path, str]]) -> None:
         committed: list[dict[str, Any]] = []
         try:
             for entry in entries:
-                os.replace(entry["staged"], entry["path"])
                 committed.append(entry)
+                os.replace(entry["staged"], entry["path"])
         except BaseException as exc:
             rollback_errors: list[str] = []
             for entry in reversed(committed):
@@ -846,17 +860,28 @@ def transactional_write_texts(writes: list[tuple[Path, str]]) -> None:
                 except OSError as rollback_exc:
                     rollback_errors.append(f"{path}: {rollback_exc}")
             if rollback_errors:
+                preserve_recovery_files = True
+                recovery_files = sorted(
+                    str(temporary)
+                    for entry in entries
+                    for key in ("staged", "backup")
+                    if isinstance((temporary := entry.get(key)), Path)
+                    and temporary.exists()
+                )
                 raise OSError(
                     "Transactional text write failed and rollback was incomplete: "
                     + "; ".join(rollback_errors)
+                    + ". Recovery files were preserved: "
+                    + ", ".join(recovery_files)
                 ) from exc
             raise
     finally:
-        for entry in entries:
-            for key in ("staged", "backup"):
-                temporary = entry.get(key)
-                if isinstance(temporary, Path) and temporary.exists():
-                    temporary.unlink()
+        if not preserve_recovery_files:
+            for entry in entries:
+                for key in ("staged", "backup"):
+                    temporary = entry.get(key)
+                    if isinstance(temporary, Path) and temporary.exists():
+                        temporary.unlink()
 
 
 def atomic_copy_file(source: Path, destination: Path) -> None:
@@ -1505,6 +1530,66 @@ def canonical_artifact_path(
     return candidate, valid
 
 
+PORTABLE_ARTIFACT_SEGMENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*$")
+WINDOWS_RESERVED_ARTIFACT_STEMS = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
+
+
+def portable_artifact_segment(value: str) -> bool:
+    if (
+        PORTABLE_ARTIFACT_SEGMENT_RE.fullmatch(value) is None
+        or value.endswith(".")
+    ):
+        return False
+    return value.split(".", 1)[0].upper() not in WINDOWS_RESERVED_ARTIFACT_STEMS
+
+
+def challenge_artifact_reference_parts(value: Any) -> tuple[str, ...] | None:
+    """Return a portable canonical challenge path, or None when invalid."""
+    if not is_nonempty_string(value) or "\\" in value:
+        return None
+    parts = tuple(str(value).split("/"))
+    if (
+        len(parts) < 3
+        or parts[:2] != ("audit", "05_adversarial")
+        or any(
+            not part
+            or part in {".", ".."}
+            or not portable_artifact_segment(part)
+            for part in parts[2:]
+        )
+    ):
+        return None
+    return parts
+
+
+def canonical_challenge_artifact_path(
+    root: Path,
+    value: Any,
+    label: str,
+    errors: list[str],
+) -> tuple[Path | None, bool]:
+    """Resolve one portable challenge artifact inside canonical audit state."""
+    parts = challenge_artifact_reference_parts(value)
+    if parts is None:
+        errors.append(
+            f"{label} must be a portable audit-relative path under "
+            "audit/05_adversarial"
+        )
+        return None, False
+    relative = "/".join(parts)
+    path, valid = canonical_artifact_path(
+        root, relative, "challenge artifact", errors
+    )
+    return path, valid
+
+
 def manifest_canonical_artifact_path(
     manifest: dict[str, Any],
     root: Path,
@@ -1569,6 +1654,29 @@ def audit_internal_redirect_errors(root: Path) -> list[str]:
             if redirect_kind is not None:
                 errors.append(
                     f"Audit state contains a redirected {redirect_kind}: {child}"
+                )
+                continue
+            try:
+                relative = child.relative_to(resolved_root)
+            except ValueError:
+                relative = None
+            confined_archive_transaction = (
+                relative is not None
+                and len(relative.parts) == 4
+                and relative.parts[:3] == ("audit", "06_reports", "history")
+                and re.fullmatch(
+                    r"\.I-[0-9]{3}-origin\.json\.proofcheck\.(?:tmp|lock)",
+                    relative.name,
+                )
+                is not None
+            )
+            if (
+                child.name.endswith(".proofcheck.tmp")
+                and not confined_archive_transaction
+            ):
+                errors.append(
+                    "Audit state contains interrupted transaction residue; remove "
+                    f"or recover it before continuing: {child}"
                 )
                 continue
             try:
@@ -2603,32 +2711,36 @@ def build_unowned_label_support_index(
     return result
 
 
-def resolve_candidate_internal_dependencies(
+def resolve_candidate_internal_dependency_paths(
     unit_id: str,
     occurrences: Iterable[dict[str, Any]],
     label_owners: dict[str, dict[str, Any]],
     support_index: dict[str, dict[str, Any]],
-) -> list[str]:
+) -> list[dict[str, Any]]:
     pending = [
-        occurrence.get("target")
+        (str(occurrence.get("target")), [dict(occurrence)], frozenset())
         for occurrence in occurrences
         if isinstance(occurrence, dict)
         and is_nonempty_string(occurrence.get("target"))
     ]
-    visited_labels: set[str] = set()
-    dependencies: set[str] = set()
+    paths: list[dict[str, Any]] = []
     while pending:
-        target = pending.pop()
+        target, chain, visited_labels = pending.pop()
         if target in visited_labels:
             continue
-        visited_labels.add(target)
+        next_visited = visited_labels | {target}
         owner = label_owners.get(target)
         if not isinstance(owner, dict):
             continue
         owner_unit_id = owner.get("owner_unit_id")
         if owner.get("status") == "unique" and is_nonempty_string(owner_unit_id):
             if owner_unit_id != unit_id:
-                dependencies.add(owner_unit_id)
+                paths.append(
+                    {
+                        "candidate_id": str(owner_unit_id),
+                        "reference_chain": chain,
+                    }
+                )
             continue
         if owner.get("status") != "unowned":
             continue
@@ -2639,8 +2751,40 @@ def resolve_candidate_internal_dependencies(
             if isinstance(occurrence, dict) and is_nonempty_string(
                 occurrence.get("target")
             ):
-                pending.append(occurrence["target"])
-    return sorted(dependencies)
+                pending.append(
+                    (
+                        str(occurrence["target"]),
+                        [*chain, dict(occurrence)],
+                        next_visited,
+                    )
+                )
+    unique: dict[str, dict[str, Any]] = {}
+    for path in paths:
+        identity = canonical_sha256(path)
+        unique[identity] = path
+    return sorted(
+        unique.values(),
+        key=lambda row: (
+            str(row.get("candidate_id", "")),
+            canonical_sha256(row),
+        ),
+    )
+
+
+def resolve_candidate_internal_dependencies(
+    unit_id: str,
+    occurrences: Iterable[dict[str, Any]],
+    label_owners: dict[str, dict[str, Any]],
+    support_index: dict[str, dict[str, Any]],
+) -> list[str]:
+    return sorted(
+        {
+            str(path["candidate_id"])
+            for path in resolve_candidate_internal_dependency_paths(
+                unit_id, occurrences, label_owners, support_index
+            )
+        }
+    )
 
 
 PROOF_TERMINATOR_TOKEN_RE = re.compile(
@@ -4443,6 +4587,3740 @@ def crossref_markdown(data: dict[str, Any]) -> str:
     return "\n".join(rows)
 
 
+def workflow_id_list(value: Any) -> str:
+    if not isinstance(value, list):
+        return "none"
+    values = [str(item) for item in value if is_nonempty_string(item)]
+    return ", ".join(values) if values else "none"
+
+
+def workflow_location(value: Any) -> str:
+    if not isinstance(value, dict):
+        return "none"
+    file_value = value.get("file")
+    start = value.get("start_line")
+    end = value.get("end_line")
+    if not is_nonempty_string(file_value) or not is_int(start) or not is_int(end):
+        return "invalid"
+    shown = str(file_value).replace("\\", "/")
+    return f"{shown}:{start}" if start == end else f"{shown}:{start}-{end}"
+
+
+def workflow_unit_status(unit_id: str, progress: dict[str, Any]) -> str:
+    blocked = progress.get("blocked_units")
+    if isinstance(blocked, dict) and unit_id in blocked:
+        return "blocked"
+    for field, status in (
+        ("completed_units", "completed"),
+        ("conditional_units", "conditional"),
+        ("in_progress_units", "in_progress"),
+        ("not_started_units", "not_started"),
+    ):
+        values = progress.get(field)
+        if isinstance(values, list) and unit_id in values:
+            return status
+    if progress.get("active_unit") == unit_id:
+        return "active"
+    return "unclassified"
+
+
+def workflow_registry_rows(registry: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    internal = registry.get("internal_uses")
+    if not isinstance(internal, list):
+        raise ValueError(
+            "Cannot render workflow views: dependency registry internal_uses "
+            "must be a list"
+        )
+    for index, value in enumerate(internal, 1):
+            if not isinstance(value, dict):
+                raise ValueError(
+                    f"Cannot render workflow views: internal_uses[{index}] must be an object"
+                )
+            if not is_nonempty_string(value.get("dependent_unit")) or not is_nonempty_string(
+                value.get("dependency_id")
+            ):
+                raise ValueError(
+                    "Cannot render workflow views: "
+                    f"internal_uses[{index}] dependent_unit and dependency_id "
+                    "must be nonempty strings"
+                )
+            rows.append(
+                {
+                    "use_id": value.get("use_id"),
+                    "prerequisite": value.get("dependency_id"),
+                    "conclusion": value.get("dependency_conclusion_id"),
+                    "dependent": value.get("dependent_unit"),
+                    "status": value.get("status"),
+                    "issue_ids": value.get("issue_ids"),
+                    "kind": "internal_result",
+                }
+            )
+    external = registry.get("external_results")
+    if not isinstance(external, list):
+        raise ValueError(
+            "Cannot render workflow views: dependency registry external_results "
+            "must be a list"
+        )
+    for result_index, result in enumerate(external, 1):
+            if not isinstance(result, dict):
+                raise ValueError(
+                    "Cannot render workflow views: "
+                    f"external_results[{result_index}] must be an object"
+                )
+            result_id = result.get("id")
+            uses = result.get("uses")
+            if not isinstance(uses, list):
+                raise ValueError(
+                    "Cannot render workflow views: "
+                    f"external_results[{result_index}].uses must be a list"
+                )
+            for use_index, value in enumerate(uses, 1):
+                if not isinstance(value, dict):
+                    raise ValueError(
+                        "Cannot render workflow views: "
+                        f"external_results[{result_index}].uses[{use_index}] "
+                        "must be an object"
+                    )
+                if not is_nonempty_string(result_id) or not is_nonempty_string(
+                    value.get("dependent_unit")
+                ):
+                    raise ValueError(
+                        "Cannot render workflow views: external dependency result IDs "
+                        "and dependent_unit values must be nonempty strings"
+                    )
+                rows.append(
+                    {
+                        "use_id": value.get("use_id"),
+                        "prerequisite": result_id,
+                        "conclusion": value.get("dependency_conclusion")
+                        or result.get("exact_statement"),
+                        "dependent": value.get("dependent_unit"),
+                        "status": value.get("status"),
+                        "issue_ids": value.get("issue_ids"),
+                        "kind": "external_result",
+                    }
+                )
+    return sorted(
+        rows,
+        key=lambda row: (
+            str(row.get("dependent", "")),
+            str(row.get("use_id", "")),
+            str(row.get("prerequisite", "")),
+        ),
+    )
+
+
+def workflow_topological_layers(
+    unit_ids: Iterable[str], rows: list[dict[str, Any]]
+) -> tuple[list[list[str]], bool]:
+    nodes = sorted(set(unit_ids))
+    node_set = set(nodes)
+    prerequisites: dict[str, set[str]] = {unit_id: set() for unit_id in nodes}
+    for row in rows:
+        if row.get("kind") != "internal_result":
+            continue
+        dependent = row.get("dependent")
+        prerequisite = row.get("prerequisite")
+        if not is_nonempty_string(dependent) or not is_nonempty_string(prerequisite):
+            raise ValueError(
+                "Cannot render workflow views: internal dependency endpoints must "
+                "be nonempty strings"
+            )
+        if dependent in node_set and prerequisite in node_set:
+            prerequisites[str(dependent)].add(str(prerequisite))
+    remaining = set(nodes)
+    completed: set[str] = set()
+    layers: list[list[str]] = []
+    while remaining:
+        ready = sorted(
+            unit_id
+            for unit_id in remaining
+            if prerequisites[unit_id].issubset(completed)
+        )
+        if not ready:
+            layers.append(sorted(remaining))
+            return layers, True
+        layers.append(ready)
+        completed.update(ready)
+        remaining.difference_update(ready)
+    return layers, False
+
+
+def load_workflow_records(root: Path) -> dict[str, Any]:
+    root = root.resolve()
+    errors = audit_internal_redirect_errors(root)
+    _, manifest, manifest_errors = load_audit_manifest(root)
+    errors.extend(manifest_errors)
+    if manifest_errors:
+        raise ValueError("Cannot load workflow views: " + "; ".join(errors))
+
+    records: dict[str, Any] = {"manifest": manifest, "root": root}
+    for field, label, key in (
+        ("inventory_file", "proof-unit inventory", "inventory"),
+        ("dependency_registry", "dependency registry", "dependency_registry"),
+        (
+            "method_interface_registry",
+            "method-interface registry",
+            "interface_registry",
+        ),
+    ):
+        path, valid = manifest_canonical_artifact_path(
+            manifest, root, field, label, errors
+        )
+        if not valid:
+            continue
+        value, read_errors = load_json_object(path, label)
+        errors.extend(read_errors)
+        if not read_errors:
+            records[key] = value
+            records[f"{key}_path"] = path
+
+    progress_path, progress_valid = canonical_artifact_path(
+        root, "PROGRESS.json", "progress record", errors
+    )
+    if progress_valid:
+        progress, progress_errors = load_json_object(
+            progress_path, "progress record"
+        )
+        errors.extend(progress_errors)
+        if not progress_errors:
+            records["progress"] = progress
+    _, issues, _, issue_errors = load_issue_log(root)
+    errors.extend(issue_errors)
+    if not issue_errors:
+        seen_issue_ids: set[str] = set()
+        for index, issue in enumerate(issues, 1):
+            prefix = f"Issue record {index}"
+            if not isinstance(issue, dict):
+                errors.append(f"{prefix} must be an object")
+                continue
+            issue_id = issue.get("id")
+            if not isinstance(issue_id, str) or not ISSUE_ID_RE.fullmatch(issue_id):
+                errors.append(f"{prefix} has an invalid ID")
+                continue
+            if issue_id in seen_issue_ids:
+                errors.append(f"Duplicate issue ID {issue_id}")
+            seen_issue_ids.add(issue_id)
+            if issue.get("severity") not in ISSUE_SEVERITIES:
+                errors.append(f"{issue_id} has invalid severity")
+            if issue.get("status") not in ISSUE_STATUSES:
+                errors.append(f"{issue_id} has invalid status")
+            if not isinstance(issue.get("load_bearing"), bool):
+                errors.append(f"{issue_id}.load_bearing must be boolean")
+            affected = issue.get("affected_results")
+            if not isinstance(affected, list) or not affected or not all(
+                is_nonempty_string(value) for value in affected
+            ):
+                errors.append(f"{issue_id}.affected_results is invalid")
+            historical = issue.get("historical_origin")
+            if isinstance(historical, dict):
+                required = historical.get("required_challenges", [])
+                if not isinstance(required, list) or not all(
+                    is_nonempty_string(value) for value in required
+                ):
+                    errors.append(
+                        f"{issue_id}.historical_origin.required_challenges is invalid"
+                    )
+        records["issues"] = issues
+    if errors:
+        raise ValueError("Cannot load workflow views: " + "; ".join(errors))
+    return records
+
+
+def workflow_critical_sets(
+    records: dict[str, Any]
+) -> tuple[set[str], set[str], set[str]]:
+    manifest = records["manifest"]
+    scope = manifest.get("audit_scope")
+    scope = scope if isinstance(scope, dict) else {}
+    declared = {
+        str(value)
+        for value in scope.get("critical_units", [])
+        if is_nonempty_string(value)
+    }
+    effective, _ = effective_critical_requirements(
+        manifest, records.get("issues", [])
+    )
+    effective_set = set(effective)
+    return declared, effective_set - declared, effective_set
+
+
+def workflow_dependency_mapping_readiness(
+    records: dict[str, Any]
+) -> tuple[bool, list[str]]:
+    manifest = records["manifest"]
+    registry = records["dependency_registry"]
+    inventory_path = records.get("inventory_path")
+    scope = manifest.get("audit_scope")
+    scope = scope if isinstance(scope, dict) else {}
+    in_scope = [
+        str(value)
+        for value in scope.get("in_scope_units", [])
+        if is_nonempty_string(value)
+    ]
+    snapshot = manifest.get("source_snapshot")
+    snapshot_id = snapshot.get("sha256") if isinstance(snapshot, dict) else None
+    errors: list[str] = []
+    validate_dependency_registry_review(
+        registry,
+        source_snapshot_sha256=snapshot_id,
+        inventory_sha256=(
+            sha256_file(inventory_path)
+            if isinstance(inventory_path, Path) and inventory_path.is_file()
+            else ""
+        ),
+        in_scope=in_scope,
+        errors=errors,
+    )
+    root = records.get("root")
+    if isinstance(root, Path):
+        errors.extend(packet_dependency_structure_errors(registry, root))
+    else:
+        errors.append("Workflow records do not identify the canonical audit root")
+
+    in_scope_set = set(in_scope)
+    internal_rows = registry.get("internal_uses")
+    if isinstance(internal_rows, list):
+        for index, row in enumerate(internal_rows, 1):
+            if not isinstance(row, dict):
+                continue
+            for field in ("dependent_unit", "dependency_id"):
+                endpoint = row.get(field)
+                if (
+                    is_nonempty_string(endpoint)
+                    and endpoint not in in_scope_set
+                ):
+                    errors.append(
+                        f"internal_uses[{index}].{field} must name an in-scope unit"
+                    )
+    external_results = registry.get("external_results")
+    if isinstance(external_results, list):
+        for result_index, result in enumerate(external_results, 1):
+            if not isinstance(result, dict):
+                continue
+            uses = result.get("uses")
+            if not isinstance(uses, list):
+                continue
+            for use_index, row in enumerate(uses, 1):
+                if not isinstance(row, dict):
+                    continue
+                dependent = row.get("dependent_unit")
+                if (
+                    is_nonempty_string(dependent)
+                    and dependent not in in_scope_set
+                ):
+                    errors.append(
+                        "external_results"
+                        f"[{result_index}].uses[{use_index}].dependent must name "
+                        "an in-scope unit"
+                    )
+    return not errors, errors
+
+
+def packet_dependency_structure_errors(
+    registry: dict[str, Any], root: Path
+) -> list[str]:
+    errors: list[str] = []
+    internal_rows = registry.get("internal_uses")
+    if not isinstance(internal_rows, list):
+        return ["Dependency registry internal_uses must be a list"]
+    for index, row in enumerate(internal_rows, 1):
+        prefix = f"internal_uses[{index}]"
+        validated = validate_dependency_use_identity(row, prefix, None, errors)
+        validate_compatibility_matrix(
+            validated.get("compatibility_checks"),
+            f"{prefix}.compatibility_checks",
+            errors,
+        )
+        validate_issue_id_list(
+            validated.get("issue_ids"), f"{prefix}.issue_ids", errors
+        )
+        if "use_site" in validated:
+            validate_locked_span(
+                validated.get("use_site"), root, f"{prefix}.use_site", errors
+            )
+
+    external_results, contract_hashes = validate_external_result_catalog(
+        registry, root, errors
+    )
+    for result_id, result in external_results.items():
+        uses = result.get("uses")
+        if not isinstance(uses, list):
+            errors.append(f"{result_id}.uses must be a list")
+            continue
+        for index, row in enumerate(uses, 1):
+            prefix = f"{result_id}.uses[{index}]"
+            validated = validate_dependency_use_identity(row, prefix, None, errors)
+            if validated.get("dependency_id") != result_id:
+                errors.append(f"{prefix}.dependency_id must equal {result_id}")
+            if validated.get("dependency_conclusion") != result.get("exact_statement"):
+                errors.append(f"{prefix}.dependency_conclusion is stale or incorrect")
+            if validated.get("dependency_contract_sha256") != contract_hashes.get(
+                result_id
+            ):
+                errors.append(
+                    f"{prefix}.dependency_contract_sha256 is stale or incorrect"
+                )
+            validate_compatibility_matrix(
+                validated.get("compatibility_checks"),
+                f"{prefix}.compatibility_checks",
+                errors,
+            )
+            validate_prerequisite_map(
+                validated.get("prerequisite_map"),
+                root,
+                f"{prefix}.prerequisite_map",
+                errors,
+            )
+            validate_issue_id_list(
+                validated.get("issue_ids"), f"{prefix}.issue_ids", errors
+            )
+            validate_string_list(
+                validated.get("citation_keys"),
+                f"{prefix}.citation_keys",
+                errors,
+                allow_empty=True,
+            )
+            if "use_site" in validated:
+                validate_locked_span(
+                    validated.get("use_site"), root, f"{prefix}.use_site", errors
+                )
+    return errors
+
+
+def render_check_plan(records: dict[str, Any]) -> str:
+    manifest = records["manifest"]
+    inventory = records["inventory"]
+    registry = records["dependency_registry"]
+    interface_registry = records["interface_registry"]
+    progress = records["progress"]
+    scope = manifest.get("audit_scope")
+    scope = scope if isinstance(scope, dict) else {}
+    units = inventory.get("units")
+    units = units if isinstance(units, list) else []
+    dependency_rows = workflow_registry_rows(registry)
+    direct_dependencies: dict[str, set[str]] = defaultdict(set)
+    use_sites: dict[str, set[str]] = defaultdict(set)
+    for row in dependency_rows:
+        dependent = row.get("dependent")
+        prerequisite = row.get("prerequisite")
+        if is_nonempty_string(dependent) and is_nonempty_string(prerequisite):
+            direct_dependencies[str(dependent)].add(str(prerequisite))
+            use_sites[str(prerequisite)].add(str(dependent))
+    declared_critical, promoted_critical, critical = workflow_critical_sets(records)
+    exclusions = [
+        row.get("id")
+        for row in scope.get("excluded_units", [])
+        if isinstance(row, dict)
+    ]
+    snapshot = manifest.get("source_snapshot")
+    snapshot_id = snapshot.get("sha256") if isinstance(snapshot, dict) else None
+    rows = [
+        "# Proof-Check Plan",
+        "",
+        "> **GENERATED VIEW:** Run",
+        "> `python \"<skill-root>/scripts/proofcheck.py\" sync-views --root <audit-root>`.",
+        "> Do not edit this file or use it as canonical evidence.",
+        "",
+        "## Scope",
+        "",
+        f"- Source snapshot: {snapshot_id or 'not_set'}",
+        f"- Audit depth: {scope.get('depth', 'not_set')}",
+        f"- Target results: {workflow_id_list(scope.get('target_units'))}",
+        f"- In-scope units: {workflow_id_list(scope.get('in_scope_units'))}",
+        f"- Declared critical units: {workflow_id_list(sorted(declared_critical))}",
+        f"- Issue-promoted critical units: {workflow_id_list(sorted(promoted_critical))}",
+        f"- Effective critical units: {workflow_id_list(sorted(critical))}",
+        f"- Explicit exclusions: {workflow_id_list(exclusions)}",
+        f"- Source or parser limitations: {workflow_id_list(scope.get('source_or_parser_limits'))}",
+        f"- Overall assessment: {scope.get('overall_assessment', 'not_set')}",
+        "",
+        "## Proof-unit inventory",
+        "",
+        "| Unit | Statement | Proof | Dependencies | Use sites | Critical basis | Status |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for unit in sorted(
+        (value for value in units if isinstance(value, dict)),
+        key=lambda value: str(value.get("id", "")),
+    ):
+        unit_id = str(unit.get("id", ""))
+        values = (
+            unit_id,
+            workflow_location(unit.get("statement")),
+            workflow_location(unit.get("proof")),
+            workflow_id_list(sorted(direct_dependencies.get(unit_id, set()))),
+            workflow_id_list(sorted(use_sites.get(unit_id, set()))),
+            (
+                "declared"
+                if unit_id in declared_critical
+                else "issue_promoted"
+                if unit_id in promoted_critical
+                else "no"
+            ),
+            workflow_unit_status(unit_id, progress),
+        )
+        rows.append(
+            "| " + " | ".join(escape_markdown(value) for value in values) + " |"
+        )
+    if not units:
+        rows.append("| none | none | none | none | none | no | unclassified |")
+    rows.extend(
+        [
+            "",
+            "## Reviewed exceptions",
+            "",
+            "| Kind | Unit or key | Canonical disposition | Evidence or limitation |",
+            "|---|---|---|---|",
+        ]
+    )
+    exceptions: list[tuple[str, str, str, str]] = []
+    for value in scope.get("excluded_units", []):
+        if isinstance(value, dict):
+            exceptions.append(
+                (
+                    "excluded_unit",
+                    str(value.get("id", "")),
+                    "excluded",
+                    str(value.get("reason", "")),
+                )
+            )
+    for value in scope.get("inventory_overrides", []):
+        if isinstance(value, dict):
+            exceptions.append(
+                (
+                    "inventory_override",
+                    str(value.get("unit_id", "")),
+                    str(value.get("kind", "")),
+                    str(value.get("reason", "")),
+                )
+            )
+    for index, value in enumerate(scope.get("source_or_parser_limits", []), 1):
+        if is_nonempty_string(value):
+            exceptions.append(("source_limit", f"L{index:03d}", "declared", value))
+    if exceptions:
+        for value in sorted(exceptions):
+            rows.append(
+                "| " + " | ".join(escape_markdown(item) for item in value) + " |"
+            )
+    else:
+        rows.append("| none | none | none | none |")
+    interface_scope = interface_registry.get("scope")
+    interface_scope = interface_scope if isinstance(interface_scope, dict) else {}
+    rows.extend(
+        [
+            "",
+            "## Method-interface scope",
+            "",
+            f"- Trigger decision: {interface_scope.get('trigger', 'not_set')}",
+            f"- In-scope interfaces: {workflow_id_list(scope.get('in_scope_interfaces'))}",
+            "",
+            "## Progress",
+            "",
+            f"- Current pass: {progress.get('current_pass', 'unknown')}",
+            f"- Active unit: {progress.get('active_unit') or 'none'}",
+            f"- Completed units: {workflow_id_list(progress.get('completed_units'))}",
+            f"- Conditional units: {workflow_id_list(progress.get('conditional_units'))}",
+            f"- Not-started units: {workflow_id_list(progress.get('not_started_units'))}",
+            f"- Open high-priority issues: {workflow_id_list(progress.get('open_high_priority_issues'))}",
+            f"- Next action: {progress.get('next_action') or 'not_set'}",
+            "",
+            "All detailed obligations, dependency uses, compatibility matrices, global",
+            "checks, issue definitions, challenges, and completion gates remain canonical in",
+            "JSON and are validated by `proofcheck.py`. They are intentionally not copied",
+            "into this view.",
+            "",
+        ]
+    )
+    return "\n".join(rows)
+
+
+def render_execution_order(records: dict[str, Any]) -> str:
+    manifest = records["manifest"]
+    inventory = records["inventory"]
+    registry = records["dependency_registry"]
+    progress = records["progress"]
+    scope = manifest.get("audit_scope")
+    scope = scope if isinstance(scope, dict) else {}
+    units = inventory.get("units")
+    units = units if isinstance(units, list) else []
+    inventory_ids = [
+        str(unit.get("id"))
+        for unit in units
+        if isinstance(unit, dict) and is_nonempty_string(unit.get("id"))
+    ]
+    scope_ids = [
+        str(value)
+        for value in scope.get("in_scope_units", [])
+        if is_nonempty_string(value)
+    ]
+    unit_ids = scope_ids or inventory_ids
+    dependency_rows = workflow_registry_rows(registry)
+    layers, cyclic = workflow_topological_layers(unit_ids, dependency_rows)
+    dependency_mapping_ready, dependency_mapping_errors = (
+        workflow_dependency_mapping_readiness(records)
+    )
+    direct: dict[str, set[str]] = defaultdict(set)
+    downstream: dict[str, set[str]] = defaultdict(set)
+    for row in dependency_rows:
+        if row.get("kind") != "internal_result":
+            continue
+        dependent = row.get("dependent")
+        prerequisite = row.get("prerequisite")
+        if is_nonempty_string(dependent) and is_nonempty_string(prerequisite):
+            direct[str(dependent)].add(str(prerequisite))
+            downstream[str(prerequisite)].add(str(dependent))
+    rows = [
+        "# Proof-Check Execution Order",
+        "",
+        "> **GENERATED VIEW:** Run",
+        "> `python \"<skill-root>/scripts/proofcheck.py\" sync-views --root <audit-root>`.",
+        "> Do not edit this file or use it as the dependency record.",
+        "",
+        "## Dependency layers",
+        "",
+        (
+            "Prerequisites appear before dependents."
+            if dependency_mapping_ready
+            else "The displayed order is provisional until dependency mapping is reviewed and current."
+        ),
+        "Short, closely related units in one",
+        "ready layer may share one model work packet only when every unit has a complete",
+        "separate packet, separate annotations, and a separate compiled ledger.",
+        "",
+        "| Layer | Ready units | Gate | Status |",
+        "|---|---|---|---|",
+    ]
+    for index, layer in enumerate(layers, 1):
+        prerequisites = (
+            sorted(set().union(*(direct.get(unit_id, set()) for unit_id in layer)))
+            if layer
+            else []
+        )
+        layer_statuses = [
+            workflow_unit_status(unit_id, progress) for unit_id in layer
+        ]
+        status = (
+            "blocked_dependency_mapping"
+            if not dependency_mapping_ready
+            else "cycle_or_unresolved"
+            if cyclic and index == len(layers)
+            else "completed"
+            if layer_statuses
+            and all(value == "completed" for value in layer_statuses)
+            else "blocked"
+            if "blocked" in layer_statuses
+            else "in_progress"
+            if any(
+                value in {"active", "in_progress", "conditional"}
+                for value in layer_statuses
+            )
+            else "ready"
+        )
+        values = (
+            str(index),
+            workflow_id_list(layer),
+            (
+                workflow_id_list(prerequisites)
+                if dependency_mapping_ready
+                else "review dependency mapping"
+            ),
+            status,
+        )
+        rows.append(
+            "| " + " | ".join(escape_markdown(value) for value in values) + " |"
+        )
+    if not layers:
+        rows.append("| none | none | none | not_set |")
+    rows.extend(
+        [
+            "",
+            "## Unit order",
+            "",
+            "| Priority | Unit | Dependencies | Critical | Status | Next action |",
+            "|---|---|---|---|---|---|",
+        ]
+    )
+    declared_critical, promoted_critical, critical = workflow_critical_sets(records)
+    priority = 0
+    for layer in layers:
+        for unit_id in layer:
+            priority += 1
+            status = workflow_unit_status(unit_id, progress)
+            if not dependency_mapping_ready:
+                next_action = (
+                    "Review and bind DEPENDENCY_REGISTRY.json before scheduling unit work."
+                )
+            elif status == "completed":
+                next_action = "none"
+            elif status == "blocked":
+                next_action = "Resolve the recorded blocker."
+            elif progress.get("active_unit") == unit_id:
+                next_action = str(
+                    progress.get("next_action") or "Continue the active unit."
+                )
+            else:
+                incomplete = sorted(
+                    dependency
+                    for dependency in direct.get(unit_id, set())
+                    if workflow_unit_status(dependency, progress) != "completed"
+                )
+                next_action = (
+                    "Complete prerequisites: " + ", ".join(incomplete)
+                    if incomplete
+                    else "Generate a primary packet and check this unit."
+                )
+            values = (
+                str(priority),
+                unit_id,
+                workflow_id_list(sorted(direct.get(unit_id, set()))),
+                (
+                    "declared"
+                    if unit_id in declared_critical
+                    else "issue_promoted"
+                    if unit_id in promoted_critical
+                    else "no"
+                ),
+                status,
+                next_action,
+            )
+            rows.append(
+                "| "
+                + " | ".join(escape_markdown(value) for value in values)
+                + " |"
+            )
+    if not layers:
+        rows.append("| none | none | none | no | not_set | Establish scope. |")
+    rows.extend(
+        [
+            "",
+            "## Blocked work",
+            "",
+            "| Unit | Blocker | Required evidence | Downstream effect |",
+            "|---|---|---|---|",
+        ]
+    )
+    blocked = progress.get("blocked_units")
+    if isinstance(blocked, dict) and blocked:
+        for unit_id, value in sorted(blocked.items()):
+            if isinstance(value, dict):
+                blocker = value.get("reason") or "recorded blocker"
+                required = value.get("required_evidence") or "see PROGRESS.json"
+            else:
+                blocker = value
+                required = "see PROGRESS.json"
+            values = (
+                str(unit_id),
+                str(blocker),
+                str(required),
+                workflow_id_list(sorted(downstream.get(str(unit_id), set()))),
+            )
+            rows.append(
+                "| " + " | ".join(escape_markdown(item) for item in values) + " |"
+            )
+    else:
+        rows.append("| none | none | none | none |")
+    rows.extend(
+        [
+            "",
+            "## Dependency mapping gate",
+            "",
+            f"- Status: {'ready' if dependency_mapping_ready else 'blocked'}",
+            (
+                "- Diagnostics: none"
+                if not dependency_mapping_errors
+                else "- Diagnostics: " + "; ".join(dependency_mapping_errors)
+            ),
+        ]
+    )
+    rows.extend(
+        [
+            "",
+            "The canonical dependency uses, statuses, issue propagation, and progress state",
+            "remain in `DEPENDENCY_REGISTRY.json`, the unit ledgers, `ISSUE_LOG.json`, and",
+            "`PROGRESS.json`.",
+            "",
+        ]
+    )
+    return "\n".join(rows)
+
+
+def render_dependency_graph(records: dict[str, Any]) -> str:
+    registry = records["dependency_registry"]
+    review = registry.get("review")
+    review = review if isinstance(review, dict) else {}
+    dependency_rows = workflow_registry_rows(registry)
+    rows = [
+        "# Proof Dependency View",
+        "",
+        "> **GENERATED VIEW:** Run",
+        "> `python \"<skill-root>/scripts/proofcheck.py\" sync-views --root <audit-root>`.",
+        "> Do not edit this file or use it as canonical dependency evidence.",
+        "",
+        "## Registry binding",
+        "",
+        f"- Closure contract version: {registry.get('closure_contract_version', 'not_set')}",
+        f"- Review status: {review.get('status', 'not_set')}",
+        f"- Source snapshot SHA256: {review.get('source_snapshot_sha256') or 'not_set'}",
+        f"- Inventory SHA256: {review.get('inventory_sha256') or 'not_set'}",
+        f"- In-scope units: {workflow_id_list(review.get('in_scope_units'))}",
+        "",
+        "## Dependency uses",
+        "",
+        "Arrows point from prerequisite to dependent result.",
+        "",
+        "| Use ID | Prerequisite | Conclusion | Dependent | Effective status | Issue IDs |",
+        "|---|---|---|---|---|---|",
+    ]
+    if dependency_rows:
+        for row in dependency_rows:
+            conclusion = row.get("conclusion")
+            if is_nonempty_string(conclusion):
+                conclusion = truncate(str(conclusion).replace("\n", " "), 160)
+            else:
+                conclusion = "none"
+            values = (
+                str(row.get("use_id") or "none"),
+                str(row.get("prerequisite") or "none"),
+                str(conclusion),
+                str(row.get("dependent") or "none"),
+                str(row.get("status") or "not_set"),
+                workflow_id_list(row.get("issue_ids")),
+            )
+            rows.append(
+                "| " + " | ".join(escape_markdown(value) for value in values) + " |"
+            )
+    else:
+        rows.append("| none | none | none | none | none | none |")
+    internal_edges = [
+        row
+        for row in dependency_rows
+        if row.get("kind") == "internal_result"
+        and is_nonempty_string(row.get("prerequisite"))
+        and is_nonempty_string(row.get("dependent"))
+    ]
+    rows.extend(["", "## Graph", "", "```text"])
+    if internal_edges:
+        rows.extend(
+            f"{row['prerequisite']} -> {row['dependent']} "
+            f"[{row.get('use_id') or 'no_use_id'}]"
+            for row in internal_edges
+        )
+    else:
+        rows.append("none")
+    rows.extend(
+        [
+            "```",
+            "",
+            "The generated graph is derived from reviewed internal-use rows. External",
+            "uses remain in the table and canonical registry but do not create internal",
+            "graph edges.",
+            "",
+            "`DEPENDENCY_REGISTRY.json` and ledger `direct_dependencies` remain canonical.",
+            "This view intentionally omits repeated needed forms, compatibility matrices,",
+            "source evidence, and contract hashes.",
+            "",
+        ]
+    )
+    return "\n".join(rows)
+
+
+def render_workflow_views(records: dict[str, Any]) -> dict[str, str]:
+    return {
+        "CHECK_PLAN.md": render_check_plan(records),
+        "EXECUTION_ORDER.md": render_execution_order(records),
+        "audit/03_dependencies/dependency_graph.md": render_dependency_graph(records),
+    }
+
+
+def expected_workflow_views(root: Path) -> dict[str, str]:
+    return render_workflow_views(load_workflow_records(root))
+
+
+def workflow_view_freshness(root: Path) -> dict[str, Any]:
+    root = root.resolve()
+    expected = expected_workflow_views(root)
+    missing: list[str] = []
+    stale: list[str] = []
+    for relative, text in expected.items():
+        path = root / Path(relative)
+        if not path.is_file():
+            missing.append(relative)
+            continue
+        if read_text(path) != text:
+            stale.append(relative)
+    return {
+        "status": "current" if not missing and not stale else "stale",
+        "missing": missing,
+        "stale": stale,
+    }
+
+
+def sync_workflow_views(root: Path) -> dict[str, Any]:
+    root = root.resolve()
+    expected = expected_workflow_views(root)
+    writes: list[tuple[Path, str]] = []
+    unchanged: list[str] = []
+    for relative, text in expected.items():
+        path = root / Path(relative)
+        if path.is_file() and read_text(path) == text:
+            unchanged.append(relative)
+        else:
+            writes.append((path, text))
+    if writes:
+        transactional_write_texts(writes)
+    return {
+        "status": "synchronized",
+        "changed": [path.relative_to(root).as_posix() for path, _ in writes],
+        "unchanged": unchanged,
+    }
+
+
+def cmd_sync_views(args: argparse.Namespace) -> int:
+    configure_console_errors()
+    root = args.root.resolve()
+    result = sync_workflow_views(root)
+    result["command"] = "sync-views"
+    result["audit_root"] = str(root)
+    print(json.dumps(result, ensure_ascii=True, indent=2))
+    return 0
+
+
+def packet_unit_artifact(
+    root: Path, unit_id: str, suffix: str, label: str
+) -> tuple[Path | None, dict[str, Any] | None]:
+    matches: list[tuple[Path, dict[str, Any]]] = []
+    for path in sorted(root.rglob(f"*{suffix}")):
+        value, errors = load_json_object(path, label)
+        if errors:
+            raise ValueError("Cannot generate packet: " + "; ".join(errors))
+        if value.get("unit_id") == unit_id:
+            matches.append((path, value))
+    if len(matches) > 1:
+        raise ValueError(f"Cannot generate packet: duplicate {label}s for {unit_id}")
+    return matches[0] if matches else (None, None)
+
+
+def packet_ledger(
+    root: Path, unit_id: str
+) -> tuple[Path | None, dict[str, Any] | None]:
+    return packet_unit_artifact(
+        root, unit_id, ".ledger.json", "canonical proof-unit ledger"
+    )
+
+
+def packet_skeleton(
+    root: Path, unit_id: str
+) -> tuple[Path | None, dict[str, Any] | None]:
+    return packet_unit_artifact(
+        root, unit_id, ".skeleton.json", "source-locked skeleton"
+    )
+
+
+def packet_semantic_readiness(
+    path: Path | None, ledger: dict[str, Any] | None, unit_id: str
+) -> dict[str, Any]:
+    if path is None or ledger is None:
+        return {
+            "ready": False,
+            "reasons": ["No current proof-unit ledger or source-locked skeleton exists."],
+        }
+    reasons: list[str] = []
+    if (
+        ledger.get("schema_version") != SCHEMA_VERSION
+        or ledger.get("evidence_contract_version") != EVIDENCE_CONTRACT_VERSION
+    ):
+        reasons.append("The semantic artifact uses an unsupported evidence schema.")
+    if ledger.get("unit_id") != unit_id:
+        reasons.append("The semantic artifact is bound to a different proof unit.")
+
+    source_errors: list[str] = []
+    source = ledger.get("source")
+    if not isinstance(source, dict):
+        source_errors.append("missing source object")
+    else:
+        try:
+            start = source["start_line"]
+            end = source["end_line"]
+            file_value = source["file"]
+            if (
+                not is_int(start)
+                or not is_int(end)
+                or start < 1
+                or end < start
+                or not is_nonempty_string(file_value)
+            ):
+                raise ValueError("invalid source range")
+            source_path = resolve_stored_path(str(file_value), path.parent)
+            current = read_lines(source_path)
+            if end > len(current):
+                raise ValueError("source range exceeds current file")
+            selected = current[start - 1 : end]
+            if source.get("unit_sha256") != sha256_text("\n".join(selected)):
+                raise ValueError("source unit hash is stale")
+            locked = ledger.get("source_lines")
+            if not isinstance(locked, list) or len(locked) != len(selected):
+                raise ValueError("locked source line count is stale")
+            for offset, (record, text) in enumerate(zip(locked, selected)):
+                if (
+                    not isinstance(record, dict)
+                    or record.get("line") != start + offset
+                    or record.get("text") != text
+                    or record.get("sha256") != sha256_text(text)
+                ):
+                    raise ValueError("locked source lines are stale")
+        except (KeyError, OSError, TypeError, ValueError):
+            source_errors.append("source lock is incomplete or stale")
+    if source_errors:
+        reasons.append("The proof-unit source lock is incomplete or stale.")
+
+    obligation_errors: list[str] = []
+    validate_obligation(ledger.get("obligation"), path, True, obligation_errors)
+    if obligation_errors:
+        reasons.append("The normalized obligation is incomplete or stale.")
+    return {"ready": not reasons, "reasons": reasons}
+
+
+def packet_inventory_binding_errors(
+    paper_base: Path,
+    unit: dict[str, Any],
+    artifact_path: Path | None,
+    artifact: dict[str, Any] | None,
+) -> list[str]:
+    if artifact_path is None or artifact is None:
+        return []
+    source = artifact.get("source")
+    obligation = artifact.get("obligation")
+    if not isinstance(source, dict) or not isinstance(obligation, dict):
+        return ["semantic artifact lacks source or obligation bindings"]
+    try:
+        ledger_file = resolve_stored_path(str(source["file"]), artifact_path.parent)
+        ledger_start = source["start_line"]
+        ledger_end = source["end_line"]
+        if not is_int(ledger_start) or not is_int(ledger_end):
+            raise ValueError("invalid ledger source range")
+    except (KeyError, TypeError, ValueError):
+        return ["semantic artifact source binding is malformed"]
+
+    proof = unit.get("proof")
+    statement = unit.get("statement")
+    if not isinstance(statement, dict):
+        return ["inventory has no statement or proof binding"]
+    try:
+        statement_file = resolve_stored_path(str(statement["file"]), paper_base)
+        statement_start = statement["start_line"]
+        statement_end = statement["end_line"]
+        proof_file = (
+            resolve_stored_path(str(proof["file"]), paper_base)
+            if isinstance(proof, dict)
+            else statement_file
+        )
+        proof_start = proof["start_line"] if isinstance(proof, dict) else statement_start
+        proof_end = proof["end_line"] if isinstance(proof, dict) else statement_end
+        if not all(
+            is_int(value)
+            for value in (statement_start, statement_end, proof_start, proof_end)
+        ):
+            raise ValueError("invalid inventory source range")
+    except (KeyError, TypeError, ValueError):
+        return ["inventory statement or proof binding is malformed"]
+    errors: list[str] = []
+    coverage_mode = source.get("coverage_mode")
+    if coverage_mode == "statement_and_proof":
+        exact_binding = (
+            statement_file == proof_file == ledger_file
+            and ledger_start == min(statement_start, proof_start)
+            and ledger_end == max(statement_end, proof_end)
+        )
+    elif coverage_mode in {"proof_with_separate_statement", "external_restatement"}:
+        exact_binding = (
+            ledger_file == proof_file
+            and ledger_start == proof_start
+            and ledger_end == proof_end
+        )
+    else:
+        exact_binding = False
+    if not exact_binding:
+        errors.append(
+            "semantic artifact source range does not exactly match the inventory proof contract"
+        )
+
+    statement_spans = obligation.get("statement_spans")
+    matched_statement = False
+    if isinstance(statement, dict) and isinstance(statement_spans, list):
+        try:
+            statement_file = resolve_stored_path(str(statement["file"]), paper_base)
+            statement_start = statement["start_line"]
+            statement_end = statement["end_line"]
+        except (KeyError, TypeError, ValueError):
+            statement_file = Path()
+            statement_start = None
+            statement_end = None
+        for span in statement_spans:
+            if not isinstance(span, dict):
+                continue
+            try:
+                span_file = resolve_stored_path(str(span["file"]), artifact_path.parent)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if (
+                span_file == statement_file
+                and span.get("start_line") == statement_start
+                and span.get("end_line") == statement_end
+            ):
+                matched_statement = True
+                break
+    if not matched_statement:
+        errors.append(
+            "normalized obligation statement span disagrees with the inventory statement"
+        )
+    return errors
+
+
+def packet_locked_span(
+    value: Any, root: Path, source_base: Path
+) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    file_value = value.get("file")
+    source_identity: dict[str, Any] | None = None
+    locked_lines: list[dict[str, Any]] = []
+    if is_nonempty_string(file_value):
+        normalized_name = Path(str(file_value).replace("\\", "/")).name
+        audit_relative = None
+        try:
+            source_path = resolve_stored_path(str(file_value), source_base)
+            normalized_name = source_path.name
+            audit_relative = source_path.relative_to(root).as_posix()
+        except ValueError:
+            pass
+        try:
+            source_path = resolve_stored_path(str(file_value), source_base)
+            start = value.get("start_line")
+            end = value.get("end_line")
+            if is_int(start) and is_int(end) and source_path.is_file():
+                lines = read_lines(source_path)
+                if 1 <= start <= end <= len(lines):
+                    locked_lines = [
+                        {
+                            "line": number,
+                            "sha256": sha256_text(lines[number - 1]),
+                            "text": lines[number - 1],
+                        }
+                        for number in range(start, end + 1)
+                    ]
+        except (OSError, UnicodeError, ValueError):
+            locked_lines = []
+        source_identity = {
+            "name": normalized_name,
+            "audit_relative_file": audit_relative,
+        }
+    projected = {
+        "source": source_identity,
+        "start_line": value.get("start_line"),
+        "end_line": value.get("end_line"),
+        "sha256": value.get("sha256"),
+        "quote": value.get("quote"),
+        "lines": locked_lines,
+    }
+    if "role" in value:
+        projected["role"] = value.get("role")
+    return projected
+
+
+def packet_obligation(
+    value: Any, root: Path, source_base: Path
+) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    projected = {
+        field: value.get(field)
+        for field in (
+            "quantified_variables",
+            "quantifier_scope",
+            "probability_model",
+            "hypotheses",
+            "definitions",
+            "conclusion",
+            "uniformity",
+            "regime",
+            "constant_dependencies",
+            "normalization_checks",
+        )
+    }
+    projected["statement_spans"] = [
+        span
+        for row in value.get("statement_spans", [])
+        if (span := packet_locked_span(row, root, source_base)) is not None
+    ]
+    projected["context_spans"] = [
+        span
+        for row in value.get("context_spans", [])
+        if (span := packet_locked_span(row, root, source_base)) is not None
+    ]
+    conclusions: list[dict[str, Any]] = []
+    raw_conclusions = value.get("conclusions")
+    if isinstance(raw_conclusions, list):
+        for row in raw_conclusions:
+            if isinstance(row, dict):
+                conclusions.append(
+                    {
+                        "id": row.get("id"),
+                        "claim": row.get("claim"),
+                        "applies_under": row.get("applies_under"),
+                        "source_spans": [
+                            span
+                            for source_row in row.get("source_spans", [])
+                            if (
+                                span := packet_locked_span(
+                                    source_row, root, source_base
+                                )
+                            )
+                            is not None
+                        ],
+                        "normalization": row.get("normalization"),
+                    }
+                )
+    projected["conclusions"] = conclusions
+    return projected
+
+
+def packet_source_members(
+    root: Path, manifest: dict[str, Any]
+) -> list[tuple[Path, dict[str, Any]]]:
+    snapshot = manifest.get("source_snapshot")
+    rows = snapshot.get("files") if isinstance(snapshot, dict) else None
+    if not isinstance(rows, list):
+        raise ValueError("Cannot generate packet: source snapshot files are missing")
+    members: list[tuple[Path, dict[str, Any]]] = []
+    for index, row in enumerate(rows, 1):
+        if not isinstance(row, dict) or not is_nonempty_string(row.get("file")):
+            raise ValueError(f"Cannot generate packet: invalid source member {index}")
+        members.append((resolve_stored_path(row["file"], root), row))
+    return members
+
+
+def packet_span(
+    root: Path,
+    source_base: Path,
+    location: Any,
+    members: list[tuple[Path, dict[str, Any]]],
+    *,
+    allow_locked_external: bool = False,
+) -> dict[str, Any] | None:
+    if location is None:
+        return None
+    if not isinstance(location, dict):
+        raise ValueError("Cannot generate packet: source location is malformed")
+    file_value = location.get("file")
+    start = location.get("start_line")
+    end = location.get("end_line")
+    if not is_nonempty_string(file_value) or not is_int(start) or not is_int(end):
+        raise ValueError("Cannot generate packet: source location is incomplete")
+    source = resolve_stored_path(str(file_value), source_base)
+    if not source.is_file():
+        raise FileNotFoundError(f"Cannot generate packet: source file is missing: {source}")
+    lines = read_lines(source)
+    if start < 1 or end < start or end > len(lines):
+        raise ValueError("Cannot generate packet: source location is out of bounds")
+    member_index = next(
+        (index for index, (path, _) in enumerate(members, 1) if path == source),
+        None,
+    )
+    if member_index is None and not allow_locked_external:
+        raise ValueError("Cannot generate packet: source span is outside the snapshot")
+    try:
+        audit_relative = source.relative_to(root).as_posix()
+    except ValueError:
+        audit_relative = None
+    selected = lines[start - 1 : end]
+    if member_index is None:
+        source_member = {
+            "index": None,
+            "name": source.name,
+            "audit_relative_file": audit_relative,
+            "file_sha256": sha256_file(source),
+            "membership": "locked_external_evidence",
+        }
+    else:
+        member = members[member_index - 1][1]
+        source_member = {
+            "index": member_index,
+            "name": source.name,
+            "audit_relative_file": audit_relative,
+            "file_sha256": member.get("sha256"),
+        }
+    return {
+        "source_member": source_member,
+        "start_line": start,
+        "end_line": end,
+        "span_sha256": sha256_text("\n".join(selected)),
+        "lines": [
+            {"line": number, "sha256": sha256_text(text), "text": text}
+            for number, text in enumerate(selected, start)
+        ],
+    }
+
+
+def packet_candidate_dependency_paths(
+    inventory: dict[str, Any],
+    unit: dict[str, Any],
+    source_base: Path,
+    root: Path,
+    members: list[tuple[Path, dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Reconstruct portable source paths for parser-promoted dependency candidates."""
+    label_owners = inventory.get("label_owners")
+    if not isinstance(label_owners, dict):
+        raise ValueError("Cannot generate packet: inventory label_owners is malformed")
+    raw_files = inventory.get("files")
+    if not isinstance(raw_files, list) or not all(
+        is_nonempty_string(value) for value in raw_files
+    ):
+        raise ValueError("Cannot generate packet: inventory files are malformed")
+    source_paths: list[Path] = []
+    for value in raw_files:
+        path = resolve_stored_path(str(value), source_base)
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"Cannot generate packet: inventory source file is missing: {path}"
+            )
+        source_paths.append(path)
+    source_lines = readable_source_lines(source_paths, [], source_base)
+    units = inventory.get("units")
+    if not isinstance(units, list):
+        raise ValueError("Cannot generate packet: inventory units are malformed")
+    support_index = build_unowned_label_support_index(
+        source_lines, units, label_owners, source_base
+    )
+    statement_evidence = scan_unit_statement_evidence(unit, source_base)
+    raw_paths = resolve_candidate_internal_dependency_paths(
+        str(unit.get("id")),
+        [
+            *statement_evidence["reference_occurrences"],
+            *(
+                row
+                for row in unit.get("reference_occurrences", [])
+                if isinstance(row, dict)
+            ),
+        ],
+        label_owners,
+        support_index,
+    )
+    output: list[dict[str, Any]] = []
+    for path_index, raw_path in enumerate(raw_paths, 1):
+        chain_projection: list[dict[str, Any]] = []
+        raw_chain = raw_path.get("reference_chain")
+        if not isinstance(raw_chain, list) or not raw_chain:
+            raise ValueError("Cannot generate packet: candidate path is malformed")
+        for occurrence in raw_chain:
+            if not isinstance(occurrence, dict):
+                raise ValueError(
+                    "Cannot generate packet: candidate occurrence is malformed"
+                )
+            file_value = occurrence.get("file")
+            line_number = occurrence.get("line")
+            if not is_nonempty_string(file_value) or not is_int(line_number):
+                raise ValueError(
+                    "Cannot generate packet: candidate occurrence lacks a source anchor"
+                )
+            source = resolve_stored_path(str(file_value), source_base)
+            member_index = next(
+                (
+                    index
+                    for index, (member_path, _) in enumerate(members, 1)
+                    if member_path == source
+                ),
+                None,
+            )
+            if member_index is None:
+                raise ValueError(
+                    "Cannot generate packet: candidate occurrence is outside "
+                    "the source snapshot"
+                )
+            lines = source_lines.get(source)
+            if lines is None:
+                lines = read_lines(source)
+            if line_number < 1 or line_number > len(lines):
+                raise ValueError(
+                    "Cannot generate packet: candidate occurrence line is out of bounds"
+                )
+            member = members[member_index - 1][1]
+            try:
+                audit_relative = source.relative_to(root).as_posix()
+            except ValueError:
+                audit_relative = None
+            owner = label_owners.get(str(occurrence.get("target")))
+            owner = owner if isinstance(owner, dict) else {}
+            text = lines[line_number - 1]
+            chain_projection.append(
+                {
+                    "occurrence_id": occurrence.get("occurrence_id"),
+                    "command": occurrence.get("command"),
+                    "target": occurrence.get("target"),
+                    "structural_context": occurrence.get("structural_context"),
+                    "resolution_status": owner.get("status"),
+                    "owner_unit_id": owner.get("owner_unit_id"),
+                    "source_member": {
+                        "index": member_index,
+                        "name": source.name,
+                        "audit_relative_file": audit_relative,
+                        "file_sha256": member.get("sha256"),
+                    },
+                    "line": line_number,
+                    "start_column": occurrence.get(
+                        "start_column", occurrence.get("column")
+                    ),
+                    "end_column": occurrence.get("end_column"),
+                    "line_sha256": sha256_text(text),
+                    "text": text,
+                }
+            )
+        output.append(
+            {
+                "path_id": f"CP{path_index:03d}",
+                "candidate_id": raw_path.get("candidate_id"),
+                "origin_occurrence_id": chain_projection[0][
+                    "occurrence_id"
+                ],
+                "reference_chain": chain_projection,
+            }
+        )
+    return output
+
+
+def packet_downstream_use_sites(
+    inventory: dict[str, Any],
+    unit: dict[str, Any],
+    cross_references: dict[str, Any],
+    source_base: Path,
+    root: Path,
+    members: list[tuple[Path, dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Project every canonical outside-unit reference to this result."""
+    label_owners = inventory.get("label_owners")
+    label_owners = label_owners if isinstance(label_owners, dict) else {}
+    inventory_units = inventory.get("units")
+    inventory_units = inventory_units if isinstance(inventory_units, list) else []
+    occurrence_context = {
+        occurrence.get("occurrence_id"): occurrence.get("structural_context")
+        for reviewed_unit in inventory_units
+        if isinstance(reviewed_unit, dict)
+        for occurrence in reviewed_unit.get("reference_occurrences", [])
+        if isinstance(occurrence, dict)
+        and is_nonempty_string(occurrence.get("occurrence_id"))
+    }
+    redirect_spans = [
+        redirect
+        for reviewed_unit in inventory_units
+        if isinstance(reviewed_unit, dict)
+        for redirect in reviewed_unit.get("proof_redirects", [])
+        if isinstance(reviewed_unit.get("proof_redirects"), list)
+        and isinstance(redirect, dict)
+    ]
+    unit_id = str(unit.get("id"))
+    projected: list[dict[str, Any]] = []
+    occurrences = cross_references.get("occurrences")
+    occurrences = occurrences if isinstance(occurrences, list) else []
+    seen: set[str] = set()
+    for occurrence in occurrences:
+        if not isinstance(occurrence, dict):
+            continue
+        owner = label_owners.get(str(occurrence.get("target")))
+        owner = owner if isinstance(owner, dict) else {}
+        refers_to_unit = bool(
+            occurrence.get("target") == unit_id
+            or (
+                owner.get("status") == "unique"
+                and owner.get("owner_unit_id") == unit_id
+            )
+        )
+        if not refers_to_unit:
+            continue
+        if span_contains_location(
+            unit.get("statement"),
+            occurrence.get("file"),
+            occurrence.get("line"),
+            source_base,
+        ) or span_contains_location(
+            unit.get("proof"),
+            occurrence.get("file"),
+            occurrence.get("line"),
+            source_base,
+        ):
+            continue
+        if occurrence_context.get(
+            occurrence.get("occurrence_id")
+        ) == "proof_header":
+            continue
+        if any(
+            span_contains_location(
+                redirect,
+                occurrence.get("file"),
+                occurrence.get("line"),
+                source_base,
+            )
+            for redirect in redirect_spans
+        ):
+            continue
+        file_value = occurrence.get("file")
+        line_number = occurrence.get("line")
+        if not is_nonempty_string(file_value) or not is_int(line_number):
+            continue
+        canonical_location = f"{file_value}:{line_number}"
+        if canonical_location in seen:
+            continue
+        seen.add(canonical_location)
+        source = resolve_stored_path(str(file_value), source_base)
+        member_index = next(
+            (
+                index
+                for index, (member_path, _) in enumerate(members, 1)
+                if member_path == source
+            ),
+            None,
+        )
+        if member_index is None or not source.is_file():
+            raise ValueError(
+                "Cannot generate packet: downstream use is outside the "
+                "source snapshot"
+            )
+        lines = read_lines(source)
+        if line_number < 1 or line_number > len(lines):
+            raise ValueError(
+                "Cannot generate packet: downstream use line is out of bounds"
+            )
+        member = members[member_index - 1][1]
+        try:
+            audit_relative = source.relative_to(root).as_posix()
+        except ValueError:
+            audit_relative = None
+        text = lines[line_number - 1]
+        projected.append(
+            {
+                "canonical_location": canonical_location,
+                "occurrence_id": occurrence.get("occurrence_id"),
+                "command": occurrence.get("command"),
+                "target": occurrence.get("target"),
+                "source_member": {
+                    "index": member_index,
+                    "name": source.name,
+                    "audit_relative_file": audit_relative,
+                    "file_sha256": member.get("sha256"),
+                },
+                "line": line_number,
+                "line_sha256": sha256_text(text),
+                "text": text,
+            }
+        )
+    return sorted(
+        projected, key=lambda row: str(row.get("canonical_location", ""))
+    )
+
+
+def packet_inventory_projection(
+    unit: dict[str, Any],
+    candidate_paths: list[dict[str, Any]] | None = None,
+    downstream_use_sites: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    association = unit.get("proof_association")
+    association_projection = None
+    if isinstance(association, dict):
+        association_projection = {
+            field: association.get(field)
+            for field in ("status", "method", "target", "evidence_occurrence_ids")
+        }
+    occurrences: list[dict[str, Any]] = []
+    for row in unit.get("reference_occurrences", []):
+        if isinstance(row, dict):
+            occurrences.append(
+                {
+                    field: row.get(field)
+                    for field in (
+                        "occurrence_id",
+                        "command",
+                        "target",
+                        "line",
+                        "start_column",
+                        "end_column",
+                        "structural_context",
+                        "resolution_status",
+                        "owner_unit_id",
+                        "owner_region",
+                    )
+                    if field in row
+                }
+            )
+    candidate_ids: set[str] = set()
+    for row in unit.get("candidate_internal_dependencies", []):
+        if is_nonempty_string(row):
+            candidate_ids.add(str(row))
+        elif isinstance(row, dict):
+            for field in ("dependency_id", "id", "owner_unit_id", "target"):
+                if is_nonempty_string(row.get(field)):
+                    candidate_ids.add(str(row[field]))
+    return {
+        "environment": unit.get("environment"),
+        "proof_required": unit.get("proof_required"),
+        "proof_association": association_projection,
+        "reference_occurrences": occurrences,
+        "candidate_internal_dependency_ids": sorted(candidate_ids),
+        "candidate_dependency_paths": list(candidate_paths or []),
+        "downstream_use_sites": list(downstream_use_sites or []),
+        "citation_keys": sorted(
+            str(value)
+            for value in unit.get("citations", [])
+            if is_nonempty_string(value)
+        ),
+    }
+
+
+def packet_candidate_reconciliation(
+    unit: dict[str, Any],
+    registry: dict[str, Any],
+    semantic_artifact: dict[str, Any] | None,
+    candidate_paths: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    candidate_ids = set(
+        packet_inventory_projection(unit)["candidate_internal_dependency_ids"]
+    )
+    registry_mapped_ids = {
+        str(row.get("dependency_id"))
+        for row in registry.get("internal_uses", [])
+        if isinstance(row, dict)
+        and row.get("dependent_unit") == unit.get("id")
+        and is_nonempty_string(row.get("dependency_id"))
+    }
+    review = (
+        semantic_artifact.get("review")
+        if isinstance(semantic_artifact, dict)
+        else None
+    )
+    ledger_dependency_ids: set[str] = set()
+    if isinstance(review, dict):
+        ledger_dependency_ids.update(
+            str(row.get("id"))
+            for row in review.get("direct_dependencies", [])
+            if (
+                isinstance(row, dict)
+                and row.get("kind") == "internal_result"
+                and is_nonempty_string(row.get("id"))
+            )
+        )
+    candidate_dispositions = {
+        str(row.get("candidate_id")): row
+        for row in (
+            review.get("candidate_dependency_dispositions", [])
+            if isinstance(review, dict)
+            else []
+        )
+        if isinstance(row, dict) and is_nonempty_string(row.get("candidate_id"))
+    }
+    path_ids_by_candidate: dict[str, list[str]] = defaultdict(list)
+    for path in candidate_paths or []:
+        if not isinstance(path, dict):
+            continue
+        candidate_id = path.get("candidate_id")
+        path_id = path.get("path_id")
+        if is_nonempty_string(candidate_id) and is_nonempty_string(
+            path_id
+        ):
+            path_ids_by_candidate[str(candidate_id)].append(
+                str(path_id)
+            )
+    explicit_non_dependencies: set[str] = set()
+    nondependency_roles = {"navigation", "non_load_bearing"}
+    for candidate_id in candidate_ids - registry_mapped_ids:
+        disposition = candidate_dispositions.get(candidate_id)
+        expected_path_ids = sorted(path_ids_by_candidate.get(candidate_id, []))
+        if (
+            isinstance(disposition, dict)
+            and disposition.get("disposition") in nondependency_roles
+            and sorted(disposition.get("path_ids", [])) == expected_path_ids
+            and expected_path_ids
+        ):
+            explicit_non_dependencies.add(candidate_id)
+    unresolved = sorted(
+        candidate_ids - registry_mapped_ids - explicit_non_dependencies
+    )
+    ledger_only = sorted(ledger_dependency_ids - registry_mapped_ids)
+    return {
+        "status": (
+            "complete" if not unresolved and not ledger_only else "pending"
+        ),
+        "candidate_internal_dependency_ids": sorted(candidate_ids),
+        "registry_mapped_dependency_ids": sorted(
+            candidate_ids & registry_mapped_ids
+        ),
+        "explicit_nondependency_ids": sorted(explicit_non_dependencies),
+        "unresolved_candidate_ids": unresolved,
+        "ledger_only_internal_dependency_ids": ledger_only,
+    }
+
+
+def packet_candidate_reconciliation_projection(
+    reconciliation: dict[str, Any], mode: str
+) -> dict[str, Any]:
+    """Hide the primary reviewer's candidate classifications from a challenger."""
+    if mode == "primary":
+        return reconciliation
+    candidate_ids = list(
+        reconciliation.get("candidate_internal_dependency_ids", [])
+    )
+    mapped_ids = list(
+        reconciliation.get("registry_mapped_dependency_ids", [])
+    )
+    return {
+        "candidate_internal_dependency_ids": candidate_ids,
+        "registry_mapped_dependency_ids": mapped_ids,
+        "candidate_ids_without_registry_contract": sorted(
+            set(candidate_ids) - set(mapped_ids)
+        ),
+    }
+
+
+def compact_dependencies_from_packet(
+    dependency_projection: Any,
+) -> list[dict[str, Any]]:
+    """Project registry-backed packet uses into the compact annotation schema."""
+    if not isinstance(dependency_projection, dict):
+        raise ValueError("Packet dependencies must be an object")
+    output: list[dict[str, Any]] = []
+    for field, kind in (
+        ("direct_internal_uses", "internal_result"),
+        ("direct_external_uses", "external_result"),
+    ):
+        rows = dependency_projection.get(field)
+        if not isinstance(rows, list):
+            raise ValueError(f"Packet dependencies.{field} must be a list")
+        for index, row in enumerate(rows, 1):
+            if not isinstance(row, dict):
+                raise ValueError(
+                    f"Packet dependencies.{field}[{index}] must be an object"
+                )
+            compact = {
+                "id": row.get("dependency_id"),
+                "use_id": row.get("use_id"),
+                "kind": kind,
+                "status": row.get("status"),
+                "needed_form": row.get("needed_form"),
+                "compatibility_check": row.get("compatibility_check"),
+            }
+            if kind == "internal_result":
+                compact["conclusion_id"] = row.get(
+                    "dependency_conclusion_id"
+                )
+            output.append(compact)
+    return sorted(output, key=lambda row: str(row.get("use_id", "")))
+
+
+def packet_dependency_alignment(
+    semantic_artifact: dict[str, Any] | None,
+    dependency_projection: dict[str, Any],
+    *,
+    primary_record_ready: bool,
+) -> dict[str, Any]:
+    """Compare a final primary ledger with the registry-backed packet contracts."""
+    expected = compact_dependencies_from_packet(dependency_projection)
+    if not primary_record_ready or not isinstance(semantic_artifact, dict):
+        return {
+            "status": "pending_primary_record",
+            "expected_use_ids": [
+                str(row.get("use_id")) for row in expected
+            ],
+            "mismatches": [],
+        }
+    review = semantic_artifact.get("review")
+    raw_actual = (
+        review.get("direct_dependencies", [])
+        if isinstance(review, dict)
+        else []
+    )
+    actual: list[dict[str, Any]] = []
+    if isinstance(raw_actual, list):
+        for row in raw_actual:
+            if not isinstance(row, dict):
+                continue
+            compact = {
+                field: row.get(field)
+                for field in (
+                    "id",
+                    "use_id",
+                    "kind",
+                    "status",
+                    "needed_form",
+                    "compatibility_check",
+                )
+            }
+            if row.get("kind") == "internal_result":
+                compact["conclusion_id"] = row.get("conclusion_id")
+            actual.append(compact)
+    actual = sorted(actual, key=lambda row: str(row.get("use_id", "")))
+    mismatches: list[str] = []
+    expected_by_use = {
+        str(row.get("use_id")): row for row in expected
+    }
+    actual_by_use = {
+        str(row.get("use_id")): row for row in actual
+    }
+    for use_id in sorted(set(expected_by_use) | set(actual_by_use)):
+        if use_id not in expected_by_use:
+            mismatches.append(f"{use_id}: missing registry contract")
+        elif use_id not in actual_by_use:
+            mismatches.append(f"{use_id}: missing primary-ledger use")
+        elif expected_by_use[use_id] != actual_by_use[use_id]:
+            fields = sorted(
+                field
+                for field in set(expected_by_use[use_id])
+                | set(actual_by_use[use_id])
+                if expected_by_use[use_id].get(field)
+                != actual_by_use[use_id].get(field)
+            )
+            mismatches.append(
+                f"{use_id}: fields differ: {', '.join(fields)}"
+            )
+    return {
+        "status": "complete" if not mismatches else "mismatch",
+        "expected_use_ids": sorted(expected_by_use),
+        "mismatches": mismatches,
+    }
+
+
+def packet_dependency_use(
+    row: dict[str, Any],
+    root: Path,
+    mode: str,
+    *,
+    external: bool = False,
+    source_status: str | None = None,
+) -> dict[str, Any]:
+    common_fields = (
+        "dependent_unit",
+        "use_id",
+        "dependency_id",
+        "dependency_conclusion_id",
+        "dependency_conclusion",
+        "dependency_contract_sha256",
+        "needed_form",
+        "step_ids",
+    )
+    projected = {field: row.get(field) for field in common_fields if field in row}
+    if external:
+        projected["citation_keys"] = row.get("citation_keys")
+    use_site = packet_locked_span(row.get("use_site"), root, root)
+    if use_site is not None:
+        projected["use_site"] = use_site
+    if mode == "primary":
+        if source_status is not None:
+            projected["source_status"] = source_status
+        for field in (
+            "compatibility_check",
+            "compatibility_checks",
+            "status",
+            "issue_ids",
+        ):
+            projected[field] = row.get(field)
+        if external:
+            prerequisite_rows: list[dict[str, Any]] = []
+            raw_prerequisites = row.get("prerequisite_map")
+            if isinstance(raw_prerequisites, list):
+                for prerequisite in raw_prerequisites:
+                    if not isinstance(prerequisite, dict):
+                        continue
+                    item = {
+                        field: prerequisite.get(field)
+                        for field in (
+                            "prerequisite",
+                            "manuscript_evidence",
+                            "status",
+                            "issue_ids",
+                        )
+                    }
+                    item["evidence_spans"] = [
+                        span
+                        for source_row in prerequisite.get("evidence_spans", [])
+                        if (
+                            span := packet_locked_span(source_row, root, root)
+                        )
+                        is not None
+                    ]
+                    prerequisite_rows.append(item)
+            projected["prerequisite_map"] = prerequisite_rows
+    return projected
+
+
+def packet_dependency_projection(
+    registry: dict[str, Any],
+    root: Path,
+    unit_id: str,
+    mode: str,
+    current_artifact: dict[str, Any] | None,
+) -> dict[str, Any]:
+    direct_internal: list[dict[str, Any]] = []
+    downstream_internal: list[dict[str, Any]] = []
+    internal_rows = registry.get("internal_uses")
+    internal_rows = internal_rows if isinstance(internal_rows, list) else []
+    for row in internal_rows:
+        if not isinstance(row, dict):
+            continue
+        if row.get("dependent_unit") == unit_id:
+            dependency_path, _ = packet_ledger(
+                root, str(row.get("dependency_id", ""))
+            )
+            if dependency_path is None:
+                raise ValueError(
+                    "Cannot generate packet: direct internal dependency has no "
+                    "canonical ledger"
+                )
+            dependency_errors, dependency_summary = check_ledger_data(
+                dependency_path, True
+            )
+            if dependency_errors:
+                raise ValueError(
+                    "Cannot generate packet: direct internal dependency ledger is "
+                    "not locally final: " + "; ".join(dependency_errors[:6])
+                )
+            conclusion_id = str(row.get("dependency_conclusion_id", ""))
+            conclusion_record = next(
+                (
+                    value
+                    for value in dependency_summary.get(
+                        "obligation_conclusions", []
+                    )
+                    if isinstance(value, dict)
+                    and value.get("id") == conclusion_id
+                ),
+                None,
+            )
+            if (
+                not isinstance(conclusion_record, dict)
+                or row.get("dependency_conclusion")
+                != conclusion_record.get("claim")
+                or row.get("dependency_contract_sha256")
+                != conclusion_record.get("contract_sha256")
+            ):
+                raise ValueError(
+                    "Cannot generate packet: direct internal dependency contract "
+                    "is stale or incorrect"
+                )
+            projected = packet_dependency_use(
+                row,
+                root,
+                mode,
+                source_status=internal_dependency_status(
+                    dependency_summary,
+                    conclusion_id,
+                ),
+            )
+            direct_internal.append(projected)
+        if row.get("dependency_id") == unit_id:
+            obligation = (
+                current_artifact.get("obligation")
+                if isinstance(current_artifact, dict)
+                else None
+            )
+            conclusion_id = row.get("dependency_conclusion_id")
+            contract_payload = (
+                conclusion_contract_payload(obligation, str(conclusion_id))
+                if isinstance(obligation, dict)
+                and is_nonempty_string(conclusion_id)
+                else None
+            )
+            if (
+                not isinstance(contract_payload, dict)
+                or row.get("dependency_conclusion")
+                != contract_payload.get("claim")
+                or row.get("dependency_contract_sha256")
+                != canonical_sha256(contract_payload)
+            ):
+                raise ValueError(
+                    "Cannot generate packet: downstream internal dependency contract "
+                    "is stale or incorrect"
+                )
+            projected = packet_dependency_use(row, root, mode)
+            downstream_internal.append(projected)
+
+    direct_external: list[dict[str, Any]] = []
+    external_results: list[dict[str, Any]] = []
+    result_rows = registry.get("external_results")
+    result_rows = result_rows if isinstance(result_rows, list) else []
+    for result in result_rows:
+        if not isinstance(result, dict):
+            continue
+        raw_uses = result.get("uses")
+        raw_uses = raw_uses if isinstance(raw_uses, list) else []
+        uses = [
+            row
+            for row in raw_uses
+            if isinstance(row, dict) and row.get("dependent_unit") == unit_id
+        ]
+        if not uses:
+            continue
+        expected_contract_hash = canonical_sha256(external_result_contract(result))
+        if any(
+            row.get("dependency_conclusion") != result.get("exact_statement")
+            or row.get("dependency_contract_sha256") != expected_contract_hash
+            for row in uses
+        ):
+            raise ValueError(
+                "Cannot generate packet: direct external dependency contract is "
+                "stale or incorrect"
+            )
+        projected_uses = [
+            packet_dependency_use(
+                row,
+                root,
+                mode,
+                external=True,
+                source_status=(
+                    str(result.get("status"))
+                    if is_nonempty_string(result.get("status"))
+                    else None
+                ),
+            )
+            for row in uses
+        ]
+        direct_external.extend(projected_uses)
+        evidence_rows: list[dict[str, Any]] = []
+        raw_evidence = result.get("source_evidence")
+        raw_evidence = raw_evidence if isinstance(raw_evidence, list) else []
+        for index, evidence in enumerate(raw_evidence, 1):
+            if not isinstance(evidence, dict):
+                continue
+            audit_relative = None
+            file_value = evidence.get("file")
+            file_name = None
+            if is_nonempty_string(file_value):
+                try:
+                    evidence_path = resolve_stored_path(str(file_value), root)
+                    if (
+                        not evidence_path.is_file()
+                        or evidence.get("sha256") != sha256_file(evidence_path)
+                    ):
+                        raise ValueError("external source evidence is stale")
+                except ValueError:
+                    raise ValueError(
+                        "Cannot generate packet: direct external source evidence "
+                        "is missing or stale"
+                    )
+                file_name = evidence_path.name
+                try:
+                    audit_relative = evidence_path.relative_to(root).as_posix()
+                except ValueError:
+                    audit_relative = None
+            evidence_rows.append(
+                {
+                    "evidence_id": f"{result.get('id')}:E{index:03d}",
+                    "name": file_name,
+                    "audit_relative_file": audit_relative,
+                    "sha256": evidence.get("sha256"),
+                    "locator": evidence.get("locator"),
+                    "role": evidence.get("role"),
+                }
+            )
+        result_projection = {
+            field: result.get(field)
+            for field in (
+                "id",
+                "source_identity",
+                "version",
+                "theorem_location",
+                "exact_statement",
+            )
+        } | {"source_evidence": evidence_rows, "uses": projected_uses}
+        if mode == "primary":
+            result_projection["status"] = result.get("status")
+            result_projection["issue_ids"] = result.get("issue_ids")
+        external_results.append(result_projection)
+    review = registry.get("review")
+    review = review if isinstance(review, dict) else {}
+    return {
+        "registry_binding": {
+            "closure_contract_version": registry.get("closure_contract_version"),
+            "source_snapshot_sha256": review.get("source_snapshot_sha256"),
+            "inventory_sha256": review.get("inventory_sha256"),
+            "in_scope_units": review.get("in_scope_units"),
+        },
+        "direct_internal_uses": sorted(
+            direct_internal, key=lambda row: str(row.get("use_id", ""))
+        ),
+        "direct_external_uses": sorted(
+            direct_external, key=lambda row: str(row.get("use_id", ""))
+        ),
+        "downstream_internal_uses": sorted(
+            downstream_internal,
+            key=lambda row: (
+                str(row.get("dependent_unit", "")),
+                str(row.get("use_id", "")),
+            ),
+        ),
+        "external_results": sorted(
+            external_results, key=lambda row: str(row.get("id", ""))
+        ),
+    }
+
+
+def packet_issue_ledger(
+    root: Path, unit_id: Any
+) -> tuple[Path, dict[str, Any]]:
+    if not is_nonempty_string(unit_id):
+        raise ValueError("Cannot generate packet: issue target has no unit ID")
+    path, ledger = packet_ledger(root, str(unit_id))
+    if path is None or ledger is None:
+        raise ValueError(
+            "Cannot generate packet: issue target ledger is missing for "
+            f"{unit_id}"
+        )
+    return path, ledger
+
+
+def packet_issue_locked_anchor(
+    root: Path,
+    source_base: Path,
+    span: Any,
+    members: list[tuple[Path, dict[str, Any]]],
+    *,
+    allow_locked_external: bool = False,
+) -> dict[str, Any]:
+    projection = packet_span(
+        root,
+        source_base,
+        span,
+        members,
+        allow_locked_external=allow_locked_external,
+    )
+    if projection is None:
+        raise ValueError("Cannot generate packet: issue target span is missing")
+    expected_sha256 = span.get("sha256") if isinstance(span, dict) else None
+    if (
+        is_nonempty_string(expected_sha256)
+        and expected_sha256 != projection["span_sha256"]
+    ):
+        raise ValueError("Cannot generate packet: issue target span is stale")
+    if isinstance(span, dict) and "role" in span:
+        projection["role"] = span.get("role")
+    return projection
+
+
+def packet_issue_step_anchor(
+    root: Path,
+    ledger_path: Path,
+    ledger: dict[str, Any],
+    step: dict[str, Any],
+    members: list[tuple[Path, dict[str, Any]]],
+) -> dict[str, Any]:
+    source_unit_id = step.get("source_unit_id")
+    source_unit = next(
+        (
+            row
+            for row in ledger.get("source_units", [])
+            if isinstance(row, dict) and row.get("id") == source_unit_id
+        ),
+        None,
+    )
+    line_range = source_unit.get("lines") if isinstance(source_unit, dict) else None
+    source = ledger.get("source")
+    if (
+        not isinstance(source, dict)
+        or not is_nonempty_string(source.get("file"))
+        or not isinstance(line_range, list)
+        or len(line_range) != 2
+        or not all(is_int(value) for value in line_range)
+    ):
+        raise ValueError(
+            "Cannot generate packet: issue target step lacks an exact source unit"
+        )
+    location = {
+        "file": source["file"],
+        "start_line": line_range[0],
+        "end_line": line_range[1],
+    }
+    projection = packet_span(root, ledger_path.parent, location, members)
+    if projection is None:
+        raise ValueError("Cannot generate packet: issue target step is unanchored")
+    source_sha256 = source_unit.get("source_sha256")
+    if (
+        is_nonempty_string(source_sha256)
+        and source_sha256 != projection["span_sha256"]
+    ):
+        raise ValueError("Cannot generate packet: issue target source unit is stale")
+    projection["source_unit_id"] = source_unit_id
+    return projection
+
+
+def packet_issue_contract_target(
+    root: Path,
+    ref: dict[str, Any],
+    members: list[tuple[Path, dict[str, Any]]],
+) -> dict[str, Any]:
+    ledger_path, ledger = packet_issue_ledger(root, ref.get("unit_id"))
+    kind = ref.get("kind")
+    reference = canonical_issue_ref_identity(ref)
+    if kind == "conclusion":
+        matches = [
+            row
+            for row in ledger.get("obligation", {}).get("conclusions", [])
+            if isinstance(row, dict)
+            and row.get("id") == ref.get("conclusion_id")
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                "Cannot generate packet: issue conclusion contract is unresolved"
+            )
+        conclusion = matches[0]
+        raw_spans = conclusion.get("source_spans")
+        if not isinstance(raw_spans, list) or not raw_spans:
+            raise ValueError(
+                "Cannot generate packet: issue conclusion contract is unanchored"
+            )
+        conditions: list[dict[str, Any]] = []
+        for pointer in conclusion.get("applies_under", []):
+            found, value = resolve_json_pointer(
+                ledger.get("obligation"), pointer
+            )
+            if not found:
+                raise ValueError(
+                    "Cannot generate packet: issue conclusion condition is unresolved"
+                )
+            conditions.append({"pointer": pointer, "value": value})
+        return {
+            "reference": reference,
+            "claim": conclusion.get("claim"),
+            "conditions": conditions,
+            "source_anchors": [
+                packet_issue_locked_anchor(
+                    root, ledger_path.parent, span, members
+                )
+                for span in raw_spans
+            ],
+        }
+    if kind == "obligation_pointer":
+        found, value = resolve_json_pointer(
+            ledger.get("obligation"), ref.get("pointer")
+        )
+        if not found:
+            raise ValueError(
+                "Cannot generate packet: issue obligation contract is unresolved"
+            )
+        statement_spans = ledger.get("obligation", {}).get(
+            "statement_spans", []
+        )
+        if not isinstance(statement_spans, list) or not statement_spans:
+            raise ValueError(
+                "Cannot generate packet: issue obligation contract is unanchored"
+            )
+        return {
+            "reference": reference,
+            "value": value,
+            "source_anchors": [
+                packet_issue_locked_anchor(
+                    root, ledger_path.parent, span, members
+                )
+                for span in statement_spans
+            ],
+        }
+    if kind == "dependency_use":
+        dependencies = ledger.get("review", {}).get(
+            "direct_dependencies", []
+        )
+        matches = [
+            row
+            for row in dependencies
+            if isinstance(row, dict) and row.get("use_id") == ref.get("use_id")
+        ] if isinstance(dependencies, list) else []
+        if len(matches) != 1:
+            raise ValueError(
+                "Cannot generate packet: issue dependency contract is unresolved"
+            )
+        dependency = matches[0]
+        anchors: list[dict[str, Any]] = []
+        for step_id in dependency.get("step_ids", []):
+            step = next(
+                (
+                    row
+                    for row in ledger.get("steps", [])
+                    if isinstance(row, dict) and row.get("id") == step_id
+                ),
+                None,
+            )
+            if not isinstance(step, dict):
+                raise ValueError(
+                    "Cannot generate packet: issue dependency step is unresolved"
+                )
+            anchors.append(
+                packet_issue_step_anchor(
+                    root, ledger_path, ledger, step, members
+                )
+            )
+        return {
+            "reference": reference,
+            "dependency_id": dependency.get("dependency_id"),
+            "dependency_conclusion_id": dependency.get(
+                "dependency_conclusion_id"
+            ),
+            "dependency_conclusion": dependency.get(
+                "dependency_conclusion"
+            ),
+            "dependency_contract_sha256": dependency.get(
+                "dependency_contract_sha256"
+            ),
+            "needed_form": dependency.get("needed_form"),
+            "source_anchors": anchors,
+        }
+    raise ValueError("Cannot generate packet: issue contract kind is invalid")
+
+
+def packet_issue_evidence_anchors(
+    root: Path,
+    spans: Any,
+    members: list[tuple[Path, dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    if not isinstance(spans, list):
+        return []
+    return [
+        packet_issue_locked_anchor(
+            root,
+            root,
+            span,
+            members,
+            allow_locked_external=True,
+        )
+        for span in spans
+        if isinstance(span, dict)
+    ]
+
+
+def packet_issue_premise_origin(
+    root: Path,
+    ledger_path: Path,
+    ledger: dict[str, Any],
+    step: dict[str, Any],
+    premise: dict[str, Any],
+    members: list[tuple[Path, dict[str, Any]]],
+) -> dict[str, Any]:
+    origin = premise.get("origin")
+    if not isinstance(origin, dict):
+        raise ValueError("Cannot generate packet: issue premise origin is missing")
+    kind = origin.get("kind")
+    reference = origin.get("reference")
+    projected: dict[str, Any] = {
+        "kind": kind,
+        "reference": reference,
+    }
+    if kind == "obligation":
+        anchor = origin.get("anchor")
+        anchor = anchor if isinstance(anchor, dict) else {}
+        anchor_field = {
+            "statement_span": "statement_spans",
+            "context_span": "context_spans",
+        }.get(anchor.get("kind"))
+        anchor_index = anchor.get("index")
+        spans = (
+            ledger.get("obligation", {}).get(anchor_field, [])
+            if isinstance(anchor_field, str)
+            else []
+        )
+        if (
+            not isinstance(spans, list)
+            or not is_int(anchor_index)
+            or anchor_index < 1
+            or anchor_index > len(spans)
+        ):
+            raise ValueError(
+                "Cannot generate packet: issue premise obligation anchor is invalid"
+            )
+        projected["anchor"] = {
+            "kind": anchor.get("kind"),
+            "index": anchor_index,
+            "source": packet_issue_locked_anchor(
+                root, ledger_path.parent, spans[anchor_index - 1], members
+            ),
+        }
+    elif kind == "prior_step":
+        prior_step = next(
+            (
+                row
+                for row in ledger.get("steps", [])
+                if isinstance(row, dict) and row.get("id") == reference
+            ),
+            None,
+        )
+        if not isinstance(prior_step, dict):
+            raise ValueError(
+                "Cannot generate packet: issue premise prior step is unresolved"
+            )
+        projected["source"] = packet_issue_step_anchor(
+            root, ledger_path, ledger, prior_step, members
+        )
+    elif kind in {"internal_result", "external_result"}:
+        step_dependencies = step.get("dependencies")
+        step_dependencies = (
+            step_dependencies if isinstance(step_dependencies, list) else []
+        )
+        dependencies = [
+            row
+            for row in step_dependencies
+            if isinstance(row, dict)
+            and row.get("use_id") == reference
+        ]
+        if len(dependencies) != 1:
+            raise ValueError(
+                "Cannot generate packet: issue premise dependency is unresolved"
+            )
+        dependency = dependencies[0]
+        projected.update(
+            {
+                "use_id": dependency.get("use_id"),
+                "dependency_id": dependency.get("id"),
+                "dependency_conclusion_id": dependency.get("conclusion_id"),
+                "needed_form": dependency.get("needed_form"),
+            }
+        )
+    else:
+        raise ValueError("Cannot generate packet: issue premise origin kind is invalid")
+    if is_nonempty_string(premise.get("source_reference_id")):
+        projected["source_reference"] = {
+            "target": premise.get("source_reference_id"),
+            "occurrence_id": premise.get("source_reference_occurrence_id"),
+        }
+    return projected
+
+
+def packet_issue_origin_target(
+    root: Path,
+    issue: dict[str, Any],
+    records: dict[str, Any],
+    members: list[tuple[Path, dict[str, Any]]],
+) -> dict[str, Any]:
+    origin = issue.get("origin_ref")
+    resolution = issue.get("current_resolution")
+    if issue.get("status") == "resolved":
+        if (
+            isinstance(resolution, dict)
+            and isinstance(resolution.get("current_ref"), dict)
+        ):
+            origin = resolution["current_ref"]
+        elif (
+            isinstance(resolution, dict)
+            and resolution.get("disposition") == "removed"
+        ):
+            archive_errors: list[str] = []
+            archive = load_resolution_archive(issue, root, archive_errors)
+            if archive is None or archive_errors:
+                raise ValueError(
+                    "Cannot generate packet: removed issue archive is invalid: "
+                    + "; ".join(archive_errors[:8])
+                )
+            archived_issue = archive.get("issue_record")
+            archived_issue = (
+                archived_issue if isinstance(archived_issue, dict) else {}
+            )
+            original_identity = canonical_issue_ref_identity(
+                archived_issue.get("origin_ref")
+            )
+            retired = resolution.get("retired_dependency_uses")
+            retired = retired if isinstance(retired, list) else []
+            anchors = packet_issue_evidence_anchors(
+                root, resolution.get("evidence_spans"), members
+            )
+            if not anchors:
+                raise ValueError(
+                    "Cannot generate packet: removed issue target lacks current "
+                    "source evidence"
+                )
+            return {
+                "kind": "current_absence",
+                "archived_reference_identity_sha256": canonical_sha256(
+                    original_identity
+                ),
+                "affected_result": issue.get("affected_result"),
+                "retired_dependency_use_ids": sorted(
+                    str(row.get("use_id"))
+                    for row in retired
+                    if isinstance(row, dict)
+                    and is_nonempty_string(row.get("use_id"))
+                ),
+                "source_anchors": anchors,
+            }
+        else:
+            raise ValueError(
+                "Cannot generate packet: resolved issue has no current target"
+            )
+    if not isinstance(origin, dict):
+        raise ValueError("Cannot generate packet: issue origin is malformed")
+    kind = origin.get("kind")
+    reference = canonical_issue_ref_identity(origin)
+    if kind == "ledger_move":
+        ledger_path, ledger = packet_issue_ledger(root, origin.get("unit_id"))
+        step = next(
+            (
+                row
+                for row in ledger.get("steps", [])
+                if isinstance(row, dict)
+                and row.get("id") == origin.get("step_id")
+            ),
+            None,
+        )
+        moves = (
+            step.get("inference", {}).get("moves", [])
+            if isinstance(step, dict)
+            and isinstance(step.get("inference"), dict)
+            else []
+        )
+        matching_moves = [
+            row
+            for row in moves
+            if isinstance(row, dict) and row.get("id") == origin.get("move_id")
+        ]
+        if not isinstance(step, dict) or len(matching_moves) != 1:
+            raise ValueError(
+                "Cannot generate packet: issue ledger-move origin is unresolved"
+            )
+        move = matching_moves[0]
+        premise_ids = set(move.get("premise_ids", []))
+        prior_move_ids = set(move.get("prior_move_ids", []))
+        premise_rows = step.get("premise_uses")
+        premise_rows = premise_rows if isinstance(premise_rows, list) else []
+        return {
+            "reference": reference,
+            "source_anchor": packet_issue_step_anchor(
+                root, ledger_path, ledger, step, members
+            ),
+            "goal": step.get("goal"),
+            "claim": move.get("claim"),
+            "rule": move.get("rule"),
+            "premises": [
+                {
+                    "id": row.get("id"),
+                    "role": row.get("role"),
+                    "claim": row.get("claim"),
+                    "origin": packet_issue_premise_origin(
+                        root, ledger_path, ledger, step, row, members
+                    ),
+                }
+                for row in premise_rows
+                if isinstance(row, dict) and row.get("id") in premise_ids
+            ],
+            "prior_moves": [
+                {"id": row.get("id"), "claim": row.get("claim")}
+                for row in moves
+                if isinstance(row, dict) and row.get("id") in prior_move_ids
+            ],
+        }
+    if kind in {"obligation_pointer", "dependency_use"}:
+        contract_ref = dict(origin)
+        return packet_issue_contract_target(root, contract_ref, members)
+    if kind == "interface_record":
+        interface_id = origin.get("interface_id")
+        registry = records.get("interface_registry")
+        rows = registry.get("interfaces") if isinstance(registry, dict) else []
+        matches = [
+            row
+            for row in rows
+            if isinstance(row, dict) and row.get("id") == interface_id
+        ] if isinstance(rows, list) else []
+        if len(matches) != 1:
+            raise ValueError(
+                "Cannot generate packet: issue interface origin is unresolved"
+            )
+        interface = matches[0]
+        target_relation = interface.get("target_relation")
+        target_relation = (
+            target_relation if isinstance(target_relation, dict) else {}
+        )
+        implementation = interface.get("implementation_relation")
+        implementation = implementation if isinstance(implementation, dict) else {}
+        comparisons = implementation.get("comparisons")
+        comparisons = comparisons if isinstance(comparisons, list) else []
+        provenance = implementation.get("execution_provenance")
+        provenance = provenance if isinstance(provenance, dict) else {}
+        sample_laws = interface.get("fitting_sample_laws")
+        sample_laws = sample_laws if isinstance(sample_laws, list) else []
+        return {
+            "reference": reference,
+            "kind": interface.get("kind"),
+            "affected_results": interface.get("affected_results"),
+            "implementation_required_for_claim": interface.get(
+                "implementation_required_for_claim"
+            ),
+            "execution_provenance_required_for_claim": interface.get(
+                "execution_provenance_required_for_claim"
+            ),
+            "population_target": interface.get("population_target"),
+            "identification_identity": interface.get(
+                "identification_identity"
+            ),
+            "fitting_sample_laws": [
+                {
+                    "role": row.get("role"),
+                    "law": row.get("law"),
+                    "reference_law": row.get("reference_law"),
+                    "source_anchors": packet_issue_evidence_anchors(
+                        root, row.get("evidence_spans"), members
+                    ),
+                }
+                for row in sample_laws
+                if isinstance(row, dict)
+            ],
+            "marginal_relationships": interface.get(
+                "marginal_relationships"
+            ),
+            "evaluation_sites": interface.get("evaluation_sites"),
+            "downstream_uses": interface.get("downstream_uses"),
+            "target_assumptions": target_relation.get("assumptions"),
+            "target_source_anchors": packet_issue_evidence_anchors(
+                root, target_relation.get("evidence_spans"), members
+            ),
+            "implementation_revision": implementation.get("revision"),
+            "implementation_source_anchors": packet_issue_evidence_anchors(
+                root, implementation.get("evidence_spans"), members
+            ),
+            "comparison_targets": [
+                {
+                    "to": row.get("to"),
+                    "source_anchors": packet_issue_evidence_anchors(
+                        root, row.get("evidence_spans"), members
+                    ),
+                }
+                for row in comparisons
+                if isinstance(row, dict)
+            ],
+            "execution_source_anchors": packet_issue_evidence_anchors(
+                root, provenance.get("evidence_spans"), members
+            ),
+            "origin_source_anchors": packet_issue_evidence_anchors(
+                root, origin.get("evidence_spans"), members
+            ),
+        }
+    if kind == "global_check":
+        completion = records["manifest"].get("completion")
+        global_pass = (
+            completion.get("global_consistency_pass")
+            if isinstance(completion, dict)
+            else None
+        )
+        rows = global_pass.get("checks") if isinstance(global_pass, dict) else []
+        matches = [
+            row
+            for row in rows
+            if isinstance(row, dict) and row.get("aspect") == origin.get("aspect")
+        ] if isinstance(rows, list) else []
+        if len(matches) != 1:
+            raise ValueError(
+                "Cannot generate packet: issue global-check origin is unresolved"
+            )
+        return {
+            "reference": reference,
+            "aspect": matches[0].get("aspect"),
+            "affected_units": matches[0].get("affected_units"),
+            "source_anchors": packet_issue_evidence_anchors(
+                root, origin.get("evidence_spans"), members
+            ),
+        }
+    raise ValueError("Cannot generate packet: issue origin kind is invalid")
+
+
+def packet_issue_propagation(
+    root: Path,
+    issue: dict[str, Any],
+    registry: dict[str, Any],
+    members: list[tuple[Path, dict[str, Any]]],
+    challenged_unit: str,
+) -> dict[str, Any]:
+    affected = {
+        str(value)
+        for value in issue.get("affected_results", [])
+        if is_nonempty_string(value)
+    }
+    internal_rows = registry.get("internal_uses")
+    internal_rows = internal_rows if isinstance(internal_rows, list) else []
+    external_results = registry.get("external_results")
+    external_results = (
+        external_results if isinstance(external_results, list) else []
+    )
+    root_result = issue.get("affected_result")
+    if challenged_unit == root_result:
+        return {
+            "root_affected_result": root_result,
+            "challenged_unit": challenged_unit,
+            "uses": [],
+        }
+    historical = issue.get("historical_origin")
+    historical_challenges = (
+        historical.get("required_challenges", [])
+        if isinstance(historical, dict)
+        else []
+    )
+    if (
+        issue.get("status") == "resolved"
+        and challenged_unit in historical_challenges
+        and challenged_unit not in affected
+    ):
+        resolution = issue.get("current_resolution")
+        if not isinstance(resolution, dict):
+            raise ValueError(
+                "Cannot generate packet: historical challenge lacks current "
+                "resolution evidence"
+            )
+        retired_rows = resolution.get("retired_dependency_uses")
+        retired_rows = retired_rows if isinstance(retired_rows, list) else []
+        retired = sorted(
+            (
+                {
+                    "use_id": row.get("use_id"),
+                    "prior_edge_sha256": row.get("prior_edge_sha256"),
+                }
+                for row in retired_rows
+                if isinstance(row, dict)
+                and is_nonempty_string(row.get("use_id"))
+            ),
+            key=lambda row: str(row.get("use_id", "")),
+        )
+        if not retired:
+            raise ValueError(
+                "Cannot generate packet: historical challenge has no retired "
+                "dependency-use identity"
+            )
+        archived_errors: list[str] = []
+        archive = load_resolution_archive(issue, root, archived_errors)
+        if archive is None or archived_errors:
+            raise ValueError(
+                "Cannot generate packet: historical challenge archive is invalid: "
+                + "; ".join(archived_errors[:8])
+            )
+        prior_artifacts = archive.get("prior_artifacts")
+        prior_artifacts = (
+            prior_artifacts if isinstance(prior_artifacts, dict) else {}
+        )
+        registry_errors: list[str] = []
+        decoded_registry = sealed_json_object(
+            prior_artifacts.get("dependency_registry"),
+            "historical challenge prior dependency registry",
+            registry_errors,
+        )
+        if decoded_registry is None or registry_errors:
+            raise ValueError(
+                "Cannot generate packet: historical dependency registry is "
+                "invalid: " + "; ".join(registry_errors[:8])
+            )
+        _, _, prior_registry = decoded_registry
+        prior_internal = prior_registry.get("internal_uses")
+        prior_internal = prior_internal if isinstance(prior_internal, list) else []
+        archived_issue = archive.get("issue_record")
+        archived_issue = archived_issue if isinstance(archived_issue, dict) else {}
+        archived_affected = {
+            str(value)
+            for value in archived_issue.get("affected_results", [])
+            if is_nonempty_string(value)
+        }
+        archived_hashes = {
+            str(row.get("use_id")): row.get("edge_sha256")
+            for row in archive.get("required_closure", {}).get(
+                "dependency_uses", []
+            )
+            if isinstance(row, dict)
+            and is_nonempty_string(row.get("use_id"))
+        }
+        retired_by_id = {str(row["use_id"]): row for row in retired}
+        if len(retired_by_id) != len(retired):
+            raise ValueError(
+                "Cannot generate packet: historical challenge has duplicate "
+                "retired dependency-use identities"
+            )
+        for use_id, row in retired_by_id.items():
+            if row.get("prior_edge_sha256") != archived_hashes.get(use_id):
+                raise ValueError(
+                    "Cannot generate packet: retired dependency-use identity "
+                    f"{use_id} disagrees with the sealed archive"
+                )
+        current_dependency_edges = [
+            row for row in internal_rows if isinstance(row, dict)
+        ]
+        for result in external_results:
+            if not isinstance(result, dict):
+                continue
+            uses = result.get("uses")
+            if not isinstance(uses, list):
+                continue
+            current_dependency_edges.extend(
+                row for row in uses if isinstance(row, dict)
+            )
+        current_issue_use_ids = {
+            str(row.get("use_id"))
+            for row in issue_recheck_edges(issue, current_dependency_edges)
+            if is_nonempty_string(row.get("use_id"))
+        }
+        still_present = sorted(
+            row["use_id"]
+            for row in retired
+            if row["use_id"] in current_issue_use_ids
+        )
+        if still_present:
+            raise ValueError(
+                "Cannot generate packet: retired issue dependency uses remain "
+                "in the current issue closure: " + ", ".join(still_present)
+            )
+        prior_path_rows = [
+            row
+            for row in prior_internal
+            if isinstance(row, dict)
+            and row.get("dependency_id") in archived_affected
+            and row.get("dependent_unit") in archived_affected
+        ]
+        forward = {str(root_result)}
+        changed = True
+        while changed:
+            changed = False
+            for row in prior_path_rows:
+                if (
+                    row.get("dependency_id") in forward
+                    and row.get("dependent_unit") not in forward
+                ):
+                    forward.add(str(row.get("dependent_unit")))
+                    changed = True
+        reverse = {challenged_unit}
+        changed = True
+        while changed:
+            changed = False
+            for row in prior_path_rows:
+                if (
+                    row.get("dependent_unit") in reverse
+                    and row.get("dependency_id") not in reverse
+                ):
+                    reverse.add(str(row.get("dependency_id")))
+                    changed = True
+        prior_path = [
+            row
+            for row in prior_path_rows
+            if row.get("dependency_id") in forward
+            and row.get("dependent_unit") in reverse
+        ]
+        if challenged_unit not in forward or not prior_path:
+            raise ValueError(
+                "Cannot generate packet: sealed historical propagation path "
+                "to challenged unit is unresolved"
+            )
+        retired_path_edges: list[dict[str, Any]] = []
+        for edge in prior_path:
+            use_id = str(edge.get("use_id"))
+            retirement = retired_by_id.get(use_id)
+            if retirement is None:
+                continue
+            edge_sha256 = str(retirement.get("prior_edge_sha256"))
+            retired_path_edges.append(
+                {
+                    "kind": "internal_result",
+                    "use_id": edge.get("use_id"),
+                    "prior_edge_sha256": edge_sha256,
+                    "dependency_id": edge.get("dependency_id"),
+                    "dependency_conclusion_id": edge.get(
+                        "dependency_conclusion_id"
+                    ),
+                    "dependent_unit": edge.get("dependent_unit"),
+                    "needed_form": edge.get("needed_form"),
+                    "dependency_conclusion": edge.get(
+                        "dependency_conclusion"
+                    ),
+                    "dependency_contract_sha256": edge.get(
+                        "dependency_contract_sha256"
+                    ),
+                    "step_ids": sorted(
+                        str(value)
+                        for value in edge.get("step_ids", [])
+                        if is_nonempty_string(value)
+                    ),
+                }
+            )
+        if not retired_path_edges:
+            raise ValueError(
+                "Cannot generate packet: no retired dependency use cuts the "
+                "sealed historical path to the challenged unit"
+            )
+        current_path_rows = [
+            row
+            for row in internal_rows
+            if isinstance(row, dict)
+            and is_nonempty_string(row.get("dependency_id"))
+            and is_nonempty_string(row.get("dependent_unit"))
+        ]
+        current_forward = {str(root_result)}
+        changed = True
+        while changed:
+            changed = False
+            for row in current_path_rows:
+                if (
+                    row.get("dependency_id") in current_forward
+                    and row.get("dependent_unit") not in current_forward
+                ):
+                    current_forward.add(str(row.get("dependent_unit")))
+                    changed = True
+        current_reverse = {challenged_unit}
+        changed = True
+        while changed:
+            changed = False
+            for row in current_path_rows:
+                if (
+                    row.get("dependent_unit") in current_reverse
+                    and row.get("dependency_id") not in current_reverse
+                ):
+                    current_reverse.add(str(row.get("dependency_id")))
+                    changed = True
+        current_selected = [
+            row
+            for row in current_path_rows
+            if row.get("dependency_id") in current_forward
+            and row.get("dependent_unit") in current_reverse
+        ]
+        current_route_uses: list[dict[str, Any]] = []
+        if challenged_unit in current_forward:
+            for row in current_selected:
+                dependent_unit = str(row.get("dependent_unit"))
+                ledger_path, ledger = packet_issue_ledger(root, dependent_unit)
+                source_anchors: list[dict[str, Any]] = []
+                for step_id in row.get("step_ids", []):
+                    step = next(
+                        (
+                            value
+                            for value in ledger.get("steps", [])
+                            if isinstance(value, dict)
+                            and value.get("id") == step_id
+                        ),
+                        None,
+                    )
+                    if not isinstance(step, dict):
+                        raise ValueError(
+                            "Cannot generate packet: current historical "
+                            "challenge route step is unresolved"
+                        )
+                    source_anchors.append(
+                        packet_issue_step_anchor(
+                            root, ledger_path, ledger, step, members
+                        )
+                    )
+                current_route_uses.append(
+                    {
+                        "kind": "internal_result",
+                        "use_id": row.get("use_id"),
+                        "dependency_id": row.get("dependency_id"),
+                        "dependency_conclusion_id": row.get(
+                            "dependency_conclusion_id"
+                        ),
+                        "dependent_unit": dependent_unit,
+                        "needed_form": row.get("needed_form"),
+                        "dependency_conclusion": row.get(
+                            "dependency_conclusion"
+                        ),
+                        "dependency_contract_sha256": row.get(
+                            "dependency_contract_sha256"
+                        ),
+                        "source_anchors": source_anchors,
+                    }
+                )
+        anchors = packet_issue_evidence_anchors(
+            root, resolution.get("evidence_spans"), members
+        )
+        if not anchors:
+            raise ValueError(
+                "Cannot generate packet: historical challenge lacks current "
+                "retirement source evidence"
+            )
+        return {
+            "root_affected_result": root_result,
+            "challenged_unit": challenged_unit,
+            "uses": [],
+            "current_route": {
+                "path_present": challenged_unit in current_forward,
+                "uses": sorted(
+                    current_route_uses,
+                    key=lambda row: (
+                        str(row.get("dependent_unit", "")),
+                        str(row.get("use_id", "")),
+                    ),
+                ),
+            },
+            "retirement": {
+                "kind": "historical_path_retirement",
+                "archived_reference_identity_sha256": canonical_sha256(
+                    canonical_issue_ref_identity(archived_issue.get("origin_ref"))
+                ),
+                "retired_path_edges": sorted(
+                    retired_path_edges,
+                    key=lambda row: (
+                        str(row.get("dependent_unit", "")),
+                        str(row.get("use_id", "")),
+                    ),
+                ),
+                "current_issue_closure_absent_use_ids": sorted(
+                    str(row.get("use_id")) for row in retired_path_edges
+                ),
+                "current_resolution_source_anchors": anchors,
+            },
+        }
+    internal_path_rows = [
+        row
+        for row in internal_rows
+        if isinstance(row, dict)
+        and row.get("dependency_id") in affected
+        and row.get("dependent_unit") in affected
+    ]
+    forward = {str(root_result)}
+    changed = True
+    while changed:
+        changed = False
+        for row in internal_path_rows:
+            if (
+                row.get("dependency_id") in forward
+                and row.get("dependent_unit") not in forward
+            ):
+                forward.add(str(row.get("dependent_unit")))
+                changed = True
+    reverse = {challenged_unit}
+    changed = True
+    while changed:
+        changed = False
+        for row in internal_path_rows:
+            if (
+                row.get("dependent_unit") in reverse
+                and row.get("dependency_id") not in reverse
+            ):
+                reverse.add(str(row.get("dependency_id")))
+                changed = True
+    selected_rows = [
+        row
+        for row in internal_path_rows
+        if row.get("dependency_id") in forward
+        and row.get("dependent_unit") in reverse
+    ]
+    if challenged_unit not in forward or not selected_rows:
+        raise ValueError(
+            "Cannot generate packet: issue propagation path to challenged unit "
+            "is unresolved"
+        )
+    projected: list[dict[str, Any]] = []
+    for row in selected_rows:
+        dependency_id = row.get("dependency_id")
+        dependent_unit = row.get("dependent_unit")
+        ledger_path, ledger = packet_issue_ledger(root, dependent_unit)
+        source_anchors: list[dict[str, Any]] = []
+        for step_id in row.get("step_ids", []):
+            step = next(
+                (
+                    value
+                    for value in ledger.get("steps", [])
+                    if isinstance(value, dict) and value.get("id") == step_id
+                ),
+                None,
+            )
+            if not isinstance(step, dict):
+                raise ValueError(
+                    "Cannot generate packet: issue propagation step is unresolved"
+                )
+            source_anchors.append(
+                packet_issue_step_anchor(
+                    root, ledger_path, ledger, step, members
+                )
+            )
+        projected.append(
+            {
+                "kind": "internal_result",
+                "use_id": row.get("use_id"),
+                "dependency_id": dependency_id,
+                "dependency_conclusion_id": row.get(
+                    "dependency_conclusion_id"
+                ),
+                "dependent_unit": dependent_unit,
+                "needed_form": row.get("needed_form"),
+                "dependency_conclusion": row.get("dependency_conclusion"),
+                "dependency_contract_sha256": row.get(
+                    "dependency_contract_sha256"
+                ),
+                "source_anchors": source_anchors,
+            }
+        )
+    return {
+        "root_affected_result": root_result,
+        "challenged_unit": challenged_unit,
+        "uses": sorted(
+            projected,
+            key=lambda row: (
+                str(row.get("dependent_unit", "")),
+                str(row.get("use_id", "")),
+            ),
+        ),
+    }
+
+
+def packet_issue_triggers(
+    root: Path,
+    manifest: dict[str, Any],
+    unit_id: str,
+    mode: str,
+    *,
+    records: dict[str, Any],
+    members: list[tuple[Path, dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    _, issues, schema_version, errors = load_issue_log(root)
+    if errors:
+        raise ValueError("Cannot generate packet: " + "; ".join(errors))
+    if schema_version != SCHEMA_VERSION:
+        raise ValueError("Cannot generate packet: issue log must use current schema")
+    seen: set[str] = set()
+    for index, issue in enumerate(issues, 1):
+        if not isinstance(issue, dict):
+            raise ValueError(
+                f"Cannot generate packet: issue record {index} must be an object"
+            )
+        issue_id = issue.get("id")
+        if not isinstance(issue_id, str) or not ISSUE_ID_RE.fullmatch(issue_id):
+            raise ValueError(
+                f"Cannot generate packet: issue record {index} has an invalid ID"
+            )
+        if issue_id in seen:
+            raise ValueError(f"Cannot generate packet: duplicate issue ID {issue_id}")
+        seen.add(issue_id)
+        if issue.get("severity") not in ISSUE_SEVERITIES:
+            raise ValueError(f"Cannot generate packet: {issue_id} has invalid severity")
+        if issue.get("status") not in ISSUE_STATUSES:
+            raise ValueError(f"Cannot generate packet: {issue_id} has invalid status")
+        if not isinstance(issue.get("load_bearing"), bool):
+            raise ValueError(
+                f"Cannot generate packet: {issue_id}.load_bearing must be boolean"
+            )
+        affected = issue.get("affected_results")
+        if (
+            not isinstance(affected, list)
+            or not affected
+            or not all(is_nonempty_string(value) for value in affected)
+        ):
+            raise ValueError(
+                f"Cannot generate packet: {issue_id}.affected_results is invalid"
+            )
+        historical = issue.get("historical_origin")
+        if isinstance(historical, dict):
+            required = historical.get("required_challenges", [])
+            if not isinstance(required, list) or not all(
+                is_nonempty_string(value) for value in required
+            ):
+                raise ValueError(
+                    f"Cannot generate packet: {issue_id} historical challenges are invalid"
+                )
+    selected: list[dict[str, Any]] = []
+    required_challenge_issues: set[str] = set()
+    if mode == "challenge":
+        _, severe_by_unit = effective_critical_requirements(manifest, issues)
+        required_challenge_issues = severe_by_unit.get(unit_id, set())
+    for issue in issues:
+        if not isinstance(issue, dict):
+            continue
+        if mode == "challenge":
+            if issue.get("id") not in required_challenge_issues:
+                continue
+        else:
+            affected = issue.get("affected_results")
+            if not isinstance(affected, list) or unit_id not in affected:
+                continue
+        origin_ref = issue.get("origin_ref")
+        contract_refs = issue.get("contract_refs")
+        affected_results = issue.get("affected_results")
+        if (
+            not isinstance(origin_ref, dict)
+            or not isinstance(contract_refs, list)
+            or not all(isinstance(row, dict) for row in contract_refs)
+            or not isinstance(affected_results, list)
+            or not all(
+                is_nonempty_string(value) for value in affected_results
+            )
+        ):
+            raise ValueError(
+                "Cannot generate packet: "
+                f"{issue.get('id')} lacks a structured target contract"
+            )
+        contracts: list[dict[str, Any]] = []
+        for row in contract_refs:
+            contract = packet_issue_contract_target(root, row, members)
+            contract["contract_sha256"] = canonical_sha256(contract)
+            contracts.append(contract)
+        contracts.sort(
+            key=lambda contract: canonical_sha256(contract.get("reference"))
+        )
+        propagation = packet_issue_propagation(
+            root,
+            issue,
+            records["dependency_registry"],
+            members,
+            unit_id,
+        )
+        target_contract = {
+            "current_target": packet_issue_origin_target(
+                root, issue, records, members
+            ),
+            "contracts": contracts,
+            "propagation": propagation,
+        }
+        projected_issue = {
+            "id": issue.get("id"),
+            "severity": issue.get("severity"),
+            "target_contract": target_contract,
+            "target_contract_sha256": canonical_sha256(target_contract),
+        }
+        if mode == "primary":
+            projected_issue.update(
+                {
+                    "status": issue.get("status"),
+                    "finding_status": issue.get("finding_status"),
+                    "invalidation_kind": issue.get("invalidation_kind"),
+                    "summary": issue.get("summary"),
+                }
+            )
+        selected.append(projected_issue)
+    return sorted(selected, key=lambda row: str(row.get("id", "")))
+
+
+def packet_wip_resume(
+    ledger: dict[str, Any] | None, ledger_path: Path | None
+) -> dict[str, Any]:
+    if not isinstance(ledger, dict):
+        return {"included": False, "semantic_record": None}
+    if not isinstance(ledger_path, Path) or not ledger_path.is_file():
+        raise ValueError("Cannot project WIP without its canonical ledger file")
+    return {
+        "included": True,
+        "ledger_sha256": sha256_file(ledger_path),
+        "work_context_sha256": ledger.get("work_context_sha256"),
+        "semantic_record": {
+            "source_units": ledger.get("source_units"),
+            "steps": ledger.get("steps"),
+            "review": ledger.get("review"),
+        },
+    }
+
+
+def build_context_packet(
+    root: Path, unit_id: str, mode: str
+) -> dict[str, Any]:
+    """Derive one portable model packet from current canonical audit state."""
+    root = root.resolve()
+    if mode not in {"primary", "challenge"}:
+        raise ValueError("Packet mode must be primary or challenge")
+    records = load_workflow_records(root)
+    manifest = records["manifest"]
+    if manifest.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError(
+            "Cannot generate packet: audit manifest schema is not current"
+        )
+    if manifest.get("protocol") != protocol_identity():
+        raise ValueError(
+            "Cannot generate packet: recorded proofcheck protocol is stale; "
+            "run revalidate-protocol first"
+        )
+    freshness_errors = source_snapshot_freshness_errors(root, manifest)
+    if freshness_errors:
+        raise ValueError(
+            "Cannot generate packet from stale source state: "
+            + "; ".join(freshness_errors)
+        )
+    inventory = records["inventory"]
+    units = inventory.get("units")
+    if not isinstance(units, list):
+        raise ValueError("Cannot generate packet: inventory units are missing")
+    matches = [
+        unit
+        for unit in units
+        if isinstance(unit, dict) and unit.get("id") == unit_id
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"Cannot generate packet: unknown or duplicate unit {unit_id}"
+        )
+    unit = matches[0]
+    paper_value = manifest.get("paper_file")
+    if not is_nonempty_string(paper_value):
+        raise ValueError("Cannot generate packet: manifest paper_file is missing")
+    paper = resolve_stored_path(str(paper_value), root)
+    members = packet_source_members(root, manifest)
+    statement = packet_span(root, paper.parent, unit.get("statement"), members)
+    proof = packet_span(root, paper.parent, unit.get("proof"), members)
+    candidate_paths = packet_candidate_dependency_paths(
+        inventory, unit, paper.parent, root, members
+    )
+    packet_cross_references = scan_cross_references(
+        paper,
+        source_files=[path for path, _ in members],
+        source_warnings=[],
+        path_identity_base=paper.parent,
+    )
+    downstream_use_sites = packet_downstream_use_sites(
+        inventory,
+        unit,
+        packet_cross_references,
+        paper.parent,
+        root,
+        members,
+    )
+    ledger_path, ledger = packet_ledger(root, unit_id)
+    skeleton_path, skeleton = packet_skeleton(root, unit_id)
+    semantic_path = ledger_path
+    semantic_artifact = ledger
+    semantic_kind = "canonical_ledger" if ledger is not None else None
+    if semantic_artifact is None and mode == "primary":
+        semantic_path = skeleton_path
+        semantic_artifact = skeleton
+        semantic_kind = "source_locked_skeleton" if skeleton is not None else None
+    readiness = packet_semantic_readiness(
+        semantic_path, semantic_artifact, unit_id
+    )
+    inventory_binding_errors = packet_inventory_binding_errors(
+        paper.parent, unit, semantic_path, semantic_artifact
+    )
+    if inventory_binding_errors:
+        readiness = {
+            "ready": False,
+            "reasons": [
+                *readiness["reasons"],
+                "The semantic artifact disagrees with the reviewed inventory source binding.",
+            ],
+        }
+    workflow_registry_rows(records["dependency_registry"])
+    dependency_structure_errors = packet_dependency_structure_errors(
+        records["dependency_registry"], root
+    )
+    if dependency_structure_errors:
+        raise ValueError(
+            "Cannot generate packet from malformed dependency contracts: "
+            + "; ".join(dependency_structure_errors[:12])
+        )
+    dependency_mapping_ready, dependency_context_errors = (
+        workflow_dependency_mapping_readiness(records)
+    )
+    primary_record_errors: list[str] = []
+    primary_record_ready = False
+    wip_validation_errors: list[str] = []
+    wip_local_record_ready = False
+    if ledger_path is not None:
+        primary_record_errors, _ = check_ledger_data(
+            ledger_path, True, primary_only=True
+        )
+        primary_record_ready = not primary_record_errors
+        wip_validation_errors, _ = check_ledger_data(ledger_path, False)
+        wip_local_record_ready = not wip_validation_errors
+    source = {"statement": statement, "proof": proof}
+    snapshot = manifest.get("source_snapshot")
+    source_snapshot_id = (
+        snapshot.get("sha256") if isinstance(snapshot, dict) else None
+    )
+    progress = records["progress"]
+    obligation_value = (
+        semantic_artifact.get("obligation")
+        if isinstance(semantic_artifact, dict)
+        else None
+    )
+    obligation_digest = (
+        canonical_sha256(obligation_value)
+        if readiness["ready"] and isinstance(obligation_value, dict)
+        else None
+    )
+    source_binding_sha256 = canonical_sha256(source)
+    dependency_projection = packet_dependency_projection(
+        records["dependency_registry"],
+        root,
+        unit_id,
+        mode,
+        semantic_artifact,
+    )
+    alignment_dependency_projection = (
+        dependency_projection
+        if mode == "primary"
+        else packet_dependency_projection(
+            records["dependency_registry"],
+            root,
+            unit_id,
+            "primary",
+            semantic_artifact,
+        )
+    )
+    candidate_reconciliation = packet_candidate_reconciliation(
+        unit,
+        records["dependency_registry"],
+        semantic_artifact,
+        candidate_paths,
+    )
+    dependency_alignment = packet_dependency_alignment(
+        semantic_artifact,
+        alignment_dependency_projection,
+        primary_record_ready=primary_record_ready,
+    )
+    alignment_ready = (
+        not primary_record_ready
+        or dependency_alignment["status"] == "complete"
+    )
+    dependency_context_ready = (
+        dependency_mapping_ready
+        and candidate_reconciliation["status"] == "complete"
+        and alignment_ready
+    )
+    primary_work_packet_ready = readiness["ready"] and dependency_mapping_ready
+    semantic_review_ready = readiness["ready"] and dependency_context_ready
+    semantic_review_reasons = list(readiness["reasons"])
+    if not dependency_mapping_ready:
+        semantic_review_reasons.append(
+            "The dependency registry review is incomplete or stale."
+        )
+    if candidate_reconciliation["status"] != "complete":
+        semantic_review_reasons.append(
+            "Candidate internal dependencies still require semantic reconciliation."
+        )
+    if not alignment_ready:
+        semantic_review_reasons.append(
+            "The primary ledger direct dependencies disagree with the registry."
+        )
+    if mode == "challenge":
+        if ledger is None:
+            raise ValueError(
+                "Challenge packet requires exactly one current canonical proof-unit ledger"
+            )
+        if not semantic_review_ready:
+            raise ValueError(
+                "Challenge packet requires current source, obligation, and dependency "
+                "context: " + "; ".join(semantic_review_reasons)
+            )
+        if not primary_record_ready:
+            raise ValueError(
+                "Challenge packet requires a locally final primary ledger: "
+                + "; ".join(primary_record_errors[:8])
+            )
+    issue_triggers = packet_issue_triggers(
+        root,
+        manifest,
+        unit_id,
+        mode,
+        records=records,
+        members=members,
+    )
+    issue_path, _, _, _ = load_issue_log(root)
+    semantic_artifact_projection = {
+        "kind": semantic_kind,
+        "audit_relative_file": (
+            semantic_path.relative_to(root).as_posix()
+            if semantic_path is not None
+            else None
+        ),
+        "primary_ledger_sha256": (
+            canonical_primary_ledger_sha256(ledger)
+            if primary_record_ready and isinstance(ledger, dict)
+            else None
+        ),
+    }
+    obligation_projection = packet_obligation(
+        obligation_value,
+        root,
+        semantic_path.parent if semantic_path is not None else root,
+    )
+    inventory_projection = packet_inventory_projection(
+        unit, candidate_paths, downstream_use_sites
+    )
+    candidate_projection = packet_candidate_reconciliation_projection(
+        candidate_reconciliation, mode
+    )
+    alignment_projection = (
+        dependency_alignment
+        if mode == "primary"
+        else {"status": "registry_contracts_bound"}
+    )
+    work_context_sha256: str | None = None
+    wip_record_ready = False
+    wip_reuse_errors: list[str] = []
+    if mode == "primary":
+        work_context = {
+            "unit_id": unit_id,
+            "protocol": protocol_identity(),
+            "source_snapshot_sha256": source_snapshot_id,
+            "source_binding_sha256": source_binding_sha256,
+            "obligation_sha256": obligation_digest,
+            "manifest_sha256": sha256_file(root / "AUDIT_MANIFEST.json"),
+            "inventory_sha256": sha256_file(records["inventory_path"]),
+            "dependency_registry_sha256": sha256_file(
+                records["dependency_registry_path"]
+            ),
+            "issue_log_sha256": sha256_file(issue_path),
+            "obligation_projection_sha256": canonical_sha256(
+                obligation_projection
+            ),
+            "inventory_projection_sha256": canonical_sha256(
+                inventory_projection
+            ),
+            "dependency_projection_sha256": canonical_sha256(
+                alignment_dependency_projection
+            ),
+            "issue_triggers_sha256": canonical_sha256(issue_triggers),
+            "risk_aspects_sha256": canonical_sha256(list(RISK_ASPECTS)),
+        }
+        work_context_sha256 = canonical_sha256(work_context)
+        wip_record_ready = bool(
+            wip_local_record_ready
+            and isinstance(ledger, dict)
+            and ledger.get("work_context_sha256") == work_context_sha256
+        )
+        wip_reuse_errors = list(wip_validation_errors)
+        if (
+            ledger is not None
+            and not primary_record_ready
+            and wip_local_record_ready
+            and not wip_record_ready
+        ):
+            wip_reuse_errors.append(
+                "Partial ledger work_context_sha256 is missing or stale"
+            )
+    readiness_projection = {
+        "source_obligation_ready": readiness["ready"],
+        "dependency_mapping_ready": dependency_mapping_ready,
+        "dependency_context_ready": dependency_context_ready,
+        "primary_work_packet_ready": primary_work_packet_ready,
+        "primary_record_ready": primary_record_ready,
+        "semantic_review_ready": semantic_review_ready,
+        "semantic_review_reasons": semantic_review_reasons,
+    }
+    resume_projection: dict[str, Any] | None = None
+    if mode == "primary":
+        resume_projection = {
+            "ledger_present": ledger is not None,
+            "skeleton_present": skeleton is not None,
+            "ledger_audit_relative_file": (
+                ledger_path.relative_to(root).as_posix()
+                if ledger_path
+                else None
+            ),
+            "skeleton_audit_relative_file": (
+                skeleton_path.relative_to(root).as_posix()
+                if skeleton_path
+                else None
+            ),
+            "progress_status": workflow_unit_status(unit_id, progress),
+            "active_unit": progress.get("active_unit") == unit_id,
+            "next_action": progress.get("next_action"),
+            "wip": (
+                packet_wip_resume(ledger, ledger_path)
+                if ledger is not None
+                and not primary_record_ready
+                and wip_record_ready
+                else {
+                    "included": False,
+                    "semantic_record": None,
+                    "reason": (
+                        "primary record is complete"
+                        if primary_record_ready
+                        else "partial ledger failed validation or context binding"
+                        if ledger is not None
+                        else "no partial canonical ledger"
+                    ),
+                }
+            ),
+            "wip_record_ready": wip_record_ready,
+            "wip_validation_error_count": len(wip_reuse_errors),
+        }
+    context_binding = {
+        "unit_id": unit_id,
+        "mode": mode,
+        "protocol_sha256": canonical_sha256(protocol_identity()),
+        "source_snapshot_sha256": source_snapshot_id,
+        "source_binding_sha256": source_binding_sha256,
+        "obligation_sha256": obligation_digest,
+        "semantic_artifact_sha256": canonical_sha256(
+            semantic_artifact_projection
+        ),
+        "obligation_projection_sha256": canonical_sha256(
+            obligation_projection
+        ),
+        "inventory_projection_sha256": canonical_sha256(
+            inventory_projection
+        ),
+        "dependency_projection_sha256": canonical_sha256(dependency_projection),
+        "issue_triggers_sha256": canonical_sha256(issue_triggers),
+        "candidate_reconciliation_sha256": canonical_sha256(
+            candidate_projection
+        ),
+        "dependency_alignment_sha256": canonical_sha256(
+            alignment_projection
+        ),
+        "risk_aspects_sha256": canonical_sha256(list(RISK_ASPECTS)),
+        "readiness_sha256": canonical_sha256(readiness_projection),
+    }
+    if mode == "primary":
+        context_binding.update(
+            {
+                "manifest_sha256": sha256_file(root / "AUDIT_MANIFEST.json"),
+                "inventory_sha256": sha256_file(records["inventory_path"]),
+                "dependency_registry_sha256": sha256_file(
+                    records["dependency_registry_path"]
+                ),
+                "issue_log_sha256": sha256_file(issue_path),
+                "work_context_sha256": work_context_sha256,
+                "resume_sha256": canonical_sha256(resume_projection),
+            }
+        )
+    packet: dict[str, Any] = {
+        "schema_version": CONTEXT_PACKET_SCHEMA_VERSION,
+        "kind": "stat-paper-proofcheck-context-packet",
+        "mode": mode,
+        "unit_id": unit_id,
+        "source_snapshot_sha256": source_snapshot_id,
+        "source_binding_sha256": source_binding_sha256,
+        "context_binding": context_binding,
+        "context_binding_sha256": canonical_sha256(context_binding),
+        **readiness_projection,
+        "semantic_artifact": semantic_artifact_projection,
+        "source": source,
+        "obligation_sha256": obligation_digest,
+        "obligation": obligation_projection,
+        "inventory": inventory_projection,
+        "candidate_dependency_reconciliation": candidate_projection,
+        "dependency_alignment": alignment_projection,
+        "dependencies": dependency_projection,
+        "issue_triggers": issue_triggers,
+        "risk_aspects": list(RISK_ASPECTS),
+    }
+    if resume_projection is not None:
+        assert work_context_sha256 is not None
+        packet["work_context_sha256"] = work_context_sha256
+        packet["resume"] = resume_projection
+    return packet
+
+
+def cmd_packet(args: argparse.Namespace) -> int:
+    configure_console_errors()
+    root = args.root.resolve()
+    output = args.output.resolve()
+    if output.is_relative_to(root):
+        raise ValueError("Packet output must be outside the canonical audit root")
+    if output.exists() and not args.force:
+        raise FileExistsError(f"Packet exists; use --force to replace it: {output}")
+    packet = build_context_packet(root, args.unit_id, args.mode)
+    _, manifest, manifest_errors = load_audit_manifest(root)
+    if manifest_errors:
+        raise ValueError("Cannot generate packet: " + "; ".join(manifest_errors))
+    if output in {
+        path for path, _ in packet_source_members(root, manifest)
+    }:
+        raise ValueError("Packet output must not overwrite a snapshotted source file")
+    atomic_write_json(output, packet)
+    print(
+        json.dumps(
+            {
+                "command": "packet",
+                "status": "written",
+                "mode": args.mode,
+                "unit_id": args.unit_id,
+                "packet": str(output),
+                "source_binding_sha256": packet["source_binding_sha256"],
+            },
+            ensure_ascii=True,
+            indent=2,
+        )
+    )
+    return 0
+
+
+def cmd_bind_challenge(args: argparse.Namespace) -> int:
+    """Bind one fixed challenger artifact to the exact current ledger fields."""
+    root = args.root.resolve()
+    redirect_errors = audit_internal_redirect_errors(root)
+    if redirect_errors:
+        raise ValueError("Cannot bind challenge: " + "; ".join(redirect_errors))
+    matches: list[tuple[Path, dict[str, Any]]] = []
+    for ledger_path in sorted(root.rglob("*.ledger.json")):
+        ledger, ledger_errors = load_json_object(ledger_path, "proof ledger")
+        if ledger_errors:
+            continue
+        if ledger.get("unit_id") == args.unit_id:
+            matches.append((ledger_path, ledger))
+    if len(matches) != 1:
+        raise ValueError(
+            "bind-challenge requires exactly one ledger for "
+            f"{args.unit_id}; found {len(matches)}"
+        )
+    ledger_path, ledger = matches[0]
+    if ledger.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError(
+            "bind-challenge requires a current-schema ledger for "
+            f"{args.unit_id}"
+        )
+    challenge = ledger.get("independent_check")
+    if not isinstance(challenge, dict) or challenge.get("required") is not True:
+        raise ValueError(
+            f"bind-challenge requires an independent check for {args.unit_id}"
+        )
+    validation_probe = json.loads(json.dumps(challenge, ensure_ascii=False))
+    validation_probe["challenge_artifact_sha256"] = "0" * 64
+    validation_errors: list[str] = []
+    validate_independent_check(
+        validation_probe,
+        True,
+        validation_errors,
+        primary_ledger_sha256=canonical_primary_ledger_sha256(ledger),
+        current_contract=True,
+    )
+    covered_issue_ids = challenge.get("covered_issue_ids")
+    covered_issue_ids = (
+        covered_issue_ids if isinstance(covered_issue_ids, list) else []
+    )
+    validation_errors.extend(
+        challenge_semantic_freshness_errors(
+            root,
+            args.unit_id,
+            challenge,
+            covered_issue_ids,
+        )
+    )
+    if validation_errors:
+        raise ValueError(
+            "Cannot bind challenge: " + "; ".join(validation_errors[:12])
+        )
+    artifact_path, artifact_valid = canonical_challenge_artifact_path(
+        root,
+        challenge.get("artifact"),
+        f"Effective critical unit {args.unit_id} challenger artifact",
+        validation_errors,
+    )
+    if not artifact_valid or artifact_path is None:
+        raise ValueError(
+            "Cannot bind challenge: " + "; ".join(validation_errors[:12])
+        )
+    if not artifact_path.is_file():
+        raise FileNotFoundError(
+            f"Challenger artifact not found: {artifact_path}"
+        )
+    bound_text = upsert_challenge_artifact_binding(
+        read_text(artifact_path), args.unit_id, challenge
+    )
+    challenge["challenge_artifact_sha256"] = sha256_text(bound_text)
+    transactional_write_texts(
+        [
+            (artifact_path, bound_text),
+            (
+                ledger_path,
+                json.dumps(ledger, ensure_ascii=False, indent=2) + "\n",
+            ),
+        ]
+    )
+    print(
+        json.dumps(
+            {
+                "command": "bind-challenge",
+                "status": "written",
+                "unit_id": args.unit_id,
+                "ledger": str(ledger_path),
+                "artifact": str(artifact_path),
+                "challenge_artifact_sha256": challenge[
+                    "challenge_artifact_sha256"
+                ],
+            },
+            ensure_ascii=True,
+            indent=2,
+        )
+    )
+    return 0
+
+
 def serialize(data: dict[str, Any], output_format: str) -> str:
     if output_format == "json":
         return json.dumps(data, ensure_ascii=False, indent=2) + "\n"
@@ -4899,6 +8777,7 @@ def _build_scaffold(args: argparse.Namespace, output: Path) -> dict[str, Any]:
         output / "audit" / "03_dependencies" / "METHOD_INTERFACE_REGISTRY.json",
         method_interface_registry,
     )
+    sync_workflow_views(output)
 
     return {
         "audit_root": str(output),
@@ -5106,6 +8985,7 @@ def cmd_extract(args: argparse.Namespace) -> int:
             "inherited_assumptions": [],
             "direct_dependencies": [],
             "source_reference_dispositions": [],
+            "candidate_dependency_dispositions": [],
             "citation_dispositions": [],
             "use_sites": [],
             "verification_basis": [],
@@ -5121,7 +9001,9 @@ def cmd_extract(args: argparse.Namespace) -> int:
             "covered_issue_ids": [],
             "source_snapshot_sha256": "",
             "challenged_ledger_sha256": "",
+            "challenge_context_sha256": "",
             "challenge_artifact_sha256": "",
+            "issue_assessments": [],
             "generated_utc": "",
             "disagreements": [],
             "resolution": "",
@@ -5143,6 +9025,1983 @@ def cmd_extract(args: argparse.Namespace) -> int:
                     "line into checked steps, and run ledger-check --final."
                 ),
             },
+            indent=2,
+        )
+    )
+    return 0
+
+
+COMPACT_ANNOTATION_TOP_LEVEL_FIELDS = {
+    "annotation_schema_version",
+    "unit_id",
+    "source_unit_sha256",
+    "obligation_sha256",
+    "context_binding_sha256",
+    "source_groups",
+    "dependencies",
+    "steps",
+    "conclusions",
+    "review",
+}
+
+
+def containing_audit_root(path: Path) -> Path | None:
+    for candidate in (path.parent, *path.parents):
+        if (
+            (candidate / "AUDIT_MANIFEST.json").is_file()
+            and (candidate / "audit").is_dir()
+        ):
+            return candidate.resolve()
+    return None
+
+
+def validate_compiler_context_packet(
+    ledger: dict[str, Any],
+    ledger_path: Path,
+    annotations: dict[str, Any],
+    packet_path: Path,
+) -> dict[str, Any]:
+    packet, packet_errors = load_json_object(packet_path, "primary context packet")
+    if packet_errors:
+        raise ValueError(packet_errors[0])
+    if packet.get("schema_version") != CONTEXT_PACKET_SCHEMA_VERSION:
+        raise ValueError(
+            "Compiler packet has an unsupported context-packet schema version"
+        )
+    if packet.get("kind") != "stat-paper-proofcheck-context-packet":
+        raise ValueError("Compiler packet has an unsupported kind")
+    if packet.get("mode") != "primary":
+        raise ValueError("compile-annotations requires a primary context packet")
+    if packet.get("unit_id") != ledger.get("unit_id"):
+        raise ValueError("Compiler packet unit_id does not match the skeleton")
+    if packet.get("source_obligation_ready") is not True:
+        raise ValueError("Compiler packet source and obligation are not ready")
+    if packet.get("primary_work_packet_ready") is not True:
+        raise ValueError("Compiler packet is not ready for primary semantic work")
+    audit_root = containing_audit_root(ledger_path)
+    if audit_root is None:
+        raise ValueError(
+            "compile-annotations requires a source-locked skeleton inside a "
+            "canonical proofcheck audit root"
+        )
+    if packet_path.is_relative_to(audit_root):
+        raise ValueError(
+            "The compiler packet must remain outside the canonical audit root"
+        )
+    expected_packet = build_context_packet(
+        audit_root, str(ledger.get("unit_id")), "primary"
+    )
+    if packet != expected_packet:
+        differing_fields = sorted(
+            field
+            for field in set(packet) | set(expected_packet)
+            if packet.get(field) != expected_packet.get(field)
+        )
+        raise ValueError(
+            "Compiler packet is stale or was modified; regenerate it from the "
+            "canonical audit state. Differing fields: "
+            + ", ".join(differing_fields)
+        )
+    packet_context_hash = packet.get("context_binding_sha256")
+    if annotations.get("context_binding_sha256") != packet_context_hash:
+        raise ValueError(
+            "annotations.context_binding_sha256 does not match the primary packet"
+        )
+    obligation_hash = canonical_sha256(ledger.get("obligation"))
+    if packet.get("obligation_sha256") != obligation_hash:
+        raise ValueError("Compiler packet obligation_sha256 binding is stale")
+    artifact = packet.get("semantic_artifact")
+    expected_relative = ledger_path.relative_to(audit_root).as_posix()
+    if (
+        not isinstance(artifact, dict)
+        or artifact.get("kind") != "source_locked_skeleton"
+        or artifact.get("audit_relative_file") != expected_relative
+    ):
+        raise ValueError("Compiler packet does not bind this source-locked skeleton")
+    return packet
+
+
+def annotation_object(
+    value: Any,
+    field: str,
+    *,
+    required: Iterable[str],
+    optional: Iterable[str] = (),
+) -> dict[str, Any]:
+    """Return one strict compact-annotation object or fail on a typo."""
+    if not isinstance(value, dict):
+        raise ValueError(f"{field} must be an object")
+    required_set = set(required)
+    allowed = required_set | set(optional)
+    missing = sorted(required_set - set(value))
+    unknown = sorted(set(value) - allowed)
+    if missing:
+        raise ValueError(f"{field} is missing fields: {', '.join(missing)}")
+    if unknown:
+        raise ValueError(f"{field} has unknown fields: {', '.join(unknown)}")
+    return value
+
+
+def annotation_string_list(
+    value: Any,
+    field: str,
+    *,
+    allow_empty: bool = True,
+) -> list[str]:
+    if not isinstance(value, list) or not all(
+        is_substantive_string(item) for item in value
+    ):
+        raise ValueError(f"{field} must be a list of substantive strings")
+    if not allow_empty and not value:
+        raise ValueError(f"{field} must not be empty")
+    return list(value)
+
+
+def validate_compile_skeleton(
+    ledger: dict[str, Any], ledger_path: Path
+) -> None:
+    """Restrict compact compilation to a fresh, normalized extract skeleton."""
+    if ledger.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError(
+            f"compile-annotations requires artifact schema {SCHEMA_VERSION}"
+        )
+    if ledger.get("evidence_contract_version") != EVIDENCE_CONTRACT_VERSION:
+        raise ValueError(
+            "compile-annotations requires the current evidence contract"
+        )
+    if "migration" in ledger:
+        raise ValueError("compile-annotations does not accept a migrated ledger")
+    if ledger.get("steps") != []:
+        raise ValueError(
+            "compile-annotations requires a fresh extracted skeleton with empty steps"
+        )
+
+    review = ledger.get("review")
+    if not isinstance(review, dict):
+        raise ValueError("The extracted skeleton review must be an object")
+    expected_review_scalars = {
+        "unit_status": "not_checked",
+        "conclusion_step_id": "",
+        "contract_fidelity": "not_checked",
+        "argument_status": "not_checked",
+        "statement_status": "not_assessed",
+        "dependency_closure": "not_checked",
+        "use_site_sufficiency": "not_checked",
+    }
+    expected_review_lists = (
+        "conclusion_results",
+        "explicit_assumptions",
+        "inherited_assumptions",
+        "direct_dependencies",
+        "source_reference_dispositions",
+        "candidate_dependency_dispositions",
+        "citation_dispositions",
+        "use_sites",
+        "verification_basis",
+        "reviewer_notes",
+    )
+    for field, expected in expected_review_scalars.items():
+        if review.get(field) != expected:
+            raise ValueError(
+                f"compile-annotations requires fresh review.{field}={expected!r}"
+            )
+    for field in expected_review_lists:
+        if review.get(field) != []:
+            raise ValueError(
+                f"compile-annotations requires fresh empty review.{field}"
+            )
+
+    independent = ledger.get("independent_check")
+    if not isinstance(independent, dict):
+        raise ValueError("The extracted skeleton independent_check must be an object")
+    expected_independent = {
+        "required": False,
+        "status": "not_required",
+        "independence_level": "none",
+        "challenger_verdict": "not_checked",
+        "reconciled_verdict": "not_checked",
+        "artifact": "",
+        "covered_issue_ids": [],
+        "source_snapshot_sha256": "",
+        "challenged_ledger_sha256": "",
+        "challenge_context_sha256": "",
+        "challenge_artifact_sha256": "",
+        "issue_assessments": [],
+        "generated_utc": "",
+        "disagreements": [],
+        "resolution": "",
+    }
+    for field, expected in expected_independent.items():
+        if independent.get(field) != expected:
+            raise ValueError(
+                "compile-annotations requires a fresh non-required challenge; "
+                f"independent_check.{field} must be {expected!r}"
+            )
+
+    obligation_errors: list[str] = []
+    validate_obligation(ledger.get("obligation"), ledger_path, True, obligation_errors)
+    if obligation_errors:
+        shown = "; ".join(obligation_errors[:8])
+        suffix = (
+            f"; and {len(obligation_errors) - 8} more"
+            if len(obligation_errors) > 8
+            else ""
+        )
+        raise ValueError(
+            "compile-annotations requires a completed normalized obligation: "
+            + shown
+            + suffix
+        )
+
+
+def build_compiled_source_units(
+    ledger: dict[str, Any], source_groups: Any
+) -> tuple[list[dict[str, Any]], dict[tuple[int, int], str]]:
+    source = ledger.get("source")
+    source_lines = ledger.get("source_lines")
+    if not isinstance(source, dict) or not isinstance(source_lines, list):
+        raise ValueError("The extracted skeleton has no locked source records")
+    start = source.get("start_line")
+    end = source.get("end_line")
+    if not is_int(start) or not is_int(end) or start < 1 or end < start:
+        raise ValueError("The extracted skeleton has an invalid source range")
+    if len(source_lines) != end - start + 1:
+        raise ValueError("The extracted skeleton source_lines are incomplete")
+    if not isinstance(source_groups, list):
+        raise ValueError("source_groups must be a list")
+
+    groups: list[dict[str, Any]] = []
+    previous_end = start - 1
+    for index, raw_group in enumerate(source_groups, 1):
+        field = f"source_groups[{index}]"
+        group = annotation_object(
+            raw_group,
+            field,
+            required=("lines", "kind", "partition_evidence"),
+        )
+        line_range = group["lines"]
+        if (
+            not isinstance(line_range, list)
+            or len(line_range) != 2
+            or not all(is_int(item) for item in line_range)
+        ):
+            raise ValueError(f"{field}.lines must be [start, end]")
+        group_start, group_end = line_range
+        if group_start < start or group_end > end or group_end <= group_start:
+            raise ValueError(
+                f"{field}.lines must be a multiline range inside {start}-{end}"
+            )
+        if group_start <= previous_end:
+            raise ValueError("source_groups must be disjoint and in source order")
+        previous_end = group_end
+        if group["kind"] not in {"continued_sentence", "continued_display"}:
+            raise ValueError(
+                f"{field}.kind must be continued_sentence or continued_display"
+            )
+        if not is_substantive_string(group["partition_evidence"]):
+            raise ValueError(f"{field}.partition_evidence must be substantive")
+        groups.append(group)
+
+    groups_by_start = {group["lines"][0]: group for group in groups}
+    units: list[dict[str, Any]] = []
+    ranges: dict[tuple[int, int], str] = {}
+    line_number = start
+    while line_number <= end:
+        group = groups_by_start.get(line_number)
+        if group is not None:
+            unit_start, unit_end = group["lines"]
+            kind = group["kind"]
+            evidence = group["partition_evidence"]
+        else:
+            unit_start = unit_end = line_number
+            row = source_lines[line_number - start]
+            text = row.get("text") if isinstance(row, dict) else None
+            if not isinstance(text, str):
+                raise ValueError(
+                    f"The extracted skeleton has malformed source line {line_number}"
+                )
+            kind = "non_substantive" if is_non_substantive(text) else "one_line"
+            evidence = (
+                f"Locked line {line_number} is mechanically non-substantive."
+                if kind == "non_substantive"
+                else f"This source unit is exactly locked physical line {line_number}."
+            )
+        if len(units) >= 999:
+            raise ValueError(
+                "compile-annotations supports at most 999 source units under schema 5"
+            )
+        texts = [
+            source_lines[current - start].get("text", "")
+            for current in range(unit_start, unit_end + 1)
+        ]
+        unit_id = f"U{len(units) + 1:03d}"
+        units.append(
+            {
+                "id": unit_id,
+                "lines": [unit_start, unit_end],
+                "kind": kind,
+                "source_sha256": sha256_text("\n".join(texts)),
+                "partition_evidence": evidence,
+            }
+        )
+        ranges[(unit_start, unit_end)] = unit_id
+        line_number = unit_end + 1
+    return units, ranges
+
+
+def expand_compact_risks(value: Any, field: str) -> list[dict[str, str]]:
+    risks = annotation_object(value, field, required=RISK_ASPECTS)
+    expanded: list[dict[str, str]] = []
+    for aspect in RISK_ASPECTS:
+        record = annotation_object(
+            risks[aspect],
+            f"{field}.{aspect}",
+            required=("status", "evidence"),
+        )
+        if record["status"] not in RISK_STATUSES:
+            raise ValueError(f"{field}.{aspect}.status is invalid")
+        if not is_substantive_string(record["evidence"]):
+            raise ValueError(f"{field}.{aspect}.evidence must be substantive")
+        expanded.append(
+            {
+                "aspect": aspect,
+                "status": record["status"],
+                "evidence": record["evidence"],
+            }
+        )
+    return expanded
+
+
+def load_compact_dependencies(value: Any) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    if not isinstance(value, list):
+        raise ValueError("dependencies must be a list")
+    records: list[dict[str, Any]] = []
+    by_use: dict[str, dict[str, Any]] = {}
+    for index, raw_record in enumerate(value, 1):
+        field = f"dependencies[{index}]"
+        record = annotation_object(
+            raw_record,
+            field,
+            required=(
+                "id",
+                "use_id",
+                "kind",
+                "status",
+                "needed_form",
+                "compatibility_check",
+            ),
+            optional=("conclusion_id",),
+        )
+        if record["kind"] not in {"internal_result", "external_result"}:
+            raise ValueError(f"{field}.kind must be an internal or external result")
+        use_id = record["use_id"]
+        if not isinstance(use_id, str) or not DEPENDENCY_USE_ID_RE.fullmatch(use_id):
+            raise ValueError(f"{field}.use_id must match D001")
+        if use_id in by_use:
+            raise ValueError(f"Duplicate compact dependency use {use_id}")
+        if record["status"] not in DEPENDENCY_STATUSES - {"not_applicable"}:
+            raise ValueError(f"{field}.status is invalid")
+        for semantic_field in ("id", "needed_form", "compatibility_check"):
+            if not is_substantive_string(record[semantic_field]):
+                raise ValueError(f"{field}.{semantic_field} must be substantive")
+        if record["kind"] == "internal_result":
+            conclusion_id = record.get("conclusion_id")
+            if (
+                not isinstance(conclusion_id, str)
+                or not CONCLUSION_ID_RE.fullmatch(conclusion_id)
+            ):
+                raise ValueError(
+                    f"{field}.conclusion_id must identify the internal conclusion"
+                )
+        elif "conclusion_id" in record:
+            raise ValueError(
+                f"{field}.conclusion_id is not allowed for an external result"
+            )
+        copied = {
+            key: record[key]
+            for key in (
+                "id",
+                "use_id",
+                "kind",
+                "conclusion_id",
+                "status",
+                "needed_form",
+                "compatibility_check",
+            )
+            if key in record
+        }
+        records.append(copied)
+        by_use[use_id] = copied
+    return records, by_use
+
+
+COMPACT_STEP_FIELDS = {
+    "key",
+    "lines",
+    "mode",
+    "kind",
+    "goal",
+    "claim",
+    "literal",
+    "atomicity_evidence",
+    "adversarial",
+    "risks",
+    "inputs",
+    "side_conditions",
+    "status",
+    "issue_ids",
+    "rule",
+    "justification",
+    "failure",
+}
+
+
+def compact_issue_ids(value: Any, field: str) -> list[str]:
+    if not isinstance(value, list) or not all(
+        isinstance(issue_id, str) and ISSUE_ID_RE.fullmatch(issue_id)
+        for issue_id in value
+    ):
+        raise ValueError(f"{field} must contain issue IDs such as I-001")
+    if len(value) != len(set(value)):
+        raise ValueError(f"{field} contains duplicate issue IDs")
+    return list(value)
+
+
+def prepare_compact_step_plans(
+    value: Any,
+    source_units: list[dict[str, Any]],
+    source_ranges: dict[tuple[int, int], str],
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    if not isinstance(value, list):
+        raise ValueError("steps must be a list")
+    units_by_id = {unit["id"]: unit for unit in source_units}
+    unit_order = {unit["id"]: index for index, unit in enumerate(source_units, 1)}
+    plans: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for index, raw_step in enumerate(value, 1):
+        field = f"steps[{index}]"
+        step = annotation_object(
+            raw_step,
+            field,
+            required=COMPACT_STEP_FIELDS - {"rule", "justification", "failure"},
+            optional=("rule", "justification", "failure"),
+        )
+        key = step["key"]
+        if not is_nonempty_string(key):
+            raise ValueError(f"{field}.key must be nonempty")
+        if key in seen_keys:
+            raise ValueError(f"Duplicate compact step key {key}")
+        seen_keys.add(key)
+        line_range = step["lines"]
+        if (
+            not isinstance(line_range, list)
+            or len(line_range) != 2
+            or not all(is_int(item) for item in line_range)
+        ):
+            raise ValueError(f"{field}.lines must be [start, end]")
+        source_unit_id = source_ranges.get((line_range[0], line_range[1]))
+        if source_unit_id is None:
+            raise ValueError(
+                f"{field}.lines must exactly match one compiled source unit"
+            )
+        if units_by_id[source_unit_id]["kind"] == "non_substantive":
+            raise ValueError(f"{field} cannot annotate a non-substantive source unit")
+        if step["mode"] not in {"noninferential", "derivation", "reuse"}:
+            raise ValueError(f"{field}.mode is invalid")
+        if step["kind"] not in STEP_KINDS:
+            raise ValueError(f"{field}.kind is invalid")
+        if step["status"] not in STEP_STATUSES - {"non_substantive"}:
+            raise ValueError(f"{field}.status is invalid")
+        for semantic_field in (
+            "goal",
+            "claim",
+            "literal",
+            "atomicity_evidence",
+        ):
+            if not is_substantive_string(step[semantic_field]):
+                raise ValueError(f"{field}.{semantic_field} must be substantive")
+        annotation_string_list(
+            step["adversarial"], f"{field}.adversarial", allow_empty=False
+        )
+        expand_compact_risks(step["risks"], f"{field}.risks")
+        if not isinstance(step["inputs"], list):
+            raise ValueError(f"{field}.inputs must be a list")
+        if not isinstance(step["side_conditions"], list):
+            raise ValueError(f"{field}.side_conditions must be a list")
+        compact_issue_ids(step["issue_ids"], f"{field}.issue_ids")
+        if step["mode"] == "noninferential":
+            if step["kind"] not in {"statement", "setup", "definition"}:
+                raise ValueError(
+                    f"{field}: noninferential mode requires statement, setup, or definition"
+                )
+            if step["inputs"] or step["side_conditions"]:
+                raise ValueError(
+                    f"{field}: noninferential mode cannot have inputs or side conditions"
+                )
+            if any(name in step for name in ("rule", "justification", "failure")):
+                raise ValueError(
+                    f"{field}: noninferential mode cannot have a move or failure"
+                )
+        else:
+            for semantic_field in ("rule", "justification"):
+                if not is_substantive_string(step.get(semantic_field)):
+                    raise ValueError(
+                        f"{field}.{semantic_field} must be authored for every move"
+                    )
+        plans.append(
+            {
+                **step,
+                "source_unit_id": source_unit_id,
+                "annotation_position": index,
+            }
+        )
+
+    plans.sort(
+        key=lambda plan: (
+            unit_order[plan["source_unit_id"]],
+            plan["annotation_position"],
+        )
+    )
+    plans_by_unit: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for plan in plans:
+        plans_by_unit[plan["source_unit_id"]].append(plan)
+    missing_units = [
+        unit["id"]
+        for unit in source_units
+        if unit["kind"] != "non_substantive" and not plans_by_unit.get(unit["id"])
+    ]
+    if missing_units:
+        raise ValueError(
+            "Compact annotations omit substantive source units: "
+            + ", ".join(missing_units[:8])
+        )
+
+    key_to_step_id: dict[str, str] = {}
+    for unit in source_units:
+        unit_plans = plans_by_unit.get(unit["id"], [])
+        base_id = "S" + unit["id"][1:]
+        for offset, plan in enumerate(unit_plans):
+            step_id = base_id if offset == 0 else f"{base_id}.{offset}"
+            plan["compiled_id"] = step_id
+            key_to_step_id[plan["key"]] = step_id
+    return plans, key_to_step_id
+
+
+def compact_move_failure(value: Any, field: str) -> dict[str, Any]:
+    failure = annotation_object(
+        value,
+        field,
+        required=("kind", "issue_id", "evidence"),
+        optional=("target",),
+    )
+    if failure["kind"] not in MOVE_FAILURE_KINDS:
+        raise ValueError(f"{field}.kind is invalid")
+    if (
+        not isinstance(failure["issue_id"], str)
+        or not ISSUE_ID_RE.fullmatch(failure["issue_id"])
+    ):
+        raise ValueError(f"{field}.issue_id must match I-001")
+    if not is_substantive_string(failure["evidence"]):
+        raise ValueError(f"{field}.evidence must be substantive")
+    if "target" in failure and not is_substantive_string(failure["target"]):
+        raise ValueError(f"{field}.target must be substantive")
+    return dict(failure)
+
+
+def build_compact_side_conditions(
+    value: list[Any],
+    field: str,
+    premise_ids: list[str],
+) -> list[dict[str, Any]]:
+    conditions: list[dict[str, Any]] = []
+    for index, raw_condition in enumerate(value, 1):
+        item_field = f"{field}[{index}]"
+        condition = annotation_object(
+            raw_condition,
+            item_field,
+            required=("condition", "status"),
+            optional=("discharge",),
+        )
+        if not is_substantive_string(condition["condition"]):
+            raise ValueError(f"{item_field}.condition must be substantive")
+        if condition["status"] not in {"open", "discharged"}:
+            raise ValueError(f"{item_field}.status is invalid")
+        output: dict[str, Any] = {
+            "id": f"SC{index:03d}",
+            "condition": condition["condition"],
+            "generated_by": "M001",
+            "status": condition["status"],
+        }
+        if condition["status"] == "open":
+            if "discharge" in condition:
+                raise ValueError(f"{item_field}: an open condition cannot have discharge")
+        else:
+            discharge = annotation_object(
+                condition.get("discharge"),
+                f"{item_field}.discharge",
+                required=("sources", "rule", "evidence"),
+            )
+            if not isinstance(discharge["sources"], list) or not discharge["sources"]:
+                raise ValueError(
+                    f"{item_field}.discharge.sources must be a nonempty list"
+                )
+            sources: list[dict[str, Any]] = []
+            for source_index, raw_source in enumerate(discharge["sources"], 1):
+                source_field = f"{item_field}.discharge.sources[{source_index}]"
+                source = annotation_object(
+                    raw_source,
+                    source_field,
+                    required=("input", "contribution"),
+                )
+                input_index = source["input"]
+                if (
+                    not is_int(input_index)
+                    or input_index < 1
+                    or input_index > len(premise_ids)
+                ):
+                    raise ValueError(
+                        f"{source_field}.input must identify one compact input"
+                    )
+                if not is_substantive_string(source["contribution"]):
+                    raise ValueError(
+                        f"{source_field}.contribution must be substantive"
+                    )
+                sources.append(
+                    {
+                        "kind": "premise",
+                        "reference": premise_ids[input_index - 1],
+                        "contribution": source["contribution"],
+                    }
+                )
+            if not is_substantive_string(discharge["rule"]):
+                raise ValueError(f"{item_field}.discharge.rule must be substantive")
+            if not is_substantive_string(discharge["evidence"]):
+                raise ValueError(
+                    f"{item_field}.discharge.evidence must be substantive"
+                )
+            output["discharge"] = {
+                "sources": sources,
+                "rule": discharge["rule"],
+                "evidence": discharge["evidence"],
+            }
+        conditions.append(output)
+    return conditions
+
+
+def build_compact_steps(
+    ledger: dict[str, Any],
+    source_units: list[dict[str, Any]],
+    plans: list[dict[str, Any]],
+    key_to_step_id: dict[str, str],
+    dependencies_by_use: dict[str, dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    obligation = ledger.get("obligation")
+    if not isinstance(obligation, dict):
+        raise ValueError("The extracted skeleton has no normalized obligation")
+    plans_by_unit: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for plan in plans:
+        plans_by_unit[plan["source_unit_id"]].append(plan)
+
+    steps: list[dict[str, Any]] = []
+    built_by_key: dict[str, dict[str, Any]] = {}
+    for unit in source_units:
+        unit_id = unit["id"]
+        base_step_id = "S" + unit_id[1:]
+        if unit["kind"] == "non_substantive":
+            steps.append(
+                {
+                    "id": base_step_id,
+                    "source_unit_id": unit_id,
+                    "kind": "other",
+                    "status": "non_substantive",
+                    "issue_ids": [],
+                }
+            )
+            continue
+
+        for plan in plans_by_unit[unit_id]:
+            field = f"step {plan['key']}"
+            premise_uses: list[dict[str, Any]] = []
+            step_dependencies: list[dict[str, Any]] = []
+            seen_dependency_keys: set[str] = set()
+            for input_index, raw_input in enumerate(plan["inputs"], 1):
+                input_field = f"{field}.inputs[{input_index}]"
+                compact_input = annotation_object(
+                    raw_input,
+                    input_field,
+                    required=("kind", "reference", "role", "evidence"),
+                    optional=(
+                        "anchor",
+                        "compatibility_check",
+                        "source_reference_id",
+                        "source_reference_occurrence_id",
+                    ),
+                )
+                input_kind = compact_input["kind"]
+                reference = compact_input["reference"]
+                if input_kind not in {"obligation", "prior_step", "dependency"}:
+                    raise ValueError(f"{input_field}.kind is invalid")
+                if not is_nonempty_string(reference):
+                    raise ValueError(f"{input_field}.reference must be nonempty")
+                if compact_input["role"] not in PREMISE_ROLES:
+                    raise ValueError(f"{input_field}.role is invalid")
+                if not is_substantive_string(compact_input["evidence"]):
+                    raise ValueError(f"{input_field}.evidence must be substantive")
+                source_reference_id = compact_input.get("source_reference_id")
+                source_occurrence_id = compact_input.get(
+                    "source_reference_occurrence_id"
+                )
+                if bool(is_nonempty_string(source_reference_id)) != bool(
+                    is_nonempty_string(source_occurrence_id)
+                ):
+                    raise ValueError(
+                        f"{input_field} source reference anchoring requires both IDs"
+                    )
+
+                if input_kind == "obligation":
+                    if "compatibility_check" in compact_input:
+                        raise ValueError(
+                            f"{input_field}.compatibility_check is not allowed for an obligation"
+                        )
+                    anchor = annotation_object(
+                        compact_input.get("anchor"),
+                        f"{input_field}.anchor",
+                        required=("kind", "index"),
+                    )
+                    found, claim = resolve_json_pointer(obligation, reference)
+                    root_name = (
+                        reference[1:].split("/", 1)[0]
+                        if reference.startswith("/")
+                        else ""
+                    )
+                    if (
+                        root_name not in OBLIGATION_PREMISE_ROOTS
+                        or not found
+                        or not isinstance(claim, str)
+                        or not is_substantive_string(claim)
+                    ):
+                        raise ValueError(
+                            f"{input_field}.reference must resolve to one substantive scalar premise"
+                        )
+                    origin = {
+                        "kind": "obligation",
+                        "reference": reference,
+                        "anchor": dict(anchor),
+                    }
+                elif input_kind == "prior_step":
+                    if "anchor" in compact_input:
+                        raise ValueError(
+                            f"{input_field}.anchor is not allowed for a prior step"
+                        )
+                    if not is_substantive_string(
+                        compact_input.get("compatibility_check")
+                    ):
+                        raise ValueError(
+                            f"{input_field}.compatibility_check must be authored"
+                        )
+                    prior = built_by_key.get(reference)
+                    if prior is None:
+                        if reference in key_to_step_id:
+                            raise ValueError(
+                                f"{input_field} references a step not established earlier"
+                            )
+                        raise ValueError(f"{input_field} references unknown step {reference}")
+                    claim = prior["restatement"]
+                    prior_id = prior["id"]
+                    dependency = {
+                        "id": prior_id,
+                        "kind": "step",
+                        "status": STEP_TO_DEPENDENCY_STATUS[prior["status"]],
+                        "needed_form": claim,
+                        "compatibility_check": compact_input[
+                            "compatibility_check"
+                        ],
+                    }
+                    if prior_id not in seen_dependency_keys:
+                        step_dependencies.append(dependency)
+                        seen_dependency_keys.add(prior_id)
+                    origin = {"kind": "prior_step", "reference": prior_id}
+                else:
+                    if "anchor" in compact_input or "compatibility_check" in compact_input:
+                        raise ValueError(
+                            f"{input_field} duplicates fields owned by the dependency catalog"
+                        )
+                    dependency = dependencies_by_use.get(reference)
+                    if dependency is None:
+                        raise ValueError(
+                            f"{input_field} references unknown dependency use {reference}"
+                        )
+                    claim = dependency["needed_form"]
+                    if reference not in seen_dependency_keys:
+                        step_dependencies.append(dict(dependency))
+                        seen_dependency_keys.add(reference)
+                    origin = {
+                        "kind": dependency["kind"],
+                        "reference": reference,
+                    }
+
+                premise: dict[str, Any] = {
+                    "id": f"P{input_index:03d}",
+                    "role": compact_input["role"],
+                    "claim": claim,
+                    "origin": origin,
+                    "evidence": compact_input["evidence"],
+                }
+                if is_nonempty_string(source_reference_id):
+                    premise["source_reference_id"] = source_reference_id
+                    premise["source_reference_occurrence_id"] = source_occurrence_id
+                premise_uses.append(premise)
+
+            risks = expand_compact_risks(plan["risks"], f"{field}.risks")
+            issue_ids = compact_issue_ids(plan["issue_ids"], f"{field}.issue_ids")
+            common: dict[str, Any] = {
+                "id": plan["compiled_id"],
+                "source_unit_id": unit_id,
+                "kind": plan["kind"],
+                "goal": plan["goal"],
+                "restatement": plan["claim"],
+                "premise_uses": premise_uses,
+                "dependencies": step_dependencies,
+                "checks": {
+                    "literal": plan["literal"],
+                    "atomicity": {
+                        "status": (
+                            "non_inferential"
+                            if plan["mode"] == "noninferential"
+                            else "single_move"
+                        ),
+                        "evidence": plan["atomicity_evidence"],
+                    },
+                    "adversarial": list(plan["adversarial"]),
+                },
+                "side_conditions": [],
+                "risk_checks": risks,
+                "conditions": [],
+                "status": plan["status"],
+                "issue_ids": issue_ids,
+            }
+            if plan["mode"] == "noninferential":
+                common["inference"] = {"moves": [], "conclusion_move": None}
+            else:
+                common["support_role"] = plan["mode"]
+                move: dict[str, Any] = {
+                    "id": "M001",
+                    "claim": plan["claim"],
+                    "rule": plan["rule"],
+                    "premise_ids": [premise["id"] for premise in premise_uses],
+                    "prior_move_ids": [],
+                    "justification": plan["justification"],
+                }
+                if "failure" in plan:
+                    move["failure"] = compact_move_failure(
+                        plan["failure"], f"{field}.failure"
+                    )
+                common["inference"] = {
+                    "moves": [move],
+                    "conclusion_move": "M001",
+                }
+                side_conditions = build_compact_side_conditions(
+                    plan["side_conditions"],
+                    f"{field}.side_conditions",
+                    [premise["id"] for premise in premise_uses],
+                )
+                common["side_conditions"] = side_conditions
+                if plan["status"] == "conditionally_verified":
+                    derived_conditions: list[dict[str, str]] = [
+                        {
+                            "kind": "side_condition",
+                            "reference": condition["id"],
+                            "condition": condition["condition"],
+                        }
+                        for condition in side_conditions
+                        if condition["status"] == "open"
+                    ]
+                    for dependency in step_dependencies:
+                        if dependency["status"] in {"conditional", "unchecked"}:
+                            dependency_reference = (
+                                dependency["id"]
+                                if dependency["kind"] == "step"
+                                else dependency["use_id"]
+                            )
+                            derived_conditions.append(
+                                {
+                                    "kind": "dependency",
+                                    "reference": dependency_reference,
+                                    "condition": (
+                                        f"Dependency {dependency_reference} remains "
+                                        f"{dependency['status']} for the needed form: "
+                                        f"{dependency['needed_form']}"
+                                    ),
+                                }
+                            )
+                    derived_conditions.extend(
+                        {
+                            "kind": "risk_check",
+                            "reference": risk["aspect"],
+                            "condition": risk["evidence"],
+                        }
+                        for risk in risks
+                        if risk["status"] == "open"
+                    )
+                    common["conditions"] = derived_conditions
+            steps.append(common)
+            built_by_key[plan["key"]] = common
+    return steps, built_by_key
+
+
+def build_compact_reference_dispositions(
+    value: Any, steps: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        raise ValueError("review.source_reference_dispositions must be a list")
+    premises = [
+        (step["id"], premise)
+        for step in steps
+        if isinstance(step, dict)
+        for premise in step.get("premise_uses", [])
+        if isinstance(premise, dict)
+    ]
+    output: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, raw_record in enumerate(value, 1):
+        field = f"review.source_reference_dispositions[{index}]"
+        record = annotation_object(
+            raw_record,
+            field,
+            required=("occurrence_id", "target", "command", "disposition", "evidence"),
+            optional=("dependency_use_id",),
+        )
+        occurrence_id = record["occurrence_id"]
+        if not is_nonempty_string(occurrence_id) or not occurrence_id.startswith("R-"):
+            raise ValueError(f"{field}.occurrence_id must be a parser occurrence ID")
+        if occurrence_id in seen:
+            raise ValueError(f"Duplicate source reference occurrence {occurrence_id}")
+        seen.add(occurrence_id)
+        for name in ("target", "command", "evidence"):
+            if not is_substantive_string(record[name]):
+                raise ValueError(f"{field}.{name} must be substantive")
+        disposition = record["disposition"]
+        allowed = {
+            "internal_result",
+            "obligation_context",
+            "local_step",
+            "own_result_identification",
+            "navigation",
+            "non_load_bearing",
+            "unresolved",
+        }
+        if disposition not in allowed:
+            raise ValueError(f"{field}.disposition is invalid")
+        copied = {
+            "occurrence_id": occurrence_id,
+            "target": record["target"],
+            "command": record["command"],
+            "disposition": disposition,
+            "evidence": record["evidence"],
+        }
+        premise_roles = {"internal_result", "obligation_context", "local_step"}
+        if disposition in premise_roles:
+            links = [
+                {"step_id": step_id, "premise_id": premise["id"]}
+                for step_id, premise in premises
+                if premise.get("source_reference_occurrence_id") == occurrence_id
+                and premise.get("source_reference_id") == record["target"]
+            ]
+            if not links:
+                raise ValueError(
+                    f"{field} has no compact premise carrying its exact occurrence"
+                )
+            copied["premise_links"] = links
+            if disposition == "internal_result":
+                use_id = record.get("dependency_use_id")
+                if not is_nonempty_string(use_id):
+                    raise ValueError(f"{field}.dependency_use_id is required")
+                copied["dependency_use_id"] = use_id
+            elif "dependency_use_id" in record:
+                raise ValueError(
+                    f"{field}.dependency_use_id is allowed only for internal_result"
+                )
+        elif "dependency_use_id" in record:
+            raise ValueError(
+                f"{field}.dependency_use_id is allowed only for internal_result"
+            )
+        output.append(copied)
+    return output
+
+
+def build_compact_candidate_dispositions(
+    value: Any,
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        raise ValueError(
+            "review.candidate_dependency_dispositions must be a list"
+        )
+    output: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    nondependency_roles = {"navigation", "non_load_bearing"}
+    for index, raw_record in enumerate(value, 1):
+        field = f"review.candidate_dependency_dispositions[{index}]"
+        record = annotation_object(
+            raw_record,
+            field,
+            required=(
+                "candidate_id",
+                "path_ids",
+                "disposition",
+                "evidence",
+            ),
+            optional=("dependency_use_id",),
+        )
+        candidate_id = record["candidate_id"]
+        if not is_substantive_string(candidate_id):
+            raise ValueError(f"{field}.candidate_id must be substantive")
+        if candidate_id in seen:
+            raise ValueError(
+                f"Duplicate candidate dependency disposition {candidate_id}"
+            )
+        seen.add(str(candidate_id))
+        path_ids = annotation_string_list(
+            record["path_ids"], f"{field}.path_ids", allow_empty=False
+        )
+        if len(path_ids) != len(set(path_ids)) or not all(
+            re.fullmatch(r"CP[0-9]{3}", path_id) for path_id in path_ids
+        ):
+            raise ValueError(
+                f"{field}.path_ids must contain unique IDs such as CP001"
+            )
+        disposition = record["disposition"]
+        if disposition not in {"internal_result", *nondependency_roles}:
+            raise ValueError(f"{field}.disposition is invalid")
+        if not is_substantive_string(record["evidence"]):
+            raise ValueError(f"{field}.evidence must be substantive")
+        copied = {
+            "candidate_id": str(candidate_id),
+            "path_ids": path_ids,
+            "disposition": disposition,
+            "evidence": record["evidence"],
+        }
+        if disposition == "internal_result":
+            use_id = record.get("dependency_use_id")
+            if not isinstance(use_id, str) or not DEPENDENCY_USE_ID_RE.fullmatch(
+                use_id
+            ):
+                raise ValueError(
+                    f"{field}.dependency_use_id must match D001"
+                )
+            copied["dependency_use_id"] = use_id
+        elif "dependency_use_id" in record:
+            raise ValueError(
+                f"{field}.dependency_use_id is allowed only for internal_result"
+            )
+        output.append(copied)
+    return output
+
+
+def build_compact_citation_dispositions(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        raise ValueError("review.citation_dispositions must be a list")
+    output: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, raw_record in enumerate(value, 1):
+        field = f"review.citation_dispositions[{index}]"
+        record = annotation_object(
+            raw_record,
+            field,
+            required=("key", "disposition", "evidence"),
+            optional=("dependency_id", "dependency_use_id"),
+        )
+        key = record["key"]
+        if not is_nonempty_string(key):
+            raise ValueError(f"{field}.key must be nonempty")
+        if key in seen:
+            raise ValueError(f"Duplicate citation disposition {key}")
+        seen.add(key)
+        if record["disposition"] not in {
+            "external_result",
+            "bibliographic_only",
+            "unresolved",
+        }:
+            raise ValueError(f"{field}.disposition is invalid")
+        if not is_substantive_string(record["evidence"]):
+            raise ValueError(f"{field}.evidence must be substantive")
+        if record["disposition"] == "external_result":
+            for name in ("dependency_id", "dependency_use_id"):
+                if not is_nonempty_string(record.get(name)):
+                    raise ValueError(f"{field}.{name} is required")
+        elif "dependency_id" in record or "dependency_use_id" in record:
+            raise ValueError(
+                f"{field} dependency fields are allowed only for external_result"
+            )
+        output.append(dict(record))
+    return output
+
+
+def aggregate_use_site_status(statuses: list[str]) -> str:
+    substantive = [status for status in statuses if status != "not_applicable"]
+    if not substantive:
+        return "not_applicable"
+    rank = {
+        "sufficient": 0,
+        "conditional": 1,
+        "unclear": 2,
+        "insufficient": 3,
+        "not_checked": 4,
+    }
+    return max(substantive, key=lambda status: rank[status])
+
+
+def build_compact_review(
+    ledger: dict[str, Any],
+    value: Any,
+    compact_conclusions: Any,
+    steps: list[dict[str, Any]],
+    built_by_key: dict[str, dict[str, Any]],
+    direct_dependencies: list[dict[str, Any]],
+    expected_use_sites: list[str],
+) -> dict[str, Any]:
+    review_input = annotation_object(
+        value,
+        "review",
+        required=(
+            "explicit_assumptions",
+            "inherited_assumptions",
+            "source_reference_dispositions",
+            "candidate_dependency_dispositions",
+            "citation_dispositions",
+            "verification_basis",
+            "reviewer_notes",
+        ),
+    )
+    for field in (
+        "explicit_assumptions",
+        "inherited_assumptions",
+        "reviewer_notes",
+    ):
+        annotation_string_list(review_input[field], f"review.{field}")
+    annotation_string_list(
+        review_input["verification_basis"],
+        "review.verification_basis",
+        allow_empty=False,
+    )
+    source_dispositions = build_compact_reference_dispositions(
+        review_input["source_reference_dispositions"], steps
+    )
+    candidate_dispositions = build_compact_candidate_dispositions(
+        review_input["candidate_dependency_dispositions"]
+    )
+    citation_dispositions = build_compact_citation_dispositions(
+        review_input["citation_dispositions"]
+    )
+
+    if not isinstance(compact_conclusions, list):
+        raise ValueError("conclusions must be a list")
+    obligation = ledger.get("obligation")
+    obligation_conclusions = (
+        obligation.get("conclusions", []) if isinstance(obligation, dict) else []
+    )
+    ordered_ids = [
+        record.get("id")
+        for record in obligation_conclusions
+        if isinstance(record, dict) and is_nonempty_string(record.get("id"))
+    ]
+    compact_by_id: dict[str, dict[str, Any]] = {}
+    for index, raw_record in enumerate(compact_conclusions, 1):
+        field = f"conclusions[{index}]"
+        record = annotation_object(
+            raw_record,
+            field,
+            required=(
+                "conclusion_id",
+                "support_step",
+                "contract_fidelity",
+                "statement_status",
+                "use_site_sufficiency",
+                "issue_ids",
+            ),
+        )
+        conclusion_id = record["conclusion_id"]
+        if conclusion_id in compact_by_id:
+            raise ValueError(f"Duplicate compact conclusion {conclusion_id}")
+        if conclusion_id not in ordered_ids:
+            raise ValueError(f"{field}.conclusion_id is unknown")
+        if record["contract_fidelity"] not in UNIT_STATUSES:
+            raise ValueError(f"{field}.contract_fidelity is invalid")
+        if record["statement_status"] not in STATEMENT_STATUSES:
+            raise ValueError(f"{field}.statement_status is invalid")
+        if record["use_site_sufficiency"] not in USE_STATUSES:
+            raise ValueError(f"{field}.use_site_sufficiency is invalid")
+        compact_issue_ids(record["issue_ids"], f"{field}.issue_ids")
+        if record["support_step"] not in built_by_key:
+            raise ValueError(f"{field}.support_step is unknown")
+        compact_by_id[conclusion_id] = record
+    if set(compact_by_id) != set(ordered_ids):
+        missing = sorted(set(ordered_ids) - set(compact_by_id))
+        raise ValueError(
+            "Compact conclusions must cover every normalized conclusion"
+            + (": " + ", ".join(missing) if missing else "")
+        )
+
+    ledger_for_closure = {**ledger, "steps": steps}
+    steps_by_id = {step["id"]: step for step in steps}
+    direct_by_use = {record["use_id"]: record for record in direct_dependencies}
+    conclusion_results: list[dict[str, Any]] = []
+    argument_map = {
+        "verified": "valid",
+        "conditionally_verified": "conditional",
+        "gap": "gap",
+        "incorrect": "invalid",
+        "unclear": "unclear",
+        "not_checked": "not_checked",
+    }
+    closure_map = {
+        "verified": "verified",
+        "conditional": "conditionally_verified",
+        "gap": "gap",
+        "incorrect": "incorrect",
+        "unclear": "unclear",
+        "unchecked": "not_checked",
+    }
+    for conclusion_id in ordered_ids:
+        compact = compact_by_id[conclusion_id]
+        support_step = built_by_key[compact["support_step"]]
+        support_step_id = support_step["id"]
+        inference = support_step.get("inference")
+        support_move_id = (
+            inference.get("conclusion_move") if isinstance(inference, dict) else None
+        )
+        if not is_nonempty_string(support_move_id):
+            raise ValueError(
+                f"Conclusion {conclusion_id} support_step must be inferential"
+            )
+        closure = ledger_support_contract_closure(
+            ledger_for_closure, support_step_id, support_move_id
+        )
+        dependency_use_ids = sorted(closure["dependency_uses"])
+        dependency_state = combine_dependency_statuses(
+            direct_by_use[use_id]["status"]
+            for use_id in dependency_use_ids
+            if use_id in direct_by_use
+        )
+        closure_issues = {
+            issue_id
+            for step_id, _ in closure["move_keys"]
+            for issue_id in steps_by_id.get(step_id, {}).get("issue_ids", [])
+            if is_nonempty_string(issue_id)
+        }
+        issue_ids = list(compact["issue_ids"])
+        issue_ids.extend(sorted(closure_issues - set(issue_ids)))
+        conclusion_results.append(
+            {
+                "conclusion_id": conclusion_id,
+                "support": {
+                    "step_id": support_step_id,
+                    "move_id": support_move_id,
+                },
+                "contract_fidelity": compact["contract_fidelity"],
+                "argument_status": argument_map[support_step["status"]],
+                "statement_status": compact["statement_status"],
+                "dependency_closure": closure_map[dependency_state],
+                "use_site_sufficiency": compact["use_site_sufficiency"],
+                "dependency_use_ids": dependency_use_ids,
+                "issue_ids": issue_ids,
+            }
+        )
+
+    step_statuses = [
+        step["status"] for step in steps if step["status"] != "non_substantive"
+    ]
+    unit_status = expected_unit_status(step_statuses)
+    statement_rank = {
+        "established": 0,
+        "conditional": 1,
+        "not_assessed": 2,
+        "unclear": 3,
+        "not_established": 4,
+        "refuted": 5,
+    }
+    unit_statement_status = max(
+        (record["statement_status"] for record in conclusion_results),
+        key=lambda status: statement_rank[status],
+    )
+    unit_contract = expected_unit_status(
+        [record["contract_fidelity"] for record in conclusion_results]
+    )
+    unit_closure = expected_unit_status(
+        [record["dependency_closure"] for record in conclusion_results]
+    )
+    unit_use_status = aggregate_use_site_status(
+        [record["use_site_sufficiency"] for record in conclusion_results]
+    )
+    return {
+        "unit_status": unit_status,
+        "conclusion_step_id": (
+            conclusion_results[0]["support"]["step_id"]
+            if len(conclusion_results) == 1
+            else ""
+        ),
+        "conclusion_results": conclusion_results,
+        "contract_fidelity": unit_contract,
+        "argument_status": argument_map[unit_status],
+        "statement_status": unit_statement_status,
+        "dependency_closure": unit_closure,
+        "use_site_sufficiency": unit_use_status,
+        "explicit_assumptions": list(review_input["explicit_assumptions"]),
+        "inherited_assumptions": list(review_input["inherited_assumptions"]),
+        "direct_dependencies": [dict(record) for record in direct_dependencies],
+        "source_reference_dispositions": source_dispositions,
+        "candidate_dependency_dispositions": candidate_dispositions,
+        "citation_dispositions": citation_dispositions,
+        "use_sites": list(expected_use_sites),
+        "verification_basis": list(review_input["verification_basis"]),
+        "reviewer_notes": list(review_input["reviewer_notes"]),
+    }
+
+
+def validate_compiled_candidate_reconciliation(
+    packet: dict[str, Any], candidate: dict[str, Any]
+) -> None:
+    """Match every parser candidate and provenance path to one authored disposition."""
+    reconciliation = packet.get("candidate_dependency_reconciliation")
+    if not isinstance(reconciliation, dict):
+        raise ValueError(
+            "Primary packet candidate_dependency_reconciliation is malformed"
+        )
+    candidate_ids = reconciliation.get(
+        "candidate_internal_dependency_ids"
+    )
+    mapped_ids = reconciliation.get("registry_mapped_dependency_ids")
+    if not isinstance(candidate_ids, list) or not all(
+        is_nonempty_string(value) for value in candidate_ids
+    ):
+        raise ValueError(
+            "Primary packet candidate IDs must be a string list"
+        )
+    if not isinstance(mapped_ids, list) or not all(
+        is_nonempty_string(value) for value in mapped_ids
+    ):
+        raise ValueError(
+            "Primary packet registry-mapped candidate IDs must be a string list"
+        )
+    inventory = packet.get("inventory")
+    candidate_paths = (
+        inventory.get("candidate_dependency_paths", [])
+        if isinstance(inventory, dict)
+        else []
+    )
+    path_ids_by_candidate: dict[str, list[str]] = defaultdict(list)
+    if isinstance(candidate_paths, list):
+        for path in candidate_paths:
+            candidate_id = (
+                path.get("candidate_id")
+                if isinstance(path, dict)
+                else None
+            )
+            path_id = (
+                path.get("path_id") if isinstance(path, dict) else None
+            )
+            if (
+                is_nonempty_string(candidate_id)
+                and is_nonempty_string(path_id)
+            ):
+                path_ids_by_candidate[str(candidate_id)].append(
+                    str(path_id)
+                )
+    review = candidate.get("review")
+    dispositions = (
+        review.get("candidate_dependency_dispositions", [])
+        if isinstance(review, dict)
+        else []
+    )
+    dispositions_by_id = {
+        str(row.get("candidate_id")): row
+        for row in dispositions
+        if isinstance(row, dict)
+        and is_nonempty_string(row.get("candidate_id"))
+    }
+    if set(dispositions_by_id) != set(candidate_ids):
+        missing = sorted(set(candidate_ids) - set(dispositions_by_id))
+        stale = sorted(set(dispositions_by_id) - set(candidate_ids))
+        details = []
+        if missing:
+            details.append("missing " + ", ".join(missing))
+        if stale:
+            details.append("stale " + ", ".join(stale))
+        raise ValueError(
+            "Candidate dependency dispositions must cover exactly the primary "
+            "packet candidates: " + "; ".join(details)
+        )
+    expected_dependencies = compact_dependencies_from_packet(
+        packet.get("dependencies")
+    )
+    internal_by_use = {
+        str(row.get("use_id")): row
+        for row in expected_dependencies
+        if row.get("kind") == "internal_result"
+    }
+    nondependency_roles = {"navigation", "non_load_bearing"}
+    errors: list[str] = []
+    mapped_set = set(mapped_ids)
+    for candidate_id in candidate_ids:
+        disposition = dispositions_by_id[str(candidate_id)]
+        expected_paths = sorted(
+            path_ids_by_candidate.get(str(candidate_id), [])
+        )
+        if not expected_paths:
+            errors.append(f"{candidate_id}: packet has no provenance path")
+            continue
+        if sorted(disposition.get("path_ids", [])) != expected_paths:
+            errors.append(
+                f"{candidate_id}: path_ids do not match the packet"
+            )
+        role = disposition.get("disposition")
+        if candidate_id in mapped_set:
+            use_id = disposition.get("dependency_use_id")
+            dependency = internal_by_use.get(str(use_id))
+            if (
+                role != "internal_result"
+                or dependency is None
+                or dependency.get("id") != candidate_id
+            ):
+                errors.append(
+                    f"{candidate_id}: registry-backed candidate must map to "
+                    "its exact internal dependency use"
+                )
+        elif role not in nondependency_roles:
+            errors.append(
+                f"{candidate_id}: candidate without a registry contract "
+                "requires an explicit nondependency disposition"
+            )
+    if errors:
+        raise ValueError(
+            "Compact annotations did not reconcile packet dependency "
+            "candidates: " + "; ".join(errors)
+        )
+
+
+def validate_compiled_packet_dispositions(
+    packet: dict[str, Any], candidate: dict[str, Any]
+) -> None:
+    """Apply audit-wide source-reference and citation closure before writing."""
+    inventory = packet.get("inventory")
+    if not isinstance(inventory, dict):
+        raise ValueError("Primary packet inventory is malformed")
+    review = candidate.get("review")
+    if not isinstance(review, dict):
+        raise ValueError("Compiled candidate review is malformed")
+    expected_dependencies = compact_dependencies_from_packet(
+        packet.get("dependencies")
+    )
+    dependencies_by_use = {
+        str(row.get("use_id")): row for row in expected_dependencies
+    }
+
+    occurrences = inventory.get("reference_occurrences")
+    if not isinstance(occurrences, list) or not all(
+        isinstance(row, dict)
+        and is_nonempty_string(row.get("occurrence_id"))
+        for row in occurrences
+    ):
+        raise ValueError(
+            "Primary packet reference_occurrences are malformed"
+        )
+    expected_occurrences = {
+        str(row["occurrence_id"]): row for row in occurrences
+    }
+    dispositions = review.get("source_reference_dispositions")
+    disposition_rows = dispositions if isinstance(dispositions, list) else []
+    actual_dispositions = {
+        str(row.get("occurrence_id")): row
+        for row in disposition_rows
+        if isinstance(row, dict)
+        and is_nonempty_string(row.get("occurrence_id"))
+    }
+    if set(actual_dispositions) != set(expected_occurrences):
+        missing = sorted(set(expected_occurrences) - set(actual_dispositions))
+        stale = sorted(set(actual_dispositions) - set(expected_occurrences))
+        details = []
+        if missing:
+            details.append("missing " + ", ".join(missing))
+        if stale:
+            details.append("stale " + ", ".join(stale))
+        raise ValueError(
+            "Source-reference dispositions must cover exactly the packet "
+            "proof occurrences: " + "; ".join(details)
+        )
+
+    proof = packet.get("source")
+    proof = proof.get("proof") if isinstance(proof, dict) else None
+    proof_start = proof.get("start_line") if isinstance(proof, dict) else 0
+    proof_last = proof_start if is_int(proof_start) else 0
+    proof_lines = proof.get("lines") if isinstance(proof, dict) else []
+    if isinstance(proof_lines, list):
+        for row in proof_lines:
+            if not isinstance(row, dict) or not is_int(row.get("line")):
+                continue
+            clean = strip_latex_comment(str(row.get("text", ""))).strip()
+            if clean and not re.fullmatch(r"\\end\s*\{proof\}", clean):
+                proof_last = int(row["line"])
+
+    errors: list[str] = []
+    for occurrence_id, occurrence in expected_occurrences.items():
+        disposition = actual_dispositions[occurrence_id]
+        if (
+            disposition.get("target") != occurrence.get("target")
+            or disposition.get("command") != occurrence.get("command")
+        ):
+            errors.append(f"{occurrence_id}: target or command differs")
+            continue
+        role = disposition.get("disposition")
+        owner_status = occurrence.get("resolution_status")
+        owner_unit_id = occurrence.get("owner_unit_id")
+        owner_region = occurrence.get("owner_region")
+        target = occurrence.get("target")
+        if role == "internal_result":
+            use_id = str(disposition.get("dependency_use_id"))
+            dependency = dependencies_by_use.get(use_id)
+            if (
+                owner_status != "unique"
+                or not is_nonempty_string(owner_unit_id)
+                or owner_unit_id == packet.get("unit_id")
+                or dependency is None
+                or dependency.get("kind") != "internal_result"
+                or dependency.get("id") != owner_unit_id
+            ):
+                errors.append(
+                    f"{occurrence_id}: internal_result does not map to "
+                    "the exact foreign owner and packet use"
+                )
+        elif role == "local_step":
+            if (
+                owner_status != "unique"
+                or owner_unit_id != packet.get("unit_id")
+            ):
+                errors.append(
+                    f"{occurrence_id}: local_step does not name this unit"
+                )
+        elif role == "obligation_context":
+            if owner_status == "unique" and (
+                owner_unit_id != packet.get("unit_id")
+                or owner_region != "statement"
+            ):
+                errors.append(
+                    f"{occurrence_id}: obligation_context has a foreign owner"
+                )
+        elif role == "own_result_identification":
+            closing = bool(
+                occurrence.get("structural_context") == "proof_header"
+                or (
+                    is_int(occurrence.get("line"))
+                    and occurrence["line"]
+                    >= max(int(proof_start or 0), proof_last - 2)
+                )
+            )
+            if (
+                owner_status != "unique"
+                or owner_unit_id != packet.get("unit_id")
+                or target != packet.get("unit_id")
+                or not closing
+            ):
+                errors.append(
+                    f"{occurrence_id}: own_result_identification is invalid"
+                )
+        elif role == "navigation":
+            if occurrence.get("command") != "hyperref":
+                errors.append(
+                    f"{occurrence_id}: navigation requires hyperref"
+                )
+        elif role == "non_load_bearing":
+            if (
+                owner_status == "unique"
+                and owner_unit_id == packet.get("unit_id")
+                and target == packet.get("unit_id")
+                and occurrence.get("structural_context") != "proof_header"
+                and (
+                    not is_int(occurrence.get("line"))
+                    or occurrence["line"]
+                    < max(int(proof_start or 0), proof_last - 2)
+                )
+            ):
+                errors.append(
+                    f"{occurrence_id}: mid-proof self-reference is load-bearing"
+                )
+        elif role == "unresolved":
+            if review.get("unit_status") == "verified":
+                errors.append(
+                    f"{occurrence_id}: verified unit cannot leave it unresolved"
+                )
+        if (
+            owner_status
+            in {"missing", "duplicate", "ambiguous", "dynamic", "unowned"}
+            and role
+            not in {"unresolved", "navigation", "non_load_bearing"}
+            and not (
+                owner_status == "unowned"
+                and role == "obligation_context"
+            )
+        ):
+            errors.append(
+                f"{occurrence_id}: unresolved owner cannot serve role {role}"
+            )
+
+    expected_citations = inventory.get("citation_keys")
+    if not isinstance(expected_citations, list) or not all(
+        is_nonempty_string(value) for value in expected_citations
+    ):
+        raise ValueError("Primary packet citation_keys are malformed")
+    citation_rows = review.get("citation_dispositions")
+    citation_rows = citation_rows if isinstance(citation_rows, list) else []
+    actual_citations = {
+        str(row.get("key")): row
+        for row in citation_rows
+        if isinstance(row, dict)
+        and is_nonempty_string(row.get("key"))
+    }
+    if set(actual_citations) != set(expected_citations):
+        missing = sorted(set(expected_citations) - set(actual_citations))
+        stale = sorted(set(actual_citations) - set(expected_citations))
+        details = []
+        if missing:
+            details.append("missing " + ", ".join(missing))
+        if stale:
+            details.append("stale " + ", ".join(stale))
+        errors.append(
+            "citation dispositions differ from packet citations: "
+            + "; ".join(details)
+        )
+    for citation, disposition in actual_citations.items():
+        role = disposition.get("disposition")
+        if role == "external_result":
+            use_id = str(disposition.get("dependency_use_id"))
+            dependency = dependencies_by_use.get(use_id)
+            if (
+                dependency is None
+                or dependency.get("kind") != "external_result"
+                or dependency.get("id")
+                != disposition.get("dependency_id")
+            ):
+                errors.append(
+                    f"{citation}: external_result does not map to its exact "
+                    "packet use"
+                )
+        elif role == "unresolved" and review.get("unit_status") == "verified":
+            errors.append(
+                f"{citation}: verified unit cannot leave it unresolved"
+            )
+
+    candidate_paths = inventory.get("candidate_dependency_paths", [])
+    candidate_paths = (
+        candidate_paths if isinstance(candidate_paths, list) else []
+    )
+    path_by_id = {
+        str(row.get("path_id")): row
+        for row in candidate_paths
+        if isinstance(row, dict)
+        and is_nonempty_string(row.get("path_id"))
+    }
+    candidate_rows = review.get("candidate_dependency_dispositions", [])
+    candidate_rows = (
+        candidate_rows if isinstance(candidate_rows, list) else []
+    )
+    for disposition in candidate_rows:
+        if (
+            not isinstance(disposition, dict)
+            or disposition.get("disposition") == "internal_result"
+        ):
+            continue
+        for path_id in disposition.get("path_ids", []):
+            path = path_by_id.get(str(path_id))
+            chain = path.get("reference_chain") if isinstance(path, dict) else None
+            root_occurrence = (
+                chain[0]
+                if isinstance(chain, list)
+                and chain
+                and isinstance(chain[0], dict)
+                else {}
+            )
+            role = disposition.get("disposition")
+            if role == "navigation":
+                if root_occurrence.get("command") != "hyperref":
+                    errors.append(
+                        f"{path_id}: navigation candidate requires hyperref"
+                    )
+            elif role != "non_load_bearing":
+                errors.append(
+                    f"{path_id}: foreign dependency candidate without a "
+                    "registry edge may only be navigation or non_load_bearing"
+                )
+    if errors:
+        raise ValueError(
+            "Compact packet disposition closure failed: "
+            + "; ".join(errors)
+        )
+
+
+def compile_annotation_data(
+    ledger: dict[str, Any],
+    annotations: dict[str, Any],
+    ledger_path: Path,
+    packet: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    validate_compile_skeleton(ledger, ledger_path)
+    annotation_object(
+        annotations,
+        "annotations",
+        required=COMPACT_ANNOTATION_TOP_LEVEL_FIELDS,
+    )
+    version = annotations["annotation_schema_version"]
+    if not is_int(version) or version != SEMANTIC_ANNOTATION_SCHEMA_VERSION:
+        raise ValueError(
+            "annotations.annotation_schema_version must be "
+            f"{SEMANTIC_ANNOTATION_SCHEMA_VERSION}"
+        )
+    if annotations["unit_id"] != ledger.get("unit_id"):
+        raise ValueError("annotations.unit_id does not match the extracted skeleton")
+    source = ledger.get("source")
+    expected_source_hash = source.get("unit_sha256") if isinstance(source, dict) else None
+    supplied_source_hash = annotations["source_unit_sha256"]
+    if (
+        not isinstance(supplied_source_hash, str)
+        or not SHA256_RE.fullmatch(supplied_source_hash)
+        or supplied_source_hash != expected_source_hash
+    ):
+        raise ValueError(
+            "annotations.source_unit_sha256 does not match the locked source unit"
+        )
+    supplied_obligation_hash = annotations["obligation_sha256"]
+    expected_obligation_hash = canonical_sha256(ledger.get("obligation"))
+    if (
+        not isinstance(supplied_obligation_hash, str)
+        or not SHA256_RE.fullmatch(supplied_obligation_hash)
+        or supplied_obligation_hash != expected_obligation_hash
+    ):
+        raise ValueError(
+            "annotations.obligation_sha256 does not match the normalized obligation"
+        )
+
+    source_units, source_ranges = build_compiled_source_units(
+        ledger, annotations["source_groups"]
+    )
+    direct_dependencies, dependencies_by_use = load_compact_dependencies(
+        annotations["dependencies"]
+    )
+    if packet is not None:
+        expected_dependencies = compact_dependencies_from_packet(
+            packet.get("dependencies")
+        )
+        normalized_dependencies = sorted(
+            direct_dependencies, key=lambda row: str(row.get("use_id", ""))
+        )
+        if normalized_dependencies != expected_dependencies:
+            expected_by_use = {
+                str(row.get("use_id")): row
+                for row in expected_dependencies
+            }
+            actual_by_use = {
+                str(row.get("use_id")): row
+                for row in normalized_dependencies
+            }
+            differences: list[str] = []
+            for use_id in sorted(set(expected_by_use) | set(actual_by_use)):
+                if use_id not in expected_by_use:
+                    differences.append(f"{use_id}: not in packet")
+                elif use_id not in actual_by_use:
+                    differences.append(f"{use_id}: missing from annotations")
+                else:
+                    fields = sorted(
+                        field
+                        for field in set(expected_by_use[use_id])
+                        | set(actual_by_use[use_id])
+                        if expected_by_use[use_id].get(field)
+                        != actual_by_use[use_id].get(field)
+                    )
+                    if fields:
+                        differences.append(
+                            f"{use_id}: fields differ: {', '.join(fields)}"
+                        )
+            raise ValueError(
+                "annotations.dependencies must exactly match the primary "
+                "packet's registry-backed direct uses: "
+                + "; ".join(differences)
+            )
+    plans, key_to_step_id = prepare_compact_step_plans(
+        annotations["steps"], source_units, source_ranges
+    )
+    steps, built_by_key = build_compact_steps(
+        ledger,
+        source_units,
+        plans,
+        key_to_step_id,
+        dependencies_by_use,
+    )
+    expected_use_sites: list[str] = []
+    if packet is not None:
+        inventory_projection = packet.get("inventory")
+        raw_use_sites = (
+            inventory_projection.get("downstream_use_sites", [])
+            if isinstance(inventory_projection, dict)
+            else []
+        )
+        if not isinstance(raw_use_sites, list) or not all(
+            isinstance(row, dict)
+            and is_nonempty_string(row.get("canonical_location"))
+            for row in raw_use_sites
+        ):
+            raise ValueError(
+                "Primary packet downstream_use_sites are malformed"
+            )
+        expected_use_sites = sorted(
+            str(row["canonical_location"]) for row in raw_use_sites
+        )
+    review = build_compact_review(
+        ledger,
+        annotations["review"],
+        annotations["conclusions"],
+        steps,
+        built_by_key,
+        direct_dependencies,
+        expected_use_sites,
+    )
+    candidate = {
+        **ledger,
+        "source_units": source_units,
+        "review": review,
+        "steps": steps,
+    }
+    if packet is not None:
+        validate_compiled_candidate_reconciliation(packet, candidate)
+        validate_compiled_packet_dispositions(packet, candidate)
+    return candidate
+
+
+def cmd_compile_annotations(args: argparse.Namespace) -> int:
+    configure_console_errors()
+    ledger_path = args.ledger.resolve()
+    annotations_path = args.annotations.resolve()
+    packet_value = getattr(args, "packet", None)
+    if not isinstance(packet_value, Path):
+        raise ValueError("compile-annotations requires --packet")
+    packet_path = packet_value.resolve()
+    output_path = args.output.resolve()
+    if not ledger_path.is_file():
+        raise FileNotFoundError(f"Extracted ledger not found: {ledger_path}")
+    if not annotations_path.is_file():
+        raise FileNotFoundError(f"Compact annotations not found: {annotations_path}")
+    if not packet_path.is_file():
+        raise FileNotFoundError(f"Primary context packet not found: {packet_path}")
+    if ledger_path == annotations_path:
+        raise ValueError("The ledger and compact annotation files must be distinct")
+    if not ledger_path.name.endswith(".skeleton.json"):
+        raise ValueError(
+            "Compact compiler input must end in .skeleton.json so canonical ledger "
+            "discovery cannot treat the unfinished input as audit evidence"
+        )
+    if not output_path.name.endswith(".ledger.json"):
+        raise ValueError("Compiled output must end in .ledger.json")
+    expected_output_name = (
+        ledger_path.name[: -len(".skeleton.json")] + ".ledger.json"
+    )
+    if output_path.name != expected_output_name:
+        raise ValueError(
+            "Compiled output basename must equal the skeleton basename with "
+            ".skeleton.json replaced by .ledger.json"
+        )
+    if output_path == ledger_path:
+        raise ValueError("Compiled output must not overwrite the extracted ledger")
+    if output_path == annotations_path:
+        raise ValueError("Compiled output must not overwrite compact annotations")
+    if output_path == packet_path:
+        raise ValueError("Compiled output must not overwrite the primary context packet")
+    if output_path.parent != ledger_path.parent:
+        raise ValueError(
+            "Compiled output must be in the extracted ledger directory so locked "
+            "relative paths retain their identity"
+        )
+    if output_path.exists():
+        raise FileExistsError(
+            "Compiled ledger already exists and cannot be overwritten in place; "
+            f"preserve or archive it before creating a new audit record: {output_path}"
+        )
+
+    ledger, ledger_errors = load_json_object(ledger_path, "extracted ledger")
+    if ledger_errors:
+        raise ValueError(ledger_errors[0])
+    annotations, annotation_errors = load_json_object(
+        annotations_path, "compact annotations"
+    )
+    if annotation_errors:
+        raise ValueError(annotation_errors[0])
+    packet = validate_compiler_context_packet(
+        ledger, ledger_path, annotations, packet_path
+    )
+    candidate = compile_annotation_data(
+        ledger, annotations, ledger_path, packet
+    )
+
+    source = candidate.get("source")
+    source_file = source.get("file") if isinstance(source, dict) else None
+    if is_nonempty_string(source_file):
+        if output_path == resolve_stored_path(source_file, ledger_path.parent):
+            raise ValueError("Compiled output must not overwrite the locked source")
+
+    temporary = _unique_sibling_temp_path(output_path)
+    try:
+        if temporary.is_symlink():
+            raise ValueError(f"Refusing a symlinked compiler candidate: {temporary}")
+        payload = json.dumps(candidate, ensure_ascii=False, indent=2) + "\n"
+        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        validation_errors, summary = check_ledger_data(temporary, True)
+        if validation_errors:
+            shown = "; ".join(validation_errors[:12])
+            suffix = (
+                f"; and {len(validation_errors) - 12} more"
+                if len(validation_errors) > 12
+                else ""
+            )
+            raise ValueError(
+                "Compiled ledger failed full final validation: " + shown + suffix
+            )
+        try:
+            os.link(temporary, output_path)
+        except FileExistsError as exc:
+            raise FileExistsError(
+                "Compiled ledger appeared during validation and cannot be "
+                f"overwritten: {output_path}"
+            ) from exc
+        except OSError as exc:
+            raise OSError(
+                "Cannot publish the compiled ledger with atomic no-overwrite "
+                f"semantics: {output_path}: {exc}"
+            ) from exc
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+    print(
+        json.dumps(
+            {
+                "command": "compile-annotations",
+                "ledger": output_path.as_posix(),
+                "unit_id": candidate.get("unit_id"),
+                "annotation_schema_version": SEMANTIC_ANNOTATION_SCHEMA_VERSION,
+                "source_units": len(candidate["source_units"]),
+                "steps": len(candidate["steps"]),
+                "semantic_steps": sum(
+                    step.get("status") != "non_substantive"
+                    for step in candidate["steps"]
+                ),
+                "annotation_sha256": sha256_file(annotations_path),
+                "obligation_sha256": annotations["obligation_sha256"],
+                "context_binding_sha256": packet["context_binding_sha256"],
+                "primary_ledger_sha256": canonical_primary_ledger_sha256(candidate),
+                "validation": summary["validation_scope"][
+                    "local_record_integrity"
+                ],
+                "artifact_state": "compiled_schema5_ledger",
+            },
+            ensure_ascii=True,
             indent=2,
         )
     )
@@ -5212,6 +11071,7 @@ def cmd_migrate_ledger(args: argparse.Namespace) -> int:
             "inherited_assumptions": [],
             "direct_dependencies": [],
             "source_reference_dispositions": [],
+            "candidate_dependency_dispositions": [],
             "citation_dispositions": [],
             "use_sites": [],
             "verification_basis": [],
@@ -5227,7 +11087,9 @@ def cmd_migrate_ledger(args: argparse.Namespace) -> int:
             "covered_issue_ids": [],
             "source_snapshot_sha256": "",
             "challenged_ledger_sha256": "",
+            "challenge_context_sha256": "",
             "challenge_artifact_sha256": "",
+            "issue_assessments": [],
             "generated_utc": "",
             "disagreements": [],
             "resolution": "",
@@ -5875,6 +11737,58 @@ def validate_independent_check(
             covered_issue_ids = []
         elif len(covered_issue_ids) != len(set(covered_issue_ids)):
             errors.append("independent_check.covered_issue_ids contains duplicates")
+    issue_assessments = value.get("issue_assessments")
+    assessment_ids: list[str] = []
+    if issue_assessments is None and not current_contract:
+        issue_assessments = []
+    elif not isinstance(issue_assessments, list):
+        errors.append("independent_check.issue_assessments must be a list")
+        issue_assessments = []
+    for index, assessment in enumerate(issue_assessments, 1):
+        prefix = f"independent_check.issue_assessments[{index}]"
+        if not isinstance(assessment, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        expected_fields = {
+            "issue_id",
+            "target_contract_sha256",
+            "assessment",
+            "target_assessment",
+            "downstream_assessment",
+        }
+        missing = expected_fields - set(assessment)
+        unknown = set(assessment) - expected_fields
+        if missing:
+            errors.append(
+                f"{prefix} is missing fields: {', '.join(sorted(missing))}"
+            )
+        if unknown:
+            errors.append(
+                f"{prefix} has unknown fields: {', '.join(sorted(unknown))}"
+            )
+        issue_id = assessment.get("issue_id")
+        if not isinstance(issue_id, str) or not ISSUE_ID_RE.fullmatch(issue_id):
+            errors.append(f"{prefix}.issue_id must be canonical")
+        else:
+            assessment_ids.append(issue_id)
+        digest = assessment.get("target_contract_sha256")
+        if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest):
+            errors.append(
+                f"{prefix}.target_contract_sha256 must be a SHA-256 digest"
+            )
+        if assessment.get("assessment") not in {
+            "confirmed",
+            "not_confirmed",
+            "unclear",
+        }:
+            errors.append(f"{prefix}.assessment is invalid")
+        for field in ("target_assessment", "downstream_assessment"):
+            if not is_substantive_string(assessment.get(field)):
+                errors.append(f"{prefix}.{field} must be substantive")
+    if len(assessment_ids) != len(set(assessment_ids)):
+        errors.append(
+            "independent_check.issue_assessments contains duplicate issue IDs"
+        )
     if final and value.get("required"):
         if not is_enum_value(value.get("status"), {"agreed", "resolved"}):
             errors.append("required independent check must be agreed or resolved")
@@ -5884,6 +11798,11 @@ def validate_independent_check(
             errors.append("required independent check needs a genuine independence level")
         if not is_substantive_string(value.get("artifact")):
             errors.append("required independent check needs an artifact reference")
+        elif challenge_artifact_reference_parts(value.get("artifact")) is None:
+            errors.append(
+                "required independent check artifact must be a portable "
+                "audit-relative path under audit/05_adversarial"
+            )
         if value.get("challenger_verdict") == "not_checked":
             errors.append("required independent check needs a checked challenger verdict")
         if value.get("reconciled_verdict") == "not_checked":
@@ -5910,6 +11829,7 @@ def validate_independent_check(
             for field in (
                 "source_snapshot_sha256",
                 "challenged_ledger_sha256",
+                "challenge_context_sha256",
                 "challenge_artifact_sha256",
             ):
                 if not isinstance(value.get(field), str) or not SHA256_RE.fullmatch(
@@ -5926,6 +11846,15 @@ def validate_independent_check(
                 )
             if not is_utc_timestamp(value.get("generated_utc")):
                 errors.append("required independent check needs a valid generated_utc")
+            if sorted(assessment_ids) != sorted(covered_issue_ids):
+                errors.append(
+                    "independent_check.issue_assessments must cover exactly "
+                    "covered_issue_ids"
+                )
+    elif final and issue_assessments:
+        errors.append(
+            "non-required independent check cannot contain issue assessments"
+        )
     return value
 
 
@@ -6668,7 +12597,10 @@ def validate_condition_records(
 
 
 def check_ledger_data(
-    ledger_path: Path, final: bool = False
+    ledger_path: Path,
+    final: bool = False,
+    *,
+    primary_only: bool = False,
 ) -> tuple[list[str], dict[str, Any]]:
     errors: list[str] = []
     try:
@@ -6706,6 +12638,15 @@ def check_ledger_data(
             "upgrade_required: final ledger requires evidence_contract_version "
             f"{EVIDENCE_CONTRACT_VERSION}; evidence contract 3 is inspection-only"
         )
+    work_context_sha256 = ledger.get("work_context_sha256")
+    if (
+        work_context_sha256 is not None
+        and (
+            not isinstance(work_context_sha256, str)
+            or not SHA256_RE.fullmatch(work_context_sha256)
+        )
+    ):
+        errors.append("work_context_sha256 must be a SHA-256 digest when present")
     migration = ledger.get("migration")
     if schema_version == SCHEMA_VERSION and migration is not None:
         if not isinstance(migration, dict):
@@ -7788,6 +13729,38 @@ def check_ledger_data(
             )
         source_reference_dispositions.append(disposition)
 
+    candidate_dependency_dispositions: list[dict[str, Any]] = []
+    try:
+        candidate_dependency_dispositions = (
+            build_compact_candidate_dispositions(
+                review.get("candidate_dependency_dispositions", [])
+            )
+        )
+    except ValueError as exc:
+        errors.append(str(exc))
+    direct_internal_by_use = {
+        str(record.get("use_id")): record
+        for record in direct_dependencies
+        if (
+            record.get("kind") == "internal_result"
+            and is_nonempty_string(record.get("use_id"))
+        )
+    }
+    for disposition in candidate_dependency_dispositions:
+        if disposition.get("disposition") != "internal_result":
+            continue
+        use_id = str(disposition.get("dependency_use_id"))
+        dependency = direct_internal_by_use.get(use_id)
+        if (
+            dependency is None
+            or dependency.get("id") != disposition.get("candidate_id")
+        ):
+            errors.append(
+                "Candidate dependency disposition "
+                f"{disposition.get('candidate_id')} does not match its exact "
+                "internal direct-dependency use"
+            )
+
     if final:
         recorded_source_premises = {
             (
@@ -8406,34 +14379,48 @@ def check_ledger_data(
         if failed_direct:
             errors.append("conditional unit cannot hide failed direct dependencies")
 
-    independent_check = validate_independent_check(
-        ledger.get("independent_check"),
-        final,
-        errors,
-        primary_ledger_sha256=canonical_primary_ledger_sha256(ledger),
-        current_contract=schema_version == SCHEMA_VERSION,
-    )
-    if independent_check and not independent_check.get("required"):
-        if independent_check.get("status") != "not_required":
-            errors.append("non-required independent check must have status not_required")
-    if (
-        final
-        and independent_check.get("required")
-        and independent_check.get("status") == "agreed"
-        and independent_check.get("challenger_verdict") != declared_status
-    ):
-        errors.append(
-            "independent_check marked agreed but challenger_verdict differs from unit_status"
+    raw_independent_check = ledger.get("independent_check")
+    if primary_only:
+        independent_check = (
+            raw_independent_check
+            if isinstance(raw_independent_check, dict)
+            else {}
         )
-    if (
-        final
-        and independent_check.get("required")
-        and is_enum_value(independent_check.get("status"), {"agreed", "resolved"})
-        and independent_check.get("reconciled_verdict") != declared_status
-    ):
-        errors.append(
-            "independent_check.reconciled_verdict differs from the final unit_status"
+    else:
+        independent_check = validate_independent_check(
+            raw_independent_check,
+            final,
+            errors,
+            primary_ledger_sha256=canonical_primary_ledger_sha256(ledger),
+            current_contract=schema_version == SCHEMA_VERSION,
         )
+        if independent_check and not independent_check.get("required"):
+            if independent_check.get("status") != "not_required":
+                errors.append(
+                    "non-required independent check must have status not_required"
+                )
+        if (
+            final
+            and independent_check.get("required")
+            and independent_check.get("status") == "agreed"
+            and independent_check.get("challenger_verdict") != declared_status
+        ):
+            errors.append(
+                "independent_check marked agreed but challenger_verdict differs "
+                "from unit_status"
+            )
+        if (
+            final
+            and independent_check.get("required")
+            and is_enum_value(
+                independent_check.get("status"), {"agreed", "resolved"}
+            )
+            and independent_check.get("reconciled_verdict") != declared_status
+        ):
+            errors.append(
+                "independent_check.reconciled_verdict differs from the final "
+                "unit_status"
+            )
 
     summary = {
         "ledger": str(ledger_path),
@@ -8515,6 +14502,9 @@ def check_ledger_data(
         "issue_links": issue_links,
         "direct_dependencies": direct_dependencies,
         "source_reference_dispositions": source_reference_dispositions,
+        "candidate_dependency_dispositions": (
+            candidate_dependency_dispositions
+        ),
         "citation_dispositions": citation_dispositions,
         "use_sites": review_use_sites,
         "result_dependency_claims": result_dependency_claims,
@@ -8993,6 +14983,178 @@ def archived_ledger_move_failure_rows(
     ]]
 
 
+DEPENDENCY_REPORT_COLUMNS = [
+    "Dependent",
+    "Use ID",
+    "Dependency",
+    "Dependency conclusion",
+    "Kind",
+    "Source status",
+    "Applicability status",
+    "Effective status",
+    "Issue IDs",
+]
+
+
+def archived_dependency_edge_hashes(
+    prior_registry: dict[str, Any],
+    prior_report_text: str,
+    issue_id: str,
+    errors: list[str],
+) -> dict[str, str]:
+    """Reconstruct normalized closure-edge hashes from sealed prior evidence."""
+    section = report_section(prior_report_text, "## Dependency closure")
+    tables = markdown_tables(section or "")
+    table = next(
+        (
+            candidate
+            for candidate in tables
+            if candidate and candidate[0] == DEPENDENCY_REPORT_COLUMNS
+        ),
+        None,
+    )
+    if table is None:
+        errors.append(
+            f"{issue_id} sealed prior report lacks the dependency-closure table"
+        )
+        return {}
+    report_by_use: dict[str, list[str]] = {}
+    for index, row in enumerate(table[2:], 1):
+        if len(row) != len(DEPENDENCY_REPORT_COLUMNS):
+            errors.append(
+                f"{issue_id} sealed dependency row {index} has invalid width"
+            )
+            continue
+        use_id = row[1]
+        if not is_nonempty_string(use_id) or use_id in report_by_use:
+            errors.append(
+                f"{issue_id} sealed dependency report has an invalid or "
+                f"duplicate use ID: {use_id}"
+            )
+            continue
+        report_by_use[use_id] = row
+
+    normalized_by_use: dict[str, dict[str, Any]] = {}
+
+    def add_edge(
+        use: Any,
+        *,
+        kind: str,
+        dependency_id: Any,
+        dependency_conclusion_id: Any,
+        prerequisite_map: Any,
+        source_evidence: Any,
+        source_status: Any | None = None,
+    ) -> None:
+        if not isinstance(use, dict) or not is_nonempty_string(use.get("use_id")):
+            return
+        use_id = str(use["use_id"])
+        if use_id in normalized_by_use:
+            errors.append(
+                f"{issue_id} sealed dependency registry duplicates use ID {use_id}"
+            )
+            return
+        report_row = report_by_use.get(use_id)
+        if report_row is None:
+            errors.append(
+                f"{issue_id} sealed dependency registry use {use_id} is absent "
+                "from the prior report"
+            )
+            return
+        expected_conclusion = (
+            str(dependency_conclusion_id)
+            if dependency_conclusion_id is not None
+            else "none"
+        )
+        expected_identity = [
+            str(use.get("dependent_unit")),
+            use_id,
+            str(dependency_id),
+            expected_conclusion,
+            kind,
+        ]
+        if report_row[:5] != expected_identity:
+            errors.append(
+                f"{issue_id} sealed dependency report identity disagrees with "
+                f"registry use {use_id}"
+            )
+            return
+        if source_status is not None and report_row[5] != source_status:
+            errors.append(
+                f"{issue_id} sealed dependency report source status disagrees "
+                f"with registry use {use_id}"
+            )
+        if report_row[7] != str(use.get("status")):
+            errors.append(
+                f"{issue_id} sealed dependency report effective status disagrees "
+                f"with registry use {use_id}"
+            )
+        if report_row[8] != canonical_id_field(use.get("issue_ids", [])):
+            errors.append(
+                f"{issue_id} sealed dependency report issue IDs disagree with "
+                f"registry use {use_id}"
+            )
+        normalized_by_use[use_id] = {
+            "dependent_unit": use.get("dependent_unit"),
+            "use_id": use_id,
+            "dependency_id": dependency_id,
+            "dependency_conclusion_id": dependency_conclusion_id,
+            "kind": kind,
+            "source_status": report_row[5],
+            "applicability_status": report_row[6],
+            "effective_status": report_row[7],
+            "step_ids": use.get("step_ids", []),
+            "issue_ids": use.get("issue_ids", []),
+            "compatibility_checks": use.get("compatibility_checks", []),
+            "prerequisite_map": prerequisite_map,
+            "source_evidence": source_evidence,
+        }
+
+    internal_rows = prior_registry.get("internal_uses")
+    if isinstance(internal_rows, list):
+        for use in internal_rows:
+            add_edge(
+                use,
+                kind="internal_result",
+                dependency_id=(
+                    use.get("dependency_id") if isinstance(use, dict) else None
+                ),
+                dependency_conclusion_id=(
+                    use.get("dependency_conclusion_id")
+                    if isinstance(use, dict)
+                    else None
+                ),
+                prerequisite_map=[],
+                source_evidence=[],
+            )
+    external_results = prior_registry.get("external_results")
+    if isinstance(external_results, list):
+        for result in external_results:
+            if not isinstance(result, dict):
+                continue
+            uses = result.get("uses")
+            if not isinstance(uses, list):
+                continue
+            for use in uses:
+                add_edge(
+                    use,
+                    kind="external_result",
+                    dependency_id=result.get("id"),
+                    dependency_conclusion_id=None,
+                    prerequisite_map=(
+                        use.get("prerequisite_map", [])
+                        if isinstance(use, dict)
+                        else []
+                    ),
+                    source_evidence=result.get("source_evidence", []),
+                    source_status=result.get("status"),
+                )
+    return {
+        use_id: canonical_sha256(edge)
+        for use_id, edge in normalized_by_use.items()
+    }
+
+
 def validate_resolution_archive_provenance(
     archive: dict[str, Any],
     archived_issue: dict[str, Any],
@@ -9184,6 +15346,31 @@ def validate_resolution_archive_provenance(
             f"{issue_id} resolution archive lacks a usable prior inventory "
             "or dependency registry"
         )
+    elif prior_report_text is not None:
+        normalized_edge_hashes = archived_dependency_edge_hashes(
+            prior_registry,
+            prior_report_text,
+            issue_id,
+            errors,
+        )
+        required_closure = archive.get("required_closure")
+        required_rows = (
+            required_closure.get("dependency_uses")
+            if isinstance(required_closure, dict)
+            else []
+        )
+        if isinstance(required_rows, list):
+            for row in required_rows:
+                if not isinstance(row, dict) or not is_nonempty_string(
+                    row.get("use_id")
+                ):
+                    continue
+                use_id = str(row["use_id"])
+                if row.get("edge_sha256") != normalized_edge_hashes.get(use_id):
+                    errors.append(
+                        f"{issue_id} archived dependency edge hash for {use_id} "
+                        "does not match the sealed normalized closure edge"
+                    )
 
     prior_interfaces: dict[str, dict[str, Any]] = {}
     if isinstance(prior_interface_registry, dict):
@@ -13639,6 +19826,117 @@ def canonical_id_field(values: Any) -> str:
     return ", ".join(normalized) if normalized else "none"
 
 
+def canonical_challenge_issue_assessments(value: Any) -> list[dict[str, Any]]:
+    fields = (
+        "issue_id",
+        "target_contract_sha256",
+        "assessment",
+        "target_assessment",
+        "downstream_assessment",
+    )
+    rows = value if isinstance(value, list) else []
+    return [
+        {field: row.get(field) for field in fields}
+        for row in sorted(
+            (row for row in rows if isinstance(row, dict)),
+            key=lambda row: str(row.get("issue_id", "")),
+        )
+    ]
+
+
+CHALLENGE_BINDING_BEGIN = "<!-- proofcheck-challenge-binding-v1"
+CHALLENGE_BINDING_END = "-->"
+
+
+def challenge_artifact_binding_payload(
+    unit_id: str, challenge: dict[str, Any]
+) -> dict[str, Any]:
+    """Return the exact ledger facts that a challenge artifact must carry."""
+    return {
+        "schema_version": 1,
+        "unit_id": unit_id,
+        "challenge_context_sha256": challenge.get("challenge_context_sha256"),
+        "challenger_verdict": challenge.get("challenger_verdict"),
+        "issue_assessments": canonical_challenge_issue_assessments(
+            challenge.get("issue_assessments", [])
+        ),
+    }
+
+
+def render_challenge_artifact_binding(
+    unit_id: str, challenge: dict[str, Any]
+) -> str:
+    payload = challenge_artifact_binding_payload(unit_id, challenge)
+    encoded = json.dumps(payload, ensure_ascii=False, indent=2)
+    html_safe_encoded = encoded.replace("<", "\\u003c").replace(
+        ">", "\\u003e"
+    )
+    return (
+        f"{CHALLENGE_BINDING_BEGIN}\n"
+        + html_safe_encoded
+        + f"\n{CHALLENGE_BINDING_END}"
+    )
+
+
+def upsert_challenge_artifact_binding(
+    text: str, unit_id: str, challenge: dict[str, Any]
+) -> str:
+    """Replace one prior binding block and preserve the narrative around it."""
+    marker_count = text.count(CHALLENGE_BINDING_BEGIN)
+    if marker_count > 1:
+        raise ValueError(
+            "Challenger artifact contains duplicate challenge binding blocks"
+        )
+    start = text.find(CHALLENGE_BINDING_BEGIN)
+    if start >= 0:
+        end = text.find(CHALLENGE_BINDING_END, start)
+        if end < 0:
+            raise ValueError(
+                "Challenger artifact contains an unterminated challenge "
+                "binding block"
+            )
+        text = text[:start] + text[end + len(CHALLENGE_BINDING_END) :]
+    narrative = text.strip()
+    binding = render_challenge_artifact_binding(unit_id, challenge)
+    rendered = f"{narrative}\n\n{binding}\n" if narrative else f"{binding}\n"
+    if rendered.count(CHALLENGE_BINDING_BEGIN) != 1:
+        raise ValueError(
+            "Challenger artifact binding could not be canonicalized"
+        )
+    return rendered
+
+
+def challenge_artifact_binding_errors(
+    artifact_path: Path,
+    unit_id: str,
+    challenge: dict[str, Any],
+) -> list[str]:
+    """Require one parseable artifact block equal to the ledger assessment."""
+    prefix = f"Effective critical unit {unit_id} challenger artifact"
+    try:
+        text = read_text(artifact_path)
+    except (OSError, UnicodeError) as exc:
+        return [f"{prefix} cannot be read as UTF-8 text: {exc}"]
+    if text.count(CHALLENGE_BINDING_BEGIN) != 1:
+        return [f"{prefix} must contain exactly one challenge binding block"]
+    start = text.find(CHALLENGE_BINDING_BEGIN) + len(CHALLENGE_BINDING_BEGIN)
+    end = text.find(CHALLENGE_BINDING_END, start)
+    if end < 0:
+        return [f"{prefix} challenge binding block is unterminated"]
+    raw_payload = text[start:end].strip()
+    try:
+        payload = json.loads(raw_payload)
+    except json.JSONDecodeError as exc:
+        return [f"{prefix} challenge binding block is invalid JSON: {exc}"]
+    expected = challenge_artifact_binding_payload(unit_id, challenge)
+    if payload != expected:
+        return [
+            f"{prefix} challenge binding block disagrees with the exact "
+            "ledger context, verdict, or issue assessments"
+        ]
+    return []
+
+
 def canonical_issue_row(issue: dict[str, Any]) -> list[str]:
     values = [
         str(issue.get("id", "")),
@@ -17434,6 +23732,113 @@ def _check_audit_finalization(
     dependency_edges = closure_result["edges"]
     unit_graph = closure_result["unit_graph"]
     referenced.update(closure_result["issue_ids"])
+    try:
+        candidate_source_members = packet_source_members(root, manifest)
+    except (OSError, UnicodeError, ValueError) as exc:
+        errors.append(
+            f"Cannot reconstruct dependency-candidate provenance: {exc}"
+        )
+        candidate_source_members = []
+    internal_edge_by_pair = {
+        (
+            str(edge.get("dependent_unit")),
+            str(edge.get("dependency_id")),
+        ): edge
+        for edge in dependency_edges
+        if isinstance(edge, dict)
+        and edge.get("kind") == "internal_result"
+        and is_nonempty_string(edge.get("dependent_unit"))
+        and is_nonempty_string(edge.get("dependency_id"))
+    }
+    for unit_id in sorted(set(in_scope) & set(unit_inventory) & set(summaries_by_id)):
+        unit = unit_inventory[unit_id]
+        candidate_ids = {
+            str(value)
+            for value in unit.get("candidate_internal_dependencies", [])
+            if is_nonempty_string(value)
+        }
+        summary = summaries_by_id[unit_id]
+        disposition_rows = summary.get(
+            "candidate_dependency_dispositions", []
+        )
+        dispositions_by_id = {
+            str(row.get("candidate_id")): row
+            for row in disposition_rows
+            if isinstance(row, dict)
+            and is_nonempty_string(row.get("candidate_id"))
+        }
+        if set(dispositions_by_id) != candidate_ids:
+            missing = sorted(candidate_ids - set(dispositions_by_id))
+            stale = sorted(set(dispositions_by_id) - candidate_ids)
+            if missing:
+                errors.append(
+                    f"{unit_id}: candidate dependency dispositions are missing "
+                    + ", ".join(missing)
+                )
+            if stale:
+                errors.append(
+                    f"{unit_id}: candidate dependency dispositions are stale "
+                    + ", ".join(stale)
+                )
+        if not candidate_ids or not candidate_source_members:
+            continue
+        try:
+            candidate_paths = packet_candidate_dependency_paths(
+                inventory,
+                unit,
+                paper.parent,
+                root,
+                candidate_source_members,
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
+            errors.append(
+                f"{unit_id}: cannot reconstruct dependency-candidate paths: {exc}"
+            )
+            continue
+        path_ids_by_candidate: dict[str, list[str]] = defaultdict(list)
+        for path in candidate_paths:
+            if (
+                isinstance(path, dict)
+                and is_nonempty_string(path.get("candidate_id"))
+                and is_nonempty_string(path.get("path_id"))
+            ):
+                path_ids_by_candidate[str(path["candidate_id"])].append(
+                    str(path["path_id"])
+                )
+        for candidate_id in sorted(candidate_ids):
+            disposition = dispositions_by_id.get(candidate_id)
+            if not isinstance(disposition, dict):
+                continue
+            expected_paths = sorted(
+                path_ids_by_candidate.get(candidate_id, [])
+            )
+            if (
+                not expected_paths
+                or sorted(disposition.get("path_ids", [])) != expected_paths
+            ):
+                errors.append(
+                    f"{unit_id}: candidate {candidate_id} path_ids disagree "
+                    "with canonical parser provenance"
+                )
+            edge = internal_edge_by_pair.get((unit_id, candidate_id))
+            if edge is not None:
+                if (
+                    disposition.get("disposition") != "internal_result"
+                    or disposition.get("dependency_use_id")
+                    != edge.get("use_id")
+                ):
+                    errors.append(
+                        f"{unit_id}: candidate {candidate_id} must map to its "
+                        "exact registry dependency use"
+                    )
+            elif disposition.get("disposition") not in {
+                "navigation",
+                "non_load_bearing",
+            }:
+                errors.append(
+                    f"{unit_id}: unmapped foreign candidate {candidate_id} "
+                    "must be explicitly navigation or non_load_bearing"
+                )
     for unit_id, external_use_id in sorted(external_restatements.items()):
         if unit_id not in in_scope:
             continue
@@ -17617,10 +24022,25 @@ def _check_audit_finalization(
             errors.append(
                 f"Effective critical unit {unit_id} challenger source snapshot is stale"
             )
+        errors.extend(
+            challenge_semantic_freshness_errors(
+                root,
+                unit_id,
+                challenge,
+                triggering_issue_ids,
+            )
+        )
         artifact = challenge.get("artifact")
         if is_nonempty_string(artifact):
-            artifact_path = resolve_stored_path(artifact, root)
-            if not artifact_path.is_file() or artifact_path.stat().st_size == 0:
+            artifact_path, artifact_path_valid = canonical_challenge_artifact_path(
+                root,
+                artifact,
+                f"Effective critical unit {unit_id} challenger artifact",
+                errors,
+            )
+            if not artifact_path_valid or artifact_path is None:
+                pass
+            elif not artifact_path.is_file() or artifact_path.stat().st_size == 0:
                 errors.append(
                     f"Effective critical unit {unit_id} challenger artifact is "
                     f"missing or empty: {artifact_path}"
@@ -17630,6 +24050,12 @@ def _check_audit_finalization(
             ):
                 errors.append(
                     f"Effective critical unit {unit_id} challenger artifact hash is stale"
+                )
+            else:
+                errors.extend(
+                    challenge_artifact_binding_errors(
+                        artifact_path, unit_id, challenge
+                    )
                 )
     issue_summary_path, issue_summary_path_valid = canonical_artifact_path(
         root,
@@ -17728,12 +24154,14 @@ def _check_audit_finalization(
             "Challenge status",
             "Independence",
             "Covered issue IDs",
+            "Issue assessments",
             "Challenger verdict",
             "Reconciled verdict",
             "Disagreements",
             "Artifact",
             "Source snapshot SHA256",
             "Challenged ledger SHA256",
+            "Challenge context SHA256",
             "Artifact SHA256",
             "Generated UTC",
             "Resolution",
@@ -17753,6 +24181,13 @@ def _check_audit_finalization(
                     str(check.get("status")),
                     str(check.get("independence_level")),
                     canonical_id_field(check.get("covered_issue_ids", [])),
+                    json.dumps(
+                        canonical_challenge_issue_assessments(
+                            check.get("issue_assessments", [])
+                        ),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
                     str(check.get("challenger_verdict")),
                     str(check.get("reconciled_verdict")),
                     json.dumps(
@@ -17763,6 +24198,7 @@ def _check_audit_finalization(
                     str(check.get("artifact")),
                     str(check.get("source_snapshot_sha256")),
                     str(check.get("challenged_ledger_sha256")),
+                    str(check.get("challenge_context_sha256")),
                     str(check.get("challenge_artifact_sha256")),
                     str(check.get("generated_utc")),
                     (
@@ -18638,7 +25074,37 @@ def finalization_payload_sha256(record: dict[str, Any]) -> str:
 
 def cmd_finalize(args: argparse.Namespace) -> int:
     root = args.root.resolve()
+    view_errors: list[str] = []
+    _, preflight_manifest, preflight_manifest_errors = load_audit_manifest(root)
+    preflight_protocol = preflight_manifest.get("protocol")
+    generated_view_contract_current = bool(
+        not preflight_manifest_errors
+        and preflight_manifest.get("schema_version") == SCHEMA_VERSION
+        and isinstance(preflight_protocol, dict)
+        and preflight_protocol.get("artifact_schema_version") == SCHEMA_VERSION
+        and preflight_protocol.get("evidence_contract_version")
+        == EVIDENCE_CONTRACT_VERSION
+    )
+    if generated_view_contract_current:
+        try:
+            sync_workflow_views(root)
+            freshness = workflow_view_freshness(root)
+            if freshness["status"] != "current":
+                view_errors.append(
+                    "Generated workflow views are not current: "
+                    + ", ".join([*freshness["missing"], *freshness["stale"]])
+                )
+        except (TextArtifactReadError, OSError, UnicodeError, ValueError) as exc:
+            view_errors.append(
+                f"Generated workflow views could not be synchronized: {exc}"
+            )
+    else:
+        view_errors.append(
+            "Generated workflow views were not synchronized because the audit "
+            "does not declare the current generated-view contract"
+        )
     errors, result = check_audit_finalization(root)
+    errors.extend(error for error in view_errors if error not in errors)
     _, manifest, manifest_errors = load_audit_manifest(root)
     record_path, record_path_errors = finalization_record_path(manifest, root)
     if not finalization_target_is_safe(record_path):
@@ -18654,6 +25120,12 @@ def cmd_finalize(args: argparse.Namespace) -> int:
     for error in redirect_errors:
         if error not in errors:
             errors.append(error)
+    result["errors"] = len(errors)
+    result["generated_views"] = (
+        {"status": "failed", "errors": view_errors}
+        if view_errors
+        else {"status": "current", "errors": []}
+    )
     artifact_manifest = (
         [] if redirect_errors else audit_state_manifest(root, record_path)
     )
@@ -19074,9 +25546,84 @@ def effective_critical_requirements(
             ),
         ]
         for unit_id in promoted_units:
-            if unit_id in in_scope:
+            if is_nonempty_string(unit_id) and unit_id in in_scope:
                 severe_by_unit[unit_id].add(issue_id)
     return sorted(declared | set(severe_by_unit)), dict(severe_by_unit)
+
+
+def challenge_semantic_freshness_errors(
+    root: Path,
+    unit_id: str,
+    challenge: Any,
+    triggering_issue_ids: Iterable[str],
+) -> list[str]:
+    """Check that a challenger record binds the current neutral target packet."""
+    prefix = f"Effective critical unit {unit_id}"
+    if not isinstance(challenge, dict):
+        return [f"{prefix} independent check is malformed"]
+    required_ids = sorted(set(triggering_issue_ids))
+    try:
+        packet = build_context_packet(root, unit_id, "challenge")
+    except (OSError, UnicodeError, ValueError) as exc:
+        return [
+            f"{prefix} challenge context cannot be reconstructed: {exc}"
+        ]
+
+    errors: list[str] = []
+    if challenge.get("challenge_context_sha256") != packet.get(
+        "context_binding_sha256"
+    ):
+        errors.append(f"{prefix} challenger context is stale")
+
+    trigger_rows = packet.get("issue_triggers")
+    trigger_rows = trigger_rows if isinstance(trigger_rows, list) else []
+    trigger_ids = [
+        str(row.get("id"))
+        for row in trigger_rows
+        if isinstance(row, dict) and is_nonempty_string(row.get("id"))
+    ]
+    if sorted(trigger_ids) != required_ids:
+        errors.append(
+            f"{prefix} challenge packet trigger set disagrees with current "
+            "severe triggering issues"
+        )
+    trigger_by_id = {
+        str(row.get("id")): row
+        for row in trigger_rows
+        if isinstance(row, dict) and is_nonempty_string(row.get("id"))
+    }
+
+    assessment_rows = challenge.get("issue_assessments")
+    assessment_rows = assessment_rows if isinstance(assessment_rows, list) else []
+    assessment_ids = [
+        str(row.get("issue_id"))
+        for row in assessment_rows
+        if isinstance(row, dict) and is_nonempty_string(row.get("issue_id"))
+    ]
+    if sorted(assessment_ids) != required_ids:
+        errors.append(
+            f"{prefix} issue_assessments do not cover exactly its "
+            "current severe triggering issues"
+        )
+    assessment_by_id = {
+        str(row.get("issue_id")): row
+        for row in assessment_rows
+        if isinstance(row, dict) and is_nonempty_string(row.get("issue_id"))
+    }
+    for issue_id in required_ids:
+        trigger = trigger_by_id.get(issue_id)
+        assessment = assessment_by_id.get(issue_id)
+        if (
+            not isinstance(trigger, dict)
+            or not isinstance(assessment, dict)
+            or assessment.get("target_contract_sha256")
+            != trigger.get("target_contract_sha256")
+        ):
+            errors.append(
+                f"{prefix} challenger assessment for {issue_id} is stale "
+                "or does not bind its target"
+            )
+    return errors
 
 
 def critical_challenges_complete(
@@ -19116,10 +25663,29 @@ def critical_challenges_complete(
         artifact = check.get("artifact")
         if not is_nonempty_string(artifact):
             return False
-        artifact_path = resolve_stored_path(artifact, root)
+        artifact_errors: list[str] = []
+        artifact_path, artifact_path_valid = canonical_challenge_artifact_path(
+            root,
+            artifact,
+            f"Effective critical unit {unit_id} challenger artifact",
+            artifact_errors,
+        )
         if (
-            not artifact_path.is_file()
+            not artifact_path_valid
+            or artifact_path is None
+            or not artifact_path.is_file()
+            or artifact_path.stat().st_size == 0
             or check.get("challenge_artifact_sha256") != sha256_file(artifact_path)
+            or challenge_artifact_binding_errors(
+                artifact_path, unit_id, check
+            )
+        ):
+            return False
+        if challenge_semantic_freshness_errors(
+            root,
+            unit_id,
+            check,
+            severe_by_unit.get(unit_id, set()),
         ):
             return False
     return True
@@ -19519,7 +26085,33 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
             "updated_utc": checkpoint_time,
         }
     )
-    atomic_write_json(progress_path, updated)
+    view_records = load_workflow_records(root)
+    view_records["progress"] = updated
+    rendered_views = render_workflow_views(view_records)
+    view_writes: list[tuple[Path, str]] = []
+    unchanged_views: list[str] = []
+    for relative, text in rendered_views.items():
+        view_path = root / Path(relative)
+        if view_path.is_file() and read_text(view_path) == text:
+            unchanged_views.append(relative)
+        else:
+            view_writes.append((view_path, text))
+    transactional_write_texts(
+        [
+            (
+                progress_path,
+                json.dumps(updated, ensure_ascii=False, indent=2) + "\n",
+            ),
+            *view_writes,
+        ]
+    )
+    view_sync = {
+        "status": "synchronized",
+        "changed": [
+            path.relative_to(root).as_posix() for path, _ in view_writes
+        ],
+        "unchanged": unchanged_views,
+    }
     print(
         json.dumps(
             {
@@ -19533,6 +26125,7 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
                 "in_progress_units": updated["in_progress_units"],
                 "not_started_units": updated["not_started_units"],
                 "next_action": updated["next_action"],
+                "generated_views": view_sync,
             },
             ensure_ascii=False,
             indent=2,
@@ -19649,6 +26242,7 @@ def status_markdown(data: dict[str, Any]) -> str:
         f"- Finalization-gate errors: {data['finalization_gate_error_count']}",
         f"- Candidate completion-gate errors: {progress.get('candidate_completion_gate_error_count', 0)}",
         f"- Report integrity: {data['report_integrity']['status']}",
+        f"- Generated views: {data['generated_views']['status']}",
         f"- Active unit: {progress.get('active_unit') or 'none'}",
         f"- Current pass: {progress.get('current_pass')}",
         f"- Next action: {progress.get('next_action') or 'none'}",
@@ -19860,6 +26454,15 @@ def cmd_status(args: argparse.Namespace) -> int:
         except TextArtifactReadError as exc:
             structural_errors.append(str(exc))
 
+    try:
+        generated_views = workflow_view_freshness(root)
+    except (TextArtifactReadError, OSError, UnicodeError, ValueError) as exc:
+        generated_views = {
+            "status": "unavailable",
+            "missing": [],
+            "stale": [],
+            "errors": [str(exc)],
+        }
     finalization = check_finalization_freshness(root)
     protocol_view = status_protocol_view(manifest, summaries)
     protocol_mismatch = protocol_view["status"] == "mismatch"
@@ -20058,6 +26661,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         "delivery_status": "FINAL" if audit_complete else "NONFINAL",
         "finalization_gate_error_count": len(full_gate_errors),
         "report_integrity": report_integrity,
+        "generated_views": generated_views,
         "protocol": protocol_view,
         "progress": progress_view,
         "ledgers": len(summaries),
@@ -20750,6 +27354,47 @@ def build_parser() -> argparse.ArgumentParser:
     extract.add_argument("--output", type=Path, required=True)
     extract.add_argument("--force", action="store_true")
     extract.set_defaults(func=cmd_extract)
+
+    compile_annotations = subparsers.add_parser(
+        "compile-annotations",
+        help=(
+            "Compile compact semantic annotations into one canonical schema-5 ledger"
+        ),
+    )
+    compile_annotations.add_argument("ledger", type=Path)
+    compile_annotations.add_argument("--annotations", type=Path, required=True)
+    compile_annotations.add_argument("--packet", type=Path, required=True)
+    compile_annotations.add_argument("--output", type=Path, required=True)
+    compile_annotations.set_defaults(func=cmd_compile_annotations)
+
+    packet = subparsers.add_parser(
+        "packet", help="Write a minimal source and dependency context packet"
+    )
+    packet.add_argument("--root", type=Path, required=True)
+    packet.add_argument("--unit-id", required=True)
+    packet.add_argument(
+        "--mode", choices=("primary", "challenge"), default="primary"
+    )
+    packet.add_argument("--output", type=Path, required=True)
+    packet.add_argument("--force", action="store_true")
+    packet.set_defaults(func=cmd_packet)
+
+    bind_challenge = subparsers.add_parser(
+        "bind-challenge",
+        help=(
+            "Embed the exact current challenge facts in its artifact and hash-bind "
+            "the artifact to the ledger"
+        ),
+    )
+    bind_challenge.add_argument("--root", type=Path, required=True)
+    bind_challenge.add_argument("--unit-id", required=True)
+    bind_challenge.set_defaults(func=cmd_bind_challenge)
+
+    sync_views = subparsers.add_parser(
+        "sync-views", help="Regenerate concise workflow projections"
+    )
+    sync_views.add_argument("--root", type=Path, required=True)
+    sync_views.set_defaults(func=cmd_sync_views)
 
     migrate = subparsers.add_parser(
         "migrate-ledger",

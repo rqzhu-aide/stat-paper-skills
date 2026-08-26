@@ -5,6 +5,7 @@
 - [Lock the unit](#1-lock-the-unit)
 - [Normalize the obligation](#2-normalize-the-proof-obligation)
 - [First sequential read](#3-perform-the-first-sequential-read)
+- [Compact work packets and annotations](#compact-work-packets-and-annotations)
 - [Atomic steps](#4-partition-into-atomic-steps)
 - [Ledger rows](#5-complete-every-substantive-ledger-row)
 - [Inferential checks](#6-check-each-inferential-move)
@@ -95,6 +96,120 @@ Read from the first source line to the last without jumping ahead. Record, in or
 
 A later definition does not make an earlier use well-formed. A later argument may repair a gap, but the original location remains part of the audit record.
 
+## Compact work packets and annotations
+
+Audit atomicity is not model-call atomicity. Check every substantive move
+separately, but normally inspect one complete proof unit and produce all of its
+ordered atomic records in one model call. Do not create one call per source
+line, risk row, or inference move.
+
+When a compact context projection is useful, generate a primary packet:
+
+```bash
+python "<skill-root>/scripts/proofcheck.py" packet --root <audit-root> --unit-id <unit-id> --mode primary --output <packet.json>
+```
+
+The packet is noncanonical context and must be written outside the audit root.
+It binds its source snapshot, source text, normalized obligation, current
+semantic artifact, reviewed inventory, exact dependencies, issue triggers,
+candidate reconciliation, dependency alignment, risk aspects, readiness, and
+bounded resume state through `context_binding` and
+`context_binding_sha256`. The inventory projection includes exact proof
+reference occurrences, citation keys, candidate dependency paths, and
+downstream use sites. Require `primary_work_packet_ready: true` and a present
+normalized obligation before semantic checking. Never truncate a statement,
+proof, assumption, or dependency contract to keep a packet small.
+
+For a fresh extracted skeleton with a completed normalized obligation, copy
+[COMPACT_ANNOTATIONS.json](../assets/templates/COMPACT_ANNOTATIONS.json), fill
+its semantic judgments, and compile it into the full schema-5 ledger:
+
+```bash
+python "<skill-root>/scripts/proofcheck.py" compile-annotations <unit.skeleton.json> --annotations <annotations.json> --packet <primary-packet.json> --output <unit.ledger.json>
+```
+
+The skeleton must be inside a canonical proofcheck audit root and end in
+`.skeleton.json`. The output must be in the skeleton's directory and have the
+same basename with `.ledger.json` substituted for `.skeleton.json`. The
+primary packet must remain outside the audit root. The compiler rebuilds that
+packet from current canonical state and requires exact equality, so a modified
+or stale packet fails closed. It never overwrites an existing output and has no
+`--force` option. Keep the fresh skeleton unchanged; do not compile against a
+partly authored ledger.
+
+The annotation file is not a second evidence standard. It must still contain
+one record per substantive move and all judgment-bearing content required by
+this protocol: exact local restatement, goal, premise or earlier-move
+references, rule and justification, side-condition disposition, all eight risk
+dispositions with local evidence, status, issue IDs, and conclusion support.
+Stable references may replace copied claims only when the compiler can resolve
+them exactly from the normalized obligation, earlier moves, or declared result
+uses.
+
+Use annotation schema version `1`. Its top level contains exactly
+`annotation_schema_version`, `unit_id`, `source_unit_sha256`,
+`obligation_sha256`, `context_binding_sha256`, `source_groups`,
+`dependencies`, `steps`, `conclusions`, and `review`. Copy
+`source_unit_sha256` from skeleton `source.unit_sha256`. Copy
+`obligation_sha256` and `context_binding_sha256` from the exact primary packet.
+Keep `source_groups` empty unless a genuine multiline sentence or
+display requires one. Each step uses a stable local `key`, exact `lines`,
+`mode`, `kind`, `goal`, `claim`, literal and atomicity evidence, adversarial
+checks, the eight-aspect `risks` object, inputs, side conditions, status, and
+issue IDs. A derivation or reuse also supplies its rule and justification; a
+failed move supplies the structured failure when required. Each conclusion
+names its `Cxxx` ID and support-step key.
+
+The review contains exactly `explicit_assumptions`, `inherited_assumptions`,
+`source_reference_dispositions`, `candidate_dependency_dispositions`,
+`citation_dispositions`, `verification_basis`, and `reviewer_notes`. It does
+not author `use_sites`; the compiler derives those exact canonical locations
+from packet `inventory.downstream_use_sites`. The compiler rejects unknown
+fields so a typo cannot silently become unused evidence.
+
+Make annotation `dependencies` equal the packet's registry-backed direct uses
+exactly. Each dependency row has `id`, `use_id`, `kind`, `status`,
+`needed_form`, and `compatibility_check`; an internal result also has its exact
+`conclusion_id`.
+
+Cover every packet proof reference occurrence once with the same
+`occurrence_id`, `target`, and `command`, plus `disposition` and substantive
+`evidence`. Use only `internal_result`, `obligation_context`, `local_step`,
+`own_result_identification`, `navigation`, `non_load_bearing`, or `unresolved`.
+An internal-result disposition also names `dependency_use_id`. An
+internal-result, obligation-context, or local-step disposition must be carried
+by an exact annotated input with both source-reference IDs.
+
+Cover every packet citation key once with `key`, `disposition`, and substantive
+`evidence`. An `external_result` citation also names its exact `dependency_id`
+and `dependency_use_id`; other dispositions are `bibliographic_only` or
+`unresolved`. Cover every candidate internal dependency and all of its `CPxxx`
+path IDs exactly once with `candidate_id`, `path_ids`, `disposition`, and
+substantive `evidence`. Map a load-bearing candidate to its internal dependency
+use. A candidate with no registry edge may be only `navigation` or
+`non_load_bearing`. A verified unit cannot leave a reference or citation
+unresolved.
+
+The compiler may generate only deterministic projections, including source
+text and hashes, exact referenced claims and origins, mirrored dependency rows,
+downstream use sites, non-substantive wrappers, and schema boilerplate. It must
+reject or retain as `not_checked` every missing semantic judgment. It cannot invent a premise,
+inference, applicability judgment, risk pass, side-condition discharge,
+failure, issue, or verdict. The compiled ledger receives the same
+`ledger-check --final` and audit-wide closure checks as a manually completed
+ledger.
+
+Do not change canonical audit state between packet generation and compilation.
+If the compiler reports a modified or stale packet, regenerate it. Renew the
+annotation context binding only after confirming that every semantic input and
+judgment remains valid under the regenerated packet.
+
+If a proof unit does not fit in one complete packet, process contiguous
+source-unit blocks in manuscript order. Carry forward only canonical
+established move IDs and explicitly open conditions, then perform a whole-unit
+closure pass before assigning any conclusion judgment. Do not use a free-form
+summary as a substitute for omitted source or premises.
+
 ## 4. Partition into atomic steps
 
 Partition source layout before reconstructing inference. Create
@@ -116,6 +231,12 @@ sentence.
 Use `non_substantive` only for blank lines, full-line comments, and
 proof-environment delimiters. Do not use it for braces, prose, equation
 delimiters surrounding mathematics, labels, or "by standard arguments."
+
+The `extract` command creates a deterministic one-physical-line partition with
+current hashes. Keep that partition when it represents the layout adequately;
+do not ask a model to rewrite source text or hashes. Merge lines only for one
+genuine continued sentence or display, record the required paper-specific
+partition evidence, and let validation recompute the joined hash.
 
 Then create mathematical steps. Every schema-5 step references exactly one
 `source_unit_id`; final mode forbids `steps[].lines`. One source unit may
@@ -365,6 +486,11 @@ reference, and verdict mismatch. This command checks the local record and
 declared dependency statuses only. Its JSON output states that audit-wide
 dependency resolution was not performed. Run `finalize` on the audit root
 before making an audit-wide verification claim.
+
+Compilation success means only that compact annotations expanded into a
+structurally coherent ledger. It does not establish that the annotations are
+mathematically true and does not replace `ledger-check --final`, dependency
+closure, or the critical-path challenge.
 
 For PDF-only input, create a UTF-8 numbered transcription for the exact page
 range and pass that text file as `--paper` with

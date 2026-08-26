@@ -5,6 +5,12 @@
 > Then rename the title to `Final Proof-Check Report`, remove this notice, and
 > run the full finalization and delivery sequence.
 
+Treat this report as a projection of canonical JSON. Generate all exact scalar
+fields, ID sets, status tables, dependency rows, issue views, challenge rows,
+method-interface rows, and deliverable rows from canonical records whenever the
+bundled tooling supports them. Author only the short interpretive judgment,
+confidence, and limitations text that cannot be derived mechanically.
+
 ## Verdict
 
 - Overall assessment code:
@@ -130,10 +136,17 @@ An issue is not resolved merely because source text changed.
 Include every declared or issue-promoted critical unit. A challenge covering an
 open, deferred, or resolved S0 or S1 issue must list that issue in
 `covered_issue_ids` and must be fresh for the current source snapshot and
-challenged ledger. Do not reuse a pre-repair challenge for a resolved issue.
+challenged ledger. Its challenge-context hash and per-issue assessments must
+match the exact current challenge packet. Do not reuse a pre-repair challenge
+for a resolved issue. Render `Issue assessments` as a compact JSON array sorted
+by `issue_id`. Within each object, use this exact key order: `issue_id`,
+`target_contract_sha256`, `assessment`, `target_assessment`,
+`downstream_assessment`. Render `Disagreements` as a compact JSON array in
+canonical ledger order. Escape a literal pipe inside either Markdown cell as
+`\|`.
 
-| Result | Challenge status | Independence | Covered issue IDs | Challenger verdict | Reconciled verdict | Disagreements | Artifact | Source snapshot SHA256 | Challenged ledger SHA256 | Artifact SHA256 | Generated UTC | Resolution |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Result | Challenge status | Independence | Covered issue IDs | Issue assessments | Challenger verdict | Reconciled verdict | Disagreements | Artifact | Source snapshot SHA256 | Challenged ledger SHA256 | Challenge context SHA256 | Artifact SHA256 | Generated UTC | Resolution |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 
 ## Method-interface findings
 

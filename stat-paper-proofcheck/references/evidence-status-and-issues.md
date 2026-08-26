@@ -473,17 +473,36 @@ the primary verdict or proposed repair. Set `covered_issue_ids` to the sorted
 distinct open, deferred, or resolved load-bearing S0 or S1 issues whose
 `affected_results` contain that unit; use an empty list for a unit that is
 critical only by manifest declaration. For each covered issue, give the
-challenger the exact source-locked target and mathematical contract, then
-require an independent assessment of that target and its downstream relevance.
-Listing the issue ID without challenging its substance is not coverage. Record
-`source_snapshot_sha256`,
-`challenged_ledger_sha256` computed from the canonical ledger without
-`independent_check`, `challenge_artifact_sha256`, and `generated_utc`.
+challenger the neutral packet trigger containing its ID, severity, structured
+`target_contract`, and `target_contract_sha256`, then require an independent
+assessment of that target and its downstream relevance. Do not expose the
+primary finding, summary, verdict, or repair. Listing the issue ID without
+challenging its substance is not coverage.
+
+For every covered issue, record one `issue_assessments` row containing exactly
+`issue_id`, `target_contract_sha256`, `assessment`, `target_assessment`, and
+`downstream_assessment`. Use only `confirmed`, `not_confirmed`, or `unclear`
+for `assessment`; both assessment narratives must be substantive. Assessment
+IDs must equal `covered_issue_ids` exactly. A manifest-only critical unit has
+both lists empty.
+
+The Markdown artifact must contain exactly one
+`proofcheck-challenge-binding-v1` JSON block whose unit ID, challenge-context
+hash, challenger verdict, and canonical issue-assessment rows equal the ledger.
+Create or refresh that block with `proofcheck.py bind-challenge --root
+<audit-root> --unit-id <unit-id>` after the blinded output is fixed. This makes
+the artifact itself carry the assessment it certifies; a generic or unrelated
+nonempty file is not independent-challenge evidence.
+
+Record `source_snapshot_sha256`, `challenged_ledger_sha256` computed from the
+canonical ledger without `independent_check`, `challenge_context_sha256`
+copied from the exact challenge packet `context_binding_sha256`,
+`challenge_artifact_sha256`, and `generated_utc`.
 Also preserve the independence level as fresh-context same model, different
 model, or independent human, together with the primary verdict, challenger
 verdict, reconciled verdict, disagreements, resolution, and artifact. A stale
-hash, missing or extra issue ID, or same-context reread cannot support
-independent confirmation. `agreed` requires identical challenger and reconciled
-verdicts equal to the final unit status, with no disagreements. `resolved`
-requires a reconciled verdict equal to the final unit status, at least one
-recorded disagreement, and a substantive resolution.
+packet context or target hash, missing or extra issue ID, or same-context reread
+cannot support independent confirmation. `agreed` requires identical
+challenger and reconciled verdicts equal to the final unit status, with no
+disagreements. `resolved` requires a reconciled verdict equal to the final unit
+status, at least one recorded disagreement, and a substantive resolution.
