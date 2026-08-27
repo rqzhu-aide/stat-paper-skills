@@ -110,32 +110,43 @@ python "<skill-root>/scripts/proofcheck.py" packet --root <audit-root> --unit-id
 ```
 
 The packet is noncanonical context and must be written outside the audit root.
-It binds its source snapshot, source text, normalized obligation, current
-semantic artifact, reviewed inventory, exact dependencies, issue triggers,
-candidate reconciliation, dependency alignment, risk aspects, readiness, and
-bounded resume state through `context_binding` and
-`context_binding_sha256`. The inventory projection includes exact proof
-reference occurrences, citation keys, candidate dependency paths, and
-downstream use sites. Require `primary_work_packet_ready: true` and a present
-normalized obligation before semantic checking. Never truncate a statement,
-proof, assumption, or dependency contract to keep a packet small.
+It binds exact source text, normalized obligation, current semantic artifact,
+unit inventory, exact dependencies, relevant issue triggers, candidate
+reconciliation, dependency alignment, risk aspects, and bounded resume state.
+The context binding is dependency-closed semantic state. A separate operational
+binding records global file hashes, progress, and navigation state for
+provenance without forcing mathematical rework. Exact line number and text,
+enclosing span hashes, source-member hashes, and the source snapshot retain
+traceability; redundant per-line hashes are not model-visible. Require
+primary_work_packet_ready: true and a completed normalized obligation.
 
-For a fresh extracted skeleton with a completed normalized obligation, copy
-[COMPACT_ANNOTATIONS.json](../assets/templates/COMPACT_ANNOTATIONS.json), fill
-its semantic judgments, and compile it into the full schema-5 ledger:
+For a fresh extracted skeleton, generate a deterministic packet-bound draft:
 
-```bash
-python "<skill-root>/scripts/proofcheck.py" compile-annotations <unit.skeleton.json> --annotations <annotations.json> --packet <primary-packet.json> --output <unit.ledger.json>
-```
+    python "<skill-root>/scripts/proofcheck.py" annotation-scaffold <unit.skeleton.json> --packet <primary-packet.json> --output <annotations.json>
 
-The skeleton must be inside a canonical proofcheck audit root and end in
-`.skeleton.json`. The output must be in the skeleton's directory and have the
-same basename with `.ledger.json` substituted for `.skeleton.json`. The
-primary packet must remain outside the audit root. The compiler rebuilds that
-packet from current canonical state and requires exact equality, so a modified
-or stale packet fails closed. It never overwrites an existing output and has no
-`--force` option. Keep the fresh skeleton unchanged; do not compile against a
-partly authored ledger.
+The scaffold pre-fills deterministic hashes, IDs, dependency mirrors, source
+line ranges, and all eight risk slots. Every null is an unfinished semantic
+judgment. Review multiline source grouping and replace every null with
+paper-specific analysis. Do not use placeholder prose.
+
+Run one aggregate preflight before compilation:
+
+    python "<skill-root>/scripts/proofcheck.py" annotation-check <unit.skeleton.json> --annotations <annotations.json> --packet <primary-packet.json> --json
+
+The checker reports detectable schema, binding, and reconciliation problems
+together with JSON pointers. It does not publish a ledger. Then compile:
+
+    python "<skill-root>/scripts/proofcheck.py" compile-annotations <unit.skeleton.json> --annotations <annotations.json> --packet <primary-packet.json> --output <unit.ledger.json>
+
+The skeleton must be inside the canonical audit and end in .skeleton.json.
+The packet and annotation file remain outside the audit root. The compiler
+rebuilds current state and requires exact equality of the dependency-closed
+semantic projection. Progress, next action, and unrelated metadata may drift
+without invalidating sound semantic work; relevant source, obligation,
+dependency, external evidence, issue trigger, risk, or protocol drift fails
+closed. The compiler never overwrites an existing output. Its receipt records
+the exact packet hash, submitted and current operational binding hashes, and an
+operational-drift flag, so accepted reuse remains traceable.
 
 The annotation file is not a second evidence standard. It must still contain
 one record per substantive move and all judgment-bearing content required by
@@ -195,14 +206,17 @@ text and hashes, exact referenced claims and origins, mirrored dependency rows,
 downstream use sites, non-substantive wrappers, and schema boilerplate. It must
 reject or retain as `not_checked` every missing semantic judgment. It cannot invent a premise,
 inference, applicability judgment, risk pass, side-condition discharge,
-failure, issue, or verdict. The compiled ledger receives the same
-`ledger-check --final` and audit-wide closure checks as a manually completed
-ledger.
+failure, issue, or verdict. Before verified no-overwrite publication, the compiler runs the
+same full final local ledger validation used for a manual ledger. A successful
+compile receipt with validation passed is therefore the local gate for that
+unchanged compiled file; an immediate duplicate ledger-check is unnecessary.
+Manual ledgers and any compiled ledger later modified or moved still require
+ledger-check --final. Audit-wide dependency, issue, challenge, and finalization
+gates remain mandatory.
 
-Do not change canonical audit state between packet generation and compilation.
-If the compiler reports a modified or stale packet, regenerate it. Renew the
-annotation context binding only after confirming that every semantic input and
-judgment remains valid under the regenerated packet.
+If compilation reports stale semantic context, regenerate the packet and renew
+the annotation binding only after confirming that every affected judgment
+remains valid. Operational-only drift does not justify rewriting the binding.
 
 If a proof unit does not fit in one complete packet, process contiguous
 source-unit blocks in manuscript order. Carry forward only canonical
@@ -373,7 +387,7 @@ but it cannot use that unresolved risk to upgrade its status.
 Evidence must identify the actual source claim, mathematical objects, premises,
 operation, and failure mode relevant to that record. Evidence contract 4 treats
 repeated stock evidence as nonspecific under the exact gates in
-[evidence-status-and-issues.md](evidence-status-and-issues.md). Do not use
+[evidence-and-verdicts.md](evidence-and-verdicts.md). Do not use
 generic checklist prose or cosmetic wording changes in place of local evidence.
 
 The source text is evidence of what the paper says, not evidence that the step is valid.
@@ -447,7 +461,7 @@ For logical proof rules, also check variable freshness for universal introductio
 - `not_checked`: work remains.
 - `non_substantive`: only permitted for mechanically non-substantive lines.
 
-Use [evidence-status-and-issues.md](evidence-status-and-issues.md) for severity and confidence.
+Use [evidence-and-verdicts.md](evidence-and-verdicts.md) for severity and confidence.
 
 Record separate component judgments for contract fidelity, argument validity, statement status, dependency closure, and use-site sufficiency. An invalid proof does not by itself show that the theorem statement is false.
 
@@ -479,18 +493,19 @@ waive source-lock integrity, closure of populated links, or the exactly-one-move
 rule for inferential steps. Fix those errors as soon as they appear. A clean
 draft result says only that the current partial record is coherent.
 
-Run `ledger-check --final`. Resolve every uncovered or multiply covered source
+For a manual ledger, or a compiled ledger later moved or modified, run
+`ledger-check --final`. An unchanged compiled file with a passed compile receipt
+already has this local gate. Resolve every uncovered or multiply covered source
 line, stale or unrepresented source unit, missing or invalid source-unit
 reference, non-atomic inferential step, unsupported status, missing issue
-reference, and verdict mismatch. This command checks the local record and
-declared dependency statuses only. Its JSON output states that audit-wide
-dependency resolution was not performed. Run `finalize` on the audit root
-before making an audit-wide verification claim.
+reference, and verdict mismatch. The local gate checks the record and declared
+dependency statuses only; run `finalize` before any audit-wide verification
+claim.
 
-Compilation success means only that compact annotations expanded into a
-structurally coherent ledger. It does not establish that the annotations are
-mathematically true and does not replace `ledger-check --final`, dependency
-closure, or the critical-path challenge.
+Compilation success does not establish that authored judgments are
+mathematically true. It already includes the full final local ledger validator,
+but it does not replace dependency closure, issue reconciliation, the
+critical-path challenge, or audit-wide finalization.
 
 For PDF-only input, create a UTF-8 numbered transcription for the exact page
 range and pass that text file as `--paper` with

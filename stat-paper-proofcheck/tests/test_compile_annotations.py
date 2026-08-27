@@ -445,6 +445,437 @@ class CompileAnnotationsTests(unittest.TestCase):
         text = rendered[0].decode("utf-8")
         self.assertNotIn(str(annotation_path), text)
 
+    def test_annotation_scaffold_is_deterministic_and_prefilled(self) -> None:
+        outputs = [
+            self.base / "draft one.annotations.json",
+            self.base / "draft two.annotations.json",
+        ]
+        rendered: list[bytes] = []
+        for output in outputs:
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(
+                    0,
+                    proofcheck.cmd_annotation_scaffold(
+                        argparse.Namespace(
+                            ledger=self.ledger,
+                            packet=self.packet,
+                            output=output,
+                        )
+                    ),
+                )
+            rendered.append(output.read_bytes())
+        self.assertEqual(rendered[0], rendered[1])
+        scaffold = read_json(outputs[0])
+        packet = read_json(self.packet)
+        ledger = read_json(self.ledger)
+        self.assertEqual(
+            ledger["source"]["unit_sha256"],
+            scaffold["source_unit_sha256"],
+        )
+        self.assertEqual(
+            packet["context_binding_sha256"],
+            scaffold["context_binding_sha256"],
+        )
+        self.assertEqual([], scaffold["dependencies"])
+        self.assertEqual(
+            ["C001"],
+            [row["conclusion_id"] for row in scaffold["conclusions"]],
+        )
+        self.assertEqual(
+            [packet["inventory"]["reference_occurrences"][0]["occurrence_id"]],
+            [
+                row["occurrence_id"]
+                for row in scaffold["review"][
+                    "source_reference_dispositions"
+                ]
+            ],
+        )
+        first_step = scaffold["steps"][0]
+        self.assertEqual(list(proofcheck.RISK_ASPECTS), list(first_step["risks"]))
+        self.assertIsNone(first_step["mode"])
+        self.assertIsNone(first_step["literal"])
+        self.assertIsNone(first_step["risks"]["domain"]["status"])
+        serialized = json.dumps(scaffold, ensure_ascii=False)
+        for placeholder in ("TODO", "TBD", "not_checked"):
+            self.assertNotIn(placeholder, serialized)
+
+        parser = proofcheck.build_parser()
+        args = parser.parse_args(
+            [
+                "annotation-scaffold",
+                str(self.ledger),
+                "--packet",
+                str(self.packet),
+                "--output",
+                str(self.base / "parser.annotations.json"),
+            ]
+        )
+        self.assertIs(args.func, proofcheck.cmd_annotation_scaffold)
+
+    def test_annotation_scaffold_refuses_audit_output_and_overwrite(self) -> None:
+        audit_output = (
+            self.audit
+            / "audit"
+            / "04_local_checks"
+            / "draft.annotations.json"
+        )
+        with self.assertRaisesRegex(ValueError, "outside the audit root"):
+            proofcheck.cmd_annotation_scaffold(
+                argparse.Namespace(
+                    ledger=self.ledger,
+                    packet=self.packet,
+                    output=audit_output,
+                )
+            )
+        output = self.base / "safe.annotations.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            proofcheck.cmd_annotation_scaffold(
+                argparse.Namespace(
+                    ledger=self.ledger,
+                    packet=self.packet,
+                    output=output,
+                )
+            )
+        original = output.read_bytes()
+        with self.assertRaisesRegex(FileExistsError, "already exists"):
+            proofcheck.cmd_annotation_scaffold(
+                argparse.Namespace(
+                    ledger=self.ledger,
+                    packet=self.packet,
+                    output=output,
+                )
+            )
+        self.assertEqual(original, output.read_bytes())
+
+    def test_annotation_check_reports_multiple_json_pointers(self) -> None:
+        annotation_path = self.base / "draft.annotations.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            proofcheck.cmd_annotation_scaffold(
+                argparse.Namespace(
+                    ledger=self.ledger,
+                    packet=self.packet,
+                    output=annotation_path,
+                )
+            )
+        draft = read_json(annotation_path)
+        draft["context_binding_sha256"] = "0" * 64
+        del draft["steps"][0]["risks"]["limit"]
+        draft["steps"][0]["verdict_note"] = "unused"
+        write_json(annotation_path, draft)
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            status = proofcheck.cmd_annotation_check(
+                argparse.Namespace(
+                    ledger=self.ledger,
+                    annotations=annotation_path,
+                    packet=self.packet,
+                    json=True,
+                )
+            )
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(1, status)
+        self.assertFalse(result["compile_ready"])
+        self.assertGreater(result["error_count"], 8)
+        pointers = {row["pointer"] for row in result["diagnostics"]}
+        self.assertIn("/context_binding_sha256", pointers)
+        self.assertIn("/steps/0/risks/limit", pointers)
+        self.assertIn("/steps/0/verdict_note", pointers)
+        self.assertFalse(self.output.exists())
+
+    def test_annotation_check_accepts_complete_annotations_without_writing(self) -> None:
+        annotation_path = self.base / "complete.annotations.json"
+        write_json(annotation_path, self.annotations())
+        original_skeleton = self.ledger.read_bytes()
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            status = proofcheck.cmd_annotation_check(
+                argparse.Namespace(
+                    ledger=self.ledger,
+                    annotations=annotation_path,
+                    packet=self.packet,
+                    json=True,
+                )
+            )
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(0, status)
+        self.assertTrue(result["compile_ready"])
+        self.assertEqual([], result["diagnostics"])
+        self.assertEqual(original_skeleton, self.ledger.read_bytes())
+        self.assertFalse(self.output.exists())
+
+    def test_annotation_check_aggregates_nonnull_semantic_errors(self) -> None:
+        annotation_path = self.base / "invalid semantic.annotations.json"
+        annotations = self.annotations()
+        annotations["steps"][0]["mode"] = "invented-mode"
+        annotations["steps"][0]["kind"] = "invented-kind"
+        annotations["steps"][0]["status"] = "invented-status"
+        annotations["steps"][0]["risks"]["domain"]["status"] = "invented-risk"
+        annotations["conclusions"][0]["contract_fidelity"] = "invented-verdict"
+        write_json(annotation_path, annotations)
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            status = proofcheck.cmd_annotation_check(
+                argparse.Namespace(
+                    ledger=self.ledger,
+                    annotations=annotation_path,
+                    packet=self.packet,
+                    json=True,
+                )
+            )
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(1, status)
+        pointers = {row["pointer"] for row in result["diagnostics"]}
+        self.assertTrue(
+            {
+                "/steps/0/mode",
+                "/steps/0/kind",
+                "/steps/0/status",
+                "/steps/0/risks/domain/status",
+                "/conclusions/0/contract_fidelity",
+            }.issubset(pointers)
+        )
+
+    def test_annotation_check_aggregates_cross_field_errors(self) -> None:
+        annotation_path = self.base / "invalid relationships.annotations.json"
+        annotations = self.annotations()
+        annotations["source_groups"].append(
+            {
+                "lines": [2, 3],
+                "kind": "continued_sentence",
+                "partition_evidence": "This deliberately overlaps the prior group.",
+            }
+        )
+        annotations["steps"][1]["inputs"][0]["compatibility_check"] = (
+            "This field is forbidden on an obligation input."
+        )
+        annotations["conclusions"][0]["support_step"] = "unknown-step"
+        annotations["review"]["source_reference_dispositions"][0][
+            "dependency_use_id"
+        ] = "D001"
+        write_json(annotation_path, annotations)
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            status = proofcheck.cmd_annotation_check(
+                argparse.Namespace(
+                    ledger=self.ledger,
+                    annotations=annotation_path,
+                    packet=self.packet,
+                    json=True,
+                )
+            )
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(1, status)
+        pointers = {row["pointer"] for row in result["diagnostics"]}
+        self.assertTrue(
+            {
+                "/source_groups/1/lines",
+                "/steps/1/inputs/0/compatibility_check",
+                "/conclusions/0/support_step",
+                "/review/source_reference_dispositions/0/dependency_use_id",
+            }.issubset(pointers)
+        )
+
+    def test_annotation_inputs_must_remain_outside_audit_root(self) -> None:
+        annotation_path = (
+            self.audit
+            / "audit"
+            / "04_local_checks"
+            / "inside.annotations.json"
+        )
+        write_json(annotation_path, self.annotations())
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            status = proofcheck.cmd_annotation_check(
+                argparse.Namespace(
+                    ledger=self.ledger,
+                    annotations=annotation_path,
+                    packet=self.packet,
+                    json=True,
+                )
+            )
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(1, status)
+        self.assertIn(
+            "invalid_annotation_path", result["counts_by_code"]
+        )
+        with self.assertRaisesRegex(ValueError, "outside the canonical audit root"):
+            proofcheck.cmd_compile_annotations(
+                argparse.Namespace(
+                    ledger=self.ledger,
+                    annotations=annotation_path,
+                    packet=self.packet,
+                    output=self.output,
+                    force=False,
+                )
+            )
+        self.assertFalse(self.output.exists())
+
+    def test_machine_readable_root_pointer_is_empty_string(self) -> None:
+        missing = self.base / "missing.annotations.json"
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            status = proofcheck.cmd_annotation_check(
+                argparse.Namespace(
+                    ledger=self.ledger,
+                    annotations=missing,
+                    packet=self.packet,
+                    json=True,
+                )
+            )
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(1, status)
+        self.assertEqual("", result["diagnostics"][0]["pointer"])
+
+    def test_identity_diagnostics_keep_all_missing_records_and_unordered_paths(self) -> None:
+        diagnostics: list[dict[str, str]] = []
+        proofcheck.annotation_identity_diagnostics(
+            [],
+            [{"id": "A"}, {"id": "B"}],
+            "/records",
+            "id",
+            ("id",),
+            diagnostics,
+        )
+        self.assertEqual(2, len(diagnostics))
+        self.assertEqual(2, len({row["message"] for row in diagnostics}))
+
+        diagnostics = []
+        proofcheck.annotation_identity_diagnostics(
+            [{"candidate_id": "dep:a", "path_ids": ["CP002", "CP001"]}],
+            [{"candidate_id": "dep:a", "path_ids": ["CP001", "CP002"]}],
+            "/review/candidate_dependency_dispositions",
+            "candidate_id",
+            ("candidate_id", "path_ids"),
+            diagnostics,
+            unordered_fields=("path_ids",),
+        )
+        self.assertEqual([], diagnostics)
+
+    def test_scaffold_prefills_nonempty_packet_mirrors_only(self) -> None:
+        packet = read_json(self.packet)
+        packet["dependencies"]["direct_external_uses"] = [
+            {
+                "dependency_id": "ext:fact",
+                "use_id": "D001",
+                "status": "verified",
+                "needed_form": "The exact external fact needed here.",
+                "compatibility_check": "The domains and quantifiers match exactly.",
+            }
+        ]
+        packet["inventory"]["candidate_internal_dependency_ids"] = ["lem:prior"]
+        packet["inventory"]["candidate_dependency_paths"] = [
+            {"candidate_id": "lem:prior", "path_id": "CP002"},
+            {"candidate_id": "lem:prior", "path_id": "CP001"},
+        ]
+        packet["inventory"]["citation_keys"] = ["Author2026"]
+        scaffold = proofcheck.annotation_scaffold_data(
+            read_json(self.ledger), packet
+        )
+        self.assertEqual(["D001"], [row["use_id"] for row in scaffold["dependencies"]])
+        candidate = scaffold["review"]["candidate_dependency_dispositions"][0]
+        self.assertEqual(["CP001", "CP002"], candidate["path_ids"])
+        self.assertEqual(
+            ["Author2026"],
+            [row["key"] for row in scaffold["review"]["citation_dispositions"]],
+        )
+        self.assertTrue(all(step["literal"] is None for step in scaffold["steps"]))
+
+    def test_compile_accepts_operational_drift_but_rejects_packet_tampering(self) -> None:
+        progress_path = self.audit / "PROGRESS.json"
+        progress = read_json(progress_path)
+        progress["next_action"] = "Continue the same semantic unit."
+        write_json(progress_path, progress)
+        summary = self.compile(self.annotations(), self.output)
+        self.assertEqual("passed", summary["validation"])
+        self.assertEqual(
+            proofcheck.sha256_file(self.packet), summary["packet_sha256"]
+        )
+        self.assertTrue(summary["operational_binding_drift"])
+        self.assertNotEqual(
+            summary["submitted_operational_binding_sha256"],
+            summary["operational_binding_sha256"],
+        )
+        self.output.unlink()
+
+        packet = read_json(self.packet)
+        packet["source"]["proof"]["lines"][0]["text"] = "tampered source"
+        write_json(self.packet, packet)
+        annotation_path = self.base / "tampered.annotations.json"
+        write_json(annotation_path, self.annotations())
+        with self.assertRaisesRegex(ValueError, "semantic context"):
+            proofcheck.cmd_compile_annotations(
+                argparse.Namespace(
+                    ledger=self.ledger,
+                    annotations=annotation_path,
+                    packet=self.packet,
+                    output=self.output,
+                    force=False,
+                )
+            )
+        self.assertFalse(self.output.exists())
+
+    def test_operational_binding_tamper_is_not_reported_as_current(self) -> None:
+        packet = read_json(self.packet)
+        packet["operational_binding"]["manifest_sha256"] = "0" * 64
+        packet["operational_binding_sha256"] = proofcheck.canonical_sha256(
+            packet["operational_binding"]
+        )
+        submitted_hash = packet["operational_binding_sha256"]
+        write_json(self.packet, packet)
+        summary = self.compile(self.annotations(), self.output)
+        self.assertTrue(summary["operational_binding_drift"])
+        self.assertEqual(
+            submitted_hash, summary["submitted_operational_binding_sha256"]
+        )
+        self.assertNotEqual(
+            submitted_hash, summary["operational_binding_sha256"]
+        )
+
+    def test_registry_binding_tamper_rejects_old_packet(self) -> None:
+        packet = read_json(self.packet)
+        packet["dependencies"]["registry_binding"][
+            "closure_contract_version"
+        ] = 999
+        write_json(self.packet, packet)
+        annotation_path = self.base / "registry tamper.annotations.json"
+        write_json(annotation_path, self.annotations())
+        with self.assertRaisesRegex(ValueError, "semantic context"):
+            proofcheck.cmd_compile_annotations(
+                argparse.Namespace(
+                    ledger=self.ledger,
+                    annotations=annotation_path,
+                    packet=self.packet,
+                    output=self.output,
+                    force=False,
+                )
+            )
+
+    def test_direct_dependency_contract_drift_rejects_old_packet(self) -> None:
+        annotations = self.dependency_annotations()
+        registry_path = (
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        registry = read_json(registry_path)
+        registry["external_results"][0]["uses"][0]["needed_form"] = (
+            "A materially different external fact is now required."
+        )
+        write_json(registry_path, registry)
+        annotation_path = self.base / "dependency drift.annotations.json"
+        write_json(annotation_path, annotations)
+        with self.assertRaisesRegex(ValueError, "semantic context"):
+            proofcheck.cmd_compile_annotations(
+                argparse.Namespace(
+                    ledger=self.ledger,
+                    annotations=annotation_path,
+                    packet=self.packet,
+                    output=self.output,
+                    force=False,
+                )
+            )
+
     def test_invalid_annotation_never_replaces_existing_output(self) -> None:
         annotations = self.annotations()
         annotations["source_unit_sha256"] = "0" * 64
@@ -483,9 +914,7 @@ class CompileAnnotationsTests(unittest.TestCase):
         with mock.patch.object(
             proofcheck.os, "link", side_effect=create_then_link
         ):
-            with self.assertRaisesRegex(
-                FileExistsError, "appeared during validation"
-            ):
+            with self.assertRaisesRegex(FileExistsError, "appeared during creation"):
                 proofcheck.cmd_compile_annotations(
                     argparse.Namespace(
                         ledger=self.ledger,
@@ -498,6 +927,30 @@ class CompileAnnotationsTests(unittest.TestCase):
 
         self.assertEqual(concurrent, output.read_bytes())
         self.assertEqual([], list(self.base.glob(".*.proofcheck.tmp")))
+
+    def test_no_hard_link_filesystem_uses_verified_exclusive_copy(self) -> None:
+        annotation_path = self.base / "semantic annotations.json"
+        write_json(annotation_path, self.annotations())
+        stdout = io.StringIO()
+        with mock.patch.object(
+            proofcheck.os, "link", side_effect=OSError("hard links unsupported")
+        ):
+            with contextlib.redirect_stdout(stdout):
+                status = proofcheck.cmd_compile_annotations(
+                    argparse.Namespace(
+                        ledger=self.ledger,
+                        annotations=annotation_path,
+                        packet=self.packet,
+                        output=self.output,
+                        force=False,
+                    )
+                )
+        summary = json.loads(stdout.getvalue())
+        self.assertEqual(0, status)
+        expected_method = "exclusive_rename" if os.name == "nt" else "exclusive_copy"
+        self.assertEqual(expected_method, summary["publication_method"])
+        errors, _ = proofcheck.check_ledger_data(self.output, True)
+        self.assertEqual([], errors)
 
     def test_compact_schema_rejects_missing_semantics_and_unknown_fields(self) -> None:
         cases: list[tuple[str, dict, str]] = []

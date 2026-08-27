@@ -243,7 +243,7 @@ class WorkflowEfficiencyTests(unittest.TestCase):
                 "reviewer_notes": [],
             },
         }
-        annotations_path = ledger_dir / "lem-a.annotations.json"
+        annotations_path = self.base / "lem-a.annotations.json"
         write_json(annotations_path, annotations)
         with contextlib.redirect_stdout(io.StringIO()):
             proofcheck.cmd_compile_annotations(
@@ -384,8 +384,36 @@ class WorkflowEfficiencyTests(unittest.TestCase):
             "\\begin{lemma}\\label{lem:a}",
             challenge["source"]["statement"]["lines"][0]["text"],
         )
+        self.assertNotIn("line_sha256", serialized)
+        def assert_line_records_are_slim(value: object) -> None:
+            if isinstance(value, dict):
+                if {"line", "text"}.issubset(value):
+                    self.assertNotIn("sha256", value)
+                for child in value.values():
+                    assert_line_records_are_slim(child)
+            elif isinstance(value, list):
+                for child in value:
+                    assert_line_records_are_slim(child)
+
+        assert_line_records_are_slim(challenge)
+        for span_name in ("statement", "proof"):
+            span = challenge["source"][span_name]
+            self.assertRegex(span["span_sha256"], r"^[0-9a-f]{64}$")
+            self.assertRegex(
+                span["source_member"]["file_sha256"], r"^[0-9a-f]{64}$"
+            )
+            for line in span["lines"]:
+                self.assertEqual({"line", "text"}, set(line))
         self.assertEqual("x equals x", challenge["obligation"]["conclusion"])
         self.assertTrue(challenge["obligation"]["statement_spans"])
+        statement_span = challenge["obligation"]["statement_spans"][0]
+        self.assertEqual("/source/statement", statement_span["source_span_ref"])
+        self.assertNotIn("lines", statement_span)
+        conclusion_span = challenge["obligation"]["conclusions"][0][
+            "source_spans"
+        ][0]
+        self.assertEqual("/source/statement", conclusion_span["source_span_ref"])
+        self.assertNotIn("lines", conclusion_span)
         self.assertTrue(challenge["obligation"]["normalization_checks"])
         self.assertEqual(list(proofcheck.RISK_ASPECTS), challenge["risk_aspects"])
         self.assertEqual([], challenge["issue_triggers"])
@@ -449,6 +477,24 @@ class WorkflowEfficiencyTests(unittest.TestCase):
             exact["resume"]["wip"]["semantic_record"]["review"],
         )
 
+        progress_path = self.audit / "PROGRESS.json"
+        progress = read_json(progress_path)
+        progress["next_action"] = "Continue the same bound unit."
+        write_json(progress_path, progress)
+        progress_drift = proofcheck.build_context_packet(
+            self.audit, "lem:a", "primary"
+        )
+        self.assertEqual(
+            exact["work_context_sha256"],
+            progress_drift["work_context_sha256"],
+        )
+        self.assertTrue(progress_drift["resume"]["wip_record_ready"])
+        self.assertTrue(progress_drift["resume"]["wip"]["included"])
+        self.assertNotEqual(
+            exact["operational_binding_sha256"],
+            progress_drift["operational_binding_sha256"],
+        )
+
         issue_path = self.audit / "audit" / "06_reports" / "ISSUE_LOG.json"
         original_issue_log = read_json(issue_path)
         changed_issue_log = json.loads(json.dumps(original_issue_log))
@@ -457,8 +503,12 @@ class WorkflowEfficiencyTests(unittest.TestCase):
         issue_drift = proofcheck.build_context_packet(
             self.audit, "lem:a", "primary"
         )
-        self.assertFalse(issue_drift["resume"]["wip_record_ready"])
-        self.assertFalse(issue_drift["resume"]["wip"]["included"])
+        self.assertEqual(
+            exact["work_context_sha256"],
+            issue_drift["work_context_sha256"],
+        )
+        self.assertTrue(issue_drift["resume"]["wip_record_ready"])
+        self.assertTrue(issue_drift["resume"]["wip"]["included"])
 
         write_json(issue_path, original_issue_log)
         restored = proofcheck.build_context_packet(
@@ -479,8 +529,41 @@ class WorkflowEfficiencyTests(unittest.TestCase):
         dependency_drift = proofcheck.build_context_packet(
             self.audit, "lem:a", "primary"
         )
-        self.assertFalse(dependency_drift["resume"]["wip_record_ready"])
-        self.assertFalse(dependency_drift["resume"]["wip"]["included"])
+        self.assertEqual(
+            exact["work_context_sha256"],
+            dependency_drift["work_context_sha256"],
+        )
+        self.assertTrue(dependency_drift["resume"]["wip_record_ready"])
+        self.assertTrue(dependency_drift["resume"]["wip"]["included"])
+
+    def test_span_reference_requires_exact_resolved_path(self) -> None:
+        first = self.base / "first" / "shared.tex"
+        second = self.base / "second" / "shared.tex"
+        first.parent.mkdir()
+        second.parent.mkdir()
+        first.write_text("first\n", encoding="utf-8")
+        second.write_text("second\n", encoding="utf-8")
+        locations = {
+            "statement": {
+                "file": first.as_posix(),
+                "start_line": 1,
+                "end_line": 3,
+            }
+        }
+        same = proofcheck.packet_span_reference(
+            {"file": first.as_posix(), "start_line": 1, "end_line": 2},
+            self.base,
+            locations,
+            self.base,
+        )
+        different = proofcheck.packet_span_reference(
+            {"file": second.as_posix(), "start_line": 1, "end_line": 2},
+            self.base,
+            locations,
+            self.base,
+        )
+        self.assertEqual("/source/statement", same)
+        self.assertIsNone(different)
 
     def test_packet_refuses_canonical_audit_output(self) -> None:
         destination = self.audit / "packet.json"

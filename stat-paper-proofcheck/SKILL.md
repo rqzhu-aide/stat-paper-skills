@@ -9,503 +9,223 @@ description: Audit proofs in statistics, probability, machine-learning theory, e
 
 ## Core standard
 
-Determine whether each stated conclusion follows from the exact assumptions, definitions, prior results, and proof steps available at its point of use. Check constants, rates, probability levels, quantifiers, dimensions, domains, edge cases, and external results in the form actually needed.
+Determine whether each stated conclusion follows from the exact assumptions,
+definitions, prior results, and written proof steps available at its point of
+use. Cover every physical source line and reconstruct every substantive
+transition as an independently checkable inference.
 
-Read every detailed proof unit in manuscript order. Cover every physical source line and reconstruct every substantive transition as an independently checkable inference. Do not skip a line because it looks routine.
+Check contract fidelity, argument validity, statement status, dependency
+closure, and later-use sufficiency separately. Check domain, dimension, sign,
+constant, rate, probability, quantifier, and limit risk for every substantive
+step. An invalid proof does not by itself show that its conclusion is false.
 
-Diagnose the written proof. Do not silently supply a missing argument or edit the manuscript to make the proof work. Record the stated argument, any failure, and any possible repair separately.
+Diagnose the written proof. Do not silently supply a missing argument, weaken a
+claim, strengthen an assumption, or edit the manuscript unless the user
+separately asks for revision after the audit.
 
-Keep contract fidelity, argument validity, statement status, dependency closure, and later-use sufficiency separate. An invalid proof does not by itself show that its conclusion is false.
+## Load only the current role
 
-Keep this skill self-contained. Do not invoke or depend on another reviewer, writing, or proof-check skill. Use other tools only to inspect in-scope sources, render documents, retrieve external publications, inspect implementation evidence, run exact computational checks, or execute the bundled validator.
+Audit obligations accumulate in canonical state. Reference files do not
+accumulate in every worker context. The coordinator enforces stages that a
+worker does not load.
 
-Treat the result as a rigorous non-formal audit, not a kernel-checked proof certificate. Mechanical gates establish record completeness and internal consistency, not mathematical truth. Human judgment remains necessary for every high-consequence finding and final assessment.
-
-Audit atomicity is not model-call atomicity. Preserve one checked record for
-every substantive move, but review a complete proof unit and return many
-separate atomic records in one compact model call whenever the full evidence
-fits. Reduce repeated context and generated prose, never mathematical coverage
-or judgment.
-
-## Load references only when needed
-
-Read each selected reference completely before performing the stage that needs it. Routes are cumulative: a Full audit adds system and state references, then still uses the local protocol and evidence discipline for every checked unit.
-
-| Current need | Read |
+| Current role or trigger | Read |
 |---|---|
-| Detailed proof-unit audit, source locking, PDF transcription, atomic checking, or local ledger validation | [line-by-line-protocol.md](references/line-by-line-protocol.md) |
-| Verdicts, component judgments, severity, confidence, canonical issues, computational evidence, or challenger evidence | [evidence-status-and-issues.md](references/evidence-status-and-issues.md) |
-| In a Focused or Full audit: inventory reconciliation, proof-association review, dependency closure, global consistency, or completion gates | [proof-system-audit.md](references/proof-system-audit.md) |
-| Probability, asymptotic, optimization, matrix, empirical-process, causal, machine-learning, lower-bound, or analytic risk | Only the matching section of [domain-risk-checks.md](references/domain-risk-checks.md) |
-| A cited theorem or external technical fact is load-bearing | [external-result-verification.md](references/external-result-verification.md) |
-| Workspace setup, checkpoint, resume, source revision, handoff, finalization, or final report | [state-and-reporting.md](references/state-and-reporting.md) |
-| First record of an unfamiliar JSON shape | Search the relevant top-level object in [AUDIT_RECORD_EXAMPLES.json](assets/templates/AUDIT_RECORD_EXAMPLES.json); do not load the entire file by default |
-| First compact annotation for `compile-annotations` | Copy [COMPACT_ANNOTATIONS.json](assets/templates/COMPACT_ANNOTATIONS.json), then follow [line-by-line-protocol.md](references/line-by-line-protocol.md) for exact packet-bound fields |
-| Independent challenge artifact | Start from [CHALLENGE_ARTIFACT.md](assets/templates/CHALLENGE_ARTIFACT.md), then use `bind-challenge` after the blinded assessment is fixed |
-| Generated check plan, dependency view, or execution order | Run `proofcheck.py sync-views`; do not author or treat the Markdown projection as canonical evidence |
-| Final report artifact | Use [state-and-reporting.md](references/state-and-reporting.md) and [FINAL_REPORT.md](assets/templates/FINAL_REPORT.md); generate every exact projection available from canonical records |
+| Triage only | This entrypoint and read-only parser outputs |
+| New or resumed audit coordinator | [workspace-and-resume.md](references/workspace-and-resume.md) |
+| Inventory, dependency mapping, global consistency, or closure | [proof-system-audit.md](references/proof-system-audit.md) |
+| Primary proof-unit checker | [line-by-line-protocol.md](references/line-by-line-protocol.md) and [evidence-and-verdicts.md](references/evidence-and-verdicts.md) |
+| Probability, asymptotic, optimization, matrix, causal, machine-learning, lower-bound, or analytic risk | Only the matching section of [domain-risk-checks.md](references/domain-risk-checks.md) |
+| Load-bearing cited theorem or external technical fact | [external-result-verification.md](references/external-result-verification.md) |
+| Create, propagate, archive, repair, or resolve an issue | [issues-and-repairs.md](references/issues-and-repairs.md) |
+| Fresh-context challenger | [challenge-protocol.md](references/challenge-protocol.md) and the exact challenge packet only |
+| Final report or release | [reporting-and-release.md](references/reporting-and-release.md) |
+| First unfamiliar JSON record | Search the relevant object in [AUDIT_RECORD_EXAMPLES.json](assets/templates/AUDIT_RECORD_EXAMPLES.json); do not load the whole file |
+| Challenge artifact | Start from [CHALLENGE_ARTIFACT.md](assets/templates/CHALLENGE_ARTIFACT.md), then run bind-challenge |
 
-For Triage, use read-only parser outputs to build a nonfinal architecture map and verification plan. Do not load full-system, reporting, or unrelated domain material. Apply the same narrow loading rule to an isolated local stage.
+The legacy evidence-status-and-issues.md and state-and-reporting.md filenames
+are compatibility routes only. The table above names the canonical files.
 
-Use role-specific context. The audit coordinator needs scope, state, and system
-closure material. A primary proof checker needs one complete unit packet, the
-local protocol, evidence discipline, and only applicable domain or external
-rules. A challenger needs a fresh challenge packet, not the primary reasoning
-or report state. A reporter needs canonical summaries and reporting rules, not
-all source ledgers in context.
+## Select audit depth
 
-## Select the audit depth
+- Triage maps proof architecture, suspicious transitions, missing sources, and
+  a verification plan. It makes no correctness claim and does not finalize.
+- Focused completely checks target results and their exact transitive internal
+  prerequisite closure.
+- Full checks every proof-required result, the main theorem chain, global
+  consistency, adversarial cases, and declared scope.
 
-- **Triage:** map the proof architecture, suspicious transitions, missing sources, and a verification plan. Do not make a correctness claim or run finalization.
-- **Focused:** completely check one or more target results plus their exact transitive internal dependency closure, with source-line coverage.
-- **Full:** check every proof-required result, the main theorem chain, global consistency, adversarial cases, and declared scope.
+Use Focused or Full when the user asks whether a proof is correct. If source
+material is incomplete, give a bounded nonfinal assessment and name unavailable
+dependencies. Every Focused or Full audit has at least one critical unit and a
+fresh-context challenge.
 
-If the user asks whether a proof is correct, use Focused or Full depth. If source material is incomplete, give a bounded assessment and mark unavailable dependencies explicitly.
+## Nonnegotiable invariants
 
-For a Focused or Full correctness judgment, resumable audit, or evidence-backed final report, create a durable audit workspace and run the applicable gates. A diagnostic review may stop earlier only when clearly labeled nonfinal.
-
-Designate at least one critical unit for every Focused or Full audit, normally a target result or the main theorem, and require a fresh-context challenger pass.
-
-## Workflow invariants
-
-- Lock the source and normalize the stated claim before assigning a verdict.
-- Treat canonical JSON records as authoritative; prose and Markdown are reviewed views.
-- Work from fine-grained source and inference checks toward dependency and paper-level conclusions.
-- Preserve exact dependency identity, source evidence, issue propagation, and checked versus unchecked scope.
-- Downgrade the assessment when evidence is missing, stale, ambiguous, or incompatible.
-- Never let a later explanation erase the location where an object, premise, or transition first failed.
-- Use deterministic tooling for source text, hashes, source-unit partitions,
-  exact canonical mirrors, dependency graphs, progress, and Markdown views.
-  The model supplies the mathematical content and judgments: normalization,
-  premise selection, inference moves, side conditions, risk dispositions,
-  failure evidence, verdicts, and issue classification. A compiler or view
-  generator must never infer or upgrade those judgments.
-- Default to one complete proof unit per primary packet. Batch short, tightly
-  related units in one model call only when each statement, complete proof,
-  relevant context, and exact dependency contracts fit in full and each unit
-  receives a separate packet, annotation file, and ledger. Never truncate
-  evidence merely to preserve a batch.
-- Stable IDs may replace copied canonical prose in a compact annotation input
-  only when the compiler dereferences and validates them exactly.
-- Reuse current validated work only while its source, obligation, dependency,
-  external-evidence, and protocol bindings remain current. Source or contract
-  drift requires the affected semantic judgments to be rechecked; never carry
-  a verdict across revisions merely because a unit ID or wording looks similar.
+- Lock source and normalize the obligation before judgment.
+- Canonical JSON is authoritative; Markdown and prose are reviewed views.
+- Cover every physical line and every substantive move at atomic granularity.
+- Preserve exact source, dependency, issue, and checked-scope identity.
+- Downgrade missing, stale, ambiguous, or incompatible evidence.
+- Deterministic tooling owns hashes, source partitions, exact mirrors, graphs,
+  progress, and generated views. It never invents a mathematical judgment.
+- The checker owns normalization, premises, moves, side conditions, all eight
+  risk dispositions, failure evidence, verdicts, and issue classification.
+- Normally process one complete proof unit per packet and model call. Never
+  truncate source or dependency evidence to preserve a batch.
+- Reuse work only while dependency-closed semantic inputs remain current.
+  Operational progress and unrelated metadata remain provenance, not reasons
+  to discard sound mathematical work.
 
 ## Workflow
 
-### 1. Establish scope and source
+### 1. Establish environment, scope, and source
 
-Record the exact source files, revision or hashes, target statements, proof ranges, definitions, inherited assumptions, direct dependencies, later use sites, and audit depth. Normalize each target without strengthening or weakening it.
+Resolve scripts from the directory containing SKILL.md. Prefer LaTeX. For
+PDF-only work, follow [line-by-line-protocol.md](references/line-by-line-protocol.md).
+For a new audit, run the nonmutating preflight:
 
-Prefer LaTeX source. For PDF-only work, follow the transcription and visual-comparison procedure in [line-by-line-protocol.md](references/line-by-line-protocol.md) and disclose the unavailable LaTeX-level checks.
+    python "<skill-root>/scripts/proofcheck.py" doctor --mode new --paper paper.tex --output proofcheck-audit --input-kind latex --portable-sources
 
-Never project an excerpt-level conclusion onto an unseen paper or appendix.
+If execution fails or doctor reports unreadable source or an unwritable
+destination, stop with environment_blocked and NONFINAL. Do not substitute an
+informal judgment or attempt system security repair.
 
-Resolve the bundled script from the directory containing this `SKILL.md`; do
-not assume that the current working directory is the skill directory. Before
-substantive work, run a nonmutating environment and source preflight:
+Then create durable Focused or Full state:
 
-```bash
-python "<skill-root>/scripts/proofcheck.py" doctor --mode new --paper paper.tex --output proofcheck-audit --input-kind latex --portable-sources
-```
+    python "<skill-root>/scripts/proofcheck.py" scaffold --paper paper.tex --output proofcheck-audit --input-kind latex --portable-sources
 
-If the execution environment cannot start the command, or if `doctor` reports
-an unreadable source or unwritable destination, stop the proofcheck workflow.
-Report the specific boundary as `environment_blocked`, label every requested
-proofcheck deliverable `NONFINAL`, and do not substitute an informal proof
-judgment. A retry may confirm a transient failure, but it must not weaken this
-fail-closed rule. Do not attempt operating-system, sandbox, or global security
-repair from this workflow.
+Use scaffold help for PDF transcription, extra sources, .fls input, or project
+boundaries. An .fls trace is not proof of complete source closure.
 
-For a durable Focused or Full audit, create the workspace outside the skill directory:
-
-```bash
-python "<skill-root>/scripts/proofcheck.py" scaffold --paper paper.tex --output proofcheck-audit --input-kind latex --portable-sources
-```
-
-Use `scaffold --help` for a PDF transcription, declared additional sources, an
-existing `.fls` trace, or a project boundary. `--portable-sources` copies the
-hash-locked authoritative source closure into the audit bundle so it can be
-moved as one directory; omit it only when external source locations are an
-intentional audit dependency. Portable LaTeX sources must use relative local
-references, and `--project-root` must contain the full authoritative source
-closure. If it does not, rerun with a broader project root; do not rewrite
-source paths to force bundling. Treat an `.fls` file as evidence from one
-compilation path, not as a completeness certificate. `scaffold` does not
-execute TeX. A raw PDF is provenance, not line-audit text, and is rejected as
-`--paper`; use a verified transcription plus `--publisher-pdf` as specified in
-[line-by-line-protocol.md](references/line-by-line-protocol.md).
+For an existing audit, run `status --root <audit-root>` first and resume from
+canonical state. If the source location, output location, working directory, or
+platform changed, also run `doctor --mode resume` with the recorded paper and
+audit root. Never scaffold over an existing audit.
 
 ### 2. Map the proof system
 
-Before deep checking a broad source, inspect the static source closure, rendered paper, formal-unit inventory, proof associations, labels, cross-reference anomalies, dependencies, and parser warnings.
+Review formal units, proof associations, cross-references, parser warnings,
+direct and transitive dependencies, and later use sites. Parser output is an
+index, not verification. Focused scope is the target plus exact prerequisites;
+Full scope includes every proof-required unit. Record canonical decisions, then:
 
-In Triage, inspect these outputs only to produce a nonfinal architecture map and verification plan. In Focused or Full depth, review them and follow [proof-system-audit.md](references/proof-system-audit.md) and [state-and-reporting.md](references/state-and-reporting.md) for exact reconciliation and override rules.
-
-Store reviewed scope and planning decisions in canonical JSON. Generate
-`CHECK_PLAN.md`, `EXECUTION_ORDER.md`, and
-`audit/03_dependencies/dependency_graph.md` from that state:
-
-```bash
-python "<skill-root>/scripts/proofcheck.py" sync-views --root proofcheck-audit
-```
-
-These files are concise reviewed projections. Do not manually duplicate
-inventory, dependency, progress, or completion records into them.
-
-Treat parser output as an index, not verification. Do not delete or weaken parser-discovered facts. Source-lock and rescan any reviewed replacement proof span. A proof-required result with no genuine proof is a checked gap or unclear result, not an exclusion. The only exception is an explicit `external_restatement` inventory override for a result that restates one externally verified result instead of giving a local proof. Keep that unit proof-required and in scope, use exact statement-only ledger coverage, and designate exactly one external dependency use as specified in [proof-system-audit.md](references/proof-system-audit.md).
-
-For Focused depth, set scope to the target units plus exactly their transitive internal prerequisites. For Full depth, include every proof-required inventory unit.
+    python "<skill-root>/scripts/proofcheck.py" sync-views --root proofcheck-audit
 
 ### 3. Lock and normalize each proof unit
 
-Lock the complete proof and the exact formal statement. Keep a distant or cross-file statement as a separate locked statement span rather than widening the ledger across unrelated material.
+Lock the complete proof and exact statement, then extract a skeleton:
 
-Create a source-locked skeleton for compact compilation, for example:
+    python "<skill-root>/scripts/proofcheck.py" extract --file <resolved-paper-file> --start 120 --end 168 --statement-start 120 --statement-end 128 --unit-id lem-main --output proofcheck-audit/audit/04_local_checks/lem-main.skeleton.json
 
-```bash
-python "<skill-root>/scripts/proofcheck.py" extract --file <resolved-manifest-paper-file> --start 120 --end 168 --statement-start 120 --statement-end 128 --unit-id lem-main --output proofcheck-audit/audit/04_local_checks/lem-main.skeleton.json
-```
+Resolve the authoritative paper path from AUDIT_MANIFEST.json. Complete the
+normalized obligation, ordered Cxxx conclusions, exact spans, and all eight
+normalization checks. Finalizable contracts are artifact schema 5, evidence
+contract 4, closure contract 3, and skill version 1.0.
 
-Resolve `<resolved-manifest-paper-file>` from `AUDIT_MANIFEST.json` field
-`paper_file` against the audit root. This is mandatory after
-`--portable-sources`, because the bundled copy is authoritative. Use
-`extract --help` for a separate statement file. Follow
-[line-by-line-protocol.md](references/line-by-line-protocol.md) for the
-obligation contract, `Cxxx` conclusions, normalization evidence, exact field
-shapes, and placeholder restrictions. Use the `.skeleton.json` suffix when the
-compact compiler will create the canonical ledger. For fully manual ledger
-authoring, extract directly to `.ledger.json` and do not use
-`compile-annotations`.
+### 4. Check every line and atomic move
 
-The current finalizable protocol is skill version `1.0`, artifact schema `5`,
-evidence contract `4`, and closure contract `3`. Artifacts using schema `4`,
-evidence contract `3`, or closure contract `2` are inspection-only until
-explicitly migrated and rechecked under the current contracts. Use
-`python "<skill-root>/scripts/proofcheck.py" migrate-ledger <legacy.ledger.json> --output <schema5.ledger.json>`
-only to create a nonfinal skeleton; complete the full manual atomic recheck
-before finalization.
+Read in source order. Every physical line belongs to one source unit, every
+substantive source unit has a checked step, and every inferential step contains
+one move. Record exact claims, anchored inputs, rule, justification, side
+conditions, adversarial checks, all eight risk dispositions with local
+evidence, calibrated status, and issue IDs.
 
-### 4. Verify sequentially at atomic granularity
+Generate the complete primary packet outside the audit root:
 
-First read the unit from its first line to its last to map definitions, assumptions, scope changes, dependencies, and the point where each conclusion is reached. Assign verdicts only after reconstructing the relevant evidence.
+    python "<skill-root>/scripts/proofcheck.py" packet --root proofcheck-audit --unit-id lem-main --mode primary --output <primary-packet.json>
 
-Partition every physical line into exactly one contiguous `source_unit`, then
-reference those units from the inferential steps. Source units preserve source
-layout; steps preserve mathematical atomicity. Each inferential step contains
-exactly one move and declares `support_role` as `derivation` or `reuse`. Follow
-the exact coverage, ordering, hashing, and support restrictions in
-[line-by-line-protocol.md](references/line-by-line-protocol.md).
+Create and complete the deterministic draft:
 
-For every substantive move, perform:
+    python "<skill-root>/scripts/proofcheck.py" annotation-scaffold proofcheck-audit/audit/04_local_checks/lem-main.skeleton.json --packet <primary-packet.json> --output <lem-main.annotations.json>
 
-1. **Literal check:** identify exactly what the source claims and whether all objects and scopes are defined.
-2. **Inferential check:** derive the move from its recorded premises without importing an unstated fact.
-3. **Adversarial check:** test weak assumptions, boundary and equality cases, signs, dimensions, events, and quantifier order.
+Only hashes, exact mirrors, IDs, source line ranges, and risk slots are prefilled.
+Nulls are unfinished judgments. Review source grouping and replace every null
+with paper-specific analysis. Run aggregate preflight, then compile:
 
-Record exact premise origins, result uses, reference occurrences, citations, inference links, side-condition discharges, risk dispositions, support moves, and canonical issue IDs as specified in the local protocol. Recompute algebra, rates, probability accumulation, and limiting steps rather than relying on familiarity.
+    python "<skill-root>/scripts/proofcheck.py" annotation-check proofcheck-audit/audit/04_local_checks/lem-main.skeleton.json --annotations <lem-main.annotations.json> --packet <primary-packet.json> --json
+    python "<skill-root>/scripts/proofcheck.py" compile-annotations proofcheck-audit/audit/04_local_checks/lem-main.skeleton.json --annotations <lem-main.annotations.json> --packet <primary-packet.json> --output proofcheck-audit/audit/04_local_checks/lem-main.ledger.json
 
-#### Compact primary packets and annotation compilation
+Compilation requires the exact dependency-closed semantic projection, runs full
+final local ledger validation, and publishes without overwrite. A passed compile
+receipt is the local gate for that unchanged file. Manual, moved, or modified
+ledgers still require:
 
-Audit a normal proof unit in one complete primary packet rather than one model
-call per ledger row. The packet binds the current source, normalized
-obligation, semantic artifact, reviewed inventory, dependency contracts,
-candidate dependency paths, source references, citations, downstream use
-sites, issue triggers, risk aspects, readiness, and bounded resume state.
-Generate it for compact compilation or whenever this minimal context is useful:
+    python "<skill-root>/scripts/proofcheck.py" ledger-check <unit.ledger.json> --final
 
-```bash
-python "<skill-root>/scripts/proofcheck.py" packet --root proofcheck-audit --unit-id <unit-id> --mode primary --output <packet.json>
-```
+### 5. Close dependencies and issues
 
-The packet is a noncanonical context projection. Write it outside the audit
-root. It is optional for manual ledger authoring but mandatory for
-`compile-annotations`. The compiler rebuilds the primary packet from current
-canonical state and requires exact equality, so do not edit the packet or
-change bound audit state between semantic checking and compilation. For
-semantic checking, require `primary_work_packet_ready: true` and a present
-normalized obligation. Do not add the entire audit workspace, earlier
-conversation, unrelated ledgers, report drafts, or generic references to a
-unit packet.
+Reconcile every reference candidate, internal or external result, citation, and
+later use in the exact form needed. Propagate load-bearing issues through the
+exact dependent closure. ISSUE_LOG.json is the only issue-definition source.
 
-For a fresh source-locked skeleton whose obligation has already been normalized,
-the checker may return a compact annotation file containing all semantic
-judgments for the unit. Compile it deterministically into the full ledger
-contract:
+Create or review a method-interface record when any condition holds:
 
-```bash
-python "<skill-root>/scripts/proofcheck.py" compile-annotations proofcheck-audit/audit/04_local_checks/lem-main.skeleton.json --annotations <annotations.json> --packet <packet.json> --output proofcheck-audit/audit/04_local_checks/lem-main.ledger.json
-```
-
-The input must end in `.skeleton.json`. The output must be in the same
-directory and use the exact same basename with `.ledger.json` substituted for
-`.skeleton.json`, so locked relative paths retain their identity. The compiler
-never overwrites an existing canonical ledger. Preserve or archive the prior
-record before creating a replacement through the appropriate audit workflow.
-Keep the skeleton fresh and unchanged.
-
-Each substantive annotation still represents exactly one mathematical move
-and supplies its local claim, premise or earlier-move references, rule and
-justification, side-condition and risk dispositions, status, and issue links.
-It also binds the exact source, obligation, and primary packet hashes and
-reconciles every packet dependency, reference occurrence, citation, and
-candidate dependency path. Start from
-[COMPACT_ANNOTATIONS.json](assets/templates/COMPACT_ANNOTATIONS.json).
-The compiler may expand source text, hashes, exact referenced claims, mirrors,
-and structural boilerplate. It must leave missing semantic content unchecked
-or fail; it cannot create a positive risk disposition, discharge, inference,
-or verdict. Run `ledger-check --final` on the compiled ledger exactly as on a
-manually completed ledger.
-
-If one unit does not fit in a complete packet, check contiguous source-unit
-blocks in order and pass forward only canonical established move IDs and open
-conditions. Then perform one whole-unit closure pass before assigning any
-conclusion verdict. Splitting a long proof never relaxes full source coverage
-or support-closure requirements.
-
-Use the calibrated unit and component judgments in [evidence-status-and-issues.md](references/evidence-status-and-issues.md). Preserve the difference between a proof gap, an invalid transition, source ambiguity, and an exact refutation of a conclusion.
-
-### 5. Close dependencies and later uses
-
-Give every internal or external result use one exact `Dxxx` identity. Bind each internal use to the precise dependency `Cxxx` conclusion and current contract, then check compatibility in the form actually needed. Derive availability conclusion by conclusion rather than from a unit-level summary.
-
-Verify every load-bearing cited result from its exact source and for each separate manuscript use by following [external-result-verification.md](references/external-result-verification.md). An uninspected citation cannot support a verified dependency.
-
-Inspect a unique external theorem and its locked source once per current
-contract, then assess all current manuscript uses together when they fit. Keep
-the prerequisite map, compatibility judgment, invoking steps, status, and
-issues separate for every use. Sharing source inspection does not merge use
-contracts or permit reuse after source-evidence or theorem-contract drift.
-
-Check cycles, assumptions, definitions, notation, dimensions, constants, rates, probability events, quantifiers, regimes, downstream use sites, and issue propagation under [proof-system-audit.md](references/proof-system-audit.md). Apply only the relevant sections of [domain-risk-checks.md](references/domain-risk-checks.md).
-
-#### Method-interface trigger
-
-Create or review a method-interface record when at least one condition holds:
-
-- a load-bearing estimated or algorithmic object has feasible constructions that can target materially different population quantities;
-- the manuscript claims consistency, applicability, or end-to-end validity for a feasible estimator rather than only assuming an oracle object;
+- a load-bearing estimated or algorithmic object has feasible constructions
+  targeting materially different population quantities;
+- the manuscript claims consistency, applicability, or end-to-end validity for
+  a feasible estimator, rather than only assuming an oracle object; or
 - the user requests method-to-implementation verification.
 
-An oracle nuisance appearing only as an explicit theorem assumption does not by itself trigger implementation inspection. When no interface is triggered, record the reviewed `not_required` decision and reason. When triggered, use the estimated-interface sections of [domain-risk-checks.md](references/domain-risk-checks.md), [evidence-status-and-issues.md](references/evidence-status-and-issues.md), and [state-and-reporting.md](references/state-and-reporting.md). Keep manuscript specification, estimator-to-target correspondence, code correspondence, and execution provenance separate.
+An oracle nuisance used only as an explicit theorem assumption does not by
+itself trigger implementation inspection. Always record reviewed
+`scope.trigger` as `required` or `not_required` with an explicit reason. When
+required, use the estimated-interface section of
+[domain-risk-checks.md](references/domain-risk-checks.md) and the method-interface
+judgments in [evidence-and-verdicts.md](references/evidence-and-verdicts.md).
+Keep specification, estimator-to-target correspondence, code correspondence,
+and execution provenance separate.
 
-### 6. Challenge the critical path
+### 6. Challenge effective-critical units
 
-Treat the manifest critical units together with every in-scope result reached
-by an open, deferred, or resolved load-bearing S0 or S1 issue as the effective
-critical set. For every effective-critical unit, run an issue-aware fresh-context
-challenger that sees the source and normalized obligation but not the primary
-verdict or proposed repair. Record the exact triggering issue set, freshness
-hashes, independence level, challenger verdict, disagreements, resolution,
-reconciled verdict, and artifact.
+Follow [challenge-protocol.md](references/challenge-protocol.md). Use a fresh
+packet without primary reasoning, fix the blinded assessment before
+reconciliation, then run:
 
-Keep a resolved S0 or S1 issue in `covered_issue_ids` for the fresh
-post-repair challenge. Resolution requires a current challenge of the repaired
-state, not reuse of the pre-repair challenge.
+    python "<skill-root>/scripts/proofcheck.py" bind-challenge --root proofcheck-audit --unit-id <unit-id>
 
-A same-context reread is not independent. If a challenger is unavailable, disclose the audit as single-pass and do not claim independent confirmation.
+### 7. Checkpoint and resume
 
-Generate a minimal fresh challenge packet when useful:
+At each completed unit, session boundary, and handoff:
 
-```bash
-python "<skill-root>/scripts/proofcheck.py" packet --root proofcheck-audit --unit-id <unit-id> --mode challenge --output <challenge-packet.json>
-```
+    python "<skill-root>/scripts/proofcheck.py" checkpoint --root proofcheck-audit --active-unit <unit-id> --next-action "<specific action>"
+    python "<skill-root>/scripts/proofcheck.py" issues --root proofcheck-audit --write-summary
+    python "<skill-root>/scripts/proofcheck.py" status --root proofcheck-audit
 
-The challenge packet contains the source-snapshot binding, locked source,
-normalized obligation, inventory row, exact dependency-contract slices,
-neutral issue triggers, and risk aspects. Each issue trigger contains its ID,
-severity, structured target contract, and `target_contract_sha256`, but not the
-primary finding, summary, verdict, or repair. It must exclude the primary
-review, steps, verdicts, proposed repairs, reports, unrelated ledgers, and prior
-conversation. For a historical challenge whose current downstream path was
-retired, the target reconstructs the sealed prior registry and exposes only
-the neutral retired edge or edges on prior root-to-unit paths, together with
-current retirement evidence. It also exposes the exact neutral current
-root-to-unit route when one exists, or records that no current route exists.
-An edge can remain in the registry while being absent from this issue's current
-closure. The packet uses the issue-specific closure definition and excludes
-archived and current verdict fields. Source-locked interface, implementation,
-or resolution evidence outside the LaTeX snapshot is embedded as a
-self-contained name, range, hashes, and lines without a host-specific path.
-One fresh challenger pass should
-cover all triggering issues for that unit. Do not start a separate pass for
-each issue. Closely related critical units may share one fresh-context call
-only when every unit's complete packet fits and the output gives each unit a
-separate verdict, disagreement list, and reconciliation input. The challenger
-does not need to reproduce a second full atomic ledger.
+Bare status means coherent to resume, not complete. Resume from status and the
+active unit packet. Reuse partial semantics only when resume.wip.included is
+true. Archive every repair-affected issue before changing its source or records.
 
-After fixing the blinded challenger artifact, store the packet
-`context_binding_sha256` as
-`independent_check.challenge_context_sha256`. For every covered issue, record
-one `issue_assessments` row with the exact target-contract hash, an assessment
-of `confirmed`, `not_confirmed`, or `unclear`, and substantive target and
-downstream assessments. The assessment IDs must equal `covered_issue_ids`
-exactly. A manifest-only critical unit has both lists empty.
+### 8. Finalize and release
 
-After the blinded narrative, verdict, and assessment rows are fixed, bind the
-artifact to the ledger deterministically:
+Build reports from canonical records and generated projections, then run:
 
-```bash
-python "<skill-root>/scripts/proofcheck.py" bind-challenge --root proofcheck-audit --unit-id <unit-id>
-```
+    python "<skill-root>/scripts/proofcheck.py" checkpoint --root proofcheck-audit --clear-active-unit --next-action "Run final issue reconciliation and finalization."
+    python "<skill-root>/scripts/proofcheck.py" issues --root proofcheck-audit --write-summary --write-report-views --final
+    python "<skill-root>/scripts/proofcheck.py" sync-views --root proofcheck-audit
+    python "<skill-root>/scripts/proofcheck.py" finalize --root proofcheck-audit
+    python "<skill-root>/scripts/proofcheck.py" delivery-check --root proofcheck-audit
 
-This command inserts or replaces exactly one
-`proofcheck-challenge-binding-v1` JSON block in the Markdown artifact and
-updates `challenge_artifact_sha256` transactionally. It refuses a stale
-challenge context or target contract. Do not hand-edit the binding block after
-running it; rerun the command if the narrative or ledger assessment changes.
-
-### 7. Validate records and maintain state
-
-Validate each completed ledger:
-
-```bash
-python "<skill-root>/scripts/proofcheck.py" ledger-check proofcheck-audit/audit/04_local_checks/lem-main.ledger.json --final
-```
-
-The local validator checks source coverage, hashes, record closure, exact links, statuses, and internal consistency. It does not establish mathematical truth or audit-wide dependency closure. Fix the record or downgrade the claim. Do not edit validator output to conceal a failure.
-
-After every completed ledger, at every session boundary, and before handoff, write a deterministic checkpoint. Choose exactly one active-unit option and state the specific next action:
-
-```bash
-python "<skill-root>/scripts/proofcheck.py" checkpoint --root proofcheck-audit --active-unit <unit-id> --next-action "<specific action>"
-python "<skill-root>/scripts/proofcheck.py" checkpoint --root proofcheck-audit --clear-active-unit --next-action "<specific action>"
-```
-
-Keep `ISSUE_LOG.json` as the only issue-definition source. Propagate every open or deferred load-bearing issue through the exact dependent closure. At source changes, session boundaries, or handoff, refresh the issue summary, checkpoint the current state, and inspect it as described in [state-and-reporting.md](references/state-and-reporting.md):
-
-```bash
-python "<skill-root>/scripts/proofcheck.py" issues --root proofcheck-audit --write-summary
-python "<skill-root>/scripts/proofcheck.py" status --root proofcheck-audit
-```
-
-Before changing source or audit records to repair open or deferred issues,
-identify the complete repair-affected issue set and seal every member's exact
-failure and historical closure. The unresolved audit must first have a current
-passed finalization:
-
-```bash
-python "<skill-root>/scripts/proofcheck.py" archive-issue --root proofcheck-audit --issue-id I-001
-```
-
-The command archives one issue and makes the prior finalization stale. When a
-repair affects more than one issue, rerun finalization as required and archive
-every affected issue before editing any shared source or audit record. Only
-after the complete set is archived may the repair replace current source,
-ledgers, dependencies, contracts, or propagation. Preserve the archived
-`origin_ref` in the issue for identity, use `historical_origin` as
-the immutable archive pointer, and describe current provenance in
-`current_resolution`. Recheck the historical-current union of affected
-units and dependency uses, record every retired use, run fresh resolved-issue
-challenges, and reconcile declared report deliverables before setting the
-issue to `resolved`.
-
-Use the concise, work-in-progress-aware `status` preflight to identify the current state and next action. Add `--verbose` when full gate diagnostics are needed. Concise output does not weaken strict validation. Do not trust stale source, evidence, registry, progress, or finalization hashes.
-
-Draft ledger validation relaxes final completeness only. It must still reject
-malformed populated records, stale source locks, broken links, and an
-inferential step that does not contain exactly one atomic move. A clean draft
-check means only that the recorded work is structurally coherent so far. It is
-not a verification judgment.
-
-A zero exit from bare `status` means that the resumable state is coherent; it
-does not mean that the audit is complete. Inspect the top-level
-`audit_complete`, `delivery_status`, and `finalization_gate_error_count`
-fields. Automation that requires completion must use
-`status --require-finalized` or, for release, `delivery-check`. The nested
-progress candidate gate count is not the full finalization-gate count.
-
-If status reports `validator_revalidation_required` while the schema and
-contract versions remain current, run
-`python "<skill-root>/scripts/proofcheck.py" revalidate-protocol --root proofcheck-audit`.
-This command checks current source and record readability before updating only
-the validator implementation hash. It invalidates any prior finalization and
-does not transfer a mathematical judgment. Rerun status, resolve every current
-gate error, and finalize again. The validator hash normalizes CRLF and CR text
-newlines to LF before hashing, so the same validator content has the same
-identity across supported platforms.
-
-Stored audit paths use portable `/` separators and resolve against the audit
-root. The reader accepts legacy relative paths containing `\`, but never
-guesses how to reinterpret a foreign absolute path. See
-[state-and-reporting.md](references/state-and-reporting.md) before moving or
-resuming an audit.
-
-On resume, begin with `status`, then generate the active unit packet. Reuse a
-partial canonical ledger only when the packet reports
-`resume.wip.included: true`; its bound semantic record then contains the full
-`source_units`, `steps`, and `review`. If the packet does not include WIP,
-recheck rather than reconstructing judgments from prose. Do not reload
-completed ledgers, report artifacts, or unrelated source merely to reconstruct
-context. Follow [state-and-reporting.md](references/state-and-reporting.md) for
-the exact `work_context_sha256` contract.
-
-### 8. Finalize and report
-
-After scope, ledgers, dependencies, issues, global checks, progress, and
-effective-critical challenges are complete, write the final checkpoint and run:
-
-```bash
-python "<skill-root>/scripts/proofcheck.py" checkpoint --root proofcheck-audit --clear-active-unit --next-action "Run final issue reconciliation and finalization."
-python "<skill-root>/scripts/proofcheck.py" issues --root proofcheck-audit --write-summary --write-report-views --final
-python "<skill-root>/scripts/proofcheck.py" sync-views --root proofcheck-audit
-python "<skill-root>/scripts/proofcheck.py" finalize --root proofcheck-audit
-python "<skill-root>/scripts/proofcheck.py" delivery-check --root proofcheck-audit
-```
-
-Treat `FINALIZATION.json` as persisted gate evidence, not as a proof certificate. A passing gate can close an audit that found defects or remained inconclusive; it does not imply `no_defect_found`.
-
-Deliver a proofcheck report only when `delivery-check` returns
-`delivery_status: FINAL` and `usable_finalization: true`. Otherwise label the
-report `NONFINAL`, even when an earlier finalization file or a plausible
-diagnostic judgment exists.
-
-Keep non-deliverable drafts and working notes outside `audit/06_reports`.
-That directory may contain only the canonical Markdown reports and complete
-user-facing reports declared in `report_deliverables`. The copied
-`FINAL_REPORT.md` starts with the title `NONFINAL Proof-Check Working Report`
-and a visible `NONFINAL SCAFFOLD` notice. Keep both while
-`completion.final_report_ready` is not true. After the canonical report and
-generated issue views are complete, set that field to true, rename the title
-to `Final Proof-Check Report`, remove the notice, and run the full status,
-issue-reconciliation, finalization, and delivery sequence. Leaving the notice
-or the nonfinal title in place blocks finalization.
-
-Build the report from canonical records using [state-and-reporting.md](references/state-and-reporting.md) and [FINAL_REPORT.md](assets/templates/FINAL_REPORT.md). Generate exact finding locations, mathematical contracts, failed moves with their premises and recorded failure evidence, downstream quotations, invalidation effects, and suggested changes from canonical issue references and locked source. Preserve exact result, conclusion, dependency, issue, protocol, and checked-scope judgments. Keep suggested changes separate from findings, and reconcile every manifest-declared user-facing report before delivery.
-
-Use the bundled generators for every projection they currently support,
-including workflow views and canonical issue views. Assemble remaining exact
-report scalars and tables directly from canonical records in the reporting
-pass, then let finalization reconcile them. Author only the short interpretive
-judgment, confidence, and limitations text that cannot be derived
-mechanically. Do not spend a separate model pass re-reading proof prose merely
-to copy canonical JSON into Markdown.
-
-Optional usage telemetry is observational and never part of a proof verdict or
-completion gate. When requested, use
-`python "<skill-root>/scripts/proofcheck_usage.py" --help`. Its optional
-`audit/07_runtime/RUN_USAGE.json` file is ignored by mathematical gates but is
-sealed with the other audit artifacts when present at finalization. Record
-events before finalization; after a current usable finalization, use only the
-read-only summary command. Absence of telemetry does not weaken or strengthen
-the audit.
-
-For a resolved issue, take the exact pre-repair failure only from its validated
-history archive. Take contracts, propagation, current relation statuses, and
-severity effects from the current canonical records. Never rewrite the
-historical failure to resemble the repair.
-
-Do not call a proof checked unless all in-scope lines and substantive moves are covered, current dependencies close at their recorded status, source hashes are current, critical disagreements are reconciled, and scope is stated honestly. Prefer "no defect found under the stated non-formal protocol" to an unqualified claim that a proof is correct.
+Deliver only when delivery_status is FINAL and usable_finalization is true.
+Otherwise label the report NONFINAL. FINALIZATION.json is gate evidence, not a
+formal proof certificate and not evidence that the audit found no defect.
 
 ## Nonnegotiable boundaries
 
-- Do not infer correctness from plausibility, familiarity, compilation, or failure to find a counterexample.
-- Do not mark a step verified from an unchecked "standard" argument or a citation that was not verified in the needed form.
+- Do not infer correctness from plausibility, familiarity, compilation, or
+  failure to find a counterexample.
+- Do not mark a step verified from an unchecked standard argument or a citation
+  not verified in the needed form.
 - Do not replace a missing argument with one the authors could have written.
-- Do not collapse statement correctness, proof validity, dependency availability, or later-use sufficiency into one judgment.
-- Do not collapse manuscript specification, estimator-target correspondence, implementation correspondence, or execution provenance into one judgment.
-- Do not turn ambiguity into a mismatch without authoritative source-locked evidence fixing both objects.
-- Do not treat symbolic or numerical checks as a substitute for a general proof, though they may expose exact subclaims or counterexamples.
-- Do not strengthen a canonical finding in downstream prose without new evidence and revalidation.
-- Do not hide unchecked lines, dependencies, source changes, parser warnings, limitations, or unresolved issues.
+- Do not collapse proof validity, statement truth, dependency availability, or
+  later-use sufficiency.
+- Do not turn ambiguity into mismatch without authoritative source-locked
+  evidence fixing both objects.
+- Do not treat symbolic or numerical checks as a substitute for a general
+  proof, though they may expose exact subclaims or counterexamples.
+- Do not strengthen a canonical finding in downstream prose without new
+  evidence and revalidation.
+- Do not hide unchecked lines, dependencies, source changes, parser warnings,
+  limitations, unresolved issues, or nonfinal state.
+- Prefer "no defect found under the stated non-formal protocol" to an
+  unqualified claim that a paper or proof is correct.

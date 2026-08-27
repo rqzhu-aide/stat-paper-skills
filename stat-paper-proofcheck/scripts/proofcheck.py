@@ -35,7 +35,7 @@ CLOSURE_CONTRACT_VERSION = 3
 LEGACY_CLOSURE_CONTRACT_VERSION = 2
 RESOLUTION_ARCHIVE_SCHEMA_VERSION = 1
 SEMANTIC_ANNOTATION_SCHEMA_VERSION = 1
-CONTEXT_PACKET_SCHEMA_VERSION = 1
+CONTEXT_PACKET_SCHEMA_VERSION = 2
 WORKFLOW_VIEW_PATHS = (
     "CHECK_PLAN.md",
     "EXECUTION_ORDER.md",
@@ -788,6 +788,84 @@ def atomic_write_text(path: Path, text: str) -> None:
 
 def atomic_write_json(path: Path, value: Any) -> None:
     atomic_write_text(path, json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+
+
+def publish_no_overwrite(
+    temporary: Path, destination: Path, description: str
+) -> str:
+    """Publish validated bytes without replacing an existing destination."""
+    try:
+        os.link(temporary, destination)
+        return "hard_link"
+    except FileExistsError as exc:
+        raise FileExistsError(
+            f"{description} appeared during creation and cannot be overwritten: "
+            f"{destination}"
+        ) from exc
+    except OSError:
+        pass
+
+    if os.name == "nt":
+        try:
+            os.rename(temporary, destination)
+            return "exclusive_rename"
+        except FileExistsError as exc:
+            raise FileExistsError(
+                f"{description} appeared during creation and cannot be overwritten: "
+                f"{destination}"
+            ) from exc
+        except OSError:
+            pass
+
+    created = False
+    try:
+        with destination.open("xb") as target:
+            created = True
+            with temporary.open("rb") as source:
+                shutil.copyfileobj(source, target)
+            target.flush()
+            os.fsync(target.fileno())
+        if sha256_file(destination) != sha256_file(temporary):
+            raise OSError("exclusive-copy verification hash mismatch")
+        return "exclusive_copy"
+    except FileExistsError as exc:
+        raise FileExistsError(
+            f"{description} appeared during creation and cannot be overwritten: "
+            f"{destination}"
+        ) from exc
+    except OSError as exc:
+        cleanup_error: OSError | None = None
+        if created and destination.exists():
+            try:
+                destination.unlink()
+            except OSError as unlink_exc:
+                cleanup_error = unlink_exc
+        detail = f"; partial-output cleanup also failed: {cleanup_error}" if cleanup_error else ""
+        raise OSError(
+            f"Cannot publish {description} with verified no-overwrite semantics: "
+            f"{destination}: {exc}{detail}"
+        ) from exc
+
+
+def atomic_create_json(path: Path, value: Any, description: str) -> None:
+    """Create one JSON file without replacing an existing path."""
+    path = Path(path)
+    if path.exists():
+        raise FileExistsError(f"{description} already exists: {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = _unique_sibling_temp_path(path)
+    try:
+        if temporary.is_symlink():
+            raise ValueError(f"Refusing a symlinked {description} candidate: {temporary}")
+        payload = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        publish_no_overwrite(temporary, path, description)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def transactional_write_texts(writes: list[tuple[Path, str]]) -> None:
@@ -5678,8 +5756,62 @@ def packet_inventory_binding_errors(
     return errors
 
 
+def packet_span_reference(
+    value: dict[str, Any],
+    source_base: Path,
+    source_locations: dict[str, Any] | None,
+    source_location_base: Path | None,
+) -> str | None:
+    """Return the narrowest packet source span containing a locked span."""
+    if not isinstance(source_locations, dict) or not isinstance(
+        source_location_base, Path
+    ):
+        return None
+    file_value = value.get("file")
+    start = value.get("start_line")
+    end = value.get("end_line")
+    if (
+        not is_nonempty_string(file_value)
+        or not is_int(start)
+        or not is_int(end)
+    ):
+        return None
+    try:
+        locked_path = resolve_stored_path(str(file_value), source_base)
+    except ValueError:
+        return None
+    candidates: list[tuple[int, str]] = []
+    for name in ("statement", "proof"):
+        parent = source_locations.get(name)
+        if not isinstance(parent, dict):
+            continue
+        parent_file = parent.get("file")
+        parent_start = parent.get("start_line")
+        parent_end = parent.get("end_line")
+        if not is_nonempty_string(parent_file):
+            continue
+        try:
+            parent_path = resolve_stored_path(
+                str(parent_file), source_location_base
+            )
+        except ValueError:
+            continue
+        if (
+            locked_path == parent_path
+            and is_int(parent_start)
+            and is_int(parent_end)
+            and parent_start <= start <= end <= parent_end
+        ):
+            candidates.append((parent_end - parent_start, f"/source/{name}"))
+    return min(candidates)[1] if candidates else None
+
+
 def packet_locked_span(
-    value: Any, root: Path, source_base: Path
+    value: Any,
+    root: Path,
+    source_base: Path,
+    source_locations: dict[str, Any] | None = None,
+    source_location_base: Path | None = None,
 ) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
@@ -5703,11 +5835,7 @@ def packet_locked_span(
                 lines = read_lines(source_path)
                 if 1 <= start <= end <= len(lines):
                     locked_lines = [
-                        {
-                            "line": number,
-                            "sha256": sha256_text(lines[number - 1]),
-                            "text": lines[number - 1],
-                        }
+                        {"line": number, "text": lines[number - 1]}
                         for number in range(start, end + 1)
                     ]
         except (OSError, UnicodeError, ValueError):
@@ -5726,11 +5854,24 @@ def packet_locked_span(
     }
     if "role" in value:
         projected["role"] = value.get("role")
+    source_span_ref = packet_span_reference(
+        value,
+        source_base,
+        source_locations,
+        source_location_base,
+    )
+    if source_span_ref is not None:
+        projected["source_span_ref"] = source_span_ref
+        projected.pop("lines", None)
     return projected
 
 
 def packet_obligation(
-    value: Any, root: Path, source_base: Path
+    value: Any,
+    root: Path,
+    source_base: Path,
+    source_locations: dict[str, Any] | None = None,
+    source_location_base: Path | None = None,
 ) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
@@ -5752,12 +5893,30 @@ def packet_obligation(
     projected["statement_spans"] = [
         span
         for row in value.get("statement_spans", [])
-        if (span := packet_locked_span(row, root, source_base)) is not None
+        if (
+            span := packet_locked_span(
+                row,
+                root,
+                source_base,
+                source_locations,
+                source_location_base,
+            )
+        )
+        is not None
     ]
     projected["context_spans"] = [
         span
         for row in value.get("context_spans", [])
-        if (span := packet_locked_span(row, root, source_base)) is not None
+        if (
+            span := packet_locked_span(
+                row,
+                root,
+                source_base,
+                source_locations,
+                source_location_base,
+            )
+        )
+        is not None
     ]
     conclusions: list[dict[str, Any]] = []
     raw_conclusions = value.get("conclusions")
@@ -5774,7 +5933,11 @@ def packet_obligation(
                             for source_row in row.get("source_spans", [])
                             if (
                                 span := packet_locked_span(
-                                    source_row, root, source_base
+                                    source_row,
+                                    root,
+                                    source_base,
+                                    source_locations,
+                                    source_location_base,
                                 )
                             )
                             is not None
@@ -5857,7 +6020,7 @@ def packet_span(
         "end_line": end,
         "span_sha256": sha256_text("\n".join(selected)),
         "lines": [
-            {"line": number, "sha256": sha256_text(text), "text": text}
+            {"line": number, "text": text}
             for number, text in enumerate(selected, start)
         ],
     }
@@ -5973,7 +6136,6 @@ def packet_candidate_dependency_paths(
                         "start_column", occurrence.get("column")
                     ),
                     "end_column": occurrence.get("end_column"),
-                    "line_sha256": sha256_text(text),
                     "text": text,
                 }
             )
@@ -6110,7 +6272,6 @@ def packet_downstream_use_sites(
                     "file_sha256": member.get("sha256"),
                 },
                 "line": line_number,
-                "line_sha256": sha256_text(text),
                 "text": text,
             }
         )
@@ -6633,14 +6794,9 @@ def packet_dependency_projection(
             result_projection["status"] = result.get("status")
             result_projection["issue_ids"] = result.get("issue_ids")
         external_results.append(result_projection)
-    review = registry.get("review")
-    review = review if isinstance(review, dict) else {}
     return {
         "registry_binding": {
             "closure_contract_version": registry.get("closure_contract_version"),
-            "source_snapshot_sha256": review.get("source_snapshot_sha256"),
-            "inventory_sha256": review.get("inventory_sha256"),
-            "in_scope_units": review.get("in_scope_units"),
         },
         "direct_internal_uses": sorted(
             direct_internal, key=lambda row: str(row.get("use_id", ""))
@@ -7796,6 +7952,31 @@ def packet_wip_resume(
     }
 
 
+def packet_semantic_dependencies(value: Any) -> Any:
+    """Keep every model-visible dependency binding in the semantic projection."""
+    if not isinstance(value, dict):
+        return value
+    return dict(value)
+
+
+def context_packet_semantic_projection(packet: dict[str, Any]) -> dict[str, Any]:
+    """Project only fields that can change a unit's semantic audit judgment."""
+    projected = {
+        key: value
+        for key, value in packet.items()
+        if key
+        not in {
+            "resume",
+            "operational_binding",
+            "operational_binding_sha256",
+        }
+    }
+    projected["dependencies"] = packet_semantic_dependencies(
+        packet.get("dependencies")
+    )
+    return projected
+
+
 def build_context_packet(
     root: Path, unit_id: str, mode: str
 ) -> dict[str, Any]:
@@ -8015,6 +8196,11 @@ def build_context_packet(
         obligation_value,
         root,
         semantic_path.parent if semantic_path is not None else root,
+        {
+            "statement": unit.get("statement"),
+            "proof": unit.get("proof"),
+        },
+        paper.parent,
     )
     inventory_projection = packet_inventory_projection(
         unit, candidate_paths, downstream_use_sites
@@ -8037,12 +8223,6 @@ def build_context_packet(
             "source_snapshot_sha256": source_snapshot_id,
             "source_binding_sha256": source_binding_sha256,
             "obligation_sha256": obligation_digest,
-            "manifest_sha256": sha256_file(root / "AUDIT_MANIFEST.json"),
-            "inventory_sha256": sha256_file(records["inventory_path"]),
-            "dependency_registry_sha256": sha256_file(
-                records["dependency_registry_path"]
-            ),
-            "issue_log_sha256": sha256_file(issue_path),
             "obligation_projection_sha256": canonical_sha256(
                 obligation_projection
             ),
@@ -8050,7 +8230,7 @@ def build_context_packet(
                 inventory_projection
             ),
             "dependency_projection_sha256": canonical_sha256(
-                alignment_dependency_projection
+                packet_semantic_dependencies(alignment_dependency_projection)
             ),
             "issue_triggers_sha256": canonical_sha256(issue_triggers),
             "risk_aspects_sha256": canonical_sha256(list(RISK_ASPECTS)),
@@ -8134,7 +8314,9 @@ def build_context_packet(
         "inventory_projection_sha256": canonical_sha256(
             inventory_projection
         ),
-        "dependency_projection_sha256": canonical_sha256(dependency_projection),
+        "dependency_projection_sha256": canonical_sha256(
+            packet_semantic_dependencies(dependency_projection)
+        ),
         "issue_triggers_sha256": canonical_sha256(issue_triggers),
         "candidate_reconciliation_sha256": canonical_sha256(
             candidate_projection
@@ -8148,16 +8330,29 @@ def build_context_packet(
     if mode == "primary":
         context_binding.update(
             {
-                "manifest_sha256": sha256_file(root / "AUDIT_MANIFEST.json"),
-                "inventory_sha256": sha256_file(records["inventory_path"]),
-                "dependency_registry_sha256": sha256_file(
-                    records["dependency_registry_path"]
-                ),
-                "issue_log_sha256": sha256_file(issue_path),
                 "work_context_sha256": work_context_sha256,
-                "resume_sha256": canonical_sha256(resume_projection),
             }
         )
+    operational_binding = {
+        "manifest_sha256": sha256_file(root / "AUDIT_MANIFEST.json"),
+        "inventory_sha256": sha256_file(records["inventory_path"]),
+        "dependency_registry_sha256": sha256_file(
+            records["dependency_registry_path"]
+        ),
+        "issue_log_sha256": sha256_file(issue_path),
+        "progress_sha256": sha256_file(root / "PROGRESS.json"),
+        "semantic_artifact_file_sha256": (
+            sha256_file(semantic_path)
+            if semantic_path is not None and semantic_path.is_file()
+            else None
+        ),
+        "readiness_sha256": canonical_sha256(readiness_projection),
+        "resume_sha256": (
+            canonical_sha256(resume_projection)
+            if resume_projection is not None
+            else None
+        ),
+    }
     packet: dict[str, Any] = {
         "schema_version": CONTEXT_PACKET_SCHEMA_VERSION,
         "kind": "stat-paper-proofcheck-context-packet",
@@ -8167,6 +8362,10 @@ def build_context_packet(
         "source_binding_sha256": source_binding_sha256,
         "context_binding": context_binding,
         "context_binding_sha256": canonical_sha256(context_binding),
+        "operational_binding": operational_binding,
+        "operational_binding_sha256": canonical_sha256(
+            operational_binding
+        ),
         **readiness_projection,
         "semantic_artifact": semantic_artifact_projection,
         "source": source,
@@ -9055,10 +9254,9 @@ def containing_audit_root(path: Path) -> Path | None:
     return None
 
 
-def validate_compiler_context_packet(
+def validate_current_primary_packet(
     ledger: dict[str, Any],
     ledger_path: Path,
-    annotations: dict[str, Any],
     packet_path: Path,
 ) -> dict[str, Any]:
     packet, packet_errors = load_json_object(packet_path, "primary context packet")
@@ -9091,21 +9289,40 @@ def validate_compiler_context_packet(
     expected_packet = build_context_packet(
         audit_root, str(ledger.get("unit_id")), "primary"
     )
-    if packet != expected_packet:
+    context_binding = packet.get("context_binding")
+    if (
+        not isinstance(context_binding, dict)
+        or packet.get("context_binding_sha256")
+        != canonical_sha256(context_binding)
+    ):
+        raise ValueError(
+            "Compiler packet context binding is malformed or was modified"
+        )
+    operational_binding = packet.get("operational_binding")
+    if (
+        not isinstance(operational_binding, dict)
+        or packet.get("operational_binding_sha256")
+        != canonical_sha256(operational_binding)
+    ):
+        raise ValueError(
+            "Compiler packet operational binding is malformed or was modified"
+        )
+    if expected_packet.get("source_obligation_ready") is not True:
+        raise ValueError("Current source and obligation are not ready")
+    if expected_packet.get("primary_work_packet_ready") is not True:
+        raise ValueError("Current audit state is not ready for primary semantic work")
+    packet_semantic = context_packet_semantic_projection(packet)
+    expected_semantic = context_packet_semantic_projection(expected_packet)
+    if packet_semantic != expected_semantic:
         differing_fields = sorted(
             field
-            for field in set(packet) | set(expected_packet)
-            if packet.get(field) != expected_packet.get(field)
+            for field in set(packet_semantic) | set(expected_semantic)
+            if packet_semantic.get(field) != expected_semantic.get(field)
         )
         raise ValueError(
-            "Compiler packet is stale or was modified; regenerate it from the "
-            "canonical audit state. Differing fields: "
+            "Compiler packet semantic context is stale or was modified; "
+            "regenerate it from the canonical audit state. Differing fields: "
             + ", ".join(differing_fields)
-        )
-    packet_context_hash = packet.get("context_binding_sha256")
-    if annotations.get("context_binding_sha256") != packet_context_hash:
-        raise ValueError(
-            "annotations.context_binding_sha256 does not match the primary packet"
         )
     obligation_hash = canonical_sha256(ledger.get("obligation"))
     if packet.get("obligation_sha256") != obligation_hash:
@@ -9118,6 +9335,39 @@ def validate_compiler_context_packet(
         or artifact.get("audit_relative_file") != expected_relative
     ):
         raise ValueError("Compiler packet does not bind this source-locked skeleton")
+    validated_packet = dict(packet)
+    validated_packet["_submitted_operational_binding_sha256"] = packet.get(
+        "operational_binding_sha256"
+    )
+    validated_packet["_operational_binding_drift"] = packet.get(
+        "operational_binding_sha256"
+    ) != expected_packet.get("operational_binding_sha256")
+    validated_packet["operational_binding"] = expected_packet.get(
+        "operational_binding"
+    )
+    validated_packet["operational_binding_sha256"] = expected_packet.get(
+        "operational_binding_sha256"
+    )
+    return validated_packet
+
+
+def validate_compiler_context_packet(
+    ledger: dict[str, Any],
+    ledger_path: Path,
+    annotations: dict[str, Any],
+    packet_path: Path,
+) -> dict[str, Any]:
+    packet = validate_current_primary_packet(
+        ledger,
+        ledger_path,
+        packet_path,
+    )
+    if annotations.get("context_binding_sha256") != packet.get(
+        "context_binding_sha256"
+    ):
+        raise ValueError(
+            "annotations.context_binding_sha256 does not match the primary packet"
+        )
     return packet
 
 
@@ -9252,6 +9502,1480 @@ def validate_compile_skeleton(
             + shown
             + suffix
         )
+
+
+def annotation_scaffold_data(
+    ledger: dict[str, Any], packet: dict[str, Any]
+) -> dict[str, Any]:
+    """Build a deterministic draft with mechanics filled and judgments null."""
+    source = ledger.get("source")
+    source_lines = ledger.get("source_lines")
+    if not isinstance(source, dict) or not isinstance(source_lines, list):
+        raise ValueError("The extracted skeleton has no locked source records")
+    dependencies = compact_dependencies_from_packet(packet.get("dependencies"))
+    steps: list[dict[str, Any]] = []
+    for row in source_lines:
+        if (
+            not isinstance(row, dict)
+            or not is_int(row.get("line"))
+            or not isinstance(row.get("text"), str)
+        ):
+            raise ValueError("The extracted skeleton has malformed source lines")
+        if is_non_substantive(row["text"]):
+            continue
+        line_number = int(row["line"])
+        steps.append(
+            {
+                "key": f"line-{line_number:06d}",
+                "lines": [line_number, line_number],
+                "mode": None,
+                "kind": None,
+                "goal": None,
+                "claim": None,
+                "literal": None,
+                "atomicity_evidence": None,
+                "adversarial": None,
+                "risks": {
+                    aspect: {"status": None, "evidence": None}
+                    for aspect in RISK_ASPECTS
+                },
+                "inputs": None,
+                "side_conditions": None,
+                "status": None,
+                "issue_ids": None,
+            }
+        )
+
+    obligation = packet.get("obligation")
+    raw_conclusions = (
+        obligation.get("conclusions", [])
+        if isinstance(obligation, dict)
+        else []
+    )
+    conclusions = [
+        {
+            "conclusion_id": row.get("id"),
+            "support_step": None,
+            "contract_fidelity": None,
+            "statement_status": None,
+            "use_site_sufficiency": None,
+            "issue_ids": None,
+        }
+        for row in raw_conclusions
+        if isinstance(row, dict)
+    ]
+    inventory = packet.get("inventory")
+    inventory = inventory if isinstance(inventory, dict) else {}
+    occurrences = inventory.get("reference_occurrences", [])
+    occurrences = occurrences if isinstance(occurrences, list) else []
+    source_dispositions = [
+        {
+            "occurrence_id": row.get("occurrence_id"),
+            "target": row.get("target"),
+            "command": row.get("command"),
+            "disposition": None,
+            "evidence": None,
+        }
+        for row in occurrences
+        if isinstance(row, dict)
+    ]
+    candidate_paths = inventory.get("candidate_dependency_paths", [])
+    candidate_paths = candidate_paths if isinstance(candidate_paths, list) else []
+    paths_by_candidate: dict[str, list[str]] = defaultdict(list)
+    for row in candidate_paths:
+        if (
+            isinstance(row, dict)
+            and is_nonempty_string(row.get("candidate_id"))
+            and is_nonempty_string(row.get("path_id"))
+        ):
+            paths_by_candidate[str(row["candidate_id"])].append(
+                str(row["path_id"])
+            )
+    candidate_ids = inventory.get("candidate_internal_dependency_ids", [])
+    candidate_ids = candidate_ids if isinstance(candidate_ids, list) else []
+    candidate_dispositions = [
+        {
+            "candidate_id": str(candidate_id),
+            "path_ids": sorted(paths_by_candidate.get(str(candidate_id), [])),
+            "disposition": None,
+            "evidence": None,
+        }
+        for candidate_id in candidate_ids
+        if is_nonempty_string(candidate_id)
+    ]
+    citation_keys = inventory.get("citation_keys", [])
+    citation_keys = citation_keys if isinstance(citation_keys, list) else []
+    citation_dispositions = [
+        {"key": str(key), "disposition": None, "evidence": None}
+        for key in citation_keys
+        if is_nonempty_string(key)
+    ]
+    return {
+        "annotation_schema_version": SEMANTIC_ANNOTATION_SCHEMA_VERSION,
+        "unit_id": ledger.get("unit_id"),
+        "source_unit_sha256": source.get("unit_sha256"),
+        "obligation_sha256": packet.get("obligation_sha256"),
+        "context_binding_sha256": packet.get("context_binding_sha256"),
+        "source_groups": [],
+        "dependencies": dependencies,
+        "steps": steps,
+        "conclusions": conclusions,
+        "review": {
+            "explicit_assumptions": None,
+            "inherited_assumptions": None,
+            "source_reference_dispositions": source_dispositions,
+            "candidate_dependency_dispositions": candidate_dispositions,
+            "citation_dispositions": citation_dispositions,
+            "verification_basis": None,
+            "reviewer_notes": [],
+        },
+    }
+
+
+def cmd_annotation_scaffold(args: argparse.Namespace) -> int:
+    configure_console_errors()
+    ledger_path = args.ledger.resolve()
+    packet_path = args.packet.resolve()
+    output_path = args.output.resolve()
+    if not ledger_path.is_file():
+        raise FileNotFoundError(f"Extracted ledger not found: {ledger_path}")
+    if not packet_path.is_file():
+        raise FileNotFoundError(f"Primary context packet not found: {packet_path}")
+    if not ledger_path.name.endswith(".skeleton.json"):
+        raise ValueError("Annotation scaffold input must end in .skeleton.json")
+    if not output_path.name.endswith(".annotations.json"):
+        raise ValueError("Annotation scaffold output must end in .annotations.json")
+    if output_path in {ledger_path, packet_path}:
+        raise ValueError("Annotation scaffold output must be a distinct file")
+    ledger, ledger_errors = load_json_object(ledger_path, "extracted ledger")
+    if ledger_errors:
+        raise ValueError(ledger_errors[0])
+    validate_compile_skeleton(ledger, ledger_path)
+    audit_root = containing_audit_root(ledger_path)
+    if audit_root is None:
+        raise ValueError(
+            "annotation-scaffold requires a skeleton inside a canonical audit root"
+        )
+    if output_path.is_relative_to(audit_root):
+        raise ValueError("Annotation scaffold output must remain outside the audit root")
+    packet = validate_current_primary_packet(ledger, ledger_path, packet_path)
+    scaffold = annotation_scaffold_data(ledger, packet)
+    atomic_create_json(output_path, scaffold, "Annotation scaffold")
+    print(
+        json.dumps(
+            {
+                "command": "annotation-scaffold",
+                "status": "written",
+                "unit_id": ledger.get("unit_id"),
+                "annotations": output_path.as_posix(),
+                "source_steps": len(scaffold["steps"]),
+                "dependencies": len(scaffold["dependencies"]),
+                "conclusions": len(scaffold["conclusions"]),
+                "context_binding_sha256": packet.get(
+                    "context_binding_sha256"
+                ),
+            },
+            ensure_ascii=True,
+            indent=2,
+        )
+    )
+    return 0
+
+
+def json_pointer_child(pointer: str, token: Any) -> str:
+    escaped = str(token).replace("~", "~0").replace("/", "~1")
+    return f"{pointer}/{escaped}" if pointer else f"/{escaped}"
+
+
+def append_annotation_diagnostic(
+    diagnostics: list[dict[str, str]],
+    pointer: str,
+    code: str,
+    message: str,
+    *,
+    document: str = "annotations",
+) -> None:
+    diagnostics.append(
+        {
+            "document": document,
+            "pointer": pointer,
+            "code": code,
+            "message": message,
+        }
+    )
+
+
+def annotation_object_diagnostics(
+    value: Any,
+    pointer: str,
+    diagnostics: list[dict[str, str]],
+    *,
+    required: Iterable[str],
+    optional: Iterable[str] = (),
+) -> bool:
+    if not isinstance(value, dict):
+        append_annotation_diagnostic(
+            diagnostics, pointer, "wrong_type", "must be an object"
+        )
+        return False
+    required_set = set(required)
+    allowed = required_set | set(optional)
+    for field in sorted(required_set - set(value)):
+        append_annotation_diagnostic(
+            diagnostics,
+            json_pointer_child(pointer, field),
+            "missing_field",
+            f"required field is missing; missing fields: {field}",
+        )
+    for field in sorted(set(value) - allowed):
+        append_annotation_diagnostic(
+            diagnostics,
+            json_pointer_child(pointer, field),
+            "unknown_field",
+            f"field is not part of compact annotation schema 1; "
+            f"unknown fields: {field}",
+        )
+    return True
+
+
+def annotation_null_diagnostics(
+    value: Any,
+    pointer: str,
+    diagnostics: list[dict[str, str]],
+) -> None:
+    if value is None:
+        append_annotation_diagnostic(
+            diagnostics,
+            pointer,
+            "incomplete_judgment",
+            "replace null with an authored judgment",
+        )
+    elif isinstance(value, dict):
+        for key in sorted(value):
+            annotation_null_diagnostics(
+                value[key], json_pointer_child(pointer, key), diagnostics
+            )
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            annotation_null_diagnostics(
+                item, json_pointer_child(pointer, index), diagnostics
+            )
+
+
+def annotation_enum_diagnostic(
+    value: Any,
+    pointer: str,
+    allowed: Iterable[str],
+    diagnostics: list[dict[str, str]],
+) -> None:
+    allowed_values = set(allowed)
+    if value is not None and (
+        not isinstance(value, str) or value not in allowed_values
+    ):
+        append_annotation_diagnostic(
+            diagnostics,
+            pointer,
+            "invalid_enum",
+            "must be one of: " + ", ".join(sorted(allowed_values)),
+        )
+
+
+def annotation_string_diagnostic(
+    value: Any,
+    pointer: str,
+    diagnostics: list[dict[str, str]],
+    *,
+    substantive: bool = True,
+) -> None:
+    if value is None:
+        return
+    valid = is_substantive_string(value) if substantive else is_nonempty_string(value)
+    if not valid:
+        append_annotation_diagnostic(
+            diagnostics,
+            pointer,
+            "invalid_string",
+            "must be substantive" if substantive else "must be nonempty",
+        )
+
+
+def annotation_string_list_diagnostics(
+    value: Any,
+    pointer: str,
+    diagnostics: list[dict[str, str]],
+    *,
+    allow_empty: bool = True,
+    pattern: re.Pattern[str] | None = None,
+) -> None:
+    if value is None:
+        return
+    if not isinstance(value, list):
+        append_annotation_diagnostic(
+            diagnostics, pointer, "wrong_type", "must be a list"
+        )
+        return
+    if not allow_empty and not value:
+        append_annotation_diagnostic(
+            diagnostics, pointer, "empty_list", "must be a nonempty list"
+        )
+    seen: set[str] = set()
+    for index, item in enumerate(value):
+        item_pointer = json_pointer_child(pointer, index)
+        if not is_substantive_string(item) or (
+            pattern is not None and not pattern.fullmatch(str(item))
+        ):
+            append_annotation_diagnostic(
+                diagnostics,
+                item_pointer,
+                "invalid_id" if pattern is not None else "invalid_string",
+                "has an invalid identifier" if pattern is not None else "must be substantive",
+            )
+            continue
+        if str(item) in seen:
+            append_annotation_diagnostic(
+                diagnostics, item_pointer, "duplicate_id", f"duplicate value {item}"
+            )
+        seen.add(str(item))
+
+
+def annotation_range_diagnostic(
+    value: Any, pointer: str, diagnostics: list[dict[str, str]]
+) -> None:
+    if value is not None and (
+        not isinstance(value, list)
+        or len(value) != 2
+        or not all(is_int(item) for item in value)
+    ):
+        append_annotation_diagnostic(
+            diagnostics, pointer, "invalid_range", "must be [start, end]"
+        )
+
+
+def annotation_identity_diagnostics(
+    actual: Any,
+    expected: list[dict[str, Any]],
+    pointer: str,
+    identity_field: str,
+    deterministic_fields: Iterable[str],
+    diagnostics: list[dict[str, str]],
+    *,
+    unordered_fields: Iterable[str] = (),
+) -> None:
+    if not isinstance(actual, list):
+        append_annotation_diagnostic(
+            diagnostics, pointer, "wrong_type", "must be a list"
+        )
+        return
+    expected_by_id = {
+        str(row.get(identity_field)): row
+        for row in expected
+        if isinstance(row, dict)
+    }
+    actual_by_id: dict[str, tuple[int, dict[str, Any]]] = {}
+    for index, row in enumerate(actual):
+        item_pointer = json_pointer_child(pointer, index)
+        if not isinstance(row, dict):
+            append_annotation_diagnostic(
+                diagnostics, item_pointer, "wrong_type", "must be an object"
+            )
+            continue
+        identity = row.get(identity_field)
+        if not is_nonempty_string(identity):
+            append_annotation_diagnostic(
+                diagnostics,
+                json_pointer_child(item_pointer, identity_field),
+                "invalid_id",
+                f"must identify one packet {identity_field}",
+            )
+            continue
+        identity = str(identity)
+        if identity in actual_by_id:
+            append_annotation_diagnostic(
+                diagnostics,
+                json_pointer_child(item_pointer, identity_field),
+                "duplicate_id",
+                f"duplicate {identity_field} {identity}",
+            )
+            continue
+        actual_by_id[identity] = (index, row)
+    for identity in sorted(set(expected_by_id) - set(actual_by_id)):
+        append_annotation_diagnostic(
+            diagnostics,
+            pointer,
+            "missing_packet_record",
+            f"missing packet {identity_field} {identity}",
+        )
+    for identity in sorted(set(actual_by_id) - set(expected_by_id)):
+        index, _ = actual_by_id[identity]
+        append_annotation_diagnostic(
+            diagnostics,
+            json_pointer_child(pointer, index),
+            "stale_packet_record",
+            f"{identity_field} {identity} is not present in the packet",
+        )
+    for identity in sorted(set(actual_by_id) & set(expected_by_id)):
+        index, row = actual_by_id[identity]
+        expected_row = expected_by_id[identity]
+        unordered = set(unordered_fields)
+        for field in deterministic_fields:
+            actual_value = row.get(field)
+            expected_value = expected_row.get(field)
+            if (
+                field in unordered
+                and isinstance(actual_value, list)
+                and isinstance(expected_value, list)
+            ):
+                actual_value = sorted(actual_value, key=str)
+                expected_value = sorted(expected_value, key=str)
+            if actual_value != expected_value:
+                append_annotation_diagnostic(
+                    diagnostics,
+                    json_pointer_child(
+                        json_pointer_child(pointer, index), field
+                    ),
+                    "packet_mismatch",
+                    f"must exactly match packet {identity_field} {identity}",
+                )
+
+
+def annotation_preflight_diagnostics(
+    ledger: dict[str, Any],
+    ledger_path: Path,
+    annotations: dict[str, Any],
+    packet: dict[str, Any],
+    *,
+    deep_validation: bool = True,
+) -> list[dict[str, str]]:
+    diagnostics: list[dict[str, str]] = []
+    expected = annotation_scaffold_data(ledger, packet)
+    if annotation_object_diagnostics(
+        annotations,
+        "",
+        diagnostics,
+        required=COMPACT_ANNOTATION_TOP_LEVEL_FIELDS,
+    ):
+        for field in (
+            "annotation_schema_version",
+            "unit_id",
+            "source_unit_sha256",
+            "obligation_sha256",
+            "context_binding_sha256",
+        ):
+            if field in annotations and annotations.get(field) != expected.get(field):
+                append_annotation_diagnostic(
+                    diagnostics,
+                    json_pointer_child("", field),
+                    "binding_mismatch",
+                    "must exactly match the current skeleton and primary packet",
+                )
+
+    source_groups = annotations.get("source_groups")
+    if isinstance(source_groups, list):
+        source = ledger.get("source")
+        source_start = source.get("start_line") if isinstance(source, dict) else None
+        source_end = source.get("end_line") if isinstance(source, dict) else None
+        previous_group_end = source_start - 1 if is_int(source_start) else None
+        for index, group in enumerate(source_groups):
+            pointer = f"/source_groups/{index}"
+            if annotation_object_diagnostics(
+                group,
+                pointer,
+                diagnostics,
+                required=("lines", "kind", "partition_evidence"),
+            ):
+                annotation_range_diagnostic(
+                    group.get("lines"), f"{pointer}/lines", diagnostics
+                )
+                line_range = group.get("lines")
+                if (
+                    isinstance(line_range, list)
+                    and len(line_range) == 2
+                    and all(is_int(item) for item in line_range)
+                    and is_int(source_start)
+                    and is_int(source_end)
+                ):
+                    group_start, group_end = line_range
+                    if (
+                        group_start < source_start
+                        or group_end > source_end
+                        or group_end <= group_start
+                    ):
+                        append_annotation_diagnostic(
+                            diagnostics,
+                            f"{pointer}/lines",
+                            "invalid_range",
+                            f"must be a multiline range inside {source_start}-{source_end}",
+                        )
+                    elif (
+                        previous_group_end is not None
+                        and group_start <= previous_group_end
+                    ):
+                        append_annotation_diagnostic(
+                            diagnostics,
+                            f"{pointer}/lines",
+                            "overlapping_range",
+                            "source groups must be disjoint and in source order",
+                        )
+                    previous_group_end = max(previous_group_end, group_end)
+                annotation_enum_diagnostic(
+                    group.get("kind"),
+                    f"{pointer}/kind",
+                    {"continued_sentence", "continued_display"},
+                    diagnostics,
+                )
+                annotation_string_diagnostic(
+                    group.get("partition_evidence"),
+                    f"{pointer}/partition_evidence",
+                    diagnostics,
+                )
+    elif "source_groups" in annotations:
+        append_annotation_diagnostic(
+            diagnostics, "/source_groups", "wrong_type", "must be a list"
+        )
+
+    actual_dependencies = annotations.get("dependencies")
+    annotation_identity_diagnostics(
+        actual_dependencies,
+        expected["dependencies"],
+        "/dependencies",
+        "use_id",
+        (
+            "id",
+            "use_id",
+            "kind",
+            "status",
+            "needed_form",
+            "compatibility_check",
+            "conclusion_id",
+        ),
+        diagnostics,
+    )
+    if isinstance(actual_dependencies, list):
+        for index, row in enumerate(actual_dependencies):
+            pointer = f"/dependencies/{index}"
+            if annotation_object_diagnostics(
+                row,
+                pointer,
+                diagnostics,
+                required=(
+                    "id",
+                    "use_id",
+                    "kind",
+                    "status",
+                    "needed_form",
+                    "compatibility_check",
+                ),
+                optional=("conclusion_id",),
+            ):
+                annotation_string_diagnostic(
+                    row.get("id"), f"{pointer}/id", diagnostics
+                )
+                annotation_string_diagnostic(
+                    row.get("use_id"),
+                    f"{pointer}/use_id",
+                    diagnostics,
+                    substantive=False,
+                )
+                if row.get("use_id") is not None and (
+                    not isinstance(row.get("use_id"), str)
+                    or not DEPENDENCY_USE_ID_RE.fullmatch(row["use_id"])
+                ):
+                    append_annotation_diagnostic(
+                        diagnostics,
+                        f"{pointer}/use_id",
+                        "invalid_id",
+                        "must identify a dependency use such as D001",
+                    )
+                annotation_enum_diagnostic(
+                    row.get("kind"),
+                    f"{pointer}/kind",
+                    {"internal_result", "external_result"},
+                    diagnostics,
+                )
+                annotation_enum_diagnostic(
+                    row.get("status"),
+                    f"{pointer}/status",
+                    DEPENDENCY_STATUSES - {"not_applicable"},
+                    diagnostics,
+                )
+                for field in ("needed_form", "compatibility_check"):
+                    annotation_string_diagnostic(
+                        row.get(field), f"{pointer}/{field}", diagnostics
+                    )
+                if row.get("kind") == "internal_result":
+                    conclusion_id = row.get("conclusion_id")
+                    if conclusion_id is not None and (
+                        not isinstance(conclusion_id, str)
+                        or not CONCLUSION_ID_RE.fullmatch(conclusion_id)
+                    ):
+                        append_annotation_diagnostic(
+                            diagnostics,
+                            f"{pointer}/conclusion_id",
+                            "invalid_id",
+                            "must identify a conclusion such as C001",
+                        )
+
+    step_key_positions: dict[str, int] = {}
+    steps = annotations.get("steps")
+    if not isinstance(steps, list):
+        if "steps" in annotations:
+            append_annotation_diagnostic(
+                diagnostics, "/steps", "wrong_type", "must be a list"
+            )
+    else:
+        step_key_positions = {
+            str(step.get("key")): index
+            for index, step in enumerate(steps)
+            if isinstance(step, dict) and is_nonempty_string(step.get("key"))
+        }
+        dependency_use_ids = {
+            str(row.get("use_id"))
+            for row in actual_dependencies
+            if isinstance(row, dict) and is_nonempty_string(row.get("use_id"))
+        } if isinstance(actual_dependencies, list) else set()
+        seen_keys: set[str] = set()
+        for index, step in enumerate(steps):
+            pointer = f"/steps/{index}"
+            if not annotation_object_diagnostics(
+                step,
+                pointer,
+                diagnostics,
+                required=COMPACT_STEP_FIELDS
+                - {"rule", "justification", "failure"},
+                optional=("rule", "justification", "failure"),
+            ):
+                continue
+            key = step.get("key")
+            if is_nonempty_string(key):
+                if str(key) in seen_keys:
+                    append_annotation_diagnostic(
+                        diagnostics,
+                        f"{pointer}/key",
+                        "duplicate_id",
+                        f"duplicate step key {key}",
+                    )
+                seen_keys.add(str(key))
+            elif key is not None:
+                annotation_string_diagnostic(
+                    key, f"{pointer}/key", diagnostics, substantive=False
+                )
+            annotation_range_diagnostic(
+                step.get("lines"), f"{pointer}/lines", diagnostics
+            )
+            annotation_enum_diagnostic(
+                step.get("mode"),
+                f"{pointer}/mode",
+                {"noninferential", "derivation", "reuse"},
+                diagnostics,
+            )
+            annotation_enum_diagnostic(
+                step.get("kind"), f"{pointer}/kind", STEP_KINDS, diagnostics
+            )
+            annotation_enum_diagnostic(
+                step.get("status"),
+                f"{pointer}/status",
+                STEP_STATUSES - {"non_substantive"},
+                diagnostics,
+            )
+            for field in ("goal", "claim", "literal", "atomicity_evidence"):
+                annotation_string_diagnostic(
+                    step.get(field), f"{pointer}/{field}", diagnostics
+                )
+            annotation_string_list_diagnostics(
+                step.get("adversarial"),
+                f"{pointer}/adversarial",
+                diagnostics,
+                allow_empty=False,
+            )
+            annotation_string_list_diagnostics(
+                step.get("issue_ids"),
+                f"{pointer}/issue_ids",
+                diagnostics,
+                pattern=ISSUE_ID_RE,
+            )
+            risks = step.get("risks")
+            if annotation_object_diagnostics(
+                risks,
+                f"{pointer}/risks",
+                diagnostics,
+                required=RISK_ASPECTS,
+            ):
+                for aspect in RISK_ASPECTS:
+                    if aspect in risks:
+                        if annotation_object_diagnostics(
+                            risks[aspect],
+                            f"{pointer}/risks/{aspect}",
+                            diagnostics,
+                            required=("status", "evidence"),
+                        ):
+                            annotation_enum_diagnostic(
+                                risks[aspect].get("status"),
+                                f"{pointer}/risks/{aspect}/status",
+                                RISK_STATUSES,
+                                diagnostics,
+                            )
+                            annotation_string_diagnostic(
+                                risks[aspect].get("evidence"),
+                                f"{pointer}/risks/{aspect}/evidence",
+                                diagnostics,
+                            )
+            inputs = step.get("inputs")
+            if isinstance(inputs, list):
+                for input_index, compact_input in enumerate(inputs):
+                    input_pointer = f"{pointer}/inputs/{input_index}"
+                    if annotation_object_diagnostics(
+                        compact_input,
+                        input_pointer,
+                        diagnostics,
+                        required=("kind", "reference", "role", "evidence"),
+                        optional=(
+                            "anchor",
+                            "compatibility_check",
+                            "source_reference_id",
+                            "source_reference_occurrence_id",
+                        ),
+                    ) and isinstance(compact_input, dict):
+                        annotation_enum_diagnostic(
+                            compact_input.get("kind"),
+                            f"{input_pointer}/kind",
+                            {"obligation", "prior_step", "dependency"},
+                            diagnostics,
+                        )
+                        annotation_string_diagnostic(
+                            compact_input.get("reference"),
+                            f"{input_pointer}/reference",
+                            diagnostics,
+                            substantive=False,
+                        )
+                        annotation_enum_diagnostic(
+                            compact_input.get("role"),
+                            f"{input_pointer}/role",
+                            PREMISE_ROLES,
+                            diagnostics,
+                        )
+                        annotation_string_diagnostic(
+                            compact_input.get("evidence"),
+                            f"{input_pointer}/evidence",
+                            diagnostics,
+                        )
+                        if "compatibility_check" in compact_input:
+                            annotation_string_diagnostic(
+                                compact_input.get("compatibility_check"),
+                                f"{input_pointer}/compatibility_check",
+                                diagnostics,
+                            )
+                        if "anchor" in compact_input:
+                            annotation_object_diagnostics(
+                                compact_input.get("anchor"),
+                                f"{input_pointer}/anchor",
+                                diagnostics,
+                                required=("kind", "index"),
+                            )
+                        input_kind = compact_input.get("kind")
+                        reference = compact_input.get("reference")
+                        if input_kind == "obligation":
+                            if "anchor" not in compact_input:
+                                append_annotation_diagnostic(
+                                    diagnostics,
+                                    f"{input_pointer}/anchor",
+                                    "missing_conditional_field",
+                                    "an obligation input requires an exact anchor",
+                                )
+                            if "compatibility_check" in compact_input:
+                                append_annotation_diagnostic(
+                                    diagnostics,
+                                    f"{input_pointer}/compatibility_check",
+                                    "forbidden_conditional_field",
+                                    "an obligation input cannot carry compatibility_check",
+                                )
+                        elif input_kind == "prior_step":
+                            if "anchor" in compact_input:
+                                append_annotation_diagnostic(
+                                    diagnostics,
+                                    f"{input_pointer}/anchor",
+                                    "forbidden_conditional_field",
+                                    "a prior-step input cannot carry an anchor",
+                                )
+                            if "compatibility_check" not in compact_input:
+                                append_annotation_diagnostic(
+                                    diagnostics,
+                                    f"{input_pointer}/compatibility_check",
+                                    "missing_conditional_field",
+                                    "a prior-step input requires compatibility_check",
+                                )
+                            reference_position = step_key_positions.get(str(reference))
+                            if reference_position is None:
+                                append_annotation_diagnostic(
+                                    diagnostics,
+                                    f"{input_pointer}/reference",
+                                    "unknown_reference",
+                                    "does not identify a compact step key",
+                                )
+                            elif reference_position >= index:
+                                append_annotation_diagnostic(
+                                    diagnostics,
+                                    f"{input_pointer}/reference",
+                                    "forward_reference",
+                                    "must identify a step established earlier",
+                                )
+                        elif input_kind == "dependency":
+                            for field in ("anchor", "compatibility_check"):
+                                if field in compact_input:
+                                    append_annotation_diagnostic(
+                                        diagnostics,
+                                        f"{input_pointer}/{field}",
+                                        "forbidden_conditional_field",
+                                        f"a dependency input cannot carry {field}",
+                                    )
+                            if str(reference) not in dependency_use_ids:
+                                append_annotation_diagnostic(
+                                    diagnostics,
+                                    f"{input_pointer}/reference",
+                                    "unknown_reference",
+                                    "does not identify a direct dependency use",
+                                )
+                        source_id = compact_input.get("source_reference_id")
+                        occurrence_id = compact_input.get(
+                            "source_reference_occurrence_id"
+                        )
+                        if bool(is_nonempty_string(source_id)) != bool(
+                            is_nonempty_string(occurrence_id)
+                        ):
+                            append_annotation_diagnostic(
+                                diagnostics,
+                                input_pointer,
+                                "incomplete_reference_pair",
+                                "source-reference anchoring requires both IDs",
+                            )
+            elif inputs is not None:
+                append_annotation_diagnostic(
+                    diagnostics,
+                    f"{pointer}/inputs",
+                    "wrong_type",
+                    "must be a list",
+                )
+            side_conditions = step.get("side_conditions")
+            if isinstance(side_conditions, list):
+                for condition_index, condition in enumerate(side_conditions):
+                    condition_pointer = (
+                        f"{pointer}/side_conditions/{condition_index}"
+                    )
+                    if annotation_object_diagnostics(
+                        condition,
+                        condition_pointer,
+                        diagnostics,
+                        required=("condition", "status"),
+                        optional=("discharge",),
+                    ):
+                        annotation_string_diagnostic(
+                            condition.get("condition"),
+                            f"{condition_pointer}/condition",
+                            diagnostics,
+                        )
+                        annotation_enum_diagnostic(
+                            condition.get("status"),
+                            f"{condition_pointer}/status",
+                            {"open", "discharged"},
+                            diagnostics,
+                        )
+                        status = condition.get("status")
+                        if status == "open" and "discharge" in condition:
+                            append_annotation_diagnostic(
+                                diagnostics,
+                                f"{condition_pointer}/discharge",
+                                "forbidden_conditional_field",
+                                "an open condition cannot have a discharge",
+                            )
+                        if status == "discharged" and "discharge" not in condition:
+                            append_annotation_diagnostic(
+                                diagnostics,
+                                f"{condition_pointer}/discharge",
+                                "missing_conditional_field",
+                                "a discharged condition requires discharge evidence",
+                            )
+                        discharge = condition.get("discharge")
+                        if status == "discharged" and annotation_object_diagnostics(
+                            discharge,
+                            f"{condition_pointer}/discharge",
+                            diagnostics,
+                            required=("sources", "rule", "evidence"),
+                        ):
+                            annotation_string_diagnostic(
+                                discharge.get("rule"),
+                                f"{condition_pointer}/discharge/rule",
+                                diagnostics,
+                            )
+                            annotation_string_diagnostic(
+                                discharge.get("evidence"),
+                                f"{condition_pointer}/discharge/evidence",
+                                diagnostics,
+                            )
+                            sources = discharge.get("sources")
+                            if not isinstance(sources, list) or not sources:
+                                append_annotation_diagnostic(
+                                    diagnostics,
+                                    f"{condition_pointer}/discharge/sources",
+                                    "wrong_type",
+                                    "must be a nonempty list",
+                                )
+                            else:
+                                for source_index, source in enumerate(sources):
+                                    source_pointer = (
+                                        f"{condition_pointer}/discharge/sources/"
+                                        f"{source_index}"
+                                    )
+                                    if annotation_object_diagnostics(
+                                        source,
+                                        source_pointer,
+                                        diagnostics,
+                                        required=("input", "contribution"),
+                                    ):
+                                        input_number = source.get("input")
+                                        if not is_int(input_number) or input_number < 1:
+                                            append_annotation_diagnostic(
+                                                diagnostics,
+                                                f"{source_pointer}/input",
+                                                "invalid_id",
+                                                "must identify one compact input",
+                                            )
+                                        annotation_string_diagnostic(
+                                            source.get("contribution"),
+                                            f"{source_pointer}/contribution",
+                                            diagnostics,
+                                        )
+            elif side_conditions is not None:
+                append_annotation_diagnostic(
+                    diagnostics,
+                    f"{pointer}/side_conditions",
+                    "wrong_type",
+                    "must be a list",
+                )
+            if isinstance(step, dict):
+                mode = step.get("mode")
+                if mode in {"derivation", "reuse"}:
+                    for field in ("rule", "justification"):
+                        if field not in step:
+                            append_annotation_diagnostic(
+                                diagnostics,
+                                f"{pointer}/{field}",
+                                "missing_conditional_field",
+                                f"{field} must be authored for every move "
+                                f"in {mode} mode",
+                            )
+                        else:
+                            annotation_string_diagnostic(
+                                step.get(field), f"{pointer}/{field}", diagnostics
+                            )
+                elif mode == "noninferential":
+                    for field in ("rule", "justification", "failure"):
+                        if field in step:
+                            append_annotation_diagnostic(
+                                diagnostics,
+                                f"{pointer}/{field}",
+                                "forbidden_conditional_field",
+                                f"{field} is not allowed for noninferential mode",
+                            )
+                if "failure" in step:
+                    if annotation_object_diagnostics(
+                        step.get("failure"),
+                        f"{pointer}/failure",
+                        diagnostics,
+                        required=("kind", "issue_id", "evidence"),
+                        optional=("target",),
+                    ):
+                        failure = step["failure"]
+                        annotation_enum_diagnostic(
+                            failure.get("kind"),
+                            f"{pointer}/failure/kind",
+                            MOVE_FAILURE_KINDS,
+                            diagnostics,
+                        )
+                        annotation_string_diagnostic(
+                            failure.get("evidence"),
+                            f"{pointer}/failure/evidence",
+                            diagnostics,
+                        )
+                        issue_id = failure.get("issue_id")
+                        if issue_id is not None and (
+                            not isinstance(issue_id, str)
+                            or not ISSUE_ID_RE.fullmatch(issue_id)
+                        ):
+                            append_annotation_diagnostic(
+                                diagnostics,
+                                f"{pointer}/failure/issue_id",
+                                "invalid_id",
+                                "must identify an issue such as I-001",
+                            )
+                        if "target" in failure:
+                            annotation_string_diagnostic(
+                                failure.get("target"),
+                                f"{pointer}/failure/target",
+                                diagnostics,
+                            )
+
+    conclusions = annotations.get("conclusions")
+    annotation_identity_diagnostics(
+        conclusions,
+        expected["conclusions"],
+        "/conclusions",
+        "conclusion_id",
+        ("conclusion_id",),
+        diagnostics,
+    )
+    if isinstance(conclusions, list):
+        for index, row in enumerate(conclusions):
+            pointer = f"/conclusions/{index}"
+            if annotation_object_diagnostics(
+                row,
+                pointer,
+                diagnostics,
+                required=(
+                    "conclusion_id",
+                    "support_step",
+                    "contract_fidelity",
+                    "statement_status",
+                    "use_site_sufficiency",
+                    "issue_ids",
+                ),
+            ):
+                annotation_string_diagnostic(
+                    row.get("support_step"),
+                    f"{pointer}/support_step",
+                    diagnostics,
+                    substantive=False,
+                )
+                support_step = row.get("support_step")
+                if (
+                    support_step is not None
+                    and str(support_step) not in step_key_positions
+                ):
+                    append_annotation_diagnostic(
+                        diagnostics,
+                        f"{pointer}/support_step",
+                        "unknown_reference",
+                        "does not identify a compact step key",
+                    )
+                annotation_enum_diagnostic(
+                    row.get("contract_fidelity"),
+                    f"{pointer}/contract_fidelity",
+                    UNIT_STATUSES,
+                    diagnostics,
+                )
+                annotation_enum_diagnostic(
+                    row.get("statement_status"),
+                    f"{pointer}/statement_status",
+                    STATEMENT_STATUSES,
+                    diagnostics,
+                )
+                annotation_enum_diagnostic(
+                    row.get("use_site_sufficiency"),
+                    f"{pointer}/use_site_sufficiency",
+                    USE_STATUSES,
+                    diagnostics,
+                )
+                annotation_string_list_diagnostics(
+                    row.get("issue_ids"),
+                    f"{pointer}/issue_ids",
+                    diagnostics,
+                    pattern=ISSUE_ID_RE,
+                )
+
+    review = annotations.get("review")
+    review_fields = (
+        "explicit_assumptions",
+        "inherited_assumptions",
+        "source_reference_dispositions",
+        "candidate_dependency_dispositions",
+        "citation_dispositions",
+        "verification_basis",
+        "reviewer_notes",
+    )
+    if annotation_object_diagnostics(
+        review, "/review", diagnostics, required=review_fields
+    ):
+        source_rows = review.get("source_reference_dispositions")
+        annotation_identity_diagnostics(
+            source_rows,
+            expected["review"]["source_reference_dispositions"],
+            "/review/source_reference_dispositions",
+            "occurrence_id",
+            ("occurrence_id", "target", "command"),
+            diagnostics,
+        )
+        if isinstance(source_rows, list):
+            for index, row in enumerate(source_rows):
+                pointer = f"/review/source_reference_dispositions/{index}"
+                if annotation_object_diagnostics(
+                    row,
+                    pointer,
+                    diagnostics,
+                    required=(
+                        "occurrence_id",
+                        "target",
+                        "command",
+                        "disposition",
+                        "evidence",
+                    ),
+                    optional=("dependency_use_id",),
+                ):
+                    annotation_enum_diagnostic(
+                        row.get("disposition"),
+                        f"{pointer}/disposition",
+                        {
+                            "internal_result",
+                            "obligation_context",
+                            "local_step",
+                            "own_result_identification",
+                            "navigation",
+                            "non_load_bearing",
+                            "unresolved",
+                        },
+                        diagnostics,
+                    )
+                    annotation_string_diagnostic(
+                        row.get("evidence"), f"{pointer}/evidence", diagnostics
+                    )
+                    disposition = row.get("disposition")
+                    if disposition == "internal_result":
+                        use_id = row.get("dependency_use_id")
+                        if (
+                            not isinstance(use_id, str)
+                            or not DEPENDENCY_USE_ID_RE.fullmatch(use_id)
+                        ):
+                            append_annotation_diagnostic(
+                                diagnostics,
+                                f"{pointer}/dependency_use_id",
+                                "missing_conditional_field",
+                                "internal_result requires a dependency use such as D001",
+                            )
+                    elif "dependency_use_id" in row:
+                        append_annotation_diagnostic(
+                            diagnostics,
+                            f"{pointer}/dependency_use_id",
+                            "forbidden_conditional_field",
+                            "dependency_use_id is allowed only for internal_result",
+                        )
+        candidate_rows = review.get("candidate_dependency_dispositions")
+        annotation_identity_diagnostics(
+            candidate_rows,
+            expected["review"]["candidate_dependency_dispositions"],
+            "/review/candidate_dependency_dispositions",
+            "candidate_id",
+            ("candidate_id", "path_ids"),
+            diagnostics,
+            unordered_fields=("path_ids",),
+        )
+        if isinstance(candidate_rows, list):
+            for index, row in enumerate(candidate_rows):
+                pointer = f"/review/candidate_dependency_dispositions/{index}"
+                if annotation_object_diagnostics(
+                    row,
+                    pointer,
+                    diagnostics,
+                    required=(
+                        "candidate_id",
+                        "path_ids",
+                        "disposition",
+                        "evidence",
+                    ),
+                    optional=("dependency_use_id",),
+                ):
+                    annotation_string_list_diagnostics(
+                        row.get("path_ids"),
+                        f"{pointer}/path_ids",
+                        diagnostics,
+                        allow_empty=False,
+                        pattern=re.compile(r"CP[0-9]{3}$"),
+                    )
+                    annotation_enum_diagnostic(
+                        row.get("disposition"),
+                        f"{pointer}/disposition",
+                        {"internal_result", "navigation", "non_load_bearing"},
+                        diagnostics,
+                    )
+                    annotation_string_diagnostic(
+                        row.get("evidence"), f"{pointer}/evidence", diagnostics
+                    )
+                    disposition = row.get("disposition")
+                    if disposition == "internal_result":
+                        use_id = row.get("dependency_use_id")
+                        if (
+                            not isinstance(use_id, str)
+                            or not DEPENDENCY_USE_ID_RE.fullmatch(use_id)
+                        ):
+                            append_annotation_diagnostic(
+                                diagnostics,
+                                f"{pointer}/dependency_use_id",
+                                "missing_conditional_field",
+                                "internal_result requires a dependency use such as D001",
+                            )
+                    elif "dependency_use_id" in row:
+                        append_annotation_diagnostic(
+                            diagnostics,
+                            f"{pointer}/dependency_use_id",
+                            "forbidden_conditional_field",
+                            "dependency_use_id is allowed only for internal_result",
+                        )
+        citation_rows = review.get("citation_dispositions")
+        annotation_identity_diagnostics(
+            citation_rows,
+            expected["review"]["citation_dispositions"],
+            "/review/citation_dispositions",
+            "key",
+            ("key",),
+            diagnostics,
+        )
+        if isinstance(citation_rows, list):
+            for index, row in enumerate(citation_rows):
+                pointer = f"/review/citation_dispositions/{index}"
+                if annotation_object_diagnostics(
+                    row,
+                    pointer,
+                    diagnostics,
+                    required=("key", "disposition", "evidence"),
+                    optional=("dependency_id", "dependency_use_id"),
+                ):
+                    annotation_enum_diagnostic(
+                        row.get("disposition"),
+                        f"{pointer}/disposition",
+                        {"external_result", "bibliographic_only", "unresolved"},
+                        diagnostics,
+                    )
+                    annotation_string_diagnostic(
+                        row.get("evidence"), f"{pointer}/evidence", diagnostics
+                    )
+                    disposition = row.get("disposition")
+                    if disposition == "external_result":
+                        for field in ("dependency_id", "dependency_use_id"):
+                            if not is_nonempty_string(row.get(field)):
+                                append_annotation_diagnostic(
+                                    diagnostics,
+                                    f"{pointer}/{field}",
+                                    "missing_conditional_field",
+                                    f"external_result requires {field}",
+                                )
+                    else:
+                        for field in ("dependency_id", "dependency_use_id"):
+                            if field in row:
+                                append_annotation_diagnostic(
+                                    diagnostics,
+                                    f"{pointer}/{field}",
+                                    "forbidden_conditional_field",
+                                    f"{field} is allowed only for external_result",
+                                )
+        for field in (
+            "explicit_assumptions",
+            "inherited_assumptions",
+            "verification_basis",
+            "reviewer_notes",
+        ):
+            value = review.get(field)
+            if value is not None and not isinstance(value, list):
+                append_annotation_diagnostic(
+                    diagnostics,
+                    f"/review/{field}",
+                    "wrong_type",
+                    "must be a list",
+                )
+            else:
+                annotation_string_list_diagnostics(
+                    value,
+                    f"/review/{field}",
+                    diagnostics,
+                    allow_empty=field != "verification_basis",
+                )
+
+    annotation_null_diagnostics(annotations, "", diagnostics)
+    unique: dict[tuple[str, str, str, str], dict[str, str]] = {}
+    for diagnostic in diagnostics:
+        key = (
+            diagnostic["document"],
+            diagnostic["pointer"],
+            diagnostic["code"],
+            diagnostic["message"],
+        )
+        unique.setdefault(key, diagnostic)
+    ordered = sorted(
+        unique.values(),
+        key=lambda row: (
+            row["document"],
+            row["pointer"],
+            row["code"],
+            row["message"],
+        ),
+    )
+    if ordered or not deep_validation:
+        return ordered
+    try:
+        candidate = compile_annotation_data(
+            ledger, annotations, ledger_path, packet
+        )
+    except (OSError, UnicodeError, ValueError) as exc:
+        return [
+            {
+                "document": "annotations",
+                "pointer": "",
+                "code": "semantic_compile_error",
+                "message": str(exc),
+            }
+        ]
+    temporary = _unique_sibling_temp_path(ledger_path)
+    try:
+        payload = json.dumps(candidate, ensure_ascii=False, indent=2) + "\n"
+        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        validation_errors, _ = check_ledger_data(temporary, True)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return [
+        {
+            "document": "compiled_ledger",
+            "pointer": "",
+            "code": "final_ledger_error",
+            "message": message,
+        }
+        for message in validation_errors
+    ]
+
+
+def cmd_annotation_check(args: argparse.Namespace) -> int:
+    configure_console_errors()
+    ledger_path = args.ledger.resolve()
+    annotations_path = args.annotations.resolve()
+    packet_path = args.packet.resolve()
+    diagnostics: list[dict[str, str]] = []
+    ledger: dict[str, Any] = {}
+    annotations: dict[str, Any] = {}
+    packet: dict[str, Any] = {}
+    if not ledger_path.is_file():
+        append_annotation_diagnostic(
+            diagnostics,
+            "",
+            "missing_file",
+            f"extracted skeleton not found: {ledger_path}",
+            document="skeleton",
+        )
+    else:
+        ledger, errors = load_json_object(ledger_path, "extracted ledger")
+        for message in errors:
+            append_annotation_diagnostic(
+                diagnostics,
+                "",
+                "invalid_json",
+                message,
+                document="skeleton",
+            )
+    if not annotations_path.is_file():
+        append_annotation_diagnostic(
+            diagnostics,
+            "",
+            "missing_file",
+            f"compact annotations not found: {annotations_path}",
+        )
+    else:
+        annotations, errors = load_json_object(
+            annotations_path, "compact annotations"
+        )
+        for message in errors:
+            append_annotation_diagnostic(
+                diagnostics, "", "invalid_json", message
+            )
+    if not packet_path.is_file():
+        append_annotation_diagnostic(
+            diagnostics,
+            "",
+            "missing_file",
+            f"primary context packet not found: {packet_path}",
+            document="packet",
+        )
+    audit_root = containing_audit_root(ledger_path) if ledger_path.is_file() else None
+    if audit_root is not None and annotations_path.is_relative_to(audit_root):
+        append_annotation_diagnostic(
+            diagnostics,
+            "",
+            "invalid_annotation_path",
+            "compact annotations must remain outside the canonical audit root",
+        )
+    if not diagnostics:
+        try:
+            validate_compile_skeleton(ledger, ledger_path)
+        except (OSError, UnicodeError, ValueError) as exc:
+            append_annotation_diagnostic(
+                diagnostics,
+                "",
+                "invalid_skeleton",
+                str(exc),
+                document="skeleton",
+            )
+        try:
+            packet = validate_current_primary_packet(
+                ledger, ledger_path, packet_path
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
+            append_annotation_diagnostic(
+                diagnostics,
+                "",
+                "invalid_packet",
+                str(exc),
+                document="packet",
+            )
+    if not diagnostics:
+        diagnostics.extend(
+            annotation_preflight_diagnostics(
+                ledger, ledger_path, annotations, packet
+            )
+        )
+    diagnostics = sorted(
+        diagnostics,
+        key=lambda row: (
+            row["document"],
+            row["pointer"],
+            row["code"],
+            row["message"],
+        ),
+    )
+    counts = Counter(row["code"] for row in diagnostics)
+    result = {
+        "command": "annotation-check",
+        "status": "passed" if not diagnostics else "failed",
+        "compile_ready": not diagnostics,
+        "unit_id": ledger.get("unit_id"),
+        "annotation_schema_version": annotations.get(
+            "annotation_schema_version"
+        ),
+        "skeleton_sha256": (
+            sha256_file(ledger_path) if ledger_path.is_file() else None
+        ),
+        "packet_sha256": (
+            sha256_file(packet_path) if packet_path.is_file() else None
+        ),
+        "annotation_sha256": (
+            sha256_file(annotations_path)
+            if annotations_path.is_file()
+            else None
+        ),
+        "error_count": len(diagnostics),
+        "counts_by_code": dict(sorted(counts.items())),
+        "diagnostics": diagnostics,
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(result, ensure_ascii=True, indent=2))
+    elif diagnostics:
+        print(
+            f"annotation-check failed with {len(diagnostics)} diagnostic(s)."
+        )
+        for row in diagnostics:
+            rendered_pointer = row["pointer"] or "/"
+            print(
+                f"{row['document']}{rendered_pointer}: "
+                f"{row['code']}: {row['message']}"
+            )
+    else:
+        print("annotation-check passed: annotations are compile-ready.")
+    return 0 if not diagnostics else 1
 
 
 def build_compiled_source_units(
@@ -10922,6 +12646,16 @@ def cmd_compile_annotations(args: argparse.Namespace) -> int:
             f"preserve or archive it before creating a new audit record: {output_path}"
         )
 
+    audit_root = containing_audit_root(ledger_path)
+    if audit_root is None:
+        raise ValueError(
+            "compile-annotations requires a skeleton inside a canonical audit root"
+        )
+    if annotations_path.is_relative_to(audit_root):
+        raise ValueError(
+            "Compact annotations must remain outside the canonical audit root"
+        )
+
     ledger, ledger_errors = load_json_object(ledger_path, "extracted ledger")
     if ledger_errors:
         raise ValueError(ledger_errors[0])
@@ -10933,6 +12667,26 @@ def cmd_compile_annotations(args: argparse.Namespace) -> int:
     packet = validate_compiler_context_packet(
         ledger, ledger_path, annotations, packet_path
     )
+    preflight = annotation_preflight_diagnostics(
+        ledger,
+        ledger_path,
+        annotations,
+        packet,
+        deep_validation=False,
+    )
+    if preflight:
+        shown = "; ".join(
+            f"{row['pointer']} {row['code']}: {row['message']}"
+            for row in preflight[:12]
+        )
+        suffix = (
+            f"; and {len(preflight) - 12} more"
+            if len(preflight) > 12
+            else ""
+        )
+        raise ValueError(
+            "Compact annotation preflight failed: " + shown + suffix
+        )
     candidate = compile_annotation_data(
         ledger, annotations, ledger_path, packet
     )
@@ -10963,18 +12717,9 @@ def cmd_compile_annotations(args: argparse.Namespace) -> int:
             raise ValueError(
                 "Compiled ledger failed full final validation: " + shown + suffix
             )
-        try:
-            os.link(temporary, output_path)
-        except FileExistsError as exc:
-            raise FileExistsError(
-                "Compiled ledger appeared during validation and cannot be "
-                f"overwritten: {output_path}"
-            ) from exc
-        except OSError as exc:
-            raise OSError(
-                "Cannot publish the compiled ledger with atomic no-overwrite "
-                f"semantics: {output_path}: {exc}"
-            ) from exc
+        publication_method = publish_no_overwrite(
+            temporary, output_path, "Compiled ledger"
+        )
     finally:
         if temporary.exists():
             temporary.unlink()
@@ -10993,13 +12738,24 @@ def cmd_compile_annotations(args: argparse.Namespace) -> int:
                     for step in candidate["steps"]
                 ),
                 "annotation_sha256": sha256_file(annotations_path),
+                "packet_sha256": sha256_file(packet_path),
                 "obligation_sha256": annotations["obligation_sha256"],
                 "context_binding_sha256": packet["context_binding_sha256"],
+                "operational_binding_sha256": packet[
+                    "operational_binding_sha256"
+                ],
+                "submitted_operational_binding_sha256": packet[
+                    "_submitted_operational_binding_sha256"
+                ],
+                "operational_binding_drift": packet[
+                    "_operational_binding_drift"
+                ],
                 "primary_ledger_sha256": canonical_primary_ledger_sha256(candidate),
                 "validation": summary["validation_scope"][
                     "local_record_integrity"
                 ],
                 "artifact_state": "compiled_schema5_ledger",
+                "publication_method": publication_method,
             },
             ensure_ascii=True,
             indent=2,
@@ -27354,6 +29110,31 @@ def build_parser() -> argparse.ArgumentParser:
     extract.add_argument("--output", type=Path, required=True)
     extract.add_argument("--force", action="store_true")
     extract.set_defaults(func=cmd_extract)
+
+    annotation_scaffold = subparsers.add_parser(
+        "annotation-scaffold",
+        help=(
+            "Create a packet-bound compact annotation draft with judgments left null"
+        ),
+    )
+    annotation_scaffold.add_argument("ledger", type=Path)
+    annotation_scaffold.add_argument("--packet", type=Path, required=True)
+    annotation_scaffold.add_argument("--output", type=Path, required=True)
+    annotation_scaffold.set_defaults(func=cmd_annotation_scaffold)
+
+    annotation_check = subparsers.add_parser(
+        "annotation-check",
+        help=(
+            "Aggregate compact annotation schema and reconciliation diagnostics"
+        ),
+    )
+    annotation_check.add_argument("ledger", type=Path)
+    annotation_check.add_argument("--annotations", type=Path, required=True)
+    annotation_check.add_argument("--packet", type=Path, required=True)
+    annotation_check.add_argument(
+        "--json", action="store_true", help="Write machine-readable diagnostics"
+    )
+    annotation_check.set_defaults(func=cmd_annotation_check)
 
     compile_annotations = subparsers.add_parser(
         "compile-annotations",

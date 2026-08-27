@@ -261,12 +261,9 @@ proof, assumptions, and dependency contracts fit and the output keeps their
 records separate. A full audit still checks every scoped unit; prioritization
 and batching do not sample or omit routine units.
 
-Compute the effective critical set as the manifest `critical_units` union
-every in-scope unit in `affected_results` for an open, deferred, or
-resolved load-bearing S0 or S1 issue. This promotion is derived from canonical
-issues and cannot be disabled by leaving a unit out of the manifest list.
-Resolved severe issues remain promoted until their current repaired state has
-a fresh issue-aware challenge.
+Use the exact effective-critical set defined in
+[challenge-protocol.md](challenge-protocol.md). Prioritization and batching
+cannot omit any unit in that set.
 
 If a critical dependency fails, mark downstream units blocked or conditional. Continue only when checking them can independently expose useful issues.
 
@@ -310,58 +307,8 @@ Remove or weaken each assumption and identify the first proof step that fails. S
 
 Use [domain-risk-checks.md](domain-risk-checks.md) only for domains actually present.
 
-For every effective-critical unit, run a fresh-context challenger without
-exposing the primary verdict or proposed repair. Make it issue-aware by
-requiring `covered_issue_ids` to equal the exact triggering open, deferred, or
-resolved load-bearing S0 or S1 issue set for that unit. A manifest-only
-critical unit has an empty triggering set. Bind the challenge to the current
-source snapshot, canonical ledger content excluding `independent_check`, exact
-challenge packet context, and challenger artifact with the required hashes and
-generation time. Preserve the artifact and reconcile disagreements. If a
-second pass is unavailable, disclose the audit as single-pass and do not claim
-independent confirmation.
 
-Use `packet --mode challenge` to project only its schema and mode, unit and
-source-snapshot identity, locked source, normalized obligation, inventory row,
-exact dependency contracts, neutral issue triggers, and risk aspects. Each
-trigger contains `id`, `severity`, a structured `target_contract`, and its
-`target_contract_sha256`. Exclude the primary review, steps, verdicts, finding
-summary, repair proposals, reports, unrelated ledgers, and prior conversation.
-If a historical required challenge is no longer in the current affected set
-because its downstream path was retired, reconstruct the sealed prior
-dependency registry. Include only neutral retired edge identities that cut a
-prior root-to-challenged-unit path, the exact neutral current structural route
-when present, and current retirement source anchors. Record explicitly when no
-current structural route exists. Do not require physical deletion from the
-registry: retirement means absence from the current issue-specific closure.
-Do not expose archived statuses, compatibility verdicts, or issue backlinks.
-Project source-locked code, configuration, and other valid external evidence
-as self-contained lines and hashes without a host-specific path.
-One challenger pass should assess all triggering issues for that unit. The
-challenger reports a separate verdict and exact source-anchored disagreements,
-not a duplicate full atomic ledger. Reconciliation occurs only after the
-blinded output is fixed.
-
-Store the challenge packet `context_binding_sha256` as
-`independent_check.challenge_context_sha256`. For every covered issue, add one
-`issue_assessments` row containing exactly its issue ID, packet target-contract
-hash, `assessment` in `confirmed`, `not_confirmed`, or `unclear`, and
-substantive `target_assessment` and `downstream_assessment`. The assessment ID
-set must equal `covered_issue_ids`; both sets are empty for a manifest-only
-critical unit. Finalization reconstructs the challenge packet and rejects a
-stale context or target hash.
-
-After the blinded artifact and ledger assessment are fixed, insert the exact
-machine-readable artifact binding and update its hash with:
-
-```bash
-python "<skill-root>/scripts/proofcheck.py" bind-challenge --root proofcheck-audit --unit-id <unit-id>
-```
-
-The command preserves the Markdown narrative, replaces any prior binding
-block, verifies current packet semantics, and writes the artifact and ledger
-as one transaction. Rerun it whenever the artifact or assessment changes.
-
+For every effective-critical unit, follow [challenge-protocol.md](challenge-protocol.md). That file is the sole authority for challenge selection, blinding, issue assessments, freshness hashes, reconciliation, and artifact binding. This system audit only verifies that every required challenge exists and passes its current gate.
 ## 7. Apply completion gates
 
 A full audit is complete only when:
