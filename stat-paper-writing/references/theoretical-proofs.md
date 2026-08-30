@@ -44,7 +44,7 @@ Keep notation local. State conditioning and randomness explicitly when they are 
 
 Remove rhetorical shortcuts such as "clearly," "obviously," or "it is easy to see" when they replace explanation. Do not compensate by inventing a derivation.
 
-In editor-authored clean proof prose, never use or retain "this proves the theorem," "this completes the proof," "completes the proof," "hence proves," or an equivalent proof-completion claim. When supplied textual evidence makes clear that the sentence is only rhetorical closure and its removal changes no mathematical claim, replace it with the exact nonvalidating sentence "This is the stated conclusion." Otherwise, leave the supplied source sentence unchanged, keep it outside any proposed clean revision, and report **Unverified dependency:**. Do not substitute another completion claim such as "This is the claimed conclusion and completes the proof."
+Do not decide whether a proof-ending claim such as "this proves the theorem" or "this completes the proof" is mathematically warranted. Preserve the mathematical force and attributed status of supplied proof-ending language; make only presentation edits that do not require a completeness judgment. Do not add a new proof-completion claim or a standardized replacement. If the user asks whether the proof is correct or complete, direct them to invoke `$stat-paper-proofcheck` explicitly; do not start that audit implicitly.
 
 ## Lemmas
 

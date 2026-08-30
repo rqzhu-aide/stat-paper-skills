@@ -120,11 +120,11 @@ Revise language that is:
 - stronger than the result, such as "guarantees" for an empirical pattern or "validates" for an illustrative application;
 - weaker than needed because of excessive hedging around a stated identity or theorem.
 
-Use only alternatives supported by the manuscript or author-supplied material: proves, establishes under the stated assumptions, suggests in the reported settings, is consistent with, improves the specified criterion, or remains unresolved. Do not upgrade a statement to **proves** or **establishes** merely because it appears as a theorem or has a proof. In editor-authored clean proof prose, never use or retain "this proves the theorem," "this completes the proof," "completes the proof," "hence proves," or an equivalent completion claim. Use the exact nonvalidating sentence "This is the stated conclusion." only when the closure is demonstrably rhetorical; otherwise keep the supplied closure outside the proposed clean revision and report **Unverified dependency:**.
+Use only alternatives supported by the manuscript or author-supplied material: proves, establishes under the stated assumptions, suggests in the reported settings, is consistent with, improves the specified criterion, or remains unresolved. Do not upgrade a statement to **proves** or **establishes** merely because it appears as a theorem or has a proof. For proof prose, load [theoretical-proofs.md](theoretical-proofs.md) rather than inferring whether a proof is complete.
 
 ## Typography and final validation
 
-Preserve the manuscript's or stated venue's punctuation and typographic conventions. Correct malformed punctuation, but do not impose a private house style unless requested.
+Preserve the manuscript's or stated venue's punctuation and typographic conventions, including supplied U+2013 and U+2014 characters. Correct malformed punctuation, but do not impose the assistant's output house style on manuscript text unless requested.
 
 Compare source and revision for changes in object type, logical direction, scope, evidence level, uncertainty, numerical values, citations, labels, and cross-references. If the supplied format can be compiled or rendered, inspect the affected passage. Otherwise state the validation limit.
 

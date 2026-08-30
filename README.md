@@ -10,7 +10,7 @@ verification. The skills can be used independently or in sequence.
 
 | Skill | Version |
 |---|---|
-| `stat-paper-writing` | v1.1 |
+| `stat-paper-writing` | v1.2 |
 | `stat-paper-reviewer` | v1.0 |
 | `stat-paper-proofcheck` | v1.2 |
 
@@ -38,3 +38,17 @@ assumptions, dependencies, inference steps, counterexamples, and downstream
 consequences. This is a rigorous workflow and must be invoked explicitly.
 
 Usage: `Use $stat-paper-proofcheck to audit this theorem and its dependency closure line by line.`
+
+## Runtime and tests
+
+The proofcheck and writing helpers and tests require Python 3.10 or later.
+
+For Full writing audits with PDF sources, install `pypdf` (preferred) or
+`PyPDF2`. If neither reader is available, or automatic page inspection fails,
+supply a trusted count with `--pdf-page-count "SOURCE=N"`.
+
+Run the writing skill tests from the repository root:
+
+```text
+python -m unittest discover -s stat-paper-writing/tests
+```

@@ -60,6 +60,10 @@ When claiming practical or scientific value, state only an interpretation, analy
 
 When truth is unavailable, do not present agreement in one observed data set as accuracy validation. Interpret differences in practical units, state what the design is said to identify, and separate predictive or associational evidence from causal conclusions.
 
+Before revising application prose, inventory the named data set, the method or estimator applied, and the reported result or analysis. Removing unsupported consequence, decision, or role language does not authorize dropping any of these supplied facts. Recheck the clean prose and restore each fact unless the author explicitly asks to remove it.
+
+If the application role remains unresolved, load [support-and-author-decisions.md](support-and-author-decisions.md). Ask the author to name the intended role and the manuscript-supported evidence for that role; a request only for practical-consequence evidence is not sufficient.
+
 ## Results paragraphs
 
 Use this order:

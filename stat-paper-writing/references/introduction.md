@@ -44,14 +44,7 @@ Do not weaken prior work or extrapolate beyond supplied sources to manufacture n
 
 ## Contribution paragraph
 
-Rank contributions only when the supplied manuscript states or supports a hierarchy or dependency. Otherwise preserve the stated co-primary status or request author judgment. When a dependency is supplied, a useful order is:
-
-1. conceptual or statistical target;
-2. method or construction;
-3. stated theoretical guarantee;
-4. computational or empirical consequence.
-
-If the contributions are independent, provide a genuine unifying claim or reconsider whether they belong in one manuscript. If they depend on one another, state that dependency.
+For contribution identities, hierarchy, dependency, and rank, load [argument-architecture.md](argument-architecture.md). Do not infer a contribution identity from a theorem, estimator, experiment, or section topic.
 
 ## Abstract connection
 

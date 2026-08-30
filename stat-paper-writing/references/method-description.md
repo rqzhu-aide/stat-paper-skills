@@ -60,9 +60,7 @@ Keep the statistical construction in the main text. Put software-specific indexi
 
 Compare formulas, pseudocode, and prose for the same named inputs, operations, tuning choices, and returned object. This is a documentary consistency check, not a determination that code implements the estimator.
 
-When these representations conflict, do not infer authority from formality, detail, order, or convention. Record the mismatch, label the unresolved authority **Unverified dependency**, and request author confirmation before changing one representation to match another. A conditional edit may state what would change under each author-confirmed choice, but do not silently choose an objective, algorithm, or returned object.
-
-When a claimed computational property, such as closed form, exactness, convergence, complexity, or implementation equivalence, is not established by the supplied artifacts, label its truth **Unverified dependency**. Do not remove, narrow, affirm, or deny the claim without author confirmation. A conditional alternative may show how the prose would change under each author-confirmed status, but keep it outside completed manuscript text.
+When these representations conflict, or when a claimed computational property is not established by supplied artifacts, load [support-and-author-decisions.md](support-and-author-decisions.md). Do not infer authority, code equivalence, exactness, convergence, complexity, or the returned object from formality or convention.
 
 ## Review checklist
 

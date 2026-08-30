@@ -18,6 +18,8 @@ Identify whether the task is:
 - **Substantive polish:** paragraph architecture, explanation order, terminology, and transitions while preserving the scientific claim.
 - **Structural revision:** section-level reordering or reconstruction. Use the relevant section reference and do not describe this as copyediting.
 
+Polish or revision authorizes editing within supplied support. Perform the checks privately and return or apply the improved manuscript text rather than an audit report. Do not add audit labels or ask about a safe edit. If one span is unsafe, continue with other safe in-scope edits and list only the unresolved input.
+
 Treat theorem statements, assumptions, definitions, estimands, numerical conclusions, causal interpretations, and novelty claims as high-risk prose. Inspect their dependencies before editing.
 
 ## 2. Build a meaning lock
@@ -43,9 +45,11 @@ Protect:
 
 Literal form is part of this protection. Unless notation normalization is explicitly authorized, preserve the exact source token or macro rather than substituting a mathematically equivalent typographic form.
 
-If a clearer sentence would require changing one of these items, flag the issue for author judgment rather than hiding the change inside a polish.
+If a clearer sentence would require changing one of these items, leave that span unchanged and request author judgment rather than hiding the change inside a polish. Continue with safe edits elsewhere.
 
 An explicitly unsupported promotional or evidentiary qualifier is different from a protected scientific object or conclusion. In a bounded polishing request, remove such a qualifier when its removal leaves a complete supported sentence and does not alter an estimand, causal interpretation, formal statement, numerical finding, or algorithm. Disclose the removal. Do not retain an unsupported guarantee in clean prose merely because establishing it would require additional evidence.
+
+Do not remove a substantive relation, such as independence, causality, a quantifier, or an implication, merely because another supplied representation omits it. Treat that as a documentary conflict unless supplied evidence or author confirmation identifies the controlling representation. After an authorized removal, add a concise Material change: note stating that the relation was not explicitly documented in the controlling supplied representation.
 
 ## 3. Revise in passes
 
@@ -95,20 +99,20 @@ State why the object is needed before or immediately after defining it. Keep the
 
 Preserve who assumes what, under which probability law or regime, and for which result. Replace "mild" or "standard" with an interpretation when those descriptions are not justified.
 
-A supplied diagnosis that an assumption is absent does not authorize inserting that assumption into the revision, including in an "if" clause. Keep the missing condition outside clean manuscript prose under the exact label **Unverified dependency:**. Do not substitute a support-gap or author-query label. Do not label the unsupported original claim as polished, revised, clean, suggested, or manuscript-ready prose. If no supported clean wording remains, state that no safe clean revision is available and quote the original only as diagnostic source text outside clean prose. Do not silently weaken, delete, or recast the affected claim. If author-supplied material directly supports a narrower associational, predictive, or descriptive statement, offer it as a proposed replacement that requires author approval rather than as a completed clean edit. Otherwise, do not manufacture a replacement claim.
+When an assumption, identification condition, or causal interpretation is missing or merely proposed by the editor, load [support-and-author-decisions.md](support-and-author-decisions.md). Do not insert the condition or return unsupported clean prose.
 
 ### Results
 
 Use a precise verb only when the manuscript's stated result or author-supplied material supports that evidence level:
 
-- preserve **proves** or **establishes under the stated assumptions** in theorem-result exposition when the manuscript already assigns that status to the formal result, but not as an editorial endorsement that a supplied proof step completes the proof;
+- preserve **proves** or **establishes under the stated assumptions** in theorem-result exposition when the manuscript assigns that status to the formal result; treat it as attributed manuscript status, not an independent proof-completeness judgment;
 - use **shows in the reported settings** for a supplied numerical result;
 - use **suggests** or **is consistent with** for a supplied empirical pattern;
 - use **conjectures** or **motivates** for a mechanism presented as unproved.
 
 Do not upgrade **states**, **claims**, or **asserts** to **proves** or **establishes** merely because the text contains a theorem environment or a proof. Do not change "may," "can," "typically," or "under Assumption 2" without documentary support for the stronger statement.
 
-In editor-authored clean proof prose, never use or retain "this proves the theorem," "this completes the proof," "completes the proof," "hence proves," or an equivalent proof-completion claim. When supplied textual evidence makes clear that the sentence is only rhetorical closure and its removal changes no mathematical claim, replace it with the exact nonvalidating sentence "This is the stated conclusion." Otherwise, leave the supplied source sentence unchanged, keep it outside any proposed clean revision, and report **Unverified dependency:**. Do not substitute another completion claim such as "This is the claimed conclusion and completes the proof."
+For any proof prose, including a one-sentence polish, load [theoretical-proofs.md](theoretical-proofs.md) and follow its proof-ending boundary. Recommend an explicit `$stat-paper-proofcheck` invocation only when the user asks for a formal correctness or completeness audit; do not start it implicitly.
 
 ### Comparisons
 
@@ -156,7 +160,7 @@ Treat these changes as warning signs requiring explicit justification:
 
 ## 7. Deliver the edit
 
-For a local polish, provide or apply the revised text and mention only substantive choices or unresolved scientific ambiguities.
+For a local polish, provide or apply the revised text directly. The meaning-lock and diagnostic checks remain private. Mention only substantive choices or unresolved scientific ambiguities.
 
 For a longer edit, summarize:
 

@@ -20,6 +20,14 @@ Every main section should advance one part of this sentence. Remove or move mate
 
 Choose one dominant paper-level argument spine. Sections may differ in information order and depth, but they should advance the same account of the contribution. If two spines remain plausible, draft a six-sentence introduction spine for each: target, existing capability, obstacle, key move, evidence contract, and boundary. Retain the version that requires fewer unsupported promises and introduces fewer concepts before their purpose is clear.
 
+### Forward positioning
+
+For author-side planning, restructuring, introductions, or abstracts, do not default to an A + B + C + D inventory. From supplied contribution identities, propose at most two candidate headline contributions. Compare each candidate with the stated existing capability and ask: if this component were removed, which headline capability or boundary change would disappear? Prefer the candidate with the clearest supported change in target, scope, assumptions, feasibility, inference, computation, or interpretation. Present subordinate components as enabling steps rather than coequal selling points.
+
+Lead planning, drafting, introduction, and abstract deliverables with the strongest supported candidate thesis. Use diagnostics to strengthen or delimit that thesis, not as a default referee-style list of criticisms.
+
+When the manuscript does not supply a hierarchy, label the result **Candidate primary contribution** and keep it outside the contribution ledger's supplied rank. Editorial candidate ranks remain outside the factual ledger. Link the candidate to exact formal or empirical support and its main boundary, then ask the author to confirm the hierarchy. Treat this as an author-side positioning proposal, not a verified novelty claim; do not call it novel, first, or boundary-pushing without supplied or independently verified evidence.
+
 For a methods paper, distinguish the main forms of contribution:
 
 - a new estimand or interpretation;
@@ -40,7 +48,9 @@ When a manuscript claims several contributions, or when their hierarchy or suppo
 |---|---|---|---|---|---|
 | 1, 2, ... | Exact stated contribution | Named target, identity, estimator, diagnostic, or algorithm | Named statement and written scope | Named table, figure, application, or numerical result | Stated limitation or unsupported link |
 
-Rank contributions only when the manuscript supplies a hierarchy or dependency. Record an explicitly equal hierarchy as **Co-primary**. Otherwise mark the rank as **Unclear** and identify the author decision needed. Enter only supplied support; use **Missing**, **Unclear**, or **Not claimed** rather than completing a cell by inference.
+Rank contributions in the ledger only when the manuscript supplies a hierarchy or dependency. Record an explicitly equal hierarchy as **Co-primary**. Otherwise mark the rank as **Unclear** and identify the author decision needed. Keep an editorial candidate hierarchy under Forward positioning rather than entering it as a supplied rank. Enter only supplied support; use **Missing**, **Unclear**, or **Not claimed** rather than completing a cell by inference.
+
+Editorial candidate ranks remain outside the factual ledger.
 
 Create a row only when the manuscript or author supplies that contribution's identity. Do not infer contribution identities from a named estimator, theorem, experiment, or later section emphasis. If only an aggregate count is supplied, do not display a row-level ledger or turn the count into conjectured rows; request the missing contribution inventory instead.
 
@@ -49,6 +59,8 @@ This restriction also applies to prose findings and narrative consequences. Do n
 A formal result about an oracle object does not document support for a feasible-estimator claim unless the manuscript states the link. Evidence about one component does not automatically support another. Make dependencies among contributions explicit.
 
 Use the ledger as a diagnostic. Include it in the response when it materially clarifies a paper-level narrative failure; otherwise use it internally to guide revision. When displaying it, retain all six columns.
+
+If the intended hierarchy is unresolved, a candidate positioning proposal may identify the strongest supported narrative, but ask the authors to confirm the contribution ranks before applying a paper-level reorganization. When visible formal or empirical support is distributed differently from a supplied rank, preserve the supplied rank and ask whether it should remain or be recalibrated. Do not direct the manuscript to center, rebuild around, demote, or remove a contribution until the supplied record establishes that choice.
 
 ## Reader-facing argument sequence
 

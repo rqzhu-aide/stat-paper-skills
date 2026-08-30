@@ -21,9 +21,9 @@ Treat the conventionality of a technical name as a source-dependent claim. When 
 
 - **Manuscript-supported:** the name is used by a supplied citation excerpt, source text, or clearly identified manuscript source.
 - **Externally confirmed in supplied task evidence:** authoritative-source verification was already supplied for the complete phrase, with the supporting sources and result recorded.
-- **Unverified dependency:** the supplied material does not establish the name's conventionality.
+- **Unverified dependency:** the supplied material does not establish conventionality when a conventionality or attribution claim must remain.
 
-This skill does not conduct independent source verification. Do not infer external confirmation from memory, familiar component words, or one manuscript-local phrase. Absence from a supplied limited search does not establish that a term is nonstandard. If the task does not include recorded authoritative verification, use **Unverified dependency** rather than implying verification.
+This skill does not conduct independent source verification. Do not infer external confirmation from memory, familiar component words, or one manuscript-local phrase. Absence from a supplied limited search does not establish that a term is nonstandard. Without recorded authoritative verification, do not imply confirmation. If no conventionality or attribution claim is needed, a supported transparent descriptive label may be a Local repair; state that independent confirmation was not performed.
 
 For consequential naming decisions, record internally:
 
@@ -77,7 +77,7 @@ Check every canonical term in:
 
 Check especially that:
 
-- conventional names have recorded support or are marked **Unverified dependency**;
+- retained conventionality or attribution claims have recorded support or are marked **Unverified dependency**;
 - author-defined names are explicitly introduced and consistently used;
 - manuscript-local role descriptors have not been fused into established names;
 - population, oracle, feasible, empirical, and numerical objects remain distinct;
@@ -93,12 +93,12 @@ Search for rejected variants after editing. Read visible prose without code, met
 
 ## Report the audit
 
-Apply the evidence statuses defined in the main skill:
+Apply the evidence states in [support-and-author-decisions.md](support-and-author-decisions.md) and the audit fields in [reporting-and-validation.md](reporting-and-validation.md):
 
 - use **Observed evidence** for a visible naming or consistency conflict;
 - use **Inferred consequence** for a reader-facing ambiguity supported by manuscript evidence;
-- use **Unverified dependency** for conventionality, attribution, or source support not established by supplied material.
+- use **Unverified dependency** when unsupported conventionality, attribution, or source support is load-bearing to the intended wording.
 
-Separate safe replacements from decisions that require author input or additional source support. When a changed name is supported only by supplied manuscript material, report `Provenance: Manuscript-supported` and state that independent confirmation was not performed when that distinction affects attribution or positioning. Do not call the name conventional, standard, established, accepted, or field-recognized on manuscript support alone. Report only terminology issues that affect meaning, attribution, consistency, or journal-ready presentation. Do not produce an exhaustive vocabulary list unless requested.
+Separate safe replacements from decisions that require author input or additional source support. Whenever a terminology provenance note uses Manuscript-supported, state in the same or immediately following sentence that independent confirmation was not performed. Do not call the name conventional, standard, established, accepted, or field-recognized on manuscript support alone. Report only terminology issues that affect meaning, attribution, consistency, or journal-ready presentation. Do not produce an exhaustive vocabulary list unless requested.
 
 When a supplied source identifier or citation key supports a naming replacement, retain that exact anchor in the revised wording or provenance note. Do not reduce a traceable source link to an anonymous supplied excerpt.

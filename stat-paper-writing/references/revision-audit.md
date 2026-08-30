@@ -5,8 +5,7 @@
 - [Audit depth and evidence](#audit-depth-and-evidence)
 - [Default inspection order](#default-inspection-order)
 - [Neutral orientation](#1-read-once-without-judging)
-- [Fine-grained checks](#2-audit-atomic-documentary-consistency)
-- [Local and section checks](#4-audit-local-prose-and-paragraphs)
+- [Fine-to-section shared protocol](#passes-2-through-5-fine-to-section-protocol)
 - [Cross-section and paper-level checks](#6-audit-cross-section-contracts)
 - [Revision and closure](#10-revise-and-run-the-closure-loop)
 - [Audit output](#audit-output)
@@ -23,13 +22,7 @@ Honor an explicit user request for a different focus or order. A focused request
 
 Treat "focus only" or an instruction to ignore other checks as a strict scope contract. For contribution-and-narrative-only work, use `orientation -> contribution ledger when useful -> narrative`. Use the supplied scope directly and do not perform or report separate atomic, local, section, or cross-section passes.
 
-For every consequential finding, distinguish the applicable components:
-
-- **Observed evidence:** directly visible in the supplied manuscript or artifacts;
-- **Inferred consequence:** a reader-facing effect supported by visible manuscript evidence;
-- **Unverified dependency:** unresolved without mathematical validation, external sources, code behavior, numerical recomputation, missing context, or author knowledge.
-
-A finding may contain both Observed evidence and an Inferred consequence. Label them separately. Do not label routine local polish or minor style suggestions, and never present an Unverified dependency as an established error.
+Use [support-and-author-decisions.md](support-and-author-decisions.md) when supplied support, artifact authority, or an author choice becomes consequential. Use [reporting-and-validation.md](reporting-and-validation.md) when classifying and reporting findings.
 
 ## Default inspection order
 
@@ -71,68 +64,13 @@ Read all supplied main text, appendices or supplement, captions, tables, referen
 
 Use the manuscript's own terms. Do not mark errors, diagnose reader difficulty, rank contributions, select a preferred narrative, decide coherence, load repair guidance, or edit. This pass is for understanding only.
 
-## 2. Audit atomic documentary consistency
+Store this orientation as one compact source-anchored manuscript map and reuse it across later passes. Treat the passes as logical checkpoints in one working context, not as separate required agents or model calls. Reopen source only for exact evidence, a consequential cross-check, lost context, or post-edit closure.
 
-Begin evaluation with the finest checks:
+## Passes 2 through 5: fine-to-section protocol
 
-- duplicate, undefined, or incorrect theorem, lemma, equation, figure, table, appendix, and citation references;
-- symbols, subscripts, superscripts, dimensions, probability notation, and first definitions;
-- numerical values, signs, negation, comparison direction, uncertainty summaries, and caption values;
-- assumption lists, quantifiers, conditioning, convergence language, rates, endpoints, and pointwise or uniform scope;
-- population, oracle, feasible, empirical, and numerical object names at directly paired locations;
-- exact terminology variants and attribution attached to the same local claim.
+For the default full audit, after neutral orientation load [quick-section-audit.md](quick-section-audit.md) and apply its atomic, formal-object, local, and section passes across the complete supplied scope. Reuse the full-manuscript orientation map rather than repeating its bounded orientation.
 
-Create a compact notation or terminology ledger only when inconsistent variants are visible. If editable source and a suitable toolchain are available, compile or render here to collect duplicate or unresolved references and inspect equation layout and punctuation, figure and table placement, hyperlink behavior, and publication-size readability. When rendered pages or figure or table images are supplied, inspect them directly. Treat build messages and visible layout facts as documentary evidence, not as judgments about the paper's argument.
-
-A strict-logic check may conclude that two supplied passages cannot describe the same object or scope as written. It may not conclude that a theorem is true or false, a proof is valid, an assumption is sufficient, a rate is correct, or an external source is accurate.
-
-## 3. Audit formal-object and claim-to-support contracts
-
-Check directly paired artifacts before broader exposition:
-
-- each display against its lead-in, stated job, defined symbols, normalization, numbering or display form, and follow-up;
-- each formula against prose and pseudocode for named inputs, operations, outputs, tuning choices, returned object, and whether a choice is mathematical or implementation-specific;
-- each theorem, proposition, corollary, or lemma against its stated assumptions and their stated roles, exact written conclusion, scope, surrounding interpretation, claimed relation to prior results, supported method component, proof location, and proof-roadmap references;
-- proof roadmaps and endings against the named statements, rates, objects, and scopes they cite;
-- each method description against its named sample split, withheld or reused information, randomness, tuning, initialization, stopping or failure rule, output, and computational detail when these are supplied or needed to identify the procedure;
-- each central empirical claim against its named table, figure, application, or supplied numerical result, including the stated target or truth, competitors, tuning, oracle inputs, replication count, uncertainty, timing, and failure handling when applicable;
-- each figure or table against its caption, prose interpretation, labels, scales, legends, and readable publication-size rendering;
-- each citation against the precise local claim to which it is attached, and each definition, decomposition, proof device, algorithm, technical name, novelty claim, or priority claim that requires supplied source support against an attached source;
-- each limitation against the claim it qualifies.
-
-When local prose claims that a fold, held-out construction, sample split, aggregation step, or related operation is why a theorem applies, require a supplied statement that makes that construction-to-theorem relation explicit. If the relation is not supplied, report it as its own **Blocking** finding, name the construction, label the claimed relation **Unverified dependency:**, and ask which operation is claimed to justify the theorem and what supplied statement supports that link. Do not demote the issue to ambiguous-pronoun polish or resolve the relation by rewriting.
-
-Check presentation and documentary consistency only. Do not infer code equivalence, recompute results, verify external sources, determine novelty, supply a missing derivation, or assess proof validity.
-
-If directly paired artifacts conflict, the mismatch is Observed evidence but neither artifact becomes authoritative merely because it is more formal, detailed, or earlier in the manuscript. Treat reconciliation as an author decision unless supplied material explicitly identifies the controlling representation.
-
-## 4. Audit local prose and paragraphs
-
-Now inspect local presentation:
-
-- definitions before use and purpose before unfamiliar notation;
-- sentence meaning, agency, logical direction, claim strength, and statistical register;
-- integration and punctuation of mathematics and displays;
-- the controlling question and information order of each paragraph;
-- cohesion among adjacent paragraphs and the intellectual reason for local transitions;
-- rhetorical shortcuts, software-manual wording, generic promotion, and unsupported interpretation.
-
-Use [polishing-protocol.md](polishing-protocol.md) and [wording-register.md](wording-register.md) only when these issues are in scope. Do not redesign a section during this pass.
-
-## 5. Audit section-level architecture
-
-For each affected section, identify its reader-facing job, internal dependency order, carry-forward claim, support, boundary, and transition to the next section.
-
-Check whether:
-
-- objects appear after their purpose and before their use;
-- methods distinguish target, oracle or baseline, exact or plug-in object, obstacle, feasible construction, information withheld or reused, operation, tuning and stopping details, failure behavior, and boundary;
-- formal results answer a stated question and receive interpretation without proof machinery;
-- proof exposition has a declared dependency map and navigable roadmap;
-- numerical sections organize settings and displays around supplied claims and state the target or truth, competitors, tuning, oracle inputs, replication count, uncertainty, timing, and failure handling when applicable;
-- discussions connect synthesis, evidence strength, use conditions, limitations, and next questions.
-
-Load a section guide when this pass reaches a consequential or coverage-sensitive question in that section; a fully formed finding is not required first. Use [style-modes.md](style-modes.md) only when the repair remains genuinely ambiguous.
+For an explicit focused plan, load that shared protocol only when one of its passes is selected or is an indispensable stated dependency. Do not insert its other passes into a coarse focus-only audit.
 
 ## 6. Audit cross-section contracts
 
@@ -151,10 +89,7 @@ The main text should contain the motivation, central objects, formal conclusions
 
 If several contributions compete or their hierarchy or support remains unclear after Pass 6, load [argument-architecture.md](argument-architecture.md) and build its six-column ledger.
 
-Use only the hierarchy and support supplied by the manuscript. Record explicitly equal contributions as **Co-primary**; otherwise use **Unclear** when rank is unresolved. Use **Missing**, **Unclear**, or **Not claimed** rather than completing a support cell by inference.
-
-The ledger organizes evidence already gathered. It does not establish proof validity, empirical correctness, novelty, or a preferred contribution ranking.
-This is an evaluative presentation pass because it classifies the manuscript's supplied hierarchy and support as stated, missing, unclear, or not claimed. It is not a second descriptive orientation.
+Follow [argument-architecture.md](argument-architecture.md) for contribution identity, hierarchy, support cells, author decisions, and the exact ledger. The ledger organizes evidence already gathered; it does not establish proof validity, empirical correctness, novelty, or a preferred rank. CONTRIBUTION_LEDGER remains evaluative rather than a second orientation.
 
 ## 8. Perform the evaluative reader walkthrough
 
@@ -200,36 +135,8 @@ After revision:
 3. recheck affected local, section, cross-section, and paper-level contracts;
 4. compile or render when possible and inspect affected output.
 
-This return to fine checks is validation after editing, not a change to the default fine-to-coarse diagnostic order.
+This return to fine checks is validation after editing, not a change to the default fine-to-coarse diagnostic order. Record every finding disposition plus phase-specific compile, render, and diff closure under [reporting-and-validation.md](reporting-and-validation.md).
 
 ## Audit output
 
-Do not narrate the neutral orientation pass unless the user requests an audit trail. If an audit trail is requested, state the passes in the order actually performed.
-
-By default, report only consequential findings and prioritize the final report by consequence rather than discovery order:
-
-1. target, scope, or statement inconsistency;
-2. contribution and argument;
-3. method and formal-result presentation;
-4. numerical support;
-5. notation and prose.
-
-Use this structure for material findings:
-
-- **Blocking:** the manuscript cannot be revised safely without author input or additional support.
-- **Material:** the issue substantially affects interpretation, documentary consistency, or paper-level presentation.
-- **Local:** the issue permits a safe, bounded presentation repair.
-
-Use only these three categories for audit priorities. Do not translate them into referee-style or generic high, medium, or low severity labels.
-
-| Field | Content |
-|---|---|
-| Priority | Blocking, Material, or Local |
-| Status | Observed evidence, Inferred consequence, and Unverified dependency as applicable |
-| Location | Section, paragraph, theorem, equation, figure, or manuscript-wide |
-| Evidence | Exact manuscript fact or recurring pattern |
-| Consequence | Effect on argument, interpretation, consistency, or navigation |
-| Revision direction | Specific editorial action |
-| Remedy type | Safe prose edit, author decision, or additional author-supplied source, analysis, theory, or evidence needed to retain the claim |
-
-Do not force this table for a short local audit. Preserve the same information in compact prose. Do not rewrite the manuscript unless revision was requested.
+Use [reporting-and-validation.md](reporting-and-validation.md) as the sole finding, priority, remedy, provenance, and finalization contract. Do not narrate neutral orientation unless the user requests an audit trail. Do not rewrite the manuscript unless revision was requested.

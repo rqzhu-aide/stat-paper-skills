@@ -57,7 +57,7 @@ Use the manuscript's supplied account to distinguish:
 
 Do not determine that a role is mathematically correct or that an assumption is necessary. Check that labels, scopes, and described roles are consistent across the statement and surrounding prose. Do not call assumptions mild, standard, or verifiable without supplied support.
 
-If surrounding prose attributes a stronger relation to an assumption than the displayed statement supplies, remove that relation from the clean revision and disclose the correction. The material-change note must name the removed relation and state that it is not supplied or implied by the displayed assumption; do not silently replace it with the narrower statement.
+If surrounding prose asserts a relation that the displayed statement does not explicitly document, treat the difference as a documentary conflict. Do not choose the display as authoritative or remove the relation unless supplied evidence or author confirmation identifies the controlling representation. After an authorized correction, name the changed relation and its documentary basis; do not claim that omission from the display proves the relation is false or not implied.
 
 ## Post-result interpretation
 
