@@ -1,0 +1,112 @@
+{
+  "finalization_schema_version": 1,
+  "status": "passed",
+  "generated_utc": "2026-08-30T14:54:16+00:00",
+  "protocol": {
+    "skill_name": "stat-paper-proofcheck",
+    "skill_version": "1.2",
+    "evidence_contract_version": 5,
+    "artifact_schema_version": 5,
+    "method_interface_schema_version": 1,
+    "closure_contract_version": 4,
+    "validator_sha256": "2299fed2f78984f57059f7eb839051979e59482842a62161b1e6c76de675e498"
+  },
+  "source_snapshot_sha256": "3f8b5733b8151109077b4cb9ba689810977c85ca977fbf57b53412d5e235c466",
+  "artifact_manifest": [
+    {
+      "file": "AUDIT_MANIFEST.json",
+      "sha256": "d3225b2d2b1824946e41df749b7bc789adbe3da0c212c0f39be78f486c40d295"
+    },
+    {
+      "file": "CHECK_PLAN.md",
+      "sha256": "2a6c4ecfc0ae9d24c448e3aec6f06fe9fdb5c189e65d9eb31579b6751a258df4"
+    },
+    {
+      "file": "EXECUTION_ORDER.md",
+      "sha256": "e17085b544ff06e761b4a9cca3f7086b525ae4cec5f49f08bdc2fe7d255e39dd"
+    },
+    {
+      "file": "PROGRESS.json",
+      "sha256": "b682030b912dc05e0b6d6ea89cb4210517a37307f25a69f0cf03d8434ab4ff63"
+    },
+    {
+      "file": "audit/00_sources/project/paper.tex",
+      "sha256": "aacbf71efe27f4decd4a85208223e763e54a585b4b074a1b3a0029eaff54875f"
+    },
+    {
+      "file": "audit/01_index/cross_reference_audit.json",
+      "sha256": "abaefd1bf5cdd737286c0506e6f9fae012434bbd2a3bf385d163a69dfdd6a6cd"
+    },
+    {
+      "file": "audit/01_index/cross_reference_audit.md",
+      "sha256": "71a24a3e7f6e520bfbcf40f80b43d0e460c779b4b8748ed44f31e152b0e07d09"
+    },
+    {
+      "file": "audit/01_index/theorem_inventory.json",
+      "sha256": "da7a7ba7ec8406c5e901fb625f275a3c0f24987b3178911a3623302144e5c4e2"
+    },
+    {
+      "file": "audit/01_index/theorem_inventory.md",
+      "sha256": "c56bdbda2a5f2649441278afb8da60e9569be32870cda3b79069a588bb8c31d8"
+    },
+    {
+      "file": "audit/03_dependencies/DEPENDENCY_REGISTRY.json",
+      "sha256": "c25cdf0bb9b2d12643c42528f57c5a9303f0da85a7be98265d72c073807b0dd5"
+    },
+    {
+      "file": "audit/03_dependencies/METHOD_INTERFACE_REGISTRY.json",
+      "sha256": "9ea1e51c5380d0e6ff07cb804bab1dd9312f36722e686aaf89f318b34255f31e"
+    },
+    {
+      "file": "audit/03_dependencies/dependency_graph.md",
+      "sha256": "495dfd47d492e149199994e3969c39a1333a9bbff19dafdea816d01a0e9bb3f8"
+    },
+    {
+      "file": "audit/04_local_checks/lem-growing-max.ledger.json",
+      "sha256": "dd7df9f3d1f3a8d400f2d51f26a291ada9710bae0f0539bb7235145099955216"
+    },
+    {
+      "file": "audit/04_local_checks/lem-growing-max.skeleton.json",
+      "sha256": "8c4d06942f1738ed190e8adc6dbe80add0aef0e61f868d74dd7a2c416654d45e"
+    },
+    {
+      "file": "audit/04_local_checks/thm-main.ledger.json",
+      "sha256": "cb8aec5a43ffa6387f52520a3a7ca1e53fcf29116d836038bf87e3360c8cef4f"
+    },
+    {
+      "file": "audit/04_local_checks/thm-main.skeleton.json",
+      "sha256": "5339b02217b466090f0c5e4cae72b644282a7c28cb8d70a7e66a4abdd3ffc40d"
+    },
+    {
+      "file": "audit/05_adversarial/lem-growing-max-challenge.md",
+      "sha256": "e0a3fe9e6823370115d0e1fac654bed9a6d04453edff806a37ea49b6c8b932cf"
+    },
+    {
+      "file": "audit/05_adversarial/lem-growing-max-counterexample.py",
+      "sha256": "ebae7bca362ec6fa722b2caa38c085b7ab346a577a9456af082164c864a8c289"
+    },
+    {
+      "file": "audit/05_adversarial/thm-main-challenge.md",
+      "sha256": "422f7f4e586967045574cb438bdb584e993fa3763f7c4e2fbac2ca4b17c3cac1"
+    },
+    {
+      "file": "audit/06_reports/FINAL_REPORT.md",
+      "sha256": "ee4d16d334aca3b8e3e586390b869df1f565e4b67e1568b4f3fddcda135f49e2"
+    },
+    {
+      "file": "audit/06_reports/ISSUE_LOG.json",
+      "sha256": "90ffa1353b00836232aa9e7e7ae9ca769dcc30bebffa3015e09f6cd554462c1a"
+    },
+    {
+      "file": "audit/06_reports/ISSUE_SUMMARY.md",
+      "sha256": "743f999933053bcc99e80d38337cdd483053fb29325dd3b228e9a30b019a1214"
+    },
+    {
+      "file": "audit/07_runtime/CALIBRATION.json",
+      "sha256": "eb33c1e1e1d0b58c2cfc47f2f3dda583d00ef6513b2fcb705af35f4eb139351e"
+    }
+  ],
+  "audit_state_sha256": "5ae74b3ccbd05aebff23149d83ae647e41002df9367215e0019f72d77e91025b",
+  "errors": [],
+  "record_payload_sha256": "a01e346e6482e130d4fa56fb85f0b62ca3b37ab836c292b32ec13bbb5b241c73"
+}

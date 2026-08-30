@@ -27,18 +27,21 @@ proofcheck-audit/
       ISSUE_SUMMARY.md
       FINAL_REPORT.md
       FINALIZATION.json
-    07_runtime/                 optional observational usage telemetry
+    07_runtime/
+      CALIBRATION.json          canonical checker-calibration evidence
+      calibration-history/     byte-exact hash-addressed superseded records
 ```
 
 Do not store paper-specific work inside the installed skill.
 
-`AUDIT_MANIFEST.json`, `PROGRESS.json`, ledgers, registries, and
-`ISSUE_LOG.json` are canonical. `CHECK_PLAN.md`, `EXECUTION_ORDER.md`, and
+`AUDIT_MANIFEST.json`, `PROGRESS.json`, ledgers, registries,
+`ISSUE_LOG.json`, and `CALIBRATION.json` are canonical. Superseded calibration
+records remain immutable historical evidence. `CHECK_PLAN.md`, `EXECUTION_ORDER.md`, and
 `audit/03_dependencies/dependency_graph.md` are concise deterministic views.
 Generate or refresh them instead of editing them:
 
 ```bash
-python "<skill-root>/scripts/proofcheck.py" sync-views --root <audit-root>
+python "<skill-root>/scripts/proofcheck.py" sync-views --root "<audit-root>"
 ```
 
 The generated views must be current for finalization. The `finalize` command
@@ -58,10 +61,12 @@ Invoke `proofcheck.py` through the directory containing the loaded
 directory, or platform has changed:
 
 ```bash
-python "<skill-root>/scripts/proofcheck.py" doctor --mode new --paper <source> --output <audit-root> --input-kind latex --portable-sources
+python "<skill-root>/scripts/proofcheck.py" doctor --mode new --paper "<source>" --output "<audit-root>" --input-kind latex --portable-sources
 ```
 
 Use `--mode new` before scaffold and `--mode resume` for an existing audit.
+Pass identical quoted `--project-root`, `--additional-source`, and `--fls`
+values to doctor and scaffold; doctor checks that source closure read-only.
 New mode rejects any existing destination. Resume mode requires a readable
 audit manifest and a supplied paper whose hash matches the recorded
 authoritative paper. `doctor` leaves no probe residue. It checks that
@@ -101,20 +106,21 @@ file, later validation rejects it; keep the audit `NONFINAL` and report the
 exact malformed artifact. Recovery and issue archives are byte copies with
 hashes and never depend on shared inode identity.
 
-`AUDIT_MANIFEST.json` is the machine-readable scope and completion contract. Before finalization, set its reviewed depth, overall assessment, targets, in-scope and critical units, in-scope method interfaces, explicit exclusions with reasons, source or parser limits, inventory overrides, and completion evidence. For Focused depth, `target_units` must be nonempty and `in_scope_units` must equal the targets plus their exact transitive internal dependency closure. An inventory override may add a parser-missed manual unit, correct or reject a proof location, confirm, replace, or reject a proof association, or designate an exact external restatement only when it records the required source-bound evidence. A manual unit binds `reviewed_unit_sha256`. An explicit rejection uses a null reviewed proof and a reviewed association with status `rejected`, method `reviewed_rejection`, the same target, and no evidence occurrences. An external restatement override uses `kind: external_restatement`, exact `unit_id`, `external_dependency_use_id`, `statement_sha256` equal to the hash of the exact reviewed formal statement span, substantive `reason`, and substantive `evidence`. Keep the unit proof-required and its proof null. Its ledger uses `coverage_mode: external_restatement`, repeats the designated use ID, and covers exactly the statement. That ID must name one external direct dependency of the unit and exactly one matching registry use. Citation keys equal the statement citations mapped to it, or the empty set when no citation command exists. Source-lock and rescan every changed proof span or statement-only restatement, then reconcile its exact reference occurrences, dependencies, and citations. Do not edit the source snapshot to make drift disappear. Re-scaffold or deliberately update and recheck affected work after a source change.
+`AUDIT_MANIFEST.json` is the machine-readable scope and completion contract. Before finalization, set its reviewed depth, overall assessment, targets, in-scope and critical units, in-scope method interfaces, explicit exclusions with reasons, source or parser limits, inventory overrides, and completion evidence. Every target unit must be declared critical, and the optional `audit_scope.verified_challenge_sample_rate` (a number in (0, 1]; recommended for Full audits) adds the deterministic challenge sample defined in [challenge-protocol.md](challenge-protocol.md). For Focused depth, `target_units` must be nonempty and `in_scope_units` must equal the targets plus their exact transitive internal dependency closure. An inventory override may add a parser-missed manual unit, correct or reject a proof location, confirm, replace, or reject a proof association, or designate an exact external restatement only when it records the required source-bound evidence. A manual unit binds `reviewed_unit_sha256`. An explicit rejection uses a null reviewed proof and a reviewed association with status `rejected`, method `reviewed_rejection`, the same target, and no evidence occurrences. An external restatement override uses `kind: external_restatement`, exact `unit_id`, `external_dependency_use_id`, `statement_sha256` equal to the hash of the exact reviewed formal statement span, substantive `reason`, and substantive `evidence`. Keep the unit proof-required and its proof null. Its ledger uses `coverage_mode: external_restatement`, repeats the designated use ID, and covers exactly the statement. That ID must name one external direct dependency of the unit and exactly one matching registry use. Citation keys equal the statement citations mapped to it, or the empty set when no citation command exists. Source-lock and rescan every changed proof span or statement-only restatement, then reconcile its exact reference occurrences, dependencies, and citations. Do not edit the source snapshot to make drift disappear. Re-scaffold or deliberately update and recheck affected work after a source change.
 
 The manifest records the skill version, artifact schemas, closure contract
 version, validator hash, and source snapshot identifier. When only the
-validator implementation hash changes and all schema and contract versions
-remain current, status reports `validator_revalidation_required`. Run:
+release identity changes, meaning the validator implementation hash or the
+skill version, and all schema and contract versions remain current, status
+reports `validator_revalidation_required`. Run:
 
 ```text
-python "<skill-root>/scripts/proofcheck.py" revalidate-protocol --root <audit-root>
+python "<skill-root>/scripts/proofcheck.py" revalidate-protocol --root "<audit-root>"
 ```
 
 The command checks source freshness and current record readability before it
-updates only the validator hash. It invalidates any prior finalization and does
-not transfer a mathematical judgment. Resolve every current gate error and
+stamps the current protocol identity, and changes nothing else. It invalidates
+any prior finalization and does not transfer a mathematical judgment. Resolve every current gate error and
 finalize again. Validator hashing normalizes CRLF and CR text newlines to LF,
 so equivalent checkouts retain one validator identity across platforms. A
 schema or contract-version change still requires deliberate
@@ -122,15 +128,43 @@ migration and rechecking. Keep proof, dependency-closure, and method-interface c
 so a new registry or interface record does not silently reinterpret older proof
 ledgers.
 
-The current release remains skill version `1.0`; its finalizable protocol uses
-artifact schema `5`, evidence contract `4`, and closure contract `3`.
+For an audit predating calibration schema 2, first finish reported contract
+migrations, or run `revalidate-protocol` when only the validator changed. Then
+run balanced `canary-grade` with reviewed checker-profile, configuration, and
+context IDs. It hash-archives prior bytes in
+`audit/07_runtime/calibration-history/` and records existing ledger hashes.
+Finalization requires each listed ledger to be rechecked and replaced or
+recompiled afterward, followed by affected dependency and challenge checks;
+byte-identical ledgers do not prove a post-calibration recheck. Regenerate
+calibration-bound packets only after moving old ledgers to
+`audit/04_local_checks/history/` under names not ending in `.ledger.json`.
+Create fresh annotation scaffolds and fully re-review before recompiling;
+rebind cannot cross a calibration receipt.
 
-Use `closure_contract_version: 3` in `DEPENDENCY_REGISTRY.json`. Its `review`
-object must have `status: reviewed`, the exact manifest
-`source_snapshot_sha256`, the current `inventory_sha256`, the exact ordered
-`in_scope_units`, and substantive `evidence`. A changed source snapshot,
-inventory file, or scope makes the review binding stale. Rebind it only after
-rechecking the affected registry records.
+Skill 1.2 finalizes `5/5/4`. Evidence contract 5 adds anchored step
+evidence, failure computations, and severe-issue repair searches; contract-4
+ledgers remain inspection-only. A reviewed closure-4 registry binds the exact
+source snapshot, inventory hash, ordered scope, and substantive evidence;
+rebind it after any source, inventory, or scope change.
+
+For schema-5/evidence-4 state, run `migrate-evidence --root "<audit-root>"`.
+It validates source, closure, versions, and only direct live ledgers and
+skeletons in `audit/04_local_checks`; hash-named byte-exact backups go in its
+`history/` directory. It then failure-atomically restamps live files and the
+manifest and invalidates finalization. Add and recheck the new failure, repair,
+and anchored-step evidence. At evidence 5, the same checks precede
+`already_current`; a prior closure points to `migrate-closure`. Fatal ledger
+errors remain `malformed_or_stale`.
+
+For `5/5/3`, `migrate-closure` byte-backs up the registry and atomically updates
+registry and manifest to closure 4, clears carried citation bindings, marks
+review pending, and invalidates finalization. Complete and recheck the bindings.
+It refuses evidence-contract-4 state and points to `migrate-evidence`.
+
+Both commands hold `.proofcheck-migration.lock` through preflight, backup, and
+commit. If failure leaves it, inspect the lock, audit state, and reported
+recovery files; restore coherent state, remove the lock only when no migration
+is running, then rerun.
 
 Artifacts using schema `4`, evidence contract `3`, or closure contract `2`
 are inspection-only. Their prior status is historical evidence under the older
@@ -142,7 +176,7 @@ current-protocol claim.
 To create a schema-5 skeleton from one legacy schema-4 ledger, run:
 
 ```text
-python "<skill-root>/scripts/proofcheck.py" migrate-ledger <legacy.ledger.json> --output <schema5.ledger.json>
+python "<skill-root>/scripts/proofcheck.py" migrate-ledger "<legacy.ledger.json>" --output "<schema5.ledger.json>"
 ```
 
 The command never overwrites the legacy ledger. It creates a nonfinal
@@ -174,8 +208,8 @@ before a handoff, write `PROGRESS.json` through the checkpoint command. Choose
 exactly one active-unit option and supply a specific next action:
 
 ```bash
-python "<skill-root>/scripts/proofcheck.py" checkpoint --root <audit-root> --active-unit <unit-id> --next-action "<specific action>"
-python "<skill-root>/scripts/proofcheck.py" checkpoint --root <audit-root> --clear-active-unit --next-action "<specific action>"
+python "<skill-root>/scripts/proofcheck.py" checkpoint --root "<audit-root>" --active-unit <unit-id> --next-action "<specific action>"
+python "<skill-root>/scripts/proofcheck.py" checkpoint --root "<audit-root>" --clear-active-unit --next-action "<specific action>"
 ```
 
 The command derives `current_pass`, the completed, in-progress, and not-started
@@ -222,13 +256,13 @@ Challenge completion and pass-7 readiness use the effective-critical set from
 
 On resumption:
 
-1. Run `proofcheck.py status --root <audit-root>` before loading substantive
+1. Run `proofcheck.py status --root "<audit-root>"` before loading substantive
    audit content.
 2. Inspect the reported source and protocol freshness, active unit, bounded
    gate errors, and exact next action.
 3. For an active or next unit, generate a current primary packet with
-   `packet --root <audit-root> --unit-id <unit-id> --mode primary --output
-   <packet.json>` outside the audit root and load that packet rather than the
+   `packet --root "<audit-root>" --unit-id <unit-id> --mode primary --output
+   "<packet.json>"` outside the audit root and load that packet rather than the
    whole workspace. If its obligation is absent, normalize the fresh extracted
    skeleton or ledger before semantic checking and regenerate the packet.
 4. Inspect `resume.wip.included`. Reuse partial semantic work only when it is
@@ -306,8 +340,8 @@ do not record deterministic `proofcheck.py` commands as model calls.
 For example:
 
 ```bash
-python "<skill-root>/scripts/proofcheck_usage.py" record --root <audit-root> --event-id call-001 --stage primary --work-packets 1 --unit-id <unit-id> --input-tokens 12000 --cached-input-tokens 8000 --output-tokens 3000 --reasoning-tokens 1500 --token-source measured --cache-outcome hit
-python "<skill-root>/scripts/proofcheck_usage.py" summary --root <audit-root> --format markdown
+python "<skill-root>/scripts/proofcheck_usage.py" record --root "<audit-root>" --event-id call-001 --stage primary --work-packets 1 --unit-id <unit-id> --input-tokens 12000 --cached-input-tokens 8000 --output-tokens 3000 --reasoning-tokens 1500 --token-source measured --cache-outcome hit
+python "<skill-root>/scripts/proofcheck_usage.py" summary --root "<audit-root>" --format markdown
 ```
 
 Event IDs must be unique. Use `--token-source measured` for tool-reported

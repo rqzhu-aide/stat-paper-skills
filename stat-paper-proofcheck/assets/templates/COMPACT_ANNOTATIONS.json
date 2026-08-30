@@ -1,9 +1,10 @@
 {
-  "annotation_schema_version": 1,
+  "annotation_schema_version": 2,
   "unit_id": "<copy packet unit_id>",
   "source_unit_sha256": "<copy skeleton source.unit_sha256>",
   "obligation_sha256": "<copy packet obligation_sha256>",
   "context_binding_sha256": "<copy packet context_binding_sha256>",
+  "calibration_receipt_sha256": "<copy packet calibration_receipt_sha256>",
   "source_groups": [],
   "dependencies": [],
   "steps": [

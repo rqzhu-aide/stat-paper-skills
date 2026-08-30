@@ -91,6 +91,48 @@ class WorkflowEfficiencyTests(unittest.TestCase):
             proofcheck.cmd_scaffold(
                 argparse.Namespace(paper=self.paper, output=self.audit)
             )
+        responses = [
+            {
+                "canary_id": "bounded-drift",
+                "argument_status": "invalid",
+                "statement_status": "refuted",
+                "defect_lines": [15],
+                "justification": (
+                    "The equality recurrence permits an unbounded sequence, "
+                    "so the claimed bound and written proof fail."
+                ),
+            },
+            {
+                "canary_id": "finite-max",
+                "argument_status": "valid",
+                "statement_status": "established",
+                "defect_lines": [],
+                "justification": (
+                    "The finite maximum follows from the displayed finite "
+                    "union bound and its termwise limit."
+                ),
+            },
+        ]
+        response_paths = []
+        for index, response in enumerate(responses, 1):
+            path = self.base / f"calibration-{index}.response.json"
+            write_json(path, response)
+            response_paths.append(path)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(
+                0,
+                proofcheck.cmd_canary_grade(
+                    argparse.Namespace(
+                        response=response_paths,
+                        session_id="cal-workflow-efficiency",
+                        root=self.audit,
+                        checker_profile_id="gpt-test-profile",
+                        checker_configuration_id="workflow-efficiency-config",
+                        checker_context_id="fresh-workflow-efficiency-context",
+                        reviewed_binding=True,
+                    )
+                ),
+            )
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -164,12 +206,15 @@ class WorkflowEfficiencyTests(unittest.TestCase):
             )
         primary_context = read_json(primary_context_path)
         annotations = {
-            "annotation_schema_version": 1,
+            "annotation_schema_version": proofcheck.SEMANTIC_ANNOTATION_SCHEMA_VERSION,
             "unit_id": "lem:a",
             "source_unit_sha256": value["source"]["unit_sha256"],
             "obligation_sha256": proofcheck.canonical_sha256(value["obligation"]),
             "context_binding_sha256": primary_context[
                 "context_binding_sha256"
+            ],
+            "calibration_receipt_sha256": primary_context["context_binding"][
+                "calibration_receipt_sha256"
             ],
             "source_groups": [
                 {

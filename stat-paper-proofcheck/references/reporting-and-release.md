@@ -131,7 +131,7 @@ Set `Overall assessment code` to exactly `no_defect_found`, `defects_found`, or
 `inconclusive`, matching `AUDIT_MANIFEST.json`. The finalizer derives precedence
 from the evidence: a recorded defect overrides inconclusive units, and
 inconclusive units override a no-defect assessment. Set `Closure contract
-version` to exactly `3`.
+version` to exactly `4`.
 
 Generate issue counts in `ISSUE_SUMMARY.md` with
 `proofcheck.py issues --write-summary`. At final reporting, add
@@ -159,11 +159,12 @@ and scope from current `contract_refs`. Derive every current downstream
 row from the reviewed dependency graph and invoking `Dxxx` use, including
 its exact locked use-site span, quotation, dependency conclusion, and validity
 effect. Show severity, confidence, lifecycle, finding status,
-`invalidation_kind`, and current invalidation effect. Render each
-structured suggested change with its source-locked target, action, proposal,
-verification status, and required rechecks, followed by the full recheck
-closure across affected units, dependency uses, challenges, and declared
-report deliverables.
+`invalidation_kind`, and current invalidation effect, and for an S0 or S1
+issue also the canonical repair-search conclusion and strategy rows. Render
+each structured suggested change with its source-locked target, action,
+repair scope, assumption cost, claim cost, proposal, verification status,
+and required rechecks, followed by the full recheck closure across affected
+units, dependency uses, challenges, and declared report deliverables.
 
 The issue index and detailed findings are generated projections of
 `ISSUE_LOG.json`, ledgers, the dependency registry, and locked source.
@@ -184,11 +185,11 @@ Before release, write the final derived progress state through `checkpoint`,
 then run the strict issue and finalization gates:
 
 ```bash
-python "<skill-root>/scripts/proofcheck.py" checkpoint --root <audit-root> --clear-active-unit --next-action "Run final issue reconciliation and finalization."
-python "<skill-root>/scripts/proofcheck.py" issues --root <audit-root> --write-summary --write-report-views --final
-python "<skill-root>/scripts/proofcheck.py" sync-views --root <audit-root>
-python "<skill-root>/scripts/proofcheck.py" finalize --root <audit-root>
-python "<skill-root>/scripts/proofcheck.py" delivery-check --root <audit-root>
+python "<skill-root>/scripts/proofcheck.py" checkpoint --root "<audit-root>" --clear-active-unit --next-action "Run final issue reconciliation and finalization."
+python "<skill-root>/scripts/proofcheck.py" issues --root "<audit-root>" --write-summary --write-report-views --final
+python "<skill-root>/scripts/proofcheck.py" sync-views --root "<audit-root>"
+python "<skill-root>/scripts/proofcheck.py" finalize --root "<audit-root>"
+python "<skill-root>/scripts/proofcheck.py" delivery-check --root "<audit-root>"
 ```
 
 The final command writes `FINALIZATION.json` with pass or fail status, protocol
@@ -203,7 +204,7 @@ or otherwise unusable finalization returns `NONFINAL` and a nonzero exit code.
 This gate applies even if an earlier report exists or an informal reviewer
 found a plausible defect.
 
-Before finalization, `proofcheck.py status --root <audit-root>` always runs the
+Before finalization, `proofcheck.py status --root "<audit-root>"` always runs the
 current gate as a preflight. Its default output gives a concise work-in-progress
 summary; add `--verbose` for the complete current gate errors. It reports
 `preflight_status` and `finalizable_now` even when `FINALIZATION.json` is
@@ -215,7 +216,7 @@ it rejects stale source locks, broken links, and inferential steps that do not
 contain exactly one atomic move. It relaxes only final completeness. A zero
 status for a coherent partial audit does not make it complete or final.
 
-After finalization, `proofcheck.py status --root <audit-root>` recomputes artifact
+After finalization, `proofcheck.py status --root "<audit-root>"` recomputes artifact
 hashes and the full gate, including source files, external source-evidence
 files, and other locked evidence outside the audit workspace. It reports record
 status, freshness, exact changed artifact paths, current gate errors, and

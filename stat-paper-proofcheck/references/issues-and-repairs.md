@@ -24,9 +24,25 @@ Define each issue once in `audit/06_reports/ISSUE_LOG.json` with:
 - `affected_results`, equal to the exact dependency-propagated result set;
 - a nonempty `suggested_changes` list, each with a source-locked
   `target_ref`, `action`, exact `proposal`, `verification_status` equal to
-  `candidate` or `verified_sufficient`, and `required_rechecks`;
+  `candidate` or `verified_sufficient`, `required_rechecks`, and the
+  repair-cost classification below (`repair_scope`, `assumption_cost`, and
+  for `weaken_claim` a `claim_cost`);
+- for every S0 or S1 issue, a `repair_search` record with nonempty
+  `strategies` rows (`name`, `attempt`, `outcome` equal to `failed` or
+  `survives_local_inspection`, substantive `evidence`) and a `conclusion`
+  equal to `no_local_repair_found` or `candidate_repair_exists`;
 - scope set to `unit` or `global`;
 - whether the issue is load-bearing.
+
+The repair search grounds the S0/S1 boundary in attempted repairs rather than
+taste: S0 requires `no_local_repair_found` with every strategy `failed`; S1
+requires `candidate_repair_exists` with at least one strategy that
+`survives_local_inspection`. Record each strategy's exact point of failure
+under the paper's stated hypotheses. A strategy that adds an assumption or
+weakens the claim may survive local inspection, but it is diagnostic evidence
+only: it never resolves the issue, lowers severity, strengthens a verdict, or
+edits the manuscript, and its sufficiency claim still requires the full
+suggested-change verification path below.
 
 Do not create a second prose definition of the issue. Resolve source location,
 locked source quotation, normalized claim, assumptions, failed move, and
@@ -97,6 +113,23 @@ Each suggested-change `target_ref` uses `kind: source_span` with exact
 `correct_statement`, `repair_dependency`, `clarify_scope`, or
 `presentation_edit`.
 
+Each suggested change also classifies its cost. `repair_scope` records how
+far the edit reaches: `local_step` (a proof rewrite with the statement
+untouched), `unit_statement` (the stated result changes, so every use site
+needs re-examination), `cross_unit`, or `global`. `assumption_cost` records
+how much stronger the hypotheses become: `none`, `tightens_constant`,
+`adds_regularity_or_moment`, `changes_regime`, or `structural`. A
+`weaken_claim` change also records `claim_cost`: `restricts_scope`,
+`weakens_rate`, `loses_uniformity`, or `weakens_mode`, and no other action
+may carry one. Consistency is machine-checked: `strengthen_assumption`
+cannot cost `none`, a `presentation_edit` must be `local_step` with no
+assumption cost, and an issue whose repair search concluded
+`no_local_repair_found` cannot offer a change classified `local_step` with
+`assumption_cost: none`, since that is exactly the repair the search ruled
+out. The classification is diagnostic triage only: it never certifies a
+repair, lowers severity, or strengthens a verdict, and whether the label
+fits the proposal remains reviewer judgment.
+
 Use `finding_status: defect` when the evidence establishes a defect. Use
 `inconclusive` when an ambiguity, unchecked fact, or conditional finding blocks
 a conclusion. Use `resolved` only with lifecycle `status: resolved` and the full
@@ -110,7 +143,7 @@ Preserve the unresolved evidence before modifying anything that could erase or
 move the failure. Complete and finalize the unresolved audit, then run:
 
 ```bash
-python "<skill-root>/scripts/proofcheck.py" archive-issue --root <audit-root> --issue-id I-001
+python "<skill-root>/scripts/proofcheck.py" archive-issue --root "<audit-root>" --issue-id I-001
 ```
 
 The command requires a current passed finalization, accepts only an open or

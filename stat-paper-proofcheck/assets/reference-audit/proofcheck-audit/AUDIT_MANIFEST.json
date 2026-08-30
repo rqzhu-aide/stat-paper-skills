@@ -1,0 +1,170 @@
+{
+  "schema_version": 5,
+  "protocol": {
+    "skill_name": "stat-paper-proofcheck",
+    "skill_version": "1.2",
+    "evidence_contract_version": 5,
+    "artifact_schema_version": 5,
+    "method_interface_schema_version": 1,
+    "closure_contract_version": 4,
+    "validator_sha256": "2299fed2f78984f57059f7eb839051979e59482842a62161b1e6c76de675e498"
+  },
+  "paper_file": "audit/00_sources/project/paper.tex",
+  "input_provenance": {
+    "kind": "latex",
+    "authoritative_source": "audit/00_sources/project/paper.tex",
+    "portable_sources": true,
+    "original_locations": {
+      "authoritative": false,
+      "paper": "/tmp/refaudit/paper/paper.tex",
+      "project_root": "/tmp/refaudit/paper",
+      "additional_sources": [],
+      "fls": null,
+      "fls_sha256": null,
+      "publisher_pdf": null
+    },
+    "manual_inventory_required": false,
+    "publisher_pdf": null,
+    "visual_review": {
+      "status": "not_started",
+      "notes": "",
+      "reviewed_pages": [],
+      "completed_utc": null
+    }
+  },
+  "created_utc": "2026-08-29T15:53:39+00:00",
+  "inventory_file": "audit/01_index/theorem_inventory.json",
+  "dependency_registry": "audit/03_dependencies/DEPENDENCY_REGISTRY.json",
+  "method_interface_registry": "audit/03_dependencies/METHOD_INTERFACE_REGISTRY.json",
+  "finalization_record": "audit/06_reports/FINALIZATION.json",
+  "source_snapshot": {
+    "files": [
+      {
+        "file": "audit/00_sources/project/paper.tex",
+        "sha256": "aacbf71efe27f4decd4a85208223e763e54a585b4b074a1b3a0029eaff54875f"
+      }
+    ],
+    "sha256": "3f8b5733b8151109077b4cb9ba689810977c85ca977fbf57b53412d5e235c466"
+  },
+  "source_discovery": {
+    "additional_files": [],
+    "fls": null,
+    "portable_fixed_closure": true,
+    "recorded_warnings": []
+  },
+  "parser_warnings": [],
+  "parser_warning_reviews": [],
+  "cross_reference_reviews": [],
+  "audit_scope": {
+    "status": "reviewed",
+    "depth": "full",
+    "overall_assessment": "defects_found",
+    "target_units": [
+      "thm:main"
+    ],
+    "in_scope_units": [
+      "lem:growing-max",
+      "thm:main"
+    ],
+    "critical_units": [
+      "thm:main"
+    ],
+    "in_scope_interfaces": [],
+    "excluded_units": [],
+    "inventory_overrides": [],
+    "source_or_parser_limits": []
+  },
+  "completion": {
+    "inventory_reviewed": true,
+    "parser_warnings_reviewed": true,
+    "dependency_registry_reviewed": true,
+    "method_interface_registry_reviewed": true,
+    "global_consistency_pass": {
+      "status": "completed_with_findings",
+      "evidence": [
+        "All eight aspects were checked across both in-scope units after local ledgers, dependency closure, and challenges were complete."
+      ],
+      "checks": [
+        {
+          "aspect": "source_resolution",
+          "status": "passed",
+          "evidence": "Every reference occurrence, candidate path, and label in both proofs is reconciled; the parser reported no warnings and no broken or duplicate labels.",
+          "affected_units": [],
+          "issue_ids": []
+        },
+        {
+          "aspect": "assumption_and_definition_propagation",
+          "status": "passed",
+          "evidence": "thm:main inherits exactly Lemma 1's conditions by explicit statement reference, and both units use the same convergence-in-probability definition.",
+          "affected_units": [],
+          "issue_ids": []
+        },
+        {
+          "aspect": "notation_domain_and_dimension",
+          "status": "passed",
+          "evidence": "X_{n,j}, m_n, theta_0, and hat{theta}_n keep one meaning across both units; all objects are scalar with stable domains.",
+          "affected_units": [],
+          "issue_ids": []
+        },
+        {
+          "aspect": "constants_and_rates",
+          "status": "passed",
+          "evidence": "Neither statement carries constants or rates; the theta_0 shift is exact and no hidden constant crosses units.",
+          "affected_units": [],
+          "issue_ids": []
+        },
+        {
+          "aspect": "probability_events_and_conditioning",
+          "status": "defect",
+          "evidence": "The growing union of tail events {|X_{n,j}| > eps} over 1..m_n accumulates probability that the pointwise hypothesis does not control; this is the root defect of I-001 at lem:growing-max S004 and it propagates to thm:main through D001.",
+          "affected_units": [
+            "lem:growing-max",
+            "thm:main"
+          ],
+          "issue_ids": [
+            "I-001"
+          ]
+        },
+        {
+          "aspect": "quantifiers_uniformity_and_regime",
+          "status": "defect",
+          "evidence": "The pointwise-in-j hypothesis is used uniformly over the growing range 1..m_n on lem line 16, the exact quantifier promotion recorded in I-001; both units share the asymptotic regime consistently otherwise.",
+          "affected_units": [
+            "lem:growing-max",
+            "thm:main"
+          ],
+          "issue_ids": [
+            "I-001"
+          ]
+        },
+        {
+          "aspect": "use_site_sufficiency",
+          "status": "defect",
+          "evidence": "thm:main needs Lemma 1's conclusion in exactly its stated form; the form matches verbatim but the refuted conclusion cannot support the use, so the use site fails through I-001 rather than through a form mismatch.",
+          "affected_units": [
+            "thm:main"
+          ],
+          "issue_ids": [
+            "I-001"
+          ]
+        },
+        {
+          "aspect": "issue_propagation",
+          "status": "passed",
+          "evidence": "I-001 is propagated from lem:growing-max C001 through registry use D001 to thm:main; affected_results equals the exact reverse-dependency closure and both required challenges cover the issue.",
+          "affected_units": [],
+          "issue_ids": []
+        }
+      ]
+    },
+    "adversarial_pass": {
+      "status": "completed_with_findings",
+      "evidence": [
+        "Boundary and degenerate cases were searched for both units: fixed finite index ranges (union bound closes, exposing the growing-range promotion as the exact defect), constant arrays, zero-variance coordinates, and the independent Bernoulli(1/n) family with m_n = n^2, which refutes lem:growing-max C001 and is locked as the instantiated computation of I-001."
+      ]
+    },
+    "final_report_ready": true
+  },
+  "report_deliverables": [],
+  "notes": []
+}

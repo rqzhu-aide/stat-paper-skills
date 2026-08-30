@@ -1,0 +1,69 @@
+{
+  "calibration_schema_version": 2,
+  "canary_bundle": {
+    "canary_bundle_schema_version": 1,
+    "files": [
+      {"file": "bounded-drift.key.json", "sha256": "a9a99ef1fcc46db70ebf795e7bf332127855e0e2d38cbf594170608793df3720"},
+      {"file": "bounded-drift.tex", "sha256": "21cb1db37353579f98db76346e32e90db6d12b5aff7b964d8a11c7d801e515b7"},
+      {"file": "chebyshev.key.json", "sha256": "78764d6e9220f38c2ce1aaad8b557ebb5d9a7380a69fee4f1f6b62b89e6d22de"},
+      {"file": "chebyshev.tex", "sha256": "3b557ce2869f9be249a428582ce40a34ccd0099c23ef47b4c4d74c09d3e230b8"},
+      {"file": "continuous-mapping.key.json", "sha256": "0239dfac506b07ddf2d609478e827e9e8a032c3756cd1f3115bf26b1821ecde4"},
+      {"file": "continuous-mapping.tex", "sha256": "28070457217d0507b90d4481442d4befcac468f3299db030f5983a3d3e0fc3f9"},
+      {"file": "finite-max.key.json", "sha256": "3207d89bfc8b92065c26690c24f8fc81f43bc6f180bd6f14096312b9582a6b01"},
+      {"file": "finite-max.tex", "sha256": "26995fbf9c8748a222994d4e2b0b7a991798d308125b27c3c30dbf968e999ae8"},
+      {"file": "index.json", "sha256": "aff70e3522759adda79daf720bc20e81c13d725b46279900bedcb3876d998721"},
+      {"file": "signed-markov.key.json", "sha256": "ac3153f7741f5d8edaa1485fa9c0d3a8f025faf77d486275ce5ac0350faf895f"},
+      {"file": "signed-markov.tex", "sha256": "b9d7f94469371ea609221d47efd7eafb7e550ee4bb19c6a7d6b825480442fae9"}
+    ],
+    "sha256": "615ccc5689483aef06c8ce9a9381a10e6b5faa738325beec6d02fda1fec5d51e"
+  },
+  "sessions": [
+    {
+      "session_id": "cal-001",
+      "graded_utc": "2026-08-29T16:04:15+00:00",
+      "checker_binding": {
+        "checker_profile_id": "reference-strong-checker",
+        "checker_configuration_id": "reference-proofcheck-configuration",
+        "checker_context_id": "reference-fresh-context-cal-001",
+        "reviewed": true,
+        "scope": "prospective_local_proof_checks",
+        "automatic_identity_verification": false,
+        "limitation": "Checker profile, configuration, and context identifiers are reviewed coordinator declarations; proofcheck.py cannot independently verify runtime checker identity. Any change requires a new balanced calibration before further local checking."
+      },
+      "audit_binding": {
+        "source_snapshot_sha256": "3f8b5733b8151109077b4cb9ba689810977c85ca977fbf57b53412d5e235c466",
+        "validator_sha256": "8511cf31533c4a7efc6b06db416af70dbc7ccf98b0d8747ba828b1f60c8850d6",
+        "preexisting_proof_artifacts": []
+      },
+      "results": [
+        {
+          "canary_id": "bounded-drift",
+          "passed": true,
+          "reasons": [],
+          "got": {
+            "canary_id": "bounded-drift",
+            "argument_status": "invalid",
+            "statement_status": "refuted",
+            "defect_lines": [14, 15, 16],
+            "justification": "The product of (1 + 1/n) over n = 1..m telescopes to m + 1 and diverges, so the claim that it stays near 1 because the factors tend to 1 is false as written. The statement itself is refuted by the admissible equality sequence x_n = n: it satisfies x_1 = 1 and 0 <= x_{n+1} <= (1 + 1/n) x_n with equality, yet sup_n x_n is infinite rather than at most 2."
+          },
+          "response_sha256": "353900c8bb62d56beeeb9f7e0ea7b65995f4ca374036f10d80da1533de0d1a92"
+        },
+        {
+          "canary_id": "finite-max",
+          "passed": true,
+          "reasons": [],
+          "got": {
+            "canary_id": "finite-max",
+            "argument_status": "valid",
+            "statement_status": "established",
+            "defect_lines": [],
+            "justification": "With K fixed, the union bound over the K events {|X_{n,j}| > eps} is exact and each summand vanishes by the per-j hypothesis, so the finite sum vanishes for every eps > 0; the arbitrary eps then closes convergence in probability of the maximum. No step promotes pointwise control over a growing index set."
+          },
+          "response_sha256": "42425830544413ed008dd5576a2ae2edfa7cad3a8423d52203b9a4cccad4af66"
+        }
+      ],
+      "passed": true
+    }
+  ]
+}

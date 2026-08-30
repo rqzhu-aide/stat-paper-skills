@@ -32,6 +32,81 @@ def read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def install_calibration(root: Path) -> None:
+    manifest = read_json(root / "AUDIT_MANIFEST.json")
+    calibration_path = root / "audit" / "07_runtime" / "CALIBRATION.json"
+    calibration_path.parent.mkdir(parents=True, exist_ok=True)
+    responses = [
+        {
+            "canary_id": "bounded-drift",
+            "argument_status": "invalid",
+            "statement_status": "refuted",
+            "defect_lines": [15],
+            "justification": (
+                "The equality recurrence yields an unbounded admissible "
+                "sequence, so the proof and conclusion fail."
+            ),
+        },
+        {
+            "canary_id": "finite-max",
+            "argument_status": "valid",
+            "statement_status": "established",
+            "defect_lines": [],
+            "justification": (
+                "The fixed finite maximum follows from the displayed union "
+                "bound and the finite-sum limit."
+            ),
+        },
+    ]
+    results = []
+    for response in responses:
+        passed, reasons, got = proofcheck.grade_canary_response(
+            response, proofcheck.load_canary_key(response["canary_id"])
+        )
+        results.append(
+            {
+                "canary_id": response["canary_id"],
+                "passed": passed,
+                "reasons": reasons,
+                "got": got,
+                "response_sha256": proofcheck.canonical_sha256(got),
+            }
+        )
+    write_json(
+        calibration_path,
+        {
+            "calibration_schema_version": proofcheck.CALIBRATION_SCHEMA_VERSION,
+            "canary_bundle": proofcheck.canary_bundle_identity(),
+            "sessions": [
+                {
+                    "session_id": "cal-compile-001",
+                    "graded_utc": "2026-08-09T00:00:00.000001+00:00",
+                    "checker_binding": {
+                        "checker_profile_id": "gpt-test-profile",
+                        "checker_configuration_id": "compiler-test-config",
+                        "checker_context_id": "fresh-compiler-context",
+                        "reviewed": True,
+                        "scope": proofcheck.CHECKER_BINDING_SCOPE,
+                        "automatic_identity_verification": False,
+                        "limitation": proofcheck.CHECKER_BINDING_LIMITATION,
+                    },
+                    "audit_binding": {
+                        "source_snapshot_sha256": manifest["source_snapshot"][
+                            "sha256"
+                        ],
+                        "validator_sha256": manifest["protocol"][
+                            "validator_sha256"
+                        ],
+                        "preexisting_proof_artifacts": [],
+                    },
+                    "results": results,
+                    "passed": True,
+                }
+            ],
+        },
+    )
+
+
 def normalization_checks() -> list[dict[str, str]]:
     rows = {
         "quantifiers_and_domains": (
@@ -146,6 +221,7 @@ class CompileAnnotationsTests(unittest.TestCase):
                     force=False,
                 )
             )
+        install_calibration(self.audit)
         ledger = read_json(self.ledger)
         statement_span = ledger["obligation"]["statement_spans"][0]
         ledger["obligation"] = {
@@ -234,7 +310,7 @@ class CompileAnnotationsTests(unittest.TestCase):
         packet = read_json(self.packet)
         occurrence = packet["inventory"]["reference_occurrences"][0]
         annotations = {
-            "annotation_schema_version": 1,
+            "annotation_schema_version": proofcheck.SEMANTIC_ANNOTATION_SCHEMA_VERSION,
             "unit_id": "lem:compact",
             "source_unit_sha256": ledger["source"]["unit_sha256"],
             "obligation_sha256": proofcheck.canonical_sha256(
@@ -242,6 +318,9 @@ class CompileAnnotationsTests(unittest.TestCase):
             ),
             "context_binding_sha256": read_json(self.packet)[
                 "context_binding_sha256"
+            ],
+            "calibration_receipt_sha256": packet["context_binding"][
+                "calibration_receipt_sha256"
             ],
             "source_groups": [
                 {
@@ -476,6 +555,10 @@ class CompileAnnotationsTests(unittest.TestCase):
             packet["context_binding_sha256"],
             scaffold["context_binding_sha256"],
         )
+        self.assertEqual(
+            packet["context_binding"]["calibration_receipt_sha256"],
+            scaffold["calibration_receipt_sha256"],
+        )
         self.assertEqual([], scaffold["dependencies"])
         self.assertEqual(
             ["C001"],
@@ -493,7 +576,16 @@ class CompileAnnotationsTests(unittest.TestCase):
         first_step = scaffold["steps"][0]
         self.assertEqual(list(proofcheck.RISK_ASPECTS), list(first_step["risks"]))
         self.assertIsNone(first_step["mode"])
-        self.assertIsNone(first_step["literal"])
+        first_line = first_step["lines"][0]
+        source_text = next(
+            row["text"]
+            for row in ledger["source_lines"]
+            if row["line"] == first_line
+        )
+        self.assertEqual(
+            f"Line {first_line} says exactly: {source_text.rstrip()}",
+            first_step["literal"],
+        )
         self.assertIsNone(first_step["risks"]["domain"]["status"])
         serialized = json.dumps(scaffold, ensure_ascii=False)
         for placeholder in ("TODO", "TBD", "not_checked"):
@@ -546,6 +638,488 @@ class CompileAnnotationsTests(unittest.TestCase):
                 )
             )
         self.assertEqual(original, output.read_bytes())
+
+    def test_unanchored_step_evidence_is_rejected(self) -> None:
+        annotations = self.annotations()
+        conclusion_step = annotations["steps"][1]
+        conclusion_step["atomicity_evidence"] = (
+            "The line contains exactly one application of the equality rule."
+        )
+        conclusion_step["adversarial"] = [
+            "No boundary case of the domain violates the applied identity."
+        ]
+        conclusion_step["justification"] = (
+            "The reflexive identity closes the current local goal directly."
+        )
+        for aspect, record in conclusion_step["risks"].items():
+            record["evidence"] = (
+                f"conclusion: the {aspect} aspect raises no concern for the "
+                "applied identity rule."
+            )
+        annotation_path = self.base / "unanchored.annotations.json"
+        write_json(annotation_path, annotations)
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            status = proofcheck.cmd_annotation_check(
+                argparse.Namespace(
+                    ledger=self.ledger,
+                    annotations=annotation_path,
+                    packet=self.packet,
+                    json=True,
+                )
+            )
+        self.assertEqual(1, status)
+        result = json.loads(stdout.getvalue())
+        self.assertTrue(
+            any(
+                "never names a mathematical object" in row["message"]
+                for row in result["diagnostics"]
+            ),
+            result["diagnostics"],
+        )
+
+    def test_math_token_extraction_and_anchoring_matching(self) -> None:
+        tokens = proofcheck.extract_step_math_tokens(
+            "Therefore $P(\\max_{1 \\le j \\le m_n} |X_{n,j}| > \\varepsilon) \\to 0$.",
+            whole_math=False,
+        )
+        self.assertIn("m_n", tokens)
+        self.assertIn("X_{n,j}", tokens)
+        self.assertIn("P", tokens)
+        self.assertNotIn("max", tokens)
+        self.assertNotIn("varepsilon", tokens)
+        prose_only = proofcheck.extract_step_math_tokens(
+            "The conclusion follows by reflexivity and standard arguments.",
+            whole_math=False,
+        )
+        self.assertEqual(set(), prose_only)
+        display = proofcheck.extract_step_math_tokens(
+            "a_{n+1} \\le C_0 b_n", whole_math=True
+        )
+        self.assertIn("b_n", display)
+        self.assertTrue(
+            proofcheck.evidence_names_source_object(
+                {"X_{n,j}"},
+                ["The union over X_n,j style coordinates is uncontrolled."],
+            )
+        )
+        self.assertTrue(
+            proofcheck.evidence_names_source_object(
+                {"m_n"}, ["The range grows because m_n tends to infinity."]
+            )
+        )
+        self.assertFalse(
+            proofcheck.evidence_names_source_object(
+                {"m_n", "P"},
+                ["The step follows by standard union arguments."],
+            )
+        )
+        self.assertFalse(
+            proofcheck.evidence_names_source_object(
+                {"x"}, ["This maximal exchange uses no such object."]
+            )
+        )
+
+    def test_near_duplicate_evidence_warnings_are_advisory(self) -> None:
+        annotations = self.annotations()
+        annotations["steps"][0]["atomicity_evidence"] = (
+            "This row performs no inference and records the statement exactly."
+        )
+        annotations["steps"][1]["atomicity_evidence"] = (
+            "This row performs no inference and records the statement exactly!"
+        )
+        annotation_path = self.base / "neardup.annotations.json"
+        write_json(annotation_path, annotations)
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            status = proofcheck.cmd_annotation_check(
+                argparse.Namespace(
+                    ledger=self.ledger,
+                    annotations=annotation_path,
+                    packet=self.packet,
+                    json=True,
+                )
+            )
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(0, status)
+        self.assertEqual("passed", result["status"])
+        self.assertGreaterEqual(result["warning_count"], 1)
+        self.assertTrue(
+            any(
+                warning.startswith("near_duplicate_evidence")
+                for warning in result["warnings"]
+            )
+        )
+
+    def test_rebind_annotations_restores_current_binding_hashes(self) -> None:
+        annotation_path = self.base / "rebind.annotations.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            proofcheck.cmd_annotation_scaffold(
+                argparse.Namespace(
+                    ledger=self.ledger,
+                    packet=self.packet,
+                    output=annotation_path,
+                )
+            )
+        draft = read_json(annotation_path)
+        draft["obligation_sha256"] = "0" * 64
+        draft["context_binding_sha256"] = "1" * 64
+        draft["source_unit_sha256"] = "2" * 64
+        write_json(annotation_path, draft)
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.assertEqual(
+                0,
+                proofcheck.cmd_rebind_annotations(
+                    argparse.Namespace(
+                        annotations=annotation_path,
+                        packet=self.packet,
+                        skeleton=self.ledger,
+                    )
+                ),
+            )
+        result = json.loads(stdout.getvalue())
+        self.assertEqual("rebound", result["status"])
+        self.assertTrue(result["judgment_review_required"])
+        self.assertEqual(
+            ["context_binding_sha256", "obligation_sha256", "source_unit_sha256"],
+            result["changed_fields"],
+        )
+        packet = read_json(self.packet)
+        ledger = read_json(self.ledger)
+        rebound = read_json(annotation_path)
+        self.assertEqual(packet["obligation_sha256"], rebound["obligation_sha256"])
+        self.assertEqual(
+            packet["context_binding_sha256"], rebound["context_binding_sha256"]
+        )
+        self.assertEqual(
+            ledger["source"]["unit_sha256"], rebound["source_unit_sha256"]
+        )
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.assertEqual(
+                0,
+                proofcheck.cmd_rebind_annotations(
+                    argparse.Namespace(
+                        annotations=annotation_path,
+                        packet=self.packet,
+                        skeleton=None,
+                    )
+                ),
+            )
+        repeat = json.loads(stdout.getvalue())
+        self.assertEqual([], repeat["changed_fields"])
+        self.assertFalse(repeat["judgment_review_required"])
+
+        parser = proofcheck.build_parser()
+        args = parser.parse_args(
+            [
+                "rebind-annotations",
+                str(annotation_path),
+                "--packet",
+                str(self.packet),
+            ]
+        )
+        self.assertIs(args.func, proofcheck.cmd_rebind_annotations)
+        self.assertIsNone(args.skeleton)
+
+    def test_new_calibration_invalidates_packets_and_external_annotations(
+        self,
+    ) -> None:
+        annotations = self.annotations()
+        annotation_path = self.base / "calibration-bound.annotations.json"
+        write_json(annotation_path, annotations)
+        old_packet = read_json(self.packet)
+        old_receipt = old_packet["context_binding"][
+            "calibration_receipt_sha256"
+        ]
+        old_work_context = old_packet["work_context_sha256"]
+
+        calibration_path = (
+            self.audit / "audit" / "07_runtime" / "CALIBRATION.json"
+        )
+        calibration = read_json(calibration_path)
+        latest = json.loads(json.dumps(calibration["sessions"][-1]))
+        latest["session_id"] = "cal-compile-002"
+        latest["graded_utc"] = "2026-08-09T00:00:00.000002+00:00"
+        latest["checker_binding"]["checker_context_id"] = (
+            "fresh-compiler-context-002"
+        )
+        calibration["sessions"].append(latest)
+        write_json(calibration_path, calibration)
+        self.assertEqual(
+            [], proofcheck.checker_calibration_errors(self.audit)
+        )
+
+        with self.assertRaisesRegex(ValueError, "semantic context is stale"):
+            proofcheck.cmd_compile_annotations(
+                argparse.Namespace(
+                    ledger=self.ledger,
+                    annotations=annotation_path,
+                    packet=self.packet,
+                    output=self.output,
+                    force=False,
+                )
+            )
+
+        self.regenerate_packet()
+        new_packet = read_json(self.packet)
+        self.assertNotEqual(
+            old_receipt,
+            new_packet["context_binding"]["calibration_receipt_sha256"],
+        )
+        self.assertNotEqual(old_work_context, new_packet["work_context_sha256"])
+        with self.assertRaisesRegex(
+            ValueError, "annotations.context_binding_sha256"
+        ):
+            proofcheck.cmd_compile_annotations(
+                argparse.Namespace(
+                    ledger=self.ledger,
+                    annotations=annotation_path,
+                    packet=self.packet,
+                    output=self.output,
+                    force=False,
+                )
+            )
+
+        with self.assertRaisesRegex(
+            ValueError, "refuses a changed or missing calibration receipt"
+        ):
+            proofcheck.cmd_rebind_annotations(
+                argparse.Namespace(
+                    annotations=annotation_path,
+                    packet=self.packet,
+                    skeleton=self.ledger,
+                )
+            )
+        fresh_path = self.base / "fresh-calibration.annotations.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(
+                0,
+                proofcheck.cmd_annotation_scaffold(
+                    argparse.Namespace(
+                        ledger=self.ledger,
+                        packet=self.packet,
+                        output=fresh_path,
+                    )
+                ),
+            )
+        self.assertEqual(
+            new_packet["context_binding"]["calibration_receipt_sha256"],
+            read_json(fresh_path)["calibration_receipt_sha256"],
+        )
+        self.compile(self.annotations(), self.output)
+
+    def test_other_preexisting_ledger_does_not_block_recompile(self) -> None:
+        unrelated = (
+            self.audit
+            / "audit"
+            / "04_local_checks"
+            / "unrelated.ledger.json"
+        )
+        unrelated.write_text(
+            '{"checker_authored":"before-calibration"}',
+            encoding="utf-8",
+            newline="\n",
+        )
+        calibration_path = (
+            self.audit / "audit" / "07_runtime" / "CALIBRATION.json"
+        )
+        calibration = read_json(calibration_path)
+        latest = json.loads(json.dumps(calibration["sessions"][-1]))
+        latest["session_id"] = "cal-compile-recovery"
+        latest["graded_utc"] = "2026-08-09T00:00:00.000003+00:00"
+        latest["checker_binding"]["checker_context_id"] = (
+            "fresh-compiler-recovery-context"
+        )
+        latest["audit_binding"] = proofcheck.calibration_audit_binding(
+            self.audit
+        )
+        calibration["sessions"].append(latest)
+        write_json(calibration_path, calibration)
+        self.assertTrue(
+            any(
+                "unrelated.ledger.json is unchanged" in error
+                for error in proofcheck.checker_calibration_errors(self.audit)
+            )
+        )
+
+        self.regenerate_packet()
+        summary = self.compile(self.annotations(), self.output)
+        self.assertEqual("passed", summary["validation"])
+
+    def test_packet_generation_requires_present_latest_passing_calibration(
+        self,
+    ) -> None:
+        calibration_path = (
+            self.audit / "audit" / "07_runtime" / "CALIBRATION.json"
+        )
+        original = calibration_path.read_bytes()
+        calibration_path.unlink()
+        with self.assertRaisesRegex(ValueError, "current checker calibration"):
+            proofcheck.build_context_packet(
+                self.audit, "lem:compact", "primary"
+            )
+        calibration_path.write_bytes(original)
+
+        calibration = read_json(calibration_path)
+        latest = json.loads(json.dumps(calibration["sessions"][-1]))
+        latest["session_id"] = "cal-compile-failing"
+        latest["graded_utc"] = "2026-08-09T00:00:00.000004+00:00"
+        latest["checker_binding"]["checker_context_id"] = (
+            "fresh-compiler-failing-context"
+        )
+        response = dict(latest["results"][1]["got"])
+        response["argument_status"] = "invalid"
+        response["statement_status"] = "not_established"
+        key = proofcheck.load_canary_key(response["canary_id"])
+        passed, reasons, got = proofcheck.grade_canary_response(response, key)
+        latest["results"][1] = {
+            "canary_id": response["canary_id"],
+            "passed": passed,
+            "reasons": reasons,
+            "got": got,
+            "response_sha256": proofcheck.canonical_sha256(got),
+        }
+        latest["passed"] = False
+        calibration["sessions"].append(latest)
+        write_json(calibration_path, calibration)
+        with self.assertRaisesRegex(ValueError, "latest balanced.*passes"):
+            proofcheck.build_context_packet(
+                self.audit, "lem:compact", "primary"
+            )
+
+    def test_compiled_ledger_and_existing_challenge_stale_after_calibration(
+        self,
+    ) -> None:
+        self.compile(self.annotations(), self.output)
+        compiled = read_json(self.output)
+        self.assertEqual(
+            read_json(self.packet)["work_context_sha256"],
+            compiled["work_context_sha256"],
+        )
+        old_challenge = proofcheck.build_context_packet(
+            self.audit, "lem:compact", "challenge"
+        )
+        old_receipt = old_challenge["context_binding"][
+            "calibration_receipt_sha256"
+        ]
+
+        calibration_path = (
+            self.audit / "audit" / "07_runtime" / "CALIBRATION.json"
+        )
+        calibration = read_json(calibration_path)
+        latest = json.loads(json.dumps(calibration["sessions"][-1]))
+        latest["session_id"] = "cal-compile-after-challenge"
+        latest["graded_utc"] = "2026-08-09T00:00:00.000005+00:00"
+        latest["checker_binding"]["checker_context_id"] = (
+            "fresh-compiler-after-challenge-context"
+        )
+        latest["audit_binding"] = proofcheck.calibration_audit_binding(
+            self.audit
+        )
+        calibration["sessions"].append(latest)
+        write_json(calibration_path, calibration)
+
+        current_receipt = proofcheck.current_calibration_receipt(self.audit)
+        self.assertNotEqual(old_receipt, current_receipt["sha256"])
+        ledger_errors, _, _ = proofcheck.audit_ledgers(self.audit, True)
+        self.assertTrue(
+            any("work_context_sha256 is stale" in error for error in ledger_errors),
+            ledger_errors,
+        )
+        with self.assertRaisesRegex(
+            ValueError, "recompiled under the current calibration-bound"
+        ):
+            proofcheck.build_context_packet(
+                self.audit, "lem:compact", "challenge"
+            )
+
+        history = (
+            self.audit / "audit" / "04_local_checks" / "history"
+        )
+        history.mkdir(parents=True)
+        archive = history / "unit.ledger.pre-calibration.json"
+        self.output.replace(archive)
+        self.regenerate_packet()
+        recovery_packet = read_json(self.packet)
+        self.assertEqual(
+            "source_locked_skeleton",
+            recovery_packet["semantic_artifact"]["kind"],
+        )
+
+        status_output = io.StringIO()
+        with contextlib.redirect_stdout(status_output):
+            proofcheck.cmd_status(
+                argparse.Namespace(
+                    root=self.audit,
+                    format="json",
+                    output=None,
+                    force=False,
+                )
+            )
+        archived_status = json.loads(status_output.getvalue())
+        self.assertEqual(0, archived_status["ledgers"])
+        self.assertFalse(
+            any(
+                archive.name in value
+                for value in archived_status["invalid_ledgers"]
+            )
+        )
+
+        recovered = self.compile(self.annotations(), self.output)
+        self.assertEqual("passed", recovered["validation"])
+        self.assertEqual([], proofcheck.checker_calibration_errors(self.audit))
+        status_output = io.StringIO()
+        with contextlib.redirect_stdout(status_output):
+            proofcheck.cmd_status(
+                argparse.Namespace(
+                    root=self.audit,
+                    format="json",
+                    output=None,
+                    force=False,
+                )
+            )
+        recovered_status = json.loads(status_output.getvalue())
+        self.assertEqual(1, recovered_status["ledgers"])
+        self.assertEqual(0, recovered_status["ledger_errors"])
+
+    def test_rebind_annotations_rejects_mismatch_and_audit_paths(self) -> None:
+        annotation_path = self.base / "mismatch.annotations.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            proofcheck.cmd_annotation_scaffold(
+                argparse.Namespace(
+                    ledger=self.ledger,
+                    packet=self.packet,
+                    output=annotation_path,
+                )
+            )
+        draft = read_json(annotation_path)
+        draft["unit_id"] = "lem:other"
+        write_json(annotation_path, draft)
+        with self.assertRaisesRegex(ValueError, "unit mismatch"):
+            proofcheck.cmd_rebind_annotations(
+                argparse.Namespace(
+                    annotations=annotation_path,
+                    packet=self.packet,
+                    skeleton=None,
+                )
+            )
+        inside = self.audit / "inside.annotations.json"
+        inside.write_text(
+            json.dumps({"unit_id": "lem:compact"}),
+            encoding="utf-8",
+            newline="\n",
+        )
+        with self.assertRaisesRegex(ValueError, "outside the canonical audit root"):
+            proofcheck.cmd_rebind_annotations(
+                argparse.Namespace(
+                    annotations=inside,
+                    packet=self.packet,
+                    skeleton=None,
+                )
+            )
 
     def test_annotation_check_reports_multiple_json_pointers(self) -> None:
         annotation_path = self.base / "draft.annotations.json"
@@ -778,7 +1352,14 @@ class CompileAnnotationsTests(unittest.TestCase):
             ["Author2026"],
             [row["key"] for row in scaffold["review"]["citation_dispositions"]],
         )
-        self.assertTrue(all(step["literal"] is None for step in scaffold["steps"]))
+        self.assertTrue(
+            all(
+                isinstance(step["literal"], str)
+                and step["literal"].startswith(f"Line {step['lines'][0]} says exactly: ")
+                for step in scaffold["steps"]
+            )
+        )
+        self.assertTrue(all(step["claim"] is None for step in scaffold["steps"]))
 
     def test_compile_accepts_operational_drift_but_rejects_packet_tampering(self) -> None:
         progress_path = self.audit / "PROGRESS.json"
