@@ -10,7 +10,7 @@ rewrite those facts into a separate authored plan. Generate the concise plan,
 execution order, and dependency view after relevant canonical state changes:
 
 ```bash
-python "<skill-root>/scripts/proofcheck.py" sync-views --root <audit-root>
+python "<skill-root>/scripts/proofcheck.py" sync-views --root "<audit-root>"
 ```
 
 `CHECK_PLAN.md`, `EXECUTION_ORDER.md`, and
@@ -109,7 +109,7 @@ if it omits a reachable prerequisite or includes an unrelated result.
 
 Use ledger `direct_dependencies` plus
 `audit/03_dependencies/DEPENDENCY_REGISTRY.json` as the machine-readable
-canonical record. Use `closure_contract_version: 3`. Treat the Markdown table
+canonical record. Use `closure_contract_version: 4`. Treat the Markdown table
 and graph as reviewed views, not alternate records.
 
 Let deterministic tooling build repeated mirror fields, graph edges,
@@ -344,4 +344,4 @@ A full audit is complete only when:
 - every generated plan, execution-order, and dependency Markdown view is a
   current deterministic projection of the canonical records.
 
-Run `proofcheck.py finalize --root <audit-root>` after completing the final report and progress state. A passing result means the declared non-formal audit records passed the mechanical closure checks. It does not certify kernel-checked mathematical truth.
+Run `proofcheck.py finalize --root "<audit-root>"` after completing the final report and progress state. A passing result means the declared non-formal audit records passed the mechanical closure checks. It does not certify kernel-checked mathematical truth.

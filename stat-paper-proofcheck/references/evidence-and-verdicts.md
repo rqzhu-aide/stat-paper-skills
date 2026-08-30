@@ -18,7 +18,7 @@ Evidence must identify the paper-specific claim, objects, premises, operation,
 source anchor, and observed success or failure relevant to that record. It
 cannot merely restate a status or generic checklist.
 
-Under evidence contract 4, final validation treats exact normalized wording
+Under evidence contract 5, final validation treats exact normalized wording
 repeated across at least four distinct, unrelated substantive steps as nonspecific when it
 appears in `checks.literal`, `checks.atomicity.evidence`, a move
 `justification`, or `checks.adversarial`. It also treats the same risk
@@ -28,6 +28,21 @@ paper-specific `not_applicable` row is excluded from the cross-step
 applicable-risk count, but not from the within-step cross-aspect check.
 Repetition below these thresholds is not positive evidence of specificity, and
 cosmetic wording changes do not make generic evidence adequate.
+
+Evidence contract 5 also anchors evidence to the source. For every derivation
+or reuse step whose locked source unit contains an extractable mathematical
+object name (a subscripted identifier such as `X_{n,j}` or `m_n`, or a plain
+identifier inside a math segment; TeX control-sequence names excluded), the
+union of that step's authored evidence, including atomicity, adversarial, justification,
+failure, and risk evidence, excluding the literal transcription and the
+restatement, must name at least one such object. A unit with no extractable
+token is exempt. Anchoring is a floor: naming an object does not make
+otherwise generic evidence adequate.
+
+`annotation-check` additionally reports advisory `near_duplicate_evidence`
+warnings for authored evidence strings from different steps that are at least
+90 percent similar. Warnings never fail the check; treat them as a prompt to
+replace shared boilerplate before compilation.
 
 ## Assurance boundary
 
@@ -156,6 +171,13 @@ Execution provenance affects the proof assessment only when execution linkage is
 
 Severity measures consequence, not certainty or repair difficulty.
 
+The S0/S1 boundary is an evidence-backed judgment, not an assertion: every S0
+or S1 issue carries the `repair_search` record defined in
+[issues-and-repairs.md](issues-and-repairs.md), documenting the bounded repair
+strategies actually attempted and where each fails. Assign S0 only after the
+recorded strategies fail; assign S1 only with a recorded strategy that
+survives local inspection.
+
 S0 and S1 issues are load-bearing by definition. Any open or deferred S0 or S1 issue, and any lower-severity issue explicitly marked load-bearing, prevents a `no_defect_found` assessment.
 
 Challenge promotion and coverage follow the exact effective-critical rule in
@@ -193,5 +215,13 @@ Record the encoded claim, assumptions, domain, tool and version, exact command, 
 2. Exact symbolic algebra may discharge a specific identity only after assumptions, branches, and domains are encoded and checked. Heuristic simplification alone is not proof.
 3. Validated interval arithmetic can certify a bounded numerical inclusion or counterexample when both premises and failure are enclosed rigorously.
 4. Ordinary numerical tests, simulation, property testing, and random search are falsification tools. A found candidate must be checked exactly or with validated bounds. Finding no counterexample leaves proof status unchanged.
+
+Every `counterexample` or `contradiction` failure additionally requires the
+`failure.computation` record defined in
+[line-by-line-protocol.md](line-by-line-protocol.md): a hash-locked script
+under `audit/05_adversarial/` instantiating the violation at concrete values,
+or an explicit `not_instantiable` reason. Model-authored counterexamples are a
+known hallucination risk; a refutation that cannot be instantiated numerically
+warrants a second derivation before it is released.
 
 Never promote evidence beyond the claim actually encoded.

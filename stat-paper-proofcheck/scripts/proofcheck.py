@@ -11,7 +11,11 @@ from __future__ import annotations
 
 import argparse
 import base64
+import difflib
+import math
 import binascii
+import copy
+import functools
 import hashlib
 import json
 import os
@@ -21,6 +25,7 @@ import sys
 import tempfile
 import unicodedata
 from collections import Counter, defaultdict
+from fractions import Fraction
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -28,13 +33,15 @@ from typing import Any, Iterable
 
 SCHEMA_VERSION = 5
 LEGACY_SCHEMA_VERSION = 4
-EVIDENCE_CONTRACT_VERSION = 4
+EVIDENCE_CONTRACT_VERSION = 5
+PREVIOUS_EVIDENCE_CONTRACT_VERSION = 4
 LEGACY_EVIDENCE_CONTRACT_VERSION = 3
 METHOD_INTERFACE_SCHEMA_VERSION = 1
-CLOSURE_CONTRACT_VERSION = 3
+CLOSURE_CONTRACT_VERSION = 4
+PREVIOUS_CLOSURE_CONTRACT_VERSION = 3
 LEGACY_CLOSURE_CONTRACT_VERSION = 2
 RESOLUTION_ARCHIVE_SCHEMA_VERSION = 1
-SEMANTIC_ANNOTATION_SCHEMA_VERSION = 1
+SEMANTIC_ANNOTATION_SCHEMA_VERSION = 2
 CONTEXT_PACKET_SCHEMA_VERSION = 2
 WORKFLOW_VIEW_PATHS = (
     "CHECK_PLAN.md",
@@ -42,7 +49,7 @@ WORKFLOW_VIEW_PATHS = (
     "audit/03_dependencies/dependency_graph.md",
 )
 SKILL_NAME = "stat-paper-proofcheck"
-SKILL_VERSION = "1.0"
+SKILL_VERSION = "1.2"
 MAX_UNIT_LINES = 100_000
 FORMAL_ENVIRONMENTS = {
     "theorem",
@@ -74,6 +81,9 @@ PACKAGE_RE = re.compile(
 INCLUSION_COMMAND_RE = re.compile(
     r"\\(?:input|include|subfile|import|subimport|documentclass|"
     r"LoadClass(?:WithOptions)?|usepackage|RequirePackage(?:WithOptions)?)\b"
+)
+DEFINITION_BODY_INCLUSION_RE = re.compile(
+    r"\\(?P<command>input|include|subfile|import|subimport)(?![A-Za-z@])"
 )
 FLS_SOURCE_SUFFIXES = {".tex", ".sty", ".cls", ".ltx", ".def", ".cfg", ".clo"}
 LABEL_RE = re.compile(r"\\label\s*\{([^}]+)\}")
@@ -321,16 +331,18 @@ CITE_RE = re.compile(
     r"\\(?:cite|citep|citet|citealp|citealt|parencite|textcite|autocite|footcite|smartcite|supercite)\*?(?:\[[^]]*\]){0,2}\s*\{([^}]+)\}"
 )
 CITATION_COMMAND_RE = re.compile(r"\\[A-Za-z]*cite[A-Za-z]*\*?")
-STEP_ID_RE = re.compile(r"S[0-9]{3}(?:\.[0-9]+)?$")
-SOURCE_UNIT_ID_RE = re.compile(r"U[0-9]{3}$")
-PREMISE_ID_RE = re.compile(r"P[0-9]{3}$")
+NUMBERED_ID_SUFFIX = r"(?:[0-9]{3}|[1-9][0-9]{3,})"
+STEP_ID_RE = re.compile(rf"S{NUMBERED_ID_SUFFIX}(?:\.[0-9]+)?$")
+SOURCE_UNIT_ID_RE = re.compile(rf"U{NUMBERED_ID_SUFFIX}$")
+PREMISE_ID_RE = re.compile(rf"P{NUMBERED_ID_SUFFIX}$")
 MOVE_ID_RE = re.compile(r"M[0-9]{3}$")
-SIDE_CONDITION_ID_RE = re.compile(r"SC[0-9]{3}$")
+SIDE_CONDITION_ID_RE = re.compile(rf"SC{NUMBERED_ID_SUFFIX}$")
 CONCLUSION_ID_RE = re.compile(r"C[0-9]{3}$")
 DEPENDENCY_USE_ID_RE = re.compile(r"D[0-9]{3}$")
 ISSUE_ID_RE = re.compile(r"I-[0-9]{3}$")
 INTERFACE_ID_RE = re.compile(r"MI-[0-9]{3}$")
 REPORT_DELIVERABLE_ID_RE = re.compile(r"R[0-9]{3}$")
+CANDIDATE_PATH_ID_RE = re.compile(rf"CP{NUMBERED_ID_SUFFIX}$")
 
 STEP_STATUSES = {
     "verified",
@@ -392,6 +404,24 @@ SUGGESTED_CHANGE_ACTIONS = {
     "presentation_edit",
 }
 SUGGESTED_CHANGE_STATUSES = {"candidate", "verified_sufficient"}
+REPAIR_SCOPES = {"local_step", "unit_statement", "cross_unit", "global"}
+ASSUMPTION_COSTS = {
+    "none",
+    "tightens_constant",
+    "adds_regularity_or_moment",
+    "changes_regime",
+    "structural",
+}
+CLAIM_COSTS = {
+    "none",
+    "restricts_scope",
+    "weakens_rate",
+    "loses_uniformity",
+    "weakens_mode",
+}
+REPAIR_SEARCH_OUTCOMES = {"failed", "survives_local_inspection"}
+REPAIR_SEARCH_CONCLUSIONS = {"no_local_repair_found", "candidate_repair_exists"}
+REPAIR_SEARCH_STRATEGY_FIELDS = {"name", "attempt", "outcome", "evidence"}
 RESOLUTION_DISPOSITIONS = {"repaired", "replaced", "removed"}
 INTERFACE_KINDS = {
     "density_ratio",
@@ -515,6 +545,15 @@ MOVE_FAILURE_KINDS = {
     *REFUTATION_FAILURE_KINDS,
 }
 ZERO_INPUT_FAILURE_KINDS = MOVE_FAILURE_KINDS - {"invalid_rule"}
+FAILURE_COMPUTATION_STATUSES = {"instantiated", "not_instantiable"}
+FAILURE_COMPUTATION_INSTANTIATED_FIELDS = {
+    "status",
+    "script_file",
+    "script_sha256",
+    "command",
+    "output_excerpt",
+}
+FAILURE_COMPUTATION_NOT_INSTANTIABLE_FIELDS = {"status", "reason"}
 MOVE_FAILURE_STEP_STATUSES = {
     "missing_premise": "gap",
     "unsupported_assertion": "gap",
@@ -710,6 +749,18 @@ def canonical_sha256(value: Any) -> str:
 
 
 SHA256_RE = re.compile(r"[0-9a-f]{64}$")
+JSON_NUMBER_RE = re.compile(
+    r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$"
+)
+
+
+class _ExactJSONFloat(float):
+    """A float-compatible JSON value that retains its source number token."""
+
+    def __new__(cls, json_token: str) -> "_ExactJSONFloat":
+        value = super().__new__(cls, json_token)
+        value.json_token = json_token
+        return value
 
 
 def canonical_primary_ledger_sha256(ledger: dict[str, Any]) -> str:
@@ -734,8 +785,15 @@ def is_utc_timestamp(value: Any) -> bool:
 
 
 def audit_state_manifest(root: Path, excluded: Path | None = None) -> list[dict[str, str]]:
+    # Sort by the canonical posix path string, never by Path objects: Path
+    # ordering is case-insensitive on Windows and case-sensitive elsewhere,
+    # so object ordering would give the same audit a different state hash on
+    # each platform.
     rows: list[dict[str, str]] = []
-    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+    for path in sorted(
+        (item for item in root.rglob("*") if item.is_file()),
+        key=lambda item: item.relative_to(root).as_posix(),
+    ):
         if excluded is not None and path.resolve() == excluded.resolve():
             continue
         relative = path.relative_to(root)
@@ -868,12 +926,141 @@ def atomic_create_json(path: Path, value: Any, description: str) -> None:
             temporary.unlink()
 
 
-def transactional_write_texts(writes: list[tuple[Path, str]]) -> None:
+def migration_update_lock_path(root: Path) -> Path:
+    return root.resolve() / ".proofcheck-migration.lock"
+
+
+def migration_update_lock_error(root: Path) -> str | None:
+    lock = migration_update_lock_path(root)
+    redirect_kind = path_redirect_kind(lock)
+    if redirect_kind is not None:
+        return f"audit migration lock is redirected ({redirect_kind}): {lock}"
+    if lock.exists():
+        return (
+            "audit migration is in progress or a stale lock remains: "
+            f"{lock}. If no migration command is running, inspect the lock and "
+            "audit state, then remove the lock manually and rerun"
+        )
+    return None
+
+
+def acquire_migration_update_lock(
+    root: Path, command: str
+) -> tuple[Path, bytes]:
+    lock = migration_update_lock_path(root)
+    redirect_kind = path_redirect_kind(lock)
+    if redirect_kind is not None:
+        raise ValueError(
+            f"Refusing a redirected audit migration lock ({redirect_kind}): {lock}"
+        )
+    record = {
+        "transaction_schema_version": 1,
+        "command": command,
+        "process_id": os.getpid(),
+        "created_utc": datetime.now(timezone.utc).isoformat(
+            timespec="microseconds"
+        ),
+        "recovery": (
+            "If no migration command is running, inspect this lock and the "
+            "audit state, remove the lock manually, and rerun."
+        ),
+    }
+    payload = (json.dumps(record, sort_keys=True) + "\n").encode("utf-8")
+    try:
+        descriptor = os.open(
+            lock,
+            os.O_CREAT
+            | os.O_EXCL
+            | os.O_WRONLY
+            | getattr(os, "O_BINARY", 0),
+        )
+    except FileExistsError as exc:
+        raise ValueError(migration_update_lock_error(root)) from exc
+    try:
+        offset = 0
+        while offset < len(payload):
+            written = os.write(descriptor, payload[offset:])
+            if written <= 0:
+                raise OSError(f"Cannot write audit migration lock: {lock}")
+            offset += written
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    return lock, payload
+
+
+def release_migration_update_lock(lock: Path, payload: bytes) -> None:
+    if (
+        path_redirect_kind(lock) is not None
+        or not lock.is_file()
+        or lock.read_bytes() != payload
+    ):
+        raise OSError(
+            "Audit migration lock changed during the transaction; inspect and "
+            f"remove it manually only after recovery: {lock}"
+        )
+    lock.unlink()
+
+
+class MigrationRecoveryRequired(OSError):
+    """A migration left recovery files or could not restore every live file."""
+
+
+def audit_migration_locked(command: Any) -> Any:
+    @functools.wraps(command)
+    def locked(args: argparse.Namespace) -> int:
+        root = args.root.resolve()
+        lock, payload = acquire_migration_update_lock(root, command.__name__)
+        release_lock = True
+        try:
+            return command(args)
+        except MigrationRecoveryRequired:
+            release_lock = False
+            raise
+        finally:
+            if release_lock:
+                release_migration_update_lock(lock, payload)
+
+    return locked
+
+
+def transactional_write_texts(
+    writes: list[tuple[Path, str]],
+    *,
+    expected_sha256: dict[Path, str] | None = None,
+) -> None:
     """Replace a group of text files, restoring prior bytes on commit failure."""
     entries: list[dict[str, Any]] = []
     identities: set[str] = set()
+    expected_records: dict[str, tuple[Path, str]] = {}
+    for raw_path, digest in (expected_sha256 or {}).items():
+        path = Path(raw_path)
+        identity = os.path.normcase(os.path.abspath(path))
+        if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest):
+            raise ValueError(
+                f"Transactional expected digest is invalid for {path}"
+            )
+        if identity in expected_records:
+            raise ValueError(f"Duplicate transactional baseline path: {path}")
+        expected_records[identity] = (path, digest)
+
+    def validate_expected_baselines(selected: set[str] | None = None) -> None:
+        for identity, (path, digest) in expected_records.items():
+            if selected is not None and identity not in selected:
+                continue
+            if path.is_symlink() or not path.is_file():
+                raise ValueError(
+                    f"Transactional baseline is missing or redirected: {path}"
+                )
+            if sha256_file(path) != digest:
+                raise ValueError(
+                    f"Transactional baseline changed before commit: {path}"
+                )
+
     preserve_recovery_files = False
+    commit_succeeded = False
     try:
+        validate_expected_baselines()
         for raw_path, text in writes:
             path = Path(raw_path)
             identity = os.path.normcase(os.path.abspath(path))
@@ -897,6 +1084,7 @@ def transactional_write_texts(writes: list[tuple[Path, str]]) -> None:
                 "staged": staged,
                 "backup": None,
                 "existed": path.exists(),
+                "identity": identity,
             }
             entries.append(entry)
             with staged.open("w", encoding="utf-8", newline="\n") as stream:
@@ -904,6 +1092,7 @@ def transactional_write_texts(writes: list[tuple[Path, str]]) -> None:
                 stream.flush()
                 os.fsync(stream.fileno())
 
+        validate_expected_baselines()
         for entry in entries:
             if not entry["existed"]:
                 continue
@@ -915,11 +1104,18 @@ def transactional_write_texts(writes: list[tuple[Path, str]]) -> None:
                 destination.flush()
                 os.fsync(destination.fileno())
 
+        validate_expected_baselines()
+        guard_identities = set(expected_records) - identities
         committed: list[dict[str, Any]] = []
         try:
             for entry in entries:
+                validate_expected_baselines(
+                    guard_identities | {entry["identity"]}
+                )
                 committed.append(entry)
                 os.replace(entry["staged"], entry["path"])
+            validate_expected_baselines(guard_identities)
+            commit_succeeded = True
         except BaseException as exc:
             rollback_errors: list[str] = []
             for entry in reversed(committed):
@@ -946,7 +1142,7 @@ def transactional_write_texts(writes: list[tuple[Path, str]]) -> None:
                     if isinstance((temporary := entry.get(key)), Path)
                     and temporary.exists()
                 )
-                raise OSError(
+                raise MigrationRecoveryRequired(
                     "Transactional text write failed and rollback was incomplete: "
                     + "; ".join(rollback_errors)
                     + ". Recovery files were preserved: "
@@ -955,11 +1151,35 @@ def transactional_write_texts(writes: list[tuple[Path, str]]) -> None:
             raise
     finally:
         if not preserve_recovery_files:
+            cleanup_errors: list[str] = []
             for entry in entries:
                 for key in ("staged", "backup"):
                     temporary = entry.get(key)
                     if isinstance(temporary, Path) and temporary.exists():
-                        temporary.unlink()
+                        try:
+                            temporary.unlink()
+                        except OSError as cleanup_exc:
+                            cleanup_errors.append(f"{temporary}: {cleanup_exc}")
+            if cleanup_errors:
+                message = (
+                    "Transactional temporary cleanup was incomplete: "
+                    + "; ".join(cleanup_errors)
+                )
+                if commit_succeeded:
+                    recovery_files = sorted(
+                        str(temporary)
+                        for entry in entries
+                        for key in ("staged", "backup")
+                        if isinstance((temporary := entry.get(key)), Path)
+                        and temporary.exists()
+                    )
+                    raise MigrationRecoveryRequired(
+                        message
+                        + ". Live writes were committed; recovery files were "
+                        "preserved: "
+                        + ", ".join(recovery_files)
+                    )
+                raise OSError(message)
 
 
 def atomic_copy_file(source: Path, destination: Path) -> None:
@@ -1514,6 +1734,123 @@ def mask_structural_tex(
     )
 
 
+def mask_tex_literals_for_definition_scan(text: str) -> str:
+    """Mask comments and verbatim material without masking definitions."""
+    masked = mask_latex_comments(text)
+    characters = list(masked)
+    cursor = 0
+    while cursor < len(masked):
+        inline_verb = inline_verbatim_end(masked, cursor)
+        if inline_verb is not None:
+            end, _ = inline_verb
+            mask_tex_range(characters, cursor, end)
+            cursor = max(end, cursor + 1)
+            continue
+        verbatim = TEX_VERBATIM_BEGIN_RE.match(masked, cursor)
+        if verbatim is not None:
+            environment = verbatim.group("environment")
+            end_match = re.compile(
+                rf"\\end\s*\{{{re.escape(environment)}\}}"
+            ).search(masked, verbatim.end())
+            end = end_match.end() if end_match is not None else len(masked)
+            mask_tex_range(characters, cursor, end)
+            cursor = max(end, cursor + 1)
+            continue
+        cursor += 1
+    return "".join(characters)
+
+
+def tex_definition_body_spans(
+    text: str, definition: re.Match[str]
+) -> list[tuple[int, int]]:
+    """Return executable body groups for a supported TeX definition."""
+    command = definition.group("command")
+    if (
+        command in TEX_PRIMITIVE_DEFINITIONS
+        or command in TEX_NAMED_GROUP_DEFINITIONS
+        or command in TEX_NEW_COMMAND_DEFINITIONS
+        or command in TEX_DOCUMENT_COMMAND_DEFINITIONS
+        or command.startswith("cs_")
+    ):
+        body_count = 1
+    elif (
+        command in TEX_NEW_ENVIRONMENT_DEFINITIONS
+        or command in TEX_DOCUMENT_ENVIRONMENT_DEFINITIONS
+    ):
+        body_count = 2
+    elif command in TEX_PAIRED_DELIMITER_DEFINITIONS:
+        body_count = TEX_PAIRED_DELIMITER_DEFINITIONS[command]
+    else:
+        return []
+    definition_end = tex_definition_end(text, definition)
+    if definition_end is None:
+        return []
+    groups: list[tuple[int, int]] = []
+    cursor = definition.end()
+    while cursor < definition_end:
+        if text[cursor] != "{":
+            cursor += 1
+            continue
+        group_end = consume_balanced_tex_group(text, cursor, "{", "}")
+        if group_end is None or group_end > definition_end:
+            break
+        groups.append((cursor + 1, group_end - 1))
+        cursor = group_end
+    return groups[-body_count:] if len(groups) >= body_count else []
+
+
+def warn_definition_body_inclusions(
+    text: str,
+    *,
+    source_name: str,
+    warnings: list[str],
+) -> None:
+    """Flag possibly active source inclusions hidden inside definitions."""
+    scanned_text = mask_tex_literals_for_definition_scan(text)
+    definitions: list[tuple[re.Match[str], int]] = []
+    cursor = 0
+    while cursor < len(scanned_text):
+        definition = TEX_DEFINITION_COMMAND_RE.search(scanned_text, cursor)
+        if definition is None:
+            break
+        definition_end = tex_definition_end(scanned_text, definition)
+        if definition_end is None:
+            cursor = definition.end()
+            continue
+        definitions.append((definition, definition_end))
+        cursor = max(definition_end, definition.end())
+
+    conditional_characters = list(scanned_text)
+    for definition, definition_end in definitions:
+        mask_tex_range(
+            conditional_characters, definition.start(), definition_end
+        )
+        conditional_characters[definition.start()] = "D"
+    active_markers = mask_inactive_tex_branches(
+        "".join(conditional_characters),
+        source_name=source_name,
+    )
+
+    for definition, definition_end in definitions:
+        if active_markers[definition.start()] != "D":
+            continue
+        for body_start, body_end in tex_definition_body_spans(
+            scanned_text, definition
+        ):
+            for inclusion in DEFINITION_BODY_INCLUSION_RE.finditer(
+                scanned_text, body_start, body_end
+            ):
+                line, column = source_line_column(text, inclusion.start())
+                warning = (
+                    "TeX macro/environment definition body contains a source "
+                    "inclusion command and requires manual review: "
+                    f"{source_name}:{line}:{column}: "
+                    f"\\{inclusion.group('command')}"
+                )
+                if warning not in warnings:
+                    warnings.append(warning)
+
+
 def relative_or_absolute(path: Path, base: Path) -> str:
     try:
         return Path(os.path.relpath(path.resolve(), base.resolve())).as_posix()
@@ -1710,7 +2047,9 @@ def load_audit_manifest(
     )
     if not valid:
         return path, {}, errors
-    manifest, read_errors = load_json_object(path, "audit manifest")
+    manifest, read_errors = load_json_object(
+        path, "audit manifest", preserve_verified_challenge_rate=True
+    )
     errors.extend(read_errors)
     return path, manifest, errors
 
@@ -2069,14 +2408,371 @@ def validate_evidence_specificity(
             )
 
 
-def load_json_object(path: Path, description: str) -> tuple[dict[str, Any], list[str]]:
+MATH_SEGMENT_RE = re.compile(
+    r"\$[^$]+\$|\\\((?:.(?!\\\)))*.?\\\)|\\\[(?:.(?!\\\]))*.?\\\]"
+)
+SUBSCRIPTED_MATH_TOKEN_RE = re.compile(r"[A-Za-z](?:_\{[^{}]{1,40}\}|_[A-Za-z0-9])")
+PLAIN_MATH_IDENTIFIER_RE = re.compile(r"(?<![\\A-Za-z])[A-Za-z][A-Za-z0-9]*")
+
+
+def extract_step_math_tokens(text: str, *, whole_math: bool) -> set[str]:
+    """Collect the mathematical object names visible in one locked source unit.
+
+    Tokens are subscripted identifiers such as ``X_{n,j}`` or ``m_n`` and plain
+    identifiers inside math segments. TeX control-sequence names are excluded.
+    A unit without any math segment yields no token and is exempt from
+    evidence anchoring.
+    """
+    if whole_math:
+        segments = [text]
+    else:
+        segments = [match.group(0) for match in MATH_SEGMENT_RE.finditer(text)]
+    tokens: set[str] = set()
+    for segment in segments:
+        masked = re.sub(
+            r"\\[A-Za-z]+", lambda match: " " * len(match.group(0)), segment
+        )
+        for match in SUBSCRIPTED_MATH_TOKEN_RE.finditer(masked):
+            tokens.add(match.group(0))
+        for match in PLAIN_MATH_IDENTIFIER_RE.finditer(masked):
+            tokens.add(match.group(0))
+    return tokens
+
+
+def collect_step_evidence_texts(step: dict[str, Any]) -> list[str]:
+    """Gather the authored evidence prose of one step, excluding the literal
+    transcription and the restatement, for evidence anchoring."""
+    texts: list[str] = []
+    checks = step.get("checks")
+    if isinstance(checks, dict):
+        atomicity = checks.get("atomicity")
+        if isinstance(atomicity, dict) and isinstance(
+            atomicity.get("evidence"), str
+        ):
+            texts.append(atomicity["evidence"])
+        adversarial = checks.get("adversarial")
+        if isinstance(adversarial, list):
+            texts.extend(item for item in adversarial if isinstance(item, str))
+    inference = step.get("inference")
+    moves = inference.get("moves") if isinstance(inference, dict) else None
+    if isinstance(moves, list):
+        for move in moves:
+            if not isinstance(move, dict):
+                continue
+            if isinstance(move.get("justification"), str):
+                texts.append(move["justification"])
+            failure = move.get("failure")
+            if isinstance(failure, dict) and isinstance(
+                failure.get("evidence"), str
+            ):
+                texts.append(failure["evidence"])
+    risk_checks = step.get("risk_checks")
+    if isinstance(risk_checks, list):
+        texts.extend(
+            record["evidence"]
+            for record in risk_checks
+            if isinstance(record, dict) and isinstance(record.get("evidence"), str)
+        )
+    return texts
+
+
+def evidence_names_source_object(tokens: set[str], texts: list[str]) -> bool:
+    combined = "\n".join(texts)
+    for token in tokens:
+        if "_" in token:
+            if token in combined:
+                return True
+            stripped = token.replace("{", "").replace("}", "")
+            if stripped != token and stripped in combined:
+                return True
+            base = token[0]
+            if re.search(rf"(?<![A-Za-z]){re.escape(base)}(?![A-Za-z])", combined):
+                return True
+        elif re.search(
+            rf"(?<![A-Za-z]){re.escape(token)}(?![A-Za-z])", combined
+        ):
+            return True
+    return False
+
+
+def validate_evidence_anchoring(
+    records: list[dict[str, Any]], errors: list[str]
+) -> None:
+    """Require each inferential step's authored evidence to name at least one
+    mathematical object from its own locked source unit."""
+    diagnostics: list[str] = []
+    for record in records:
+        tokens = record.get("tokens")
+        if not isinstance(tokens, set) or not tokens:
+            continue
+        texts = record.get("texts")
+        texts = texts if isinstance(texts, list) else []
+        if not evidence_names_source_object(tokens, texts):
+            sample = ", ".join(sorted(tokens)[:6])
+            diagnostics.append(
+                f"{record.get('step_id')}: step evidence never names a "
+                "mathematical object from its locked source unit; anchor the "
+                f"justification, adversarial, or risk evidence to it (e.g. {sample})"
+            )
+    if diagnostics:
+        errors.extend(diagnostics[:10])
+        if len(diagnostics) > 10:
+            errors.append(
+                f"Evidence-anchoring diagnostics omitted {len(diagnostics) - 10} "
+                "additional unanchored steps"
+            )
+
+
+def failure_computation_shape_errors(computation: Any, field: str) -> list[str]:
+    """Validate the structural shape of one failure.computation record.
+
+    The record either instantiates a refuting computation (script, command,
+    and output excerpt, with the script hash locked) or records a substantive
+    reason why the failure cannot be instantiated numerically. Shape checks
+    never establish that the computation itself is mathematically meaningful.
+    """
+    errors: list[str] = []
+    if not isinstance(computation, dict):
+        return [f"{field} must be an object"]
+    status = computation.get("status")
+    if status not in FAILURE_COMPUTATION_STATUSES:
+        errors.append(
+            f"{field}.status must be 'instantiated' or 'not_instantiable'"
+        )
+        return errors
+    if status == "instantiated":
+        allowed = FAILURE_COMPUTATION_INSTANTIATED_FIELDS
+        script_file = computation.get("script_file")
+        if not is_nonempty_string(script_file):
+            errors.append(f"{field}.script_file must be a nonempty relative path")
+        elif Path(str(script_file)).is_absolute() or "\\" in str(script_file):
+            errors.append(
+                f"{field}.script_file must be a relative path using '/' separators"
+            )
+        script_sha256 = computation.get("script_sha256")
+        if not isinstance(script_sha256, str) or not SHA256_RE.fullmatch(
+            script_sha256
+        ):
+            errors.append(f"{field}.script_sha256 must be a SHA-256 digest")
+        for name in ("command", "output_excerpt"):
+            if not is_substantive_string(computation.get(name)):
+                errors.append(f"{field}.{name} must be nonempty and substantive")
+    else:
+        allowed = FAILURE_COMPUTATION_NOT_INSTANTIABLE_FIELDS
+        if not is_substantive_string(computation.get("reason")):
+            errors.append(f"{field}.reason must be nonempty and substantive")
+    unknown = set(computation) - allowed
+    if unknown:
+        errors.append(
+            f"{field} has unknown fields: {', '.join(sorted(unknown))}"
+        )
+    return errors
+
+
+def validate_failure_computation_artifacts(
+    steps: Any, ledger_path: Path, errors: list[str]
+) -> None:
+    """Check that every instantiated failure computation resolves to a real,
+    hash-locked script inside the audit's adversarial directory."""
+    audit_root = containing_audit_root(ledger_path)
+    adversarial_root = (
+        (audit_root / "audit" / "05_adversarial").resolve()
+        if audit_root is not None
+        else None
+    )
+    steps = steps if isinstance(steps, list) else []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        step_id = str(step.get("id", "?"))
+        inference = step.get("inference")
+        moves = inference.get("moves") if isinstance(inference, dict) else None
+        if not isinstance(moves, list):
+            continue
+        for move in moves:
+            if not isinstance(move, dict):
+                continue
+            failure = move.get("failure")
+            if not isinstance(failure, dict):
+                continue
+            computation = failure.get("computation")
+            if not isinstance(computation, dict):
+                continue
+            if computation.get("status") != "instantiated":
+                continue
+            field = f"{step_id}.failure.computation"
+            script_file = computation.get("script_file")
+            script_sha256 = computation.get("script_sha256")
+            if not is_nonempty_string(script_file) or not isinstance(
+                script_sha256, str
+            ):
+                continue
+            if Path(str(script_file)).is_absolute():
+                continue
+            resolved = (ledger_path.parent / str(script_file)).resolve()
+            if adversarial_root is not None and not resolved.is_relative_to(
+                adversarial_root
+            ):
+                errors.append(
+                    f"{field}.script_file must resolve inside "
+                    "audit/05_adversarial"
+                )
+                continue
+            if not resolved.is_file():
+                errors.append(
+                    f"{field}.script_file not found: {script_file}"
+                )
+                continue
+            if sha256_file(resolved) != script_sha256:
+                errors.append(
+                    f"{field}.script_sha256 does not match the current script file"
+                )
+
+
+def near_duplicate_evidence_warnings(
+    annotations: dict[str, Any], limit: int = 8
+) -> list[str]:
+    """Advisory near-duplicate detection for authored annotation evidence.
+
+    Exact template reuse is rejected by the final evidence-specificity gate;
+    this warning surfaces lightly paraphrased boilerplate early, before
+    compilation. It never fails the check on its own.
+    """
+    records: list[tuple[str, str, str, str]] = []
+    steps = annotations.get("steps")
+    steps = steps if isinstance(steps, list) else []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        key = str(step.get("key", ""))
+        candidates: list[tuple[str, Any]] = [
+            ("atomicity_evidence", step.get("atomicity_evidence")),
+            ("justification", step.get("justification")),
+        ]
+        adversarial = step.get("adversarial")
+        if isinstance(adversarial, list):
+            candidates.extend(("adversarial", item) for item in adversarial)
+        risks = step.get("risks")
+        if isinstance(risks, dict):
+            candidates.extend(
+                (f"risks/{aspect}", record.get("evidence"))
+                for aspect, record in risks.items()
+                if isinstance(record, dict)
+            )
+        for field, value in candidates:
+            template = normalized_evidence_template(value)
+            if template:
+                records.append((key, field, template, str(value)))
+    warnings: list[str] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for left_index in range(len(records)):
+        if len(warnings) >= limit:
+            break
+        left_key, left_field, left_template, _ = records[left_index]
+        for right_index in range(left_index + 1, len(records)):
+            right_key, right_field, right_template, _ = records[right_index]
+            if left_key == right_key or left_template == right_template:
+                continue
+            pair = (left_template, right_template)
+            if pair in seen_pairs:
+                continue
+            matcher = difflib.SequenceMatcher(
+                None, left_template, right_template, autojunk=False
+            )
+            if (
+                matcher.real_quick_ratio() >= 0.9
+                and matcher.quick_ratio() >= 0.9
+                and matcher.ratio() >= 0.9
+            ):
+                seen_pairs.add(pair)
+                warnings.append(
+                    "near_duplicate_evidence: "
+                    f"{left_key}/{left_field} and {right_key}/{right_field} are "
+                    ">=90% similar; replace shared boilerplate with step-specific "
+                    f"evidence: {truncate(left_template, 100)}"
+                )
+                if len(warnings) >= limit:
+                    break
+    return warnings
+
+
+def load_json_object(
+    path: Path,
+    description: str,
+    *,
+    preserve_verified_challenge_rate: bool = False,
+) -> tuple[dict[str, Any], list[str]]:
     try:
-        data = json.loads(read_text(path))
+        text = read_text(path)
+        data = json.loads(text)
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         return {}, [f"Cannot read {description} {path}: {exc}"]
     if not isinstance(data, dict):
         return {}, [f"{description} must be a JSON object: {path}"]
+    scope = data.get("audit_scope")
+    if (
+        preserve_verified_challenge_rate
+        and isinstance(scope, dict)
+        and "verified_challenge_sample_rate" in scope
+    ):
+        exact_data = json.loads(text, parse_float=_ExactJSONFloat)
+        exact_scope = exact_data.get("audit_scope")
+        if isinstance(exact_scope, dict):
+            exact_rate = exact_scope.get("verified_challenge_sample_rate")
+            if isinstance(exact_rate, _ExactJSONFloat):
+                scope["verified_challenge_sample_rate"] = exact_rate
     return data, []
+
+
+def verified_challenge_sample_fraction(value: Any) -> Fraction | None:
+    """Return an exact valid challenge-sampling rate, or None if invalid."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        if isinstance(value, _ExactJSONFloat):
+            fraction = Fraction(value.json_token)
+        elif isinstance(value, int):
+            fraction = Fraction(value)
+        else:
+            if not math.isfinite(value):
+                return None
+            fraction = Fraction(repr(float(value)))
+    except (OverflowError, ValueError, ZeroDivisionError):
+        return None
+    return fraction if 0 < fraction <= 1 else None
+
+
+def render_audit_manifest_json(manifest: dict[str, Any]) -> str:
+    """Serialize a manifest without normalizing its exact sampling-rate token."""
+    scope = manifest.get("audit_scope")
+    rate = (
+        scope.get("verified_challenge_sample_rate")
+        if isinstance(scope, dict)
+        else None
+    )
+    if not isinstance(rate, _ExactJSONFloat):
+        return json.dumps(manifest, ensure_ascii=False, indent=2)
+    token = rate.json_token
+    if not isinstance(token, str) or not JSON_NUMBER_RE.fullmatch(token):
+        raise ValueError(
+            "Cannot serialize an invalid challenge sampling-rate token"
+        )
+
+    baseline = json.dumps(manifest, ensure_ascii=False, indent=2)
+    marker = f"__proofcheck_exact_json_number_{sha256_text(token)}__"
+    encoded_marker = json.dumps(marker, ensure_ascii=False)
+    while encoded_marker in baseline:
+        marker += "_"
+        encoded_marker = json.dumps(marker, ensure_ascii=False)
+
+    serialized_manifest = dict(manifest)
+    serialized_scope = dict(scope)
+    serialized_scope["verified_challenge_sample_rate"] = marker
+    serialized_manifest["audit_scope"] = serialized_scope
+    rendered = json.dumps(serialized_manifest, ensure_ascii=False, indent=2)
+    if rendered.count(encoded_marker) != 1:
+        raise ValueError("Cannot locate the challenge sampling-rate placeholder")
+    return rendered.replace(encoded_marker, token, 1)
 
 
 def locked_span(
@@ -3492,8 +4188,14 @@ def discover_source_closure(
             active.remove(path)
             return
 
+        source_text = "\n".join(lines)
+        warn_definition_body_inclusions(
+            source_text,
+            source_name=shown(path),
+            warnings=warnings,
+        )
         structural_lines = mask_structural_tex(
-            "\n".join(lines),
+            source_text,
             warnings=warnings,
             source_name=shown(path),
         ).split("\n")
@@ -4573,19 +5275,33 @@ def validate_cross_reference_reviews(
     }
 
 
+def markdown_inline_text(value: Any) -> str:
+    """Normalize generated Markdown free text to one physical line."""
+    return "".join(
+        (
+            " "
+            if unicodedata.category(character) in {"Cc", "Zl", "Zp"}
+            else (
+                "\uFFFD"
+                if unicodedata.category(character) == "Cs"
+                else character
+            )
+        )
+        for character in str(value)
+    )
+
+
 def escape_markdown(value: Any) -> str:
-    return str(value).replace("|", "\\|").replace("\n", " ")
+    return markdown_inline_text(value).replace("|", "\\|")
 
 
 def escape_markdown_heading(value: Any) -> str:
     """Render heading text without creating active raw HTML."""
     return (
-        str(value)
+        markdown_inline_text(value)
         .replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
-        .replace("\r", " ")
-        .replace("\n", " ")
     )
 
 
@@ -4625,7 +5341,7 @@ def index_markdown(data: dict[str, Any]) -> str:
     rows.extend(["", f"**Units found:** {len(data['units'])}", ""])
     if data["warnings"]:
         rows.extend(["## Parser warnings", ""])
-        rows.extend(f"- {warning}" for warning in data["warnings"])
+        rows.extend(f"- {escape_markdown(warning)}" for warning in data["warnings"])
         rows.append("")
     return "\n".join(rows)
 
@@ -4660,7 +5376,7 @@ def crossref_markdown(data: dict[str, Any]) -> str:
     rows.append("")
     if data["warnings"]:
         rows.extend(["## Parser warnings", ""])
-        rows.extend(f"- {warning}" for warning in data["warnings"])
+        rows.extend(f"- {escape_markdown(warning)}" for warning in data["warnings"])
         rows.append("")
     return "\n".join(rows)
 
@@ -5537,6 +6253,9 @@ def workflow_view_freshness(root: Path) -> dict[str, Any]:
 
 def sync_workflow_views(root: Path) -> dict[str, Any]:
     root = root.resolve()
+    lock_error = migration_update_lock_error(root)
+    if lock_error is not None:
+        raise ValueError(lock_error)
     expected = expected_workflow_views(root)
     writes: list[tuple[Path, str]] = []
     unchanged: list[str] = []
@@ -5565,11 +6284,24 @@ def cmd_sync_views(args: argparse.Namespace) -> int:
     return 0
 
 
+def live_local_check_artifacts(root: Path, suffix: str) -> list[Path]:
+    """Return only direct canonical proof artifacts, never history copies."""
+    if suffix not in {".ledger.json", ".skeleton.json"}:
+        raise ValueError(f"Unsupported live proof-artifact suffix: {suffix}")
+    directory = root.resolve() / "audit" / "04_local_checks"
+    if not directory.is_dir():
+        return []
+    return sorted(
+        (path for path in directory.glob(f"*{suffix}") if path.is_file()),
+        key=lambda path: path.name,
+    )
+
+
 def packet_unit_artifact(
     root: Path, unit_id: str, suffix: str, label: str
 ) -> tuple[Path | None, dict[str, Any] | None]:
     matches: list[tuple[Path, dict[str, Any]]] = []
-    for path in sorted(root.rglob(f"*{suffix}")):
+    for path in live_local_check_artifacts(root, suffix):
         value, errors = load_json_object(path, label)
         if errors:
             raise ValueError("Cannot generate packet: " + "; ".join(errors))
@@ -7982,6 +8714,9 @@ def build_context_packet(
 ) -> dict[str, Any]:
     """Derive one portable model packet from current canonical audit state."""
     root = root.resolve()
+    lock_error = migration_update_lock_error(root)
+    if lock_error is not None:
+        raise ValueError(lock_error)
     if mode not in {"primary", "challenge"}:
         raise ValueError("Packet mode must be primary or challenge")
     records = load_workflow_records(root)
@@ -8001,6 +8736,7 @@ def build_context_packet(
             "Cannot generate packet from stale source state: "
             + "; ".join(freshness_errors)
         )
+    calibration_receipt = current_calibration_receipt(root)
     inventory = records["inventory"]
     units = inventory.get("units")
     if not isinstance(units, list):
@@ -8216,26 +8952,40 @@ def build_context_packet(
     work_context_sha256: str | None = None
     wip_record_ready = False
     wip_reuse_errors: list[str] = []
+    primary_issue_triggers = (
+        issue_triggers
+        if mode == "primary"
+        else packet_issue_triggers(
+            root,
+            manifest,
+            unit_id,
+            "primary",
+            records=records,
+            members=members,
+        )
+    )
+    work_context = {
+        "unit_id": unit_id,
+        "protocol": protocol_identity(),
+        "source_snapshot_sha256": source_snapshot_id,
+        "calibration_receipt_sha256": calibration_receipt["sha256"],
+        "source_binding_sha256": source_binding_sha256,
+        "obligation_sha256": obligation_digest,
+        "obligation_projection_sha256": canonical_sha256(
+            obligation_projection
+        ),
+        "inventory_projection_sha256": canonical_sha256(
+            inventory_projection
+        ),
+        "dependency_projection_sha256": canonical_sha256(
+            packet_semantic_dependencies(alignment_dependency_projection)
+        ),
+        "issue_triggers_sha256": canonical_sha256(primary_issue_triggers),
+        "risk_aspects_sha256": canonical_sha256(list(RISK_ASPECTS)),
+    }
+    expected_work_context_sha256 = canonical_sha256(work_context)
     if mode == "primary":
-        work_context = {
-            "unit_id": unit_id,
-            "protocol": protocol_identity(),
-            "source_snapshot_sha256": source_snapshot_id,
-            "source_binding_sha256": source_binding_sha256,
-            "obligation_sha256": obligation_digest,
-            "obligation_projection_sha256": canonical_sha256(
-                obligation_projection
-            ),
-            "inventory_projection_sha256": canonical_sha256(
-                inventory_projection
-            ),
-            "dependency_projection_sha256": canonical_sha256(
-                packet_semantic_dependencies(alignment_dependency_projection)
-            ),
-            "issue_triggers_sha256": canonical_sha256(issue_triggers),
-            "risk_aspects_sha256": canonical_sha256(list(RISK_ASPECTS)),
-        }
-        work_context_sha256 = canonical_sha256(work_context)
+        work_context_sha256 = expected_work_context_sha256
         wip_record_ready = bool(
             wip_local_record_ready
             and isinstance(ledger, dict)
@@ -8251,6 +9001,14 @@ def build_context_packet(
             wip_reuse_errors.append(
                 "Partial ledger work_context_sha256 is missing or stale"
             )
+    elif (
+        not isinstance(ledger, dict)
+        or ledger.get("work_context_sha256") != expected_work_context_sha256
+    ):
+        raise ValueError(
+            "Challenge packet requires a primary ledger recompiled under the "
+            "current calibration-bound work context"
+        )
     readiness_projection = {
         "source_obligation_ready": readiness["ready"],
         "dependency_mapping_ready": dependency_mapping_ready,
@@ -8303,6 +9061,7 @@ def build_context_packet(
         "mode": mode,
         "protocol_sha256": canonical_sha256(protocol_identity()),
         "source_snapshot_sha256": source_snapshot_id,
+        "calibration_receipt_sha256": calibration_receipt["sha256"],
         "source_binding_sha256": source_binding_sha256,
         "obligation_sha256": obligation_digest,
         "semantic_artifact_sha256": canonical_sha256(
@@ -8426,7 +9185,7 @@ def cmd_bind_challenge(args: argparse.Namespace) -> int:
     if redirect_errors:
         raise ValueError("Cannot bind challenge: " + "; ".join(redirect_errors))
     matches: list[tuple[Path, dict[str, Any]]] = []
-    for ledger_path in sorted(root.rglob("*.ledger.json")):
+    for ledger_path in live_local_check_artifacts(root, ".ledger.json"):
         ledger, ledger_errors = load_json_object(ledger_path, "proof ledger")
         if ledger_errors:
             continue
@@ -8550,6 +9309,58 @@ PDF_TRANSCRIPTION_WARNING = (
 )
 
 
+def resolve_source_discovery_inputs(
+    paper: Path,
+    input_kind: str,
+    *,
+    additional_source: Any = None,
+    fls: Path | None = None,
+    project_root: Path | None = None,
+) -> tuple[Path, list[tuple[Path, str, str]], Path | None]:
+    """Validate scaffold-compatible source-discovery inputs without writing."""
+    resolved_root = (
+        project_root.resolve() if isinstance(project_root, Path) else paper.parent
+    )
+    if not resolved_root.is_dir():
+        raise FileNotFoundError(f"Project root not found: {resolved_root}")
+    if not paper.is_relative_to(resolved_root):
+        raise ValueError("Project root must contain the main paper")
+    if input_kind == "pdf_transcription" and (additional_source or fls is not None):
+        raise ValueError(
+            "pdf_transcription does not accept LaTeX additional-source or FLS inputs"
+        )
+
+    entries: list[tuple[Path, str, str]] = []
+    seen: set[Path] = set()
+    for index, raw_entry in enumerate(additional_source or [], 1):
+        if not isinstance(raw_entry, (list, tuple)) or len(raw_entry) != 3:
+            raise ValueError(
+                f"Additional source {index} must provide PATH, REASON, and EVIDENCE"
+            )
+        raw_path, raw_reason, raw_evidence = raw_entry
+        reason = str(raw_reason).strip()
+        evidence = str(raw_evidence).strip()
+        if not reason or not evidence:
+            raise ValueError(
+                f"Additional source {index} requires nonempty reason and evidence"
+            )
+        candidate = Path(raw_path)
+        if not candidate.is_absolute():
+            candidate = paper.parent / candidate
+        candidate = candidate.resolve()
+        if not candidate.is_file():
+            raise FileNotFoundError(f"Additional source file not found: {candidate}")
+        if candidate in seen:
+            raise ValueError(f"Duplicate additional source file: {candidate}")
+        seen.add(candidate)
+        entries.append((candidate, reason, evidence))
+
+    resolved_fls = fls.resolve() if isinstance(fls, Path) else None
+    if resolved_fls is not None and not resolved_fls.is_file():
+        raise FileNotFoundError(f"Recorder file not found: {resolved_fls}")
+    return resolved_root, entries, resolved_fls
+
+
 def _build_scaffold(args: argparse.Namespace, output: Path) -> dict[str, Any]:
     paper = args.paper.resolve()
     output = output.resolve()
@@ -8584,55 +9395,25 @@ def _build_scaffold(args: argparse.Namespace, output: Path) -> dict[str, Any]:
             )
         if publisher_pdf.suffix.lower() != ".pdf":
             raise ValueError("--publisher-pdf must name a PDF file")
-        if getattr(args, "additional_source", None) or getattr(args, "fls", None):
-            raise ValueError(
-                "pdf_transcription does not accept LaTeX additional-source or FLS inputs"
-            )
     elif publisher_pdf is not None:
         raise ValueError("--publisher-pdf applies only to pdf_transcription input")
 
-    project_root_arg = getattr(args, "project_root", None)
-    project_root = (
-        project_root_arg.resolve() if isinstance(project_root_arg, Path) else paper.parent
+    project_root, additional_entries, fls_path = resolve_source_discovery_inputs(
+        paper,
+        input_kind,
+        additional_source=getattr(args, "additional_source", None),
+        fls=getattr(args, "fls", None),
+        project_root=getattr(args, "project_root", None),
     )
-    if not project_root.is_dir():
-        raise FileNotFoundError(f"Project root not found: {project_root}")
-    if not paper.is_relative_to(project_root):
-        raise ValueError("Project root must contain the main paper")
-
-    additional_records: list[dict[str, str]] = []
-    additional_paths: list[Path] = []
-    seen_additional: set[Path] = set()
-    for index, (raw_path, reason, evidence) in enumerate(
-        getattr(args, "additional_source", None) or [], 1
-    ):
-        reason = reason.strip()
-        evidence = evidence.strip()
-        if not reason or not evidence:
-            raise ValueError(
-                f"Additional source {index} requires nonempty reason and evidence"
-            )
-        candidate = Path(raw_path)
-        if not candidate.is_absolute():
-            candidate = paper.parent / candidate
-        candidate = candidate.resolve()
-        if not candidate.is_file():
-            raise FileNotFoundError(f"Additional source file not found: {candidate}")
-        if candidate in seen_additional:
-            raise ValueError(f"Duplicate additional source file: {candidate}")
-        seen_additional.add(candidate)
-        additional_paths.append(candidate)
-        additional_records.append(
-            {
-                "file": relative_or_absolute(candidate, output),
-                "reason": reason,
-                "evidence": evidence,
-            }
-        )
-    fls_arg = getattr(args, "fls", None)
-    fls_path = fls_arg.resolve() if isinstance(fls_arg, Path) else None
-    if fls_path is not None and not fls_path.is_file():
-        raise FileNotFoundError(f"Recorder file not found: {fls_path}")
+    additional_paths = [entry[0] for entry in additional_entries]
+    additional_records = [
+        {
+            "file": relative_or_absolute(path, output),
+            "reason": reason,
+            "evidence": evidence,
+        }
+        for path, reason, evidence in additional_entries
+    ]
 
     directories = [
         output / "audit" / "01_index",
@@ -9061,6 +9842,11 @@ def cmd_crossref(args: argparse.Namespace) -> int:
 def cmd_extract(args: argparse.Namespace) -> int:
     source = args.file.resolve()
     output = args.output.resolve()
+    audit_root = containing_audit_root(output)
+    if audit_root is not None:
+        lock_error = migration_update_lock_error(audit_root)
+        if lock_error is not None:
+            raise ValueError(lock_error)
     if not source.is_file():
         raise FileNotFoundError(f"Source file not found: {source}")
     if source.suffix.lower() == ".pdf":
@@ -9236,6 +10022,7 @@ COMPACT_ANNOTATION_TOP_LEVEL_FIELDS = {
     "source_unit_sha256",
     "obligation_sha256",
     "context_binding_sha256",
+    "calibration_receipt_sha256",
     "source_groups",
     "dependencies",
     "steps",
@@ -9367,6 +10154,18 @@ def validate_compiler_context_packet(
     ):
         raise ValueError(
             "annotations.context_binding_sha256 does not match the primary packet"
+        )
+    context_binding = packet.get("context_binding")
+    calibration_receipt_sha256 = (
+        context_binding.get("calibration_receipt_sha256")
+        if isinstance(context_binding, dict)
+        else None
+    )
+    if annotations.get("calibration_receipt_sha256") != calibration_receipt_sha256:
+        raise ValueError(
+            "annotations.calibration_receipt_sha256 does not match the "
+            "primary packet; create a fresh annotation scaffold and fully "
+            "re-review every judgment"
         )
     return packet
 
@@ -9532,7 +10331,9 @@ def annotation_scaffold_data(
                 "kind": None,
                 "goal": None,
                 "claim": None,
-                "literal": None,
+                "literal": (
+                    f"Line {line_number} says exactly: {row['text'].rstrip()}"
+                ),
                 "atomicity_evidence": None,
                 "adversarial": None,
                 "risks": {
@@ -9610,12 +10411,19 @@ def annotation_scaffold_data(
         for key in citation_keys
         if is_nonempty_string(key)
     ]
+    context_binding = packet.get("context_binding")
+    calibration_receipt_sha256 = (
+        context_binding.get("calibration_receipt_sha256")
+        if isinstance(context_binding, dict)
+        else None
+    )
     return {
         "annotation_schema_version": SEMANTIC_ANNOTATION_SCHEMA_VERSION,
         "unit_id": ledger.get("unit_id"),
         "source_unit_sha256": source.get("unit_sha256"),
         "obligation_sha256": packet.get("obligation_sha256"),
         "context_binding_sha256": packet.get("context_binding_sha256"),
+        "calibration_receipt_sha256": calibration_receipt_sha256,
         "source_groups": [],
         "dependencies": dependencies,
         "steps": steps,
@@ -9682,6 +10490,140 @@ def cmd_annotation_scaffold(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rebind_annotations(args: argparse.Namespace) -> int:
+    """Mechanically copy current packet binding hashes into an annotation file.
+
+    Rebinding is deterministic bookkeeping only. It never edits a judgment,
+    and it does not certify that the authored judgments remain valid for the
+    regenerated packet; the checker must confirm that separately whenever the
+    semantic context changed.
+    """
+    configure_console_errors()
+    annotations_path = args.annotations.resolve()
+    packet_path = args.packet.resolve()
+    if not annotations_path.is_file():
+        raise FileNotFoundError(
+            f"Compact annotations not found: {annotations_path}"
+        )
+    if not annotations_path.name.endswith(".annotations.json"):
+        raise ValueError("rebind-annotations input must end in .annotations.json")
+    if not packet_path.is_file():
+        raise FileNotFoundError(f"Context packet not found: {packet_path}")
+    annotations, annotation_errors = load_json_object(
+        annotations_path, "compact annotations"
+    )
+    if annotation_errors:
+        raise ValueError(annotation_errors[0])
+    packet, packet_errors = load_json_object(packet_path, "context packet")
+    if packet_errors:
+        raise ValueError(packet_errors[0])
+    if packet.get("mode") != "primary":
+        raise ValueError("rebind-annotations requires a primary context packet")
+    annotation_unit = annotations.get("unit_id")
+    packet_unit = packet.get("unit_id")
+    if (
+        not is_nonempty_string(annotation_unit)
+        or annotation_unit != packet_unit
+    ):
+        raise ValueError(
+            "rebind-annotations unit mismatch: annotations name "
+            f"{annotation_unit!r} but the packet names {packet_unit!r}"
+        )
+    audit_root = containing_audit_root(annotations_path)
+    if audit_root is not None:
+        raise ValueError(
+            "Compact annotations must remain outside the canonical audit root"
+        )
+    obligation_sha256 = packet.get("obligation_sha256")
+    context_binding_sha256 = packet.get("context_binding_sha256")
+    context_binding = packet.get("context_binding")
+    if (
+        not isinstance(context_binding, dict)
+        or packet.get("context_binding_sha256")
+        != canonical_sha256(context_binding)
+    ):
+        raise ValueError("The packet context binding is malformed or modified")
+    calibration_receipt_sha256 = context_binding.get(
+        "calibration_receipt_sha256"
+    )
+    if not is_nonempty_string(obligation_sha256) or not is_nonempty_string(
+        context_binding_sha256
+    ) or not (
+        isinstance(calibration_receipt_sha256, str)
+        and SHA256_RE.fullmatch(calibration_receipt_sha256)
+    ):
+        raise ValueError("The packet does not carry complete binding hashes")
+    previous_calibration = annotations.get("calibration_receipt_sha256")
+    if previous_calibration != calibration_receipt_sha256:
+        raise ValueError(
+            "rebind-annotations refuses a changed or missing calibration "
+            "receipt; create a fresh annotation scaffold and fully re-review "
+            "every judgment under the new calibration"
+        )
+    previous = {
+        "obligation_sha256": annotations.get("obligation_sha256"),
+        "context_binding_sha256": annotations.get("context_binding_sha256"),
+        "source_unit_sha256": annotations.get("source_unit_sha256"),
+    }
+    annotations["obligation_sha256"] = obligation_sha256
+    annotations["context_binding_sha256"] = context_binding_sha256
+    updated_fields = ["context_binding_sha256", "obligation_sha256"]
+    if args.skeleton is not None:
+        skeleton_path = args.skeleton.resolve()
+        if not skeleton_path.is_file():
+            raise FileNotFoundError(
+                f"Extracted skeleton not found: {skeleton_path}"
+            )
+        skeleton, skeleton_errors = load_json_object(
+            skeleton_path, "extracted skeleton"
+        )
+        if skeleton_errors:
+            raise ValueError(skeleton_errors[0])
+        if skeleton.get("unit_id") != annotation_unit:
+            raise ValueError(
+                "rebind-annotations skeleton unit mismatch: the skeleton names "
+                f"{skeleton.get('unit_id')!r}"
+            )
+        source = skeleton.get("source")
+        unit_sha256 = (
+            source.get("unit_sha256") if isinstance(source, dict) else None
+        )
+        if not is_nonempty_string(unit_sha256):
+            raise ValueError("The skeleton does not carry source.unit_sha256")
+        annotations["source_unit_sha256"] = unit_sha256
+        updated_fields.append("source_unit_sha256")
+    atomic_write_json(annotations_path, annotations)
+    changed = sorted(
+        field
+        for field in updated_fields
+        if previous.get(field) != annotations.get(field)
+    )
+    print(
+        json.dumps(
+            {
+                "command": "rebind-annotations",
+                "status": "rebound",
+                "unit_id": annotation_unit,
+                "annotations": annotations_path.as_posix(),
+                "updated_fields": sorted(updated_fields),
+                "changed_fields": changed,
+                "obligation_sha256": obligation_sha256,
+                "context_binding_sha256": context_binding_sha256,
+                "calibration_receipt_sha256": calibration_receipt_sha256,
+                "judgment_review_required": bool(changed),
+                "note": (
+                    "Rebinding copies current binding hashes only. Confirm that "
+                    "every authored judgment remains valid for the regenerated "
+                    "packet before compiling."
+                ),
+            },
+            ensure_ascii=True,
+            indent=2,
+        )
+    )
+    return 0
+
+
 def json_pointer_child(pointer: str, token: Any) -> str:
     escaped = str(token).replace("~", "~0").replace("/", "~1")
     return f"{pointer}/{escaped}" if pointer else f"/{escaped}"
@@ -9732,7 +10674,8 @@ def annotation_object_diagnostics(
             diagnostics,
             json_pointer_child(pointer, field),
             "unknown_field",
-            f"field is not part of compact annotation schema 1; "
+            "field is not part of compact annotation schema "
+            f"{SEMANTIC_ANNOTATION_SCHEMA_VERSION}; "
             f"unknown fields: {field}",
         )
     return True
@@ -9960,6 +10903,7 @@ def annotation_preflight_diagnostics(
             "source_unit_sha256",
             "obligation_sha256",
             "context_binding_sha256",
+            "calibration_receipt_sha256",
         ):
             if field in annotations and annotations.get(field) != expected.get(field):
                 append_annotation_diagnostic(
@@ -10481,7 +11425,7 @@ def annotation_preflight_diagnostics(
                         f"{pointer}/failure",
                         diagnostics,
                         required=("kind", "issue_id", "evidence"),
-                        optional=("target",),
+                        optional=("target", "computation"),
                     ):
                         failure = step["failure"]
                         annotation_enum_diagnostic(
@@ -10512,6 +11456,30 @@ def annotation_preflight_diagnostics(
                                 f"{pointer}/failure/target",
                                 diagnostics,
                             )
+                        if failure.get("kind") in REFUTATION_FAILURE_KINDS and (
+                            "computation" not in failure
+                        ):
+                            append_annotation_diagnostic(
+                                diagnostics,
+                                f"{pointer}/failure/computation",
+                                "missing_conditional_field",
+                                "a counterexample or contradiction failure "
+                                "requires a computation record: instantiate "
+                                "it as a hash-locked script under "
+                                "audit/05_adversarial, or record status "
+                                "not_instantiable with a substantive reason",
+                            )
+                        if "computation" in failure:
+                            for message in failure_computation_shape_errors(
+                                failure.get("computation"),
+                                f"{pointer}/failure/computation",
+                            ):
+                                append_annotation_diagnostic(
+                                    diagnostics,
+                                    f"{pointer}/failure/computation",
+                                    "invalid_computation",
+                                    message,
+                                )
 
     conclusions = annotations.get("conclusions")
     annotation_identity_diagnostics(
@@ -10685,7 +11653,7 @@ def annotation_preflight_diagnostics(
                         f"{pointer}/path_ids",
                         diagnostics,
                         allow_empty=False,
-                        pattern=re.compile(r"CP[0-9]{3}$"),
+                        pattern=CANDIDATE_PATH_ID_RE,
                     )
                     annotation_enum_diagnostic(
                         row.get("disposition"),
@@ -10938,6 +11906,7 @@ def cmd_annotation_check(args: argparse.Namespace) -> int:
         ),
     )
     counts = Counter(row["code"] for row in diagnostics)
+    warnings = near_duplicate_evidence_warnings(annotations)
     result = {
         "command": "annotation-check",
         "status": "passed" if not diagnostics else "failed",
@@ -10960,6 +11929,8 @@ def cmd_annotation_check(args: argparse.Namespace) -> int:
         "error_count": len(diagnostics),
         "counts_by_code": dict(sorted(counts.items())),
         "diagnostics": diagnostics,
+        "warning_count": len(warnings),
+        "warnings": warnings,
     }
     if getattr(args, "json", False):
         print(json.dumps(result, ensure_ascii=True, indent=2))
@@ -10973,8 +11944,18 @@ def cmd_annotation_check(args: argparse.Namespace) -> int:
                 f"{row['document']}{rendered_pointer}: "
                 f"{row['code']}: {row['message']}"
             )
+        if diagnostics:
+            print(
+                "Compare field shapes against "
+                "assets/templates/AUDIT_RECORD_EXAMPLES.json and the complete "
+                "reference audit in assets/reference-audit/."
+            )
+        for warning in warnings:
+            print(f"warning: {warning}")
     else:
         print("annotation-check passed: annotations are compile-ready.")
+        for warning in warnings:
+            print(f"warning: {warning}")
     return 0 if not diagnostics else 1
 
 
@@ -11049,10 +12030,6 @@ def build_compiled_source_units(
                 f"Locked line {line_number} is mechanically non-substantive."
                 if kind == "non_substantive"
                 else f"This source unit is exactly locked physical line {line_number}."
-            )
-        if len(units) >= 999:
-            raise ValueError(
-                "compile-annotations supports at most 999 source units under schema 5"
             )
         texts = [
             source_lines[current - start].get("text", "")
@@ -11316,7 +12293,7 @@ def compact_move_failure(value: Any, field: str) -> dict[str, Any]:
         value,
         field,
         required=("kind", "issue_id", "evidence"),
-        optional=("target",),
+        optional=("target", "computation"),
     )
     if failure["kind"] not in MOVE_FAILURE_KINDS:
         raise ValueError(f"{field}.kind is invalid")
@@ -11329,6 +12306,12 @@ def compact_move_failure(value: Any, field: str) -> dict[str, Any]:
         raise ValueError(f"{field}.evidence must be substantive")
     if "target" in failure and not is_substantive_string(failure["target"]):
         raise ValueError(f"{field}.target must be substantive")
+    if "computation" in failure:
+        shape_errors = failure_computation_shape_errors(
+            failure["computation"], f"{field}.computation"
+        )
+        if shape_errors:
+            raise ValueError(shape_errors[0])
     return dict(failure)
 
 
@@ -11788,7 +12771,7 @@ def build_compact_candidate_dispositions(
             record["path_ids"], f"{field}.path_ids", allow_empty=False
         )
         if len(path_ids) != len(set(path_ids)) or not all(
-            re.fullmatch(r"CP[0-9]{3}", path_id) for path_id in path_ids
+            CANDIDATE_PATH_ID_RE.fullmatch(path_id) for path_id in path_ids
         ):
             raise ValueError(
                 f"{field}.path_ids must contain unique IDs such as CP001"
@@ -12501,6 +13484,26 @@ def compile_annotation_data(
         raise ValueError(
             "annotations.obligation_sha256 does not match the normalized obligation"
         )
+    if packet is not None:
+        context_binding = packet.get("context_binding")
+        expected_calibration_receipt = (
+            context_binding.get("calibration_receipt_sha256")
+            if isinstance(context_binding, dict)
+            else None
+        )
+        supplied_calibration_receipt = annotations[
+            "calibration_receipt_sha256"
+        ]
+        if (
+            not isinstance(supplied_calibration_receipt, str)
+            or not SHA256_RE.fullmatch(supplied_calibration_receipt)
+            or supplied_calibration_receipt != expected_calibration_receipt
+        ):
+            raise ValueError(
+                "annotations.calibration_receipt_sha256 does not match the "
+                "primary packet; create a fresh annotation scaffold and fully "
+                "re-review every judgment"
+            )
 
     source_units, source_ranges = build_compiled_source_units(
         ledger, annotations["source_groups"]
@@ -12592,6 +13595,15 @@ def compile_annotation_data(
         "steps": steps,
     }
     if packet is not None:
+        work_context_sha256 = packet.get("work_context_sha256")
+        if (
+            not isinstance(work_context_sha256, str)
+            or not SHA256_RE.fullmatch(work_context_sha256)
+        ):
+            raise ValueError(
+                "Primary packet does not carry a valid work_context_sha256"
+            )
+        candidate["work_context_sha256"] = work_context_sha256
         validate_compiled_candidate_reconciliation(packet, candidate)
         validate_compiled_packet_dispositions(packet, candidate)
     return candidate
@@ -12655,6 +13667,14 @@ def cmd_compile_annotations(args: argparse.Namespace) -> int:
         raise ValueError(
             "Compact annotations must remain outside the canonical audit root"
         )
+    try:
+        current_calibration_receipt(audit_root)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ValueError(
+            "compile-annotations requires a current passing balanced checker "
+            "calibration before publishing checker-authored proof evidence: "
+            + str(exc)
+        ) from exc
 
     ledger, ledger_errors = load_json_object(ledger_path, "extracted ledger")
     if ledger_errors:
@@ -12741,6 +13761,7 @@ def cmd_compile_annotations(args: argparse.Namespace) -> int:
                 "packet_sha256": sha256_file(packet_path),
                 "obligation_sha256": annotations["obligation_sha256"],
                 "context_binding_sha256": packet["context_binding_sha256"],
+                "work_context_sha256": candidate["work_context_sha256"],
                 "operational_binding_sha256": packet[
                     "operational_binding_sha256"
                 ],
@@ -13699,10 +14720,11 @@ def validate_premise_uses(
         if is_nonempty_string(source_reference_id) and kind not in {
             "obligation",
             "prior_step",
+            "internal_result",
         }:
             errors.append(
-                f"{item_prefix}.source_reference_id requires an obligation or "
-                "prior-step origin with an exact locked anchor"
+                f"{item_prefix}.source_reference_id requires an obligation, "
+                "prior-step, or internal-result origin with an exact anchor"
             )
 
         if kind == "obligation":
@@ -13960,6 +14982,26 @@ def validate_inference_record(
                 if not is_substantive_string(failure_evidence):
                     errors.append(
                         f"{move_prefix}.failure.evidence must be nonempty and substantive"
+                    )
+                computation = failure.get("computation")
+                if computation is not None:
+                    errors.extend(
+                        failure_computation_shape_errors(
+                            computation, f"{move_prefix}.failure.computation"
+                        )
+                    )
+                elif (
+                    final
+                    and one_move_contract
+                    and valid_failure_kind
+                    and failure_kind in REFUTATION_FAILURE_KINDS
+                ):
+                    errors.append(
+                        f"{move_prefix}.failure.computation is required for a "
+                        f"{failure_kind} failure: instantiate the failure "
+                        "numerically as a hash-locked script under "
+                        "audit/05_adversarial, or record status "
+                        "not_instantiable with a substantive reason"
                     )
                 failure_supports_zero_input = (
                     valid_failure_kind
@@ -14381,27 +15423,39 @@ def check_ledger_data(
     evidence_contract_version = ledger.get("evidence_contract_version")
     if evidence_contract_version not in {
         EVIDENCE_CONTRACT_VERSION,
+        PREVIOUS_EVIDENCE_CONTRACT_VERSION,
         LEGACY_EVIDENCE_CONTRACT_VERSION,
         None,
     }:
         errors.append(
             "Unsupported evidence_contract_version "
             f"{evidence_contract_version!r}; expected {EVIDENCE_CONTRACT_VERSION}, "
-            f"or {LEGACY_EVIDENCE_CONTRACT_VERSION} for legacy inspection"
+            f"or {PREVIOUS_EVIDENCE_CONTRACT_VERSION} or "
+            f"{LEGACY_EVIDENCE_CONTRACT_VERSION} for legacy inspection"
         )
     elif final and evidence_contract_version != EVIDENCE_CONTRACT_VERSION:
         errors.append(
             "upgrade_required: final ledger requires evidence_contract_version "
-            f"{EVIDENCE_CONTRACT_VERSION}; evidence contract 3 is inspection-only"
+            f"{EVIDENCE_CONTRACT_VERSION}; evidence contracts "
+            f"{LEGACY_EVIDENCE_CONTRACT_VERSION} and "
+            f"{PREVIOUS_EVIDENCE_CONTRACT_VERSION} are inspection-only"
         )
     work_context_sha256 = ledger.get("work_context_sha256")
+    valid_work_context = bool(
+        isinstance(work_context_sha256, str)
+        and SHA256_RE.fullmatch(work_context_sha256)
+    )
     if (
-        work_context_sha256 is not None
-        and (
-            not isinstance(work_context_sha256, str)
-            or not SHA256_RE.fullmatch(work_context_sha256)
-        )
+        final
+        and schema_version == SCHEMA_VERSION
+        and evidence_contract_version == EVIDENCE_CONTRACT_VERSION
+        and not valid_work_context
     ):
+        errors.append(
+            "current final ledger requires a calibration-bound "
+            "work_context_sha256"
+        )
+    elif work_context_sha256 is not None and not valid_work_context:
         errors.append("work_context_sha256 must be a SHA-256 digest when present")
     migration = ledger.get("migration")
     if schema_version == SCHEMA_VERSION and migration is not None:
@@ -14600,6 +15654,7 @@ def check_ledger_data(
     issue_references: set[str] = set()
     issue_links: list[dict[str, str]] = []
     evidence_specificity_records: list[dict[str, str]] = []
+    evidence_anchoring_records: list[dict[str, Any]] = []
     previous_step_end = start - 1
     previous_source_unit_order = 0
 
@@ -15126,6 +16181,37 @@ def check_ledger_data(
                 if isinstance(record, dict)
                 and is_substantive_string(record.get("evidence"))
             )
+        if (
+            final
+            and schema_version == SCHEMA_VERSION
+            and status != "not_checked"
+            and step.get("support_role") in SUPPORT_ROLES
+        ):
+            anchor_unit = source_units.get(step.get("source_unit_id"))
+            anchor_range = (
+                anchor_unit.get("lines") if isinstance(anchor_unit, dict) else None
+            )
+            if (
+                isinstance(anchor_range, list)
+                and len(anchor_range) == 2
+                and all(is_int(value) for value in anchor_range)
+                and valid_range
+            ):
+                unit_text = "\n".join(
+                    locked_selected[anchor_range[0] - start : anchor_range[1] - start + 1]
+                )
+                evidence_anchoring_records.append(
+                    {
+                        "step_id": step_id,
+                        "tokens": extract_step_math_tokens(
+                            unit_text,
+                            whole_math=(
+                                anchor_unit.get("kind") == "continued_display"
+                            ),
+                        ),
+                        "texts": collect_step_evidence_texts(step),
+                    }
+                )
 
         unused_premises = set(premises) - inference_premises - discharge_premises
         if final and status != "not_checked" and unused_premises:
@@ -15216,6 +16302,8 @@ def check_ledger_data(
 
     if final and schema_version == SCHEMA_VERSION:
         validate_evidence_specificity(evidence_specificity_records, errors)
+        validate_evidence_anchoring(evidence_anchoring_records, errors)
+        validate_failure_computation_artifacts(steps, ledger_path, errors)
 
     dependency_status_from_step = STEP_TO_DEPENDENCY_STATUS
     step_graph: dict[str, set[str]] = {step_id: set() for step_id in step_ids}
@@ -18227,6 +19315,163 @@ def current_resolution_ref_is_connected(
     )
 
 
+def validate_repair_search(
+    value: Any, severity: str | None, field: str
+) -> list[str]:
+    """Validate the bounded repair-attempt record grounding an S0/S1 grading.
+
+    The record documents which repair strategies were actually attempted and
+    where each fails, so that "no local repair established" (S0) versus "a
+    plausible repair may exist" (S1) is an evidence-backed judgment rather
+    than an assertion. It is diagnostic only: a surviving strategy never
+    resolves the issue, lowers severity, or strengthens a verdict.
+    """
+    errors: list[str] = []
+    if not isinstance(value, dict):
+        return [f"{field} must be an object"]
+    unknown = set(value) - {"strategies", "conclusion"}
+    if unknown:
+        errors.append(f"{field} has unknown fields: {', '.join(sorted(unknown))}")
+    strategies = value.get("strategies")
+    outcomes: list[str] = []
+    if not isinstance(strategies, list) or not strategies:
+        errors.append(f"{field}.strategies must be a nonempty list")
+        strategies = []
+    for index, strategy in enumerate(strategies, 1):
+        prefix = f"{field}.strategies[{index}]"
+        if not isinstance(strategy, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        unknown_fields = set(strategy) - REPAIR_SEARCH_STRATEGY_FIELDS
+        missing_fields = REPAIR_SEARCH_STRATEGY_FIELDS - set(strategy)
+        if unknown_fields:
+            errors.append(
+                f"{prefix} has unknown fields: {', '.join(sorted(unknown_fields))}"
+            )
+        if missing_fields:
+            errors.append(
+                f"{prefix} is missing fields: {', '.join(sorted(missing_fields))}"
+            )
+        for name in ("name", "attempt", "evidence"):
+            if name in strategy and not is_substantive_string(strategy.get(name)):
+                errors.append(f"{prefix}.{name} must be nonempty and substantive")
+        outcome = strategy.get("outcome")
+        if "outcome" in strategy:
+            if not is_enum_value(outcome, REPAIR_SEARCH_OUTCOMES):
+                errors.append(
+                    f"{prefix}.outcome must be 'failed' or "
+                    "'survives_local_inspection'"
+                )
+            else:
+                outcomes.append(str(outcome))
+    conclusion = value.get("conclusion")
+    if not is_enum_value(conclusion, REPAIR_SEARCH_CONCLUSIONS):
+        errors.append(
+            f"{field}.conclusion must be 'no_local_repair_found' or "
+            "'candidate_repair_exists'"
+        )
+        return errors
+    if conclusion == "no_local_repair_found" and any(
+        outcome != "failed" for outcome in outcomes
+    ):
+        errors.append(
+            f"{field}: no_local_repair_found requires every attempted "
+            "strategy to record outcome failed"
+        )
+    if conclusion == "candidate_repair_exists" and outcomes and not any(
+        outcome == "survives_local_inspection" for outcome in outcomes
+    ):
+        errors.append(
+            f"{field}: candidate_repair_exists requires at least one strategy "
+            "with outcome survives_local_inspection"
+        )
+    if severity == "S0" and conclusion != "no_local_repair_found":
+        errors.append(
+            f"{field}: severity S0 requires conclusion no_local_repair_found; "
+            "record candidate_repair_exists only with severity S1"
+        )
+    if severity == "S1" and conclusion != "candidate_repair_exists":
+        errors.append(
+            f"{field}: severity S1 requires conclusion candidate_repair_exists; "
+            "an issue with no plausible repair on the main claim is S0"
+        )
+    return errors
+
+
+def validate_repair_cost_fields(
+    change: dict[str, Any],
+    action: str | None,
+    repair_search: dict[str, Any] | None,
+    prefix: str,
+) -> list[str]:
+    """Validate the structured repair-cost classification of one suggested change.
+
+    `repair_scope` records how far the edit reaches, `assumption_cost` how much
+    stronger the hypotheses become, and `claim_cost` (weaken_claim only) what
+    the conclusion gives up. These are diagnostic classifications for triage:
+    they never certify a repair, lower severity, or strengthen a verdict, and
+    only their internal coherence is machine-checked.
+    """
+    errors: list[str] = []
+    repair_scope = change.get("repair_scope")
+    if not is_enum_value(repair_scope, REPAIR_SCOPES):
+        errors.append(
+            f"{prefix}.repair_scope must be local_step, unit_statement, "
+            "cross_unit, or global"
+        )
+        repair_scope = None
+    assumption_cost = change.get("assumption_cost")
+    if not is_enum_value(assumption_cost, ASSUMPTION_COSTS):
+        errors.append(
+            f"{prefix}.assumption_cost must be none, tightens_constant, "
+            "adds_regularity_or_moment, changes_regime, or structural"
+        )
+        assumption_cost = None
+    claim_cost = change.get("claim_cost")
+    if action == "weaken_claim":
+        if not is_enum_value(claim_cost, CLAIM_COSTS):
+            errors.append(
+                f"{prefix}.claim_cost is required for weaken_claim and must be "
+                "restricts_scope, weakens_rate, loses_uniformity, or weakens_mode"
+            )
+            claim_cost = None
+        elif claim_cost == "none":
+            errors.append(
+                f"{prefix}.claim_cost cannot be none for weaken_claim; a change "
+                "that gives up nothing is not a weakened claim"
+            )
+    elif "claim_cost" in change:
+        errors.append(
+            f"{prefix}.claim_cost is allowed only for a weaken_claim action"
+        )
+    if action == "strengthen_assumption" and assumption_cost == "none":
+        errors.append(
+            f"{prefix}.assumption_cost cannot be none for strengthen_assumption; "
+            "classify what the added hypothesis costs"
+        )
+    if action == "presentation_edit":
+        if assumption_cost not in {None, "none"}:
+            errors.append(
+                f"{prefix}: a presentation_edit cannot carry an assumption cost"
+            )
+        if repair_scope not in {None, "local_step"}:
+            errors.append(
+                f"{prefix}: a presentation_edit must have repair_scope local_step"
+            )
+    if (
+        isinstance(repair_search, dict)
+        and repair_search.get("conclusion") == "no_local_repair_found"
+        and repair_scope == "local_step"
+        and assumption_cost == "none"
+    ):
+        errors.append(
+            f"{prefix}: repair_scope local_step with assumption_cost none "
+            "asserts exactly the local repair that this issue's repair_search "
+            "concluded does not exist"
+        )
+    return errors
+
+
 def validate_issues(
     issues: list[dict[str, Any]],
     referenced: set[str],
@@ -18321,6 +19566,7 @@ def validate_issues(
         confidence = issue.get("confidence")
         status = issue.get("status")
         finding_status = issue.get("finding_status")
+        repair_search = issue.get("repair_search")
         resolution_archive: dict[str, Any] | None = None
         resolution_requirements: dict[str, list[str]] = {
             "required_units": [],
@@ -18969,12 +20215,19 @@ def validate_issues(
                         f"{change_prefix}.target_ref",
                         errors,
                     )
-                if not is_enum_value(
-                    change.get("action"), SUGGESTED_CHANGE_ACTIONS
-                ):
+                change_action = change.get("action")
+                if not is_enum_value(change_action, SUGGESTED_CHANGE_ACTIONS):
                     errors.append(f"{change_prefix}.action is invalid")
                 if not is_substantive_string(change.get("proposal")):
                     errors.append(f"{change_prefix}.proposal must be substantive")
+                errors.extend(
+                    validate_repair_cost_fields(
+                        change,
+                        change_action if isinstance(change_action, str) else None,
+                        repair_search if isinstance(repair_search, dict) else None,
+                        change_prefix,
+                    )
+                )
                 verification_status = change.get("verification_status")
                 if not is_enum_value(
                     verification_status, SUGGESTED_CHANGE_STATUSES
@@ -19247,6 +20500,21 @@ def validate_issues(
             errors.append(f"{issue_id}: load_bearing must be true or false")
         if final and is_enum_value(severity, {"S0", "S1"}) and issue.get("load_bearing") is not True:
             errors.append(f"{issue_id}: S0 and S1 issues must be load-bearing")
+        if repair_search is None:
+            if final and is_enum_value(severity, {"S0", "S1"}):
+                errors.append(
+                    f"{issue_id}: severity {severity} requires a repair_search "
+                    "record documenting the bounded repair attempts that "
+                    "ground the S0/S1 boundary"
+                )
+        else:
+            errors.extend(
+                validate_repair_search(
+                    repair_search,
+                    severity if is_enum_value(severity, ISSUE_SEVERITIES) else None,
+                    f"{issue_id}.repair_search",
+                )
+            )
         if status == "resolved" and final:
             if not is_substantive_string(issue.get("resolution")):
                 errors.append(f"{issue_id}: resolved issue needs a substantive resolution")
@@ -19467,11 +20735,44 @@ def audit_ledgers(root: Path, final: bool) -> tuple[list[str], list[dict[str, An
     errors: list[str] = []
     summaries: list[dict[str, Any]] = []
     referenced: set[str] = set()
-    for ledger_path in sorted(root.rglob("*.ledger.json")):
+    root = root.resolve()
+    live_ledger_directory = (root / "audit" / "04_local_checks").resolve()
+    for ledger_path in live_local_check_artifacts(root, ".ledger.json"):
         ledger_errors, summary = check_ledger_data(ledger_path, final)
         summaries.append(summary)
         referenced.update(summary.get("issue_references", []))
         errors.extend(f"{ledger_path}: {error}" for error in ledger_errors)
+        if (
+            final
+            and not ledger_errors
+            and ledger_path.parent.resolve() == live_ledger_directory
+            and is_nonempty_string(summary.get("unit_id"))
+        ):
+            try:
+                expected_packet = build_context_packet(
+                    root, str(summary["unit_id"]), "primary"
+                )
+            except (OSError, UnicodeError, ValueError) as exc:
+                errors.append(
+                    f"{ledger_path}: cannot reconstruct current "
+                    f"calibration-bound work context: {exc}"
+                )
+            else:
+                ledger, read_errors = load_json_object(
+                    ledger_path, "proof-unit ledger"
+                )
+                if read_errors:
+                    errors.extend(
+                        f"{ledger_path}: {error}" for error in read_errors
+                    )
+                elif ledger.get("work_context_sha256") != expected_packet.get(
+                    "work_context_sha256"
+                ):
+                    errors.append(
+                        f"{ledger_path}: work_context_sha256 is stale; "
+                        "regenerate the primary packet, fully recheck the unit, "
+                        "and replace or recompile the ledger"
+                    )
     return errors, summaries, referenced
 
 
@@ -20801,8 +22102,32 @@ def validate_method_interface_registry(
     return result
 
 
-def external_result_contract(record: dict[str, Any]) -> dict[str, Any]:
-    """Return the immutable external-result identity used by every use edge."""
+EXTERNAL_CITATION_BINDING_KINDS = {
+    "bibtex_entry",
+    "bibitem",
+    "rendered_reference",
+}
+BIBTEX_ENTRY_START_RE = re.compile(
+    r"@(?P<entry_type>[A-Za-z]+)\s*(?P<open>[{(])\s*"
+    r"(?P<key>[^,\s{}()]+)\s*,",
+    re.IGNORECASE,
+)
+BIBTEX_DIRECTIVE_START_RE = re.compile(
+    r"@(?P<entry_type>[A-Za-z]+)\s*(?P<open>[{(])",
+    re.IGNORECASE,
+)
+BIBITEM_RE = re.compile(
+    r"\\bibitem(?:\s*\[[^]]*\])?\s*\{(?P<key>[^}]+)\}"
+)
+BIBITEM_COMMAND_RE = re.compile(r"\\bibitem(?![A-Za-z@])")
+BIBLIOGRAPHY_BEGIN_RE = re.compile(
+    r"\\begin\s*\{thebibliography\}(?:\s*\{[^}]*\})?"
+)
+BIBLIOGRAPHY_END_RE = re.compile(r"\\end\s*\{thebibliography\}")
+
+
+def external_result_core_contract(record: dict[str, Any]) -> dict[str, Any]:
+    """Return the theorem-source contract, excluding bibliography bindings."""
     return {
         "source_identity": record.get("source_identity"),
         "version": record.get("version"),
@@ -20810,6 +22135,639 @@ def external_result_contract(record: dict[str, Any]) -> dict[str, Any]:
         "exact_statement": record.get("exact_statement"),
         "source_evidence": record.get("source_evidence"),
     }
+
+
+def external_result_identity_sha256(record: dict[str, Any]) -> str:
+    """Bind bibliography evidence to one exact external theorem identity."""
+    return canonical_sha256(
+        {"id": record.get("id"), **external_result_core_contract(record)}
+    )
+
+
+def external_result_contract(record: dict[str, Any]) -> dict[str, Any]:
+    """Return the immutable external-result identity used by every use edge."""
+    contract = external_result_core_contract(record)
+    bindings = record.get("citation_bindings")
+    if isinstance(bindings, list) and bindings:
+        contract["citation_bindings"] = bindings
+    return contract
+
+
+def _bibtex_entry_end(text: str, opening: int, opening_char: str) -> int | None:
+    """Return the inclusive closing offset of one balanced BibTeX entry."""
+    if opening_char == "{":
+        depth = 1
+        escaped = False
+        for index in range(opening + 1, len(text)):
+            if escaped:
+                escaped = False
+                continue
+            if text[index] == "\\":
+                escaped = True
+                continue
+            if text[index] == "{":
+                depth += 1
+            elif text[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    return index
+        return None
+
+    parenthesis_depth = 1
+    brace_depth = 0
+    quoted = False
+    escaped = False
+    for index in range(opening + 1, len(text)):
+        character = text[index]
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\":
+            escaped = True
+            continue
+        if character == '"' and brace_depth == 0:
+            quoted = not quoted
+            continue
+        if quoted:
+            continue
+        if character == "{":
+            brace_depth += 1
+        elif character == "}" and brace_depth:
+            brace_depth -= 1
+        elif brace_depth == 0 and character == "(":
+            parenthesis_depth += 1
+        elif brace_depth == 0 and character == ")":
+            parenthesis_depth -= 1
+            if parenthesis_depth == 0:
+                return index
+    return None
+
+
+def bibtex_entry_spans(path: Path) -> list[dict[str, Any]]:
+    """Index complete citation-bearing BibTeX entries by exact physical lines."""
+    text = read_text(path)
+    masked = mask_latex_comments(text)
+    entries: list[dict[str, Any]] = []
+    cursor = 0
+    while directive := BIBTEX_DIRECTIVE_START_RE.search(masked, cursor):
+        end = _bibtex_entry_end(
+            masked,
+            directive.start("open"),
+            directive.group("open"),
+        )
+        if end is None:
+            start_line = text.count("\n", 0, directive.start()) + 1
+            raise ValueError(
+                f"unterminated BibTeX directive beginning at line {start_line}"
+            )
+        entry_type = directive.group("entry_type").lower()
+        if entry_type not in {"comment", "preamble", "string"}:
+            match = BIBTEX_ENTRY_START_RE.match(masked, directive.start())
+            if (
+                match is None
+                or match.start("open") != directive.start("open")
+            ):
+                start_line = text.count("\n", 0, directive.start()) + 1
+                raise ValueError(
+                    f"malformed BibTeX entry header at line {start_line}"
+                )
+            entries.append(
+                {
+                    "key": match.group("key").strip(),
+                    "start_line": text.count("\n", 0, match.start()) + 1,
+                    "end_line": text.count("\n", 0, end) + 1,
+                    "start_offset": match.start(),
+                    "end_offset": end,
+                }
+            )
+        cursor = end + 1
+    return entries
+
+
+def bibitem_entry_spans(path: Path) -> list[dict[str, Any]]:
+    """Index complete \\bibitem entries in .bbl or inline bibliography text."""
+    text = read_text(path)
+    masked = mask_structural_tex(text)
+    lines = text.splitlines()
+    entries: list[dict[str, Any]] = []
+    environments: list[tuple[int, int]] = []
+    active_start: int | None = None
+    environment_tokens = sorted(
+        [
+            *(
+                ("begin", match)
+                for match in BIBLIOGRAPHY_BEGIN_RE.finditer(masked)
+            ),
+            *(("end", match) for match in BIBLIOGRAPHY_END_RE.finditer(masked)),
+        ],
+        key=lambda item: item[1].start(),
+    )
+    for token_kind, token in environment_tokens:
+        token_line = text.count("\n", 0, token.start()) + 1
+        if token_kind == "begin":
+            if active_start is not None:
+                raise ValueError(
+                    f"nested thebibliography environment beginning at line {token_line}"
+                )
+            active_start = token.end()
+        elif active_start is None:
+            raise ValueError(
+                f"thebibliography end without a matching begin at line {token_line}"
+            )
+        else:
+            environments.append((active_start, token.start()))
+            active_start = None
+    if active_start is not None:
+        start_line = text.count("\n", 0, active_start) + 1
+        raise ValueError(
+            f"unterminated thebibliography environment beginning at line {start_line}"
+        )
+
+    for environment_start, environment_end in environments:
+        matches = list(BIBITEM_RE.finditer(masked, environment_start, environment_end))
+        matched_starts = {match.start() for match in matches}
+        malformed = next(
+            (
+                command
+                for command in BIBITEM_COMMAND_RE.finditer(
+                    masked, environment_start, environment_end
+                )
+                if command.start() not in matched_starts
+            ),
+            None,
+        )
+        if malformed is not None:
+            malformed_line = text.count("\n", 0, malformed.start()) + 1
+            raise ValueError(f"malformed bibitem command at line {malformed_line}")
+        for index, match in enumerate(matches):
+            next_item = (
+                matches[index + 1].start()
+                if index + 1 < len(matches)
+                else environment_end
+            )
+            start_line = text.count("\n", 0, match.start()) + 1
+            end_line = text.count(
+                "\n", 0, max(match.end() - 1, next_item - 1)
+            ) + 1
+            while end_line > start_line and not strip_latex_comment(
+                lines[end_line - 1]
+            ).strip():
+                end_line -= 1
+            entries.append(
+                {
+                    "key": match.group("key").strip(),
+                    "start_line": start_line,
+                    "end_line": end_line,
+                }
+            )
+    return entries
+
+
+def source_snapshot_bibliography_key_locations(
+    root: Path,
+    errors: list[str] | None = None,
+) -> tuple[
+    dict[str, list[dict[str, Any]]],
+    dict[Path, str],
+    str | None,
+]:
+    """Index citation keys across the authoritative manuscript source closure."""
+    index_errors = errors if errors is not None else []
+    _, manifest, manifest_errors = load_audit_manifest(root)
+    if manifest_errors:
+        index_errors.extend(
+            f"Cannot index authoritative bibliography sources: {error}"
+            for error in manifest_errors
+        )
+        return {}, {}, None
+    snapshot = manifest.get("source_snapshot")
+    rows = snapshot.get("files") if isinstance(snapshot, dict) else None
+    if not isinstance(rows, list):
+        index_errors.append(
+            "Cannot index authoritative bibliography sources: "
+            "manifest source_snapshot.files is missing"
+        )
+        return {}, {}, None
+
+    locations: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    snapshot_files: dict[Path, str] = {}
+    tex_suffixes = FLS_SOURCE_SUFFIXES | {".bbl"}
+    for index, row in enumerate(rows, 1):
+        file_value = row.get("file") if isinstance(row, dict) else None
+        digest = row.get("sha256") if isinstance(row, dict) else None
+        if not is_nonempty_string(file_value) or not is_nonempty_string(digest):
+            index_errors.append(
+                "Cannot index authoritative bibliography sources: "
+                f"source_snapshot.files[{index}] needs file and sha256"
+            )
+            continue
+        try:
+            source_path = resolve_stored_path(file_value, root)
+            resolved_source = source_path.resolve()
+            suffix = source_path.suffix.lower()
+            if resolved_source in snapshot_files:
+                index_errors.append(
+                    "Cannot index authoritative bibliography sources: duplicate "
+                    f"snapshot path {relative_or_absolute(source_path, root)}"
+                )
+                continue
+            snapshot_files[resolved_source] = digest
+            if not source_path.is_file():
+                if suffix == ".bib" or suffix in tex_suffixes:
+                    index_errors.append(
+                        "Cannot index authoritative bibliography source "
+                        f"{relative_or_absolute(source_path, root)}: file does not exist"
+                    )
+                continue
+            if suffix == ".bib":
+                source_kind = "bibtex_entry"
+                entries = bibtex_entry_spans(source_path)
+            elif suffix in tex_suffixes:
+                source_kind = "bibitem"
+                entries = bibitem_entry_spans(source_path)
+            else:
+                continue
+        except (OSError, UnicodeError, ValueError) as exc:
+            index_errors.append(
+                "Cannot index authoritative bibliography source "
+                f"{file_value}: {exc}"
+            )
+            continue
+        for entry in entries:
+            key = entry.get("key")
+            if not is_nonempty_string(key):
+                continue
+            locations[key].append(
+                {
+                    "file": resolved_source,
+                    "source_kind": source_kind,
+                    "start_line": entry["start_line"],
+                    "end_line": entry["end_line"],
+                }
+            )
+    snapshot_sha256 = (
+        snapshot.get("sha256")
+        if isinstance(snapshot, dict) and is_nonempty_string(snapshot.get("sha256"))
+        else None
+    )
+    return dict(locations), snapshot_files, snapshot_sha256
+
+
+def locked_json_span_object(
+    span: Any,
+    root: Path,
+    prefix: str,
+    errors: list[str],
+) -> dict[str, Any] | None:
+    """Load one already validated locked span as a JSON object."""
+    if not isinstance(span, dict):
+        return None
+    file_value = span.get("file")
+    start_line = span.get("start_line")
+    end_line = span.get("end_line")
+    if not (
+        is_nonempty_string(file_value)
+        and is_int(start_line)
+        and is_int(end_line)
+        and start_line >= 1
+        and end_line >= start_line
+    ):
+        return None
+    source_path = resolve_stored_path(file_value, root)
+    if not source_path.is_file():
+        return None
+    try:
+        lines = read_lines(source_path)
+    except (OSError, UnicodeError, ValueError) as exc:
+        errors.append(f"{prefix} cannot be read as UTF-8 JSON: {exc}")
+        return None
+    if end_line > len(lines):
+        return None
+    try:
+        value = json.loads("\n".join(lines[start_line - 1 : end_line]))
+    except (TypeError, ValueError) as exc:
+        errors.append(f"{prefix} must contain exactly one JSON object: {exc}")
+        return None
+    if not isinstance(value, dict):
+        errors.append(f"{prefix} must contain a JSON object")
+        return None
+    return value
+
+
+def validate_external_citation_bindings(
+    record: dict[str, Any],
+    result_id: str,
+    root: Path,
+    errors: list[str],
+    source_bibliography_index: dict[str, list[dict[str, Any]]] | None = None,
+    source_snapshot_files: dict[Path, str] | None = None,
+    source_snapshot_sha256: str | None = None,
+) -> None:
+    """Require each load-bearing citation key to resolve to one locked entry."""
+    required_keys = sorted(
+        {
+            key
+            for use in record.get("uses", [])
+            if isinstance(use, dict) and isinstance(use.get("citation_keys"), list)
+            for key in use["citation_keys"]
+            if is_nonempty_string(key)
+        }
+    ) if isinstance(record.get("uses"), list) else []
+
+    raw_bindings = record.get("citation_bindings")
+    if raw_bindings is None and not required_keys:
+        bindings: list[Any] = []
+    elif not isinstance(raw_bindings, list):
+        errors.append(f"{result_id}.citation_bindings must be a list")
+        bindings = []
+    else:
+        bindings = raw_bindings
+
+    expected_identity = external_result_identity_sha256(record)
+    binding_keys: list[str] = []
+    for index, binding in enumerate(bindings, 1):
+        prefix = f"{result_id}.citation_bindings[{index}]"
+        if not isinstance(binding, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        key = binding.get("key")
+        authoritative_locations: list[dict[str, Any]] = []
+        if not is_nonempty_string(key):
+            errors.append(f"{prefix}.key must be a nonempty string")
+        else:
+            binding_keys.append(key)
+            authoritative_locations = (
+                source_bibliography_index.get(key, [])
+                if source_bibliography_index is not None
+                else []
+            )
+            if len(authoritative_locations) > 1:
+                rendered_locations = ", ".join(
+                    f"{relative_or_absolute(location['file'], root)}:"
+                    f"{location['start_line']}-{location['end_line']}"
+                    for location in authoritative_locations
+                )
+                errors.append(
+                    f"{prefix}: bibliography key {key!r} is ambiguous across "
+                    "the authoritative source snapshot: " + rendered_locations
+                )
+        source_kind = binding.get("source_kind")
+        if not is_enum_value(source_kind, EXTERNAL_CITATION_BINDING_KINDS):
+            errors.append(f"{prefix}.source_kind is invalid")
+        if binding.get("external_result_id") != result_id:
+            errors.append(f"{prefix}.external_result_id must equal {result_id}")
+        if binding.get("external_identity_sha256") != expected_identity:
+            errors.append(
+                f"{prefix}.external_identity_sha256 is stale or belongs to another result"
+            )
+        if binding.get("role") != "bibliography_identity":
+            errors.append(f"{prefix}.role must be bibliography_identity")
+        if not is_substantive_string(binding.get("locator")):
+            errors.append(f"{prefix}.locator must be nonempty and substantive")
+        validate_locked_span(binding, root, prefix, errors, require_role=True)
+
+        if source_bibliography_index is not None and is_nonempty_string(key):
+            if source_kind == "rendered_reference":
+                if authoritative_locations:
+                    errors.append(
+                        f"{prefix}: bibliography key {key!r} has an "
+                        "authoritative machine-readable entry in the source "
+                        "snapshot; bind that entry instead of a rendered "
+                        "transcription"
+                    )
+            elif not authoritative_locations:
+                errors.append(
+                    f"{prefix}: bibliography key {key!r} does not resolve to "
+                    "any authoritative entry in the source snapshot; a binding "
+                    "must lock the snapshot's own bibliography source"
+                )
+        file_value = binding.get("file")
+        start_line = binding.get("start_line")
+        end_line = binding.get("end_line")
+        if not (
+            is_nonempty_string(file_value)
+            and is_int(start_line)
+            and is_int(end_line)
+        ):
+            continue
+        source_path = resolve_stored_path(file_value, root)
+        if (
+            source_bibliography_index is not None
+            and len(authoritative_locations) == 1
+            and source_kind != "rendered_reference"
+        ):
+            authoritative = authoritative_locations[0]
+            if (
+                source_path.resolve() != authoritative["file"]
+                or source_kind != authoritative["source_kind"]
+                or (start_line, end_line)
+                != (authoritative["start_line"], authoritative["end_line"])
+            ):
+                errors.append(
+                    f"{prefix}: binding for key {key!r} must equal the unique "
+                    "authoritative snapshot entry at "
+                    f"{relative_or_absolute(authoritative['file'], root)}:"
+                    f"{authoritative['start_line']}-{authoritative['end_line']} "
+                    f"({authoritative['source_kind']})"
+                )
+        if not source_path.is_file():
+            continue
+        if source_kind == "rendered_reference":
+            provenance = binding.get("rendered_provenance")
+            if not isinstance(provenance, dict):
+                errors.append(
+                    f"{prefix}.rendered_provenance must be an object for a "
+                    "rendered_reference binding"
+                )
+                continue
+            if provenance.get("authority") != "source_snapshot":
+                errors.append(
+                    f"{prefix}.rendered_provenance.authority must be source_snapshot"
+                )
+            if (
+                not is_nonempty_string(source_snapshot_sha256)
+                or provenance.get("source_snapshot_sha256")
+                != source_snapshot_sha256
+            ):
+                errors.append(
+                    f"{prefix}.rendered_provenance.source_snapshot_sha256 is stale"
+                )
+            resolved_source = source_path.resolve()
+            snapshot_digest = (
+                source_snapshot_files.get(resolved_source)
+                if source_snapshot_files is not None
+                else None
+            )
+            if snapshot_digest is None:
+                errors.append(
+                    f"{prefix}: rendered_reference file must be an authoritative "
+                    "source snapshot member"
+                )
+            elif provenance.get("source_file_sha256") != snapshot_digest:
+                errors.append(
+                    f"{prefix}.rendered_provenance.source_file_sha256 must equal "
+                    "the snapshot file hash"
+                )
+            elif sha256_file(source_path) != snapshot_digest:
+                errors.append(
+                    f"{prefix}: rendered_reference snapshot file has drifted"
+                )
+
+            mapping_prefix = f"{prefix}.rendered_provenance.key_mapping"
+            mapping_span = provenance.get("key_mapping")
+            validate_locked_span(
+                mapping_span,
+                root,
+                mapping_prefix,
+                errors,
+                require_role=True,
+            )
+            if (
+                isinstance(mapping_span, dict)
+                and mapping_span.get("role") != "rendered_reference_key_mapping"
+            ):
+                errors.append(
+                    f"{mapping_prefix}.role must be rendered_reference_key_mapping"
+                )
+            mapping_file = (
+                mapping_span.get("file") if isinstance(mapping_span, dict) else None
+            )
+            if is_nonempty_string(mapping_file):
+                mapping_path = resolve_stored_path(mapping_file, root)
+                mapping_snapshot_digest = (
+                    source_snapshot_files.get(mapping_path.resolve())
+                    if source_snapshot_files is not None
+                    else None
+                )
+                if mapping_snapshot_digest is None:
+                    errors.append(
+                        f"{mapping_prefix}.file must be an authoritative source "
+                        "snapshot member"
+                    )
+                elif (
+                    mapping_path.is_file()
+                    and sha256_file(mapping_path) != mapping_snapshot_digest
+                ):
+                    errors.append(f"{mapping_prefix}.file has drifted from the snapshot")
+
+            mapping = locked_json_span_object(
+                mapping_span, root, mapping_prefix, errors
+            )
+            if mapping is not None:
+                if set(mapping) != {
+                    "schema_version",
+                    "citation_key",
+                    "rendered_reference",
+                }:
+                    errors.append(
+                        f"{mapping_prefix} JSON must contain exactly schema_version, "
+                        "citation_key, and rendered_reference"
+                    )
+                if mapping.get("schema_version") != 1:
+                    errors.append(f"{mapping_prefix}.schema_version must equal 1")
+                if mapping.get("citation_key") != key:
+                    errors.append(
+                        f"{mapping_prefix}.citation_key must equal {key!r}"
+                    )
+                rendered_target = mapping.get("rendered_reference")
+                if not isinstance(rendered_target, dict) or set(rendered_target) != {
+                    "file",
+                    "start_line",
+                    "end_line",
+                    "sha256",
+                }:
+                    errors.append(
+                        f"{mapping_prefix}.rendered_reference must exactly identify "
+                        "one locked span"
+                    )
+                else:
+                    target_file = rendered_target.get("file")
+                    target_matches = (
+                        is_nonempty_string(target_file)
+                        and resolve_stored_path(target_file, root).resolve()
+                        == source_path.resolve()
+                        and rendered_target.get("start_line") == start_line
+                        and rendered_target.get("end_line") == end_line
+                        and rendered_target.get("sha256") == binding.get("sha256")
+                    )
+                    if not target_matches:
+                        errors.append(
+                            f"{mapping_prefix}: citation key {key!r} does not map "
+                            "to this rendered_reference span"
+                        )
+            continue
+        if "rendered_provenance" in binding:
+            errors.append(
+                f"{prefix}.rendered_provenance is allowed only for rendered_reference"
+            )
+        try:
+            candidates = (
+                bibtex_entry_spans(source_path)
+                if source_kind == "bibtex_entry"
+                else bibitem_entry_spans(source_path)
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
+            errors.append(f"{prefix} cannot parse bibliography source: {exc}")
+            continue
+        same_key = [candidate for candidate in candidates if candidate["key"] == key]
+        if len(same_key) != 1:
+            errors.append(
+                f"{prefix}: bibliography key {key!r} must resolve exactly once; "
+                f"found {len(same_key)}"
+            )
+            continue
+        candidate = same_key[0]
+        if (candidate["start_line"], candidate["end_line"]) != (
+            start_line,
+            end_line,
+        ):
+            errors.append(
+                f"{prefix}: locked span must equal the complete {source_kind} entry"
+            )
+
+    if len(binding_keys) != len(set(binding_keys)):
+        errors.append(f"{result_id}.citation_bindings contains duplicate keys")
+    if binding_keys != sorted(binding_keys):
+        errors.append(f"{result_id}.citation_bindings must be sorted by key")
+    if sorted(set(binding_keys)) != required_keys:
+        errors.append(
+            f"{result_id}.citation_bindings must exactly bind load-bearing citation "
+            f"keys; expected {required_keys}, found {sorted(set(binding_keys))}"
+        )
+
+    review = record.get("citation_binding_review")
+    if required_keys:
+        if not isinstance(review, dict):
+            errors.append(f"{result_id}.citation_binding_review must be an object")
+        else:
+            if review.get("status") != "reviewed":
+                errors.append(
+                    f"{result_id}.citation_binding_review.status must be reviewed"
+                )
+            if review.get("required_keys") != required_keys:
+                errors.append(
+                    f"{result_id}.citation_binding_review.required_keys is stale"
+                )
+            if not is_substantive_string(review.get("evidence")):
+                errors.append(
+                    f"{result_id}.citation_binding_review.evidence must be substantive"
+                )
+    elif review is not None:
+        if not isinstance(review, dict):
+            errors.append(f"{result_id}.citation_binding_review must be an object")
+        else:
+            if review.get("status") != "not_required":
+                errors.append(
+                    f"{result_id}.citation_binding_review.status must be not_required"
+                )
+            if review.get("required_keys") != []:
+                errors.append(
+                    f"{result_id}.citation_binding_review.required_keys must be empty"
+                )
+            if not is_substantive_string(review.get("evidence")):
+                errors.append(
+                    f"{result_id}.citation_binding_review.evidence must be substantive"
+                )
 
 
 def validate_external_source_evidence(
@@ -20853,6 +22811,16 @@ def validate_external_result_catalog(
         return {}, {}
     results: dict[str, dict[str, Any]] = {}
     contract_hashes: dict[str, str] = {}
+    if records:
+        (
+            source_bibliography_index,
+            source_snapshot_files,
+            source_snapshot_sha256,
+        ) = source_snapshot_bibliography_key_locations(root, errors)
+    else:
+        source_bibliography_index = {}
+        source_snapshot_files = {}
+        source_snapshot_sha256 = None
     for index, record in enumerate(records, 1):
         prefix = f"external_results[{index}]"
         if not isinstance(record, dict):
@@ -20884,6 +22852,15 @@ def validate_external_result_catalog(
         )
         if status != "unchecked" and not source_evidence:
             errors.append(f"{result_id}.source_evidence must not be empty")
+        validate_external_citation_bindings(
+            record,
+            result_id,
+            root,
+            errors,
+            source_bibliography_index,
+            source_snapshot_files,
+            source_snapshot_sha256,
+        )
         contract_hashes[result_id] = canonical_sha256(external_result_contract(record))
         if status == "unchecked" and not is_substantive_string(record.get("reason")):
             errors.append(f"{result_id}: unchecked external result needs a substantive reason")
@@ -23216,6 +25193,13 @@ def canonical_issue_detail_projection(
         [
             compact_json_value(change.get("target_ref")),
             str(change.get("action")),
+            str(change.get("repair_scope")),
+            str(change.get("assumption_cost")),
+            (
+                str(change.get("claim_cost"))
+                if "claim_cost" in change
+                else "not_applicable"
+            ),
             str(change.get("proposal")),
             str(change.get("verification_status")),
             canonical_id_field(change.get("required_rechecks", [])),
@@ -23223,6 +25207,22 @@ def canonical_issue_detail_projection(
         for change in suggested_changes
         if isinstance(change, dict)
     ]
+    repair_search = issue.get("repair_search")
+    repair_search_rows: list[list[str]] | None = None
+    repair_search_conclusion: str | None = None
+    if isinstance(repair_search, dict):
+        strategies = repair_search.get("strategies")
+        repair_search_rows = [
+            [
+                str(strategy.get("name")),
+                str(strategy.get("attempt")),
+                str(strategy.get("outcome")),
+                str(strategy.get("evidence")),
+            ]
+            for strategy in (strategies if isinstance(strategies, list) else [])
+            if isinstance(strategy, dict)
+        ]
+        repair_search_conclusion = str(repair_search.get("conclusion"))
     current_required_uses = {
         str(edge.get("use_id"))
         for edge in issue_recheck_edges(issue, dependency_edges)
@@ -23349,6 +25349,8 @@ def canonical_issue_detail_projection(
         "contract": contract_rows,
         "propagation": propagation_rows,
         "severity": severity_rows,
+        "repair_search": repair_search_rows,
+        "repair_search_conclusion": repair_search_conclusion,
         "changes": change_rows,
         "closure": closure_rows,
         "required_closure": {
@@ -23486,6 +25488,20 @@ def render_issue_report_views(
                 ],
                 projection["severity"],
             ),
+            *(
+                [
+                    "",
+                    "Repair search conclusion: "
+                    f"`{projection['repair_search_conclusion']}`",
+                    "",
+                    render_markdown_table(
+                        ["Strategy", "Attempt", "Outcome", "Evidence"],
+                        projection["repair_search"],
+                    ),
+                ]
+                if projection["repair_search"] is not None
+                else []
+            ),
             "",
             "#### 4. Suggested changes and recheck",
             "",
@@ -23493,6 +25509,9 @@ def render_issue_report_views(
                 [
                     "Target",
                     "Action",
+                    "Repair scope",
+                    "Assumption cost",
+                    "Claim cost",
                     "Proposal",
                     "Verification status",
                     "Required rechecks",
@@ -23700,6 +25719,7 @@ def _check_audit_finalization(
     if manifest_errors:
         return errors, {"audit_root": str(root), "errors": len(errors)}
     errors.extend(audit_internal_redirect_errors(root))
+    errors.extend(checker_calibration_errors(root))
     if manifest.get("schema_version") != SCHEMA_VERSION:
         errors.append("AUDIT_MANIFEST.json has an unsupported schema_version")
     protocol = manifest.get("protocol")
@@ -24040,11 +26060,18 @@ def _check_audit_finalization(
         errors.append("audit_scope.critical_units contains duplicates")
     if not set(critical).issubset(in_scope):
         errors.append("Every critical unit must also be in scope")
+    if not set(target_units).issubset(critical):
+        errors.append("Every target unit must also be critical")
+    sample_rate = scope.get("verified_challenge_sample_rate")
     if (
-        scope.get("depth") == "focused"
-        and not set(target_units).issubset(critical)
+        sample_rate is not None
+        and verified_challenge_sample_fraction(sample_rate) is None
     ):
-        errors.append("Every focused target unit must also be critical")
+        errors.append(
+            "audit_scope.verified_challenge_sample_rate must be a finite "
+            "number greater than 0 and at most 1; omit the field entirely "
+            "to disable sampling"
+        )
     in_scope_interfaces = validate_string_list(
         scope.get("in_scope_interfaces"),
         "audit_scope.in_scope_interfaces",
@@ -26290,7 +28317,22 @@ def _check_audit_finalization(
                                     "Overall assessment effect",
                                 ],
                                 projection["severity"],
-                            )
+                            ),
+                            *(
+                                [
+                                    (
+                                        [
+                                            "Strategy",
+                                            "Attempt",
+                                            "Outcome",
+                                            "Evidence",
+                                        ],
+                                        projection["repair_search"],
+                                    )
+                                ]
+                                if projection["repair_search"] is not None
+                                else []
+                            ),
                         ],
                     ),
                     (
@@ -26300,6 +28342,9 @@ def _check_audit_finalization(
                                 [
                                     "Target",
                                     "Action",
+                                    "Repair scope",
+                                    "Assumption cost",
+                                    "Claim cost",
                                     "Proposal",
                                     "Verification status",
                                     "Required rechecks",
@@ -26808,6 +28853,13 @@ def check_audit_finalization(
     root: Path, *, progress_override: dict[str, Any] | None = None
 ) -> tuple[list[str], dict[str, Any]]:
     """Run the full gate without allowing unreadable artifacts to crash it."""
+    lock_error = migration_update_lock_error(root)
+    if lock_error is not None:
+        return [lock_error], {
+            "audit_root": str(root.resolve()),
+            "errors": 1,
+            "read_error": lock_error,
+        }
     try:
         return _check_audit_finalization(
             root, progress_override=progress_override
@@ -26830,6 +28882,9 @@ def finalization_payload_sha256(record: dict[str, Any]) -> str:
 
 def cmd_finalize(args: argparse.Namespace) -> int:
     root = args.root.resolve()
+    lock_error = migration_update_lock_error(root)
+    if lock_error is not None:
+        raise ValueError(lock_error)
     view_errors: list[str] = []
     _, preflight_manifest, preflight_manifest_errors = load_audit_manifest(root)
     preflight_protocol = preflight_manifest.get("protocol")
@@ -27304,7 +29359,54 @@ def effective_critical_requirements(
         for unit_id in promoted_units:
             if is_nonempty_string(unit_id) and unit_id in in_scope:
                 severe_by_unit[unit_id].add(issue_id)
-    return sorted(declared | set(severe_by_unit)), dict(severe_by_unit)
+    sampled = sampled_challenge_units(scope, manifest, in_scope)
+    return (
+        sorted(declared | set(severe_by_unit) | sampled),
+        dict(severe_by_unit),
+    )
+
+
+def sampled_challenge_units(
+    scope: dict[str, Any],
+    manifest: dict[str, Any],
+    in_scope: set[str],
+) -> set[str]:
+    """Deterministically sample in-scope units for independent challenge.
+
+    Membership is a pure function of the source snapshot hash and the
+    in-scope unit set: every in-scope unit is scored and the fixed fraction
+    with the lowest scores is selected. Mutable declarations such as
+    critical_units or issue records are deliberately excluded from the
+    population, so they cannot steer which units land in the sample; the
+    in-scope set itself is pinned to the source by the scope gates. A
+    sampled unit that is independently required is simply covered by its own
+    challenge. The ceiling is computed in exact rational arithmetic so
+    boundary rates never under-sample through floating-point error.
+    """
+    rate = scope.get("verified_challenge_sample_rate")
+    rate_fraction = verified_challenge_sample_fraction(rate)
+    if rate_fraction is None:
+        return set()
+    population = sorted(in_scope)
+    if not population:
+        return set()
+    snapshot = manifest.get("source_snapshot")
+    snapshot_id = (
+        snapshot.get("sha256") if isinstance(snapshot, dict) else None
+    )
+    if not is_nonempty_string(snapshot_id):
+        return set()
+    count = (
+        rate_fraction.numerator * len(population)
+        + rate_fraction.denominator
+        - 1
+    ) // rate_fraction.denominator
+    count = min(len(population), count)
+    scored = sorted(
+        (sha256_text(f"{snapshot_id}:{unit_id}"), unit_id)
+        for unit_id in population
+    )
+    return {unit_id for _, unit_id in scored[:count]}
 
 
 def challenge_semantic_freshness_errors(
@@ -27511,7 +29613,7 @@ def derive_progress_records(
     summaries_by_id: dict[str, dict[str, Any]] = {}
     stages: dict[str, str] = {}
     fatal_ledger_errors: list[str] = []
-    for ledger_path in sorted(root.rglob("*.ledger.json")):
+    for ledger_path in live_local_check_artifacts(root, ".ledger.json"):
         ledger_errors, summary = check_ledger_data(ledger_path, True)
         if not summary:
             fatal_ledger_errors.extend(
@@ -27768,6 +29870,9 @@ def bounded_errors(
 
 def cmd_checkpoint(args: argparse.Namespace) -> int:
     root = args.root.resolve()
+    lock_error = migration_update_lock_error(root)
+    if lock_error is not None:
+        raise ValueError(lock_error)
     redirect_errors = audit_internal_redirect_errors(root)
     if redirect_errors:
         raise ValueError("; ".join(redirect_errors))
@@ -27894,40 +29999,43 @@ def status_protocol_view(
     manifest: dict[str, Any], summaries: Iterable[dict[str, Any]]
 ) -> dict[str, Any]:
     protocol = manifest.get("protocol")
+    if not isinstance(protocol, dict):
+        protocol = {}
+    identity = protocol_identity()
     recorded = {
-        "artifact_schema_version": (
-            protocol.get("artifact_schema_version")
-            if isinstance(protocol, dict)
-            else None
-        ),
-        "evidence_contract_version": (
-            protocol.get("evidence_contract_version")
-            if isinstance(protocol, dict)
-            else None
-        ),
-        "closure_contract_version": (
-            protocol.get("closure_contract_version")
-            if isinstance(protocol, dict)
-            else None
-        ),
+        field: protocol.get(field)
+        for field in identity
+        if field != "validator_sha256"
     }
     current = {
-        "artifact_schema_version": SCHEMA_VERSION,
-        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
-        "closure_contract_version": CLOSURE_CONTRACT_VERSION,
+        field: value
+        for field, value in identity.items()
+        if field != "validator_sha256"
     }
-    recorded_validator = (
-        protocol.get("validator_sha256") if isinstance(protocol, dict) else None
-    )
-    current_validator = protocol_identity()["validator_sha256"]
+    recorded_validator = protocol.get("validator_sha256")
+    current_validator = identity["validator_sha256"]
     legacy = (
         manifest.get("schema_version") == LEGACY_SCHEMA_VERSION
-        and recorded
-        == {
-            "artifact_schema_version": LEGACY_SCHEMA_VERSION,
-            "evidence_contract_version": LEGACY_EVIDENCE_CONTRACT_VERSION,
-            "closure_contract_version": LEGACY_CLOSURE_CONTRACT_VERSION,
-        }
+        and recorded["artifact_schema_version"] == LEGACY_SCHEMA_VERSION
+        and recorded["evidence_contract_version"]
+        == LEGACY_EVIDENCE_CONTRACT_VERSION
+        and recorded["closure_contract_version"]
+        == LEGACY_CLOSURE_CONTRACT_VERSION
+    )
+    evidence_upgrade = (
+        manifest.get("schema_version") == SCHEMA_VERSION
+        and recorded["artifact_schema_version"] == SCHEMA_VERSION
+        and recorded["evidence_contract_version"]
+        == PREVIOUS_EVIDENCE_CONTRACT_VERSION
+        and recorded["closure_contract_version"]
+        in {CLOSURE_CONTRACT_VERSION, PREVIOUS_CLOSURE_CONTRACT_VERSION}
+    )
+    closure_upgrade = (
+        manifest.get("schema_version") == SCHEMA_VERSION
+        and recorded["artifact_schema_version"] == SCHEMA_VERSION
+        and recorded["evidence_contract_version"] == EVIDENCE_CONTRACT_VERSION
+        and recorded["closure_contract_version"]
+        == PREVIOUS_CLOSURE_CONTRACT_VERSION
     )
     legacy_ledgers = sorted(
         str(summary.get("ledger"))
@@ -27940,15 +30048,42 @@ def status_protocol_view(
         )
         and is_nonempty_string(summary.get("ledger"))
     )
+    contracts_current = manifest.get("schema_version") == SCHEMA_VERSION and all(
+        recorded[field] == current[field]
+        for field in (
+            "artifact_schema_version",
+            "evidence_contract_version",
+            "closure_contract_version",
+            "method_interface_schema_version",
+        )
+    )
+    # Full protocol identity, exactly what finalization enforces; a release
+    # bump (skill_version and validator hash) with unchanged contracts is the
+    # one drift revalidate-protocol repairs mechanically.
     versions_current = (
-        manifest.get("schema_version") == SCHEMA_VERSION and recorded == current
+        contracts_current
+        and recorded["skill_name"] == current["skill_name"]
+        and recorded["skill_version"] == current["skill_version"]
+        and recorded_validator == current_validator
+    )
+    release_identity_well_formed = bool(
+        is_nonempty_string(recorded["skill_version"])
+        and isinstance(recorded_validator, str)
+        and SHA256_RE.fullmatch(recorded_validator)
     )
     validator_revalidation_required = bool(
-        versions_current and recorded_validator != current_validator
+        contracts_current
+        and recorded["skill_name"] == current["skill_name"]
+        and release_identity_well_formed
+        and not versions_current
     )
     status = (
         "upgrade_required"
         if legacy
+        else "evidence_upgrade_required"
+        if evidence_upgrade
+        else "closure_upgrade_required"
+        if closure_upgrade
         else "validator_revalidation_required"
         if validator_revalidation_required
         else "current"
@@ -27961,15 +30096,33 @@ def status_protocol_view(
             "records under schema 5, and manually recheck every proof before "
             "finalization."
         )
+    elif evidence_upgrade:
+        next_action = (
+            "Run migrate-evidence --root <audit-root>. Then author the "
+            "evidence-contract-5 records the gates will demand: a "
+            "failure.computation for every counterexample or contradiction "
+            "failure, a repair_search on every S0 or S1 issue, repair-cost "
+            "fields on every suggested change, and source-anchored step "
+            "evidence. Recheck the affected ledgers, run migrate-closure if "
+            "the closure contract is still "
+            f"{PREVIOUS_CLOSURE_CONTRACT_VERSION}, and rerun finalization."
+        )
+    elif closure_upgrade:
+        next_action = (
+            "Run migrate-closure --root <audit-root>. Then manually bind every "
+            "pending load-bearing citation key, refresh the affected external "
+            "contract hashes, review the dependency registry, and rerun finalization."
+        )
     elif validator_revalidation_required:
         next_action = (
             "Run revalidate-protocol after resolving any reported source, "
-            "record, or ledger errors. Then rerun status and finalization."
+            "record, or ledger errors; it stamps the current skill version "
+            "and validator hash. Then rerun status and finalization."
         )
     elif status == "mismatch":
         next_action = (
-            "The recorded schema or contract identity is incompatible with the "
-            "current validator. Re-scaffold or use the documented migration "
+            "The recorded protocol identity is malformed or incompatible with "
+            "the current validator. Re-scaffold or use the documented migration "
             "workflow, then manually recheck affected records."
         )
     else:
@@ -27991,7 +30144,7 @@ def status_markdown(data: dict[str, Any]) -> str:
     rows = [
         "# Proof-Check Status",
         "",
-        f"- Audit root: {data['audit_root']}",
+        f"- Audit root: {escape_markdown(data['audit_root'])}",
         f"- Workflow state: {data['workflow_state']}",
         f"- Audit complete: {str(data['audit_complete']).lower()}",
         f"- Delivery status: {data['delivery_status']}",
@@ -27999,9 +30152,9 @@ def status_markdown(data: dict[str, Any]) -> str:
         f"- Candidate completion-gate errors: {progress.get('candidate_completion_gate_error_count', 0)}",
         f"- Report integrity: {data['report_integrity']['status']}",
         f"- Generated views: {data['generated_views']['status']}",
-        f"- Active unit: {progress.get('active_unit') or 'none'}",
+        f"- Active unit: {escape_markdown(progress.get('active_unit') or 'none')}",
         f"- Current pass: {progress.get('current_pass')}",
-        f"- Next action: {progress.get('next_action') or 'none'}",
+        f"- Next action: {escape_markdown(progress.get('next_action') or 'none')}",
         f"- Normalized units: {len(progress.get('normalized_units', []))}",
         f"- Completed units: {len(progress.get('completed_units', []))}",
         f"- Conditional units: {len(progress.get('conditional_units', []))}",
@@ -28029,14 +30182,20 @@ def status_markdown(data: dict[str, Any]) -> str:
     protocol = data.get("protocol")
     if isinstance(protocol, dict) and protocol.get("status") in {
         "upgrade_required",
+        "evidence_upgrade_required",
+        "closure_upgrade_required",
         "validator_revalidation_required",
         "mismatch",
     }:
         heading = (
             "Protocol upgrade required"
             if protocol.get("status") == "upgrade_required"
+            else "Evidence contract upgrade required"
+            if protocol.get("status") == "evidence_upgrade_required"
+            else "Closure contract upgrade required"
+            if protocol.get("status") == "closure_upgrade_required"
             else (
-                "Validator revalidation required"
+                "Release identity revalidation required"
                 if protocol.get("status") == "validator_revalidation_required"
                 else "Protocol mismatch"
             )
@@ -28045,60 +30204,81 @@ def status_markdown(data: dict[str, Any]) -> str:
             [
                 f"## {heading}",
                 "",
-                f"- Recorded protocol: {compact_json_value(protocol.get('recorded'))}",
-                f"- Current protocol: {compact_json_value(protocol.get('current'))}",
-                f"- Recorded validator SHA256: {protocol.get('recorded_validator_sha256')}",
-                f"- Current validator SHA256: {protocol.get('current_validator_sha256')}",
-                f"- Next action: {protocol.get('next_action')}",
+                f"- Recorded protocol: {escape_markdown(compact_json_value(protocol.get('recorded')))}",
+                f"- Current protocol: {escape_markdown(compact_json_value(protocol.get('current')))}",
+                f"- Recorded validator SHA256: {escape_markdown(protocol.get('recorded_validator_sha256'))}",
+                f"- Current validator SHA256: {escape_markdown(protocol.get('current_validator_sha256'))}",
+                f"- Next action: {escape_markdown(protocol.get('next_action'))}",
                 "",
             ]
         )
     if progress.get("drift"):
         rows.extend(["## Checkpoint drift", ""])
-        rows.extend(f"- {item}" for item in progress["drift"])
+        rows.extend(f"- {escape_markdown(item)}" for item in progress["drift"])
         rows.append("")
     if progress.get("in_progress_units"):
         rows.extend(["## In-progress units", ""])
-        rows.extend(f"- {unit_id}" for unit_id in progress["in_progress_units"])
+        rows.extend(
+            f"- {escape_markdown(unit_id)}"
+            for unit_id in progress["in_progress_units"]
+        )
         rows.append("")
     if progress.get("not_started_units"):
         rows.extend(["## Not-started units", ""])
-        rows.extend(f"- {unit_id}" for unit_id in progress["not_started_units"])
+        rows.extend(
+            f"- {escape_markdown(unit_id)}"
+            for unit_id in progress["not_started_units"]
+        )
         rows.append("")
     if data["invalid_ledgers"]:
         rows.extend(["## Ledgers requiring work", ""])
-        rows.extend(f"- {path}" for path in data["invalid_ledgers"])
+        rows.extend(f"- {escape_markdown(path)}" for path in data["invalid_ledgers"])
         rows.append("")
     if data.get("structural_errors"):
         rows.extend(["## Malformed or stale state", ""])
-        rows.extend(f"- {error}" for error in data["structural_errors"])
+        rows.extend(
+            f"- {escape_markdown(error)}" for error in data["structural_errors"]
+        )
         rows.append("")
     if finalization["stale_reasons"]:
         rows.extend(["## Finalization problems", ""])
-        rows.extend(f"- {reason}" for reason in finalization["stale_reasons"])
+        rows.extend(
+            f"- {escape_markdown(reason)}"
+            for reason in finalization["stale_reasons"]
+        )
         rows.append("")
     if finalization["current_gate_errors"]:
         rows.extend(["## Current finalization-gate errors", ""])
-        rows.extend(f"- {error}" for error in finalization["current_gate_errors"])
+        rows.extend(
+            f"- {escape_markdown(error)}"
+            for error in finalization["current_gate_errors"]
+        )
         rows.append("")
     changes = finalization["artifact_changes"]
     if any(changes.values()):
         rows.extend(["## Changed audit artifacts", ""])
         for kind in ("added", "removed", "changed"):
             for path in changes[kind]:
-                rows.append(f"- {kind}: {path}")
+                rows.append(f"- {kind}: {escape_markdown(path)}")
         rows.append("")
     return "\n".join(rows)
 
 
 def cmd_status(args: argparse.Namespace) -> int:
     root = args.root.resolve()
+    lock_error = migration_update_lock_error(root)
+    if lock_error is not None:
+        raise ValueError(lock_error)
     structural_errors: list[str] = audit_internal_redirect_errors(root)
     manifest_path, manifest_path_valid = canonical_artifact_path(
         root, "AUDIT_MANIFEST.json", "audit manifest", structural_errors
     )
     manifest, manifest_errors = (
-        load_json_object(manifest_path, "audit manifest")
+        load_json_object(
+            manifest_path,
+            "audit manifest",
+            preserve_verified_challenge_rate=True,
+        )
         if manifest_path_valid
         else ({}, [])
     )
@@ -28221,6 +30401,49 @@ def cmd_status(args: argparse.Namespace) -> int:
         }
     finalization = check_finalization_freshness(root)
     protocol_view = status_protocol_view(manifest, summaries)
+    protocol_registry_errors: list[str] = []
+    if (
+        protocol_view["status"]
+        in {"evidence_upgrade_required", "closure_upgrade_required"}
+        and not manifest_errors
+    ):
+        protocol_registry_path, protocol_registry_path_valid = (
+            manifest_canonical_artifact_path(
+                manifest,
+                root,
+                "dependency_registry",
+                "dependency registry",
+                protocol_registry_errors,
+            )
+        )
+        protocol_registry, protocol_registry_read_errors = (
+            load_json_object(protocol_registry_path, "dependency registry")
+            if protocol_registry_path_valid
+            else ({}, [])
+        )
+        protocol_registry_errors.extend(protocol_registry_read_errors)
+        if protocol_registry_path_valid and not protocol_registry_read_errors:
+            recorded_protocol = manifest.get("protocol")
+            recorded_protocol = (
+                recorded_protocol if isinstance(recorded_protocol, dict) else {}
+            )
+            if protocol_registry.get("schema_version") != recorded_protocol.get(
+                "artifact_schema_version"
+            ):
+                protocol_registry_errors.append(
+                    "Dependency registry schema_version does not match the "
+                    "manifest protocol"
+                )
+            if protocol_registry.get(
+                "closure_contract_version"
+            ) != recorded_protocol.get("closure_contract_version"):
+                protocol_registry_errors.append(
+                    "Dependency registry closure_contract_version does not "
+                    "match the manifest protocol"
+                )
+    for error in protocol_registry_errors:
+        if error not in structural_errors:
+            structural_errors.append(error)
     protocol_mismatch = protocol_view["status"] == "mismatch"
     if protocol_mismatch:
         structural_errors.append(
@@ -28230,7 +30453,12 @@ def cmd_status(args: argparse.Namespace) -> int:
     protocol_source_errors: list[str] = []
     if (
         protocol_view["status"]
-        in {"upgrade_required", "validator_revalidation_required"}
+        in {
+            "upgrade_required",
+            "evidence_upgrade_required",
+            "closure_upgrade_required",
+            "validator_revalidation_required",
+        }
         and not manifest_errors
     ):
         try:
@@ -28275,6 +30503,22 @@ def cmd_status(args: argparse.Namespace) -> int:
         and not protocol_source_errors
         and not any(finalization.get("artifact_changes", {}).values())
     )
+    coherent_evidence_upgrade = bool(
+        protocol_view["status"] == "evidence_upgrade_required"
+        and not structural_errors
+        and not any(
+            is_fatal_ledger_error(error) for error in ledger_errors
+        )
+        and not protocol_source_errors
+        and not any(finalization.get("artifact_changes", {}).values())
+    )
+    coherent_closure_upgrade = bool(
+        protocol_view["status"] == "closure_upgrade_required"
+        and not structural_errors
+        and not ledger_errors
+        and not protocol_source_errors
+        and not any(finalization.get("artifact_changes", {}).values())
+    )
     if coherent_legacy_upgrade:
         finalization_view.update(
             {
@@ -28295,13 +30539,74 @@ def cmd_status(args: argparse.Namespace) -> int:
         if not verbose:
             finalization_view["current_gate_errors"] = [
                 "Protocol upgrade required: recorded artifact/evidence/closure "
-                "versions are 4/3/2; current finalization requires 5/4/3.",
+                f"versions are {LEGACY_SCHEMA_VERSION}/"
+                f"{LEGACY_EVIDENCE_CONTRACT_VERSION}/"
+                f"{LEGACY_CLOSURE_CONTRACT_VERSION}; current finalization "
+                f"requires {SCHEMA_VERSION}/{EVIDENCE_CONTRACT_VERSION}/"
+                f"{CLOSURE_CONTRACT_VERSION}.",
                 "Run migrate-ledger for every legacy ledger and manually recheck "
                 "the proof records before finalization.",
             ]
             finalization_view["current_gate_errors_omitted"] = len(
                 full_gate_errors
             )
+
+    if coherent_evidence_upgrade:
+        finalization_view.update(
+            {
+                "freshness": "evidence_contract_changed",
+                "usable_finalization": False,
+                "preflight_status": "evidence_upgrade_required",
+                "finalizable_now": False,
+                "stale_reasons": [
+                    "The schema-5 audit predates evidence contract "
+                    f"{EVIDENCE_CONTRACT_VERSION}: instantiated failure "
+                    "computations, repair-search records, repair-cost fields, "
+                    "and source-anchored step evidence."
+                ],
+            }
+        )
+        if not verbose:
+            finalization_view["current_gate_errors"] = [
+                "Evidence upgrade required: recorded artifact/evidence/closure "
+                f"versions are {SCHEMA_VERSION}/"
+                f"{PREVIOUS_EVIDENCE_CONTRACT_VERSION}/"
+                f"{protocol_view['recorded']['closure_contract_version']}; "
+                f"current finalization requires {SCHEMA_VERSION}/"
+                f"{EVIDENCE_CONTRACT_VERSION}/{CLOSURE_CONTRACT_VERSION}.",
+                "Run migrate-evidence, author the newly required evidence "
+                "records, recheck the affected ledgers, then run "
+                "migrate-closure if the closure contract is still "
+                f"{PREVIOUS_CLOSURE_CONTRACT_VERSION}.",
+            ]
+            finalization_view["current_gate_errors_omitted"] = len(
+                full_gate_errors
+            )
+
+    if coherent_closure_upgrade:
+        finalization_view.update(
+            {
+                "freshness": "closure_contract_changed",
+                "usable_finalization": False,
+                "preflight_status": "closure_upgrade_required",
+                "finalizable_now": False,
+                "stale_reasons": [
+                    "The schema-5 audit predates mandatory bibliography identity "
+                    "bindings for load-bearing citation keys."
+                ],
+            }
+        )
+        if not verbose:
+            finalization_view["current_gate_errors"] = [
+                "Closure upgrade required: recorded artifact/evidence/closure "
+                f"versions are {SCHEMA_VERSION}/{EVIDENCE_CONTRACT_VERSION}/"
+                f"{PREVIOUS_CLOSURE_CONTRACT_VERSION}; current finalization "
+                f"requires {SCHEMA_VERSION}/{EVIDENCE_CONTRACT_VERSION}/"
+                f"{CLOSURE_CONTRACT_VERSION}.",
+                "Run migrate-closure, then manually complete every pending "
+                "citation binding and refresh affected dependency contracts.",
+            ]
+            finalization_view["current_gate_errors_omitted"] = len(full_gate_errors)
 
     coherent_validator_revalidation = bool(
         protocol_view["status"] == "validator_revalidation_required"
@@ -28317,15 +30622,16 @@ def cmd_status(args: argparse.Namespace) -> int:
                 "preflight_status": "validator_revalidation_required",
                 "finalizable_now": False,
                 "stale_reasons": [
-                    "The audit records a different validator implementation "
-                    "under the current schema and contract versions."
+                    "The audit records a different release identity under the "
+                    "current schema and contract versions."
                 ],
             }
         )
         if not verbose:
             finalization_view["current_gate_errors"] = [
-                "Validator revalidation required: the schema and contract "
-                "versions are current, but validator_sha256 changed.",
+                "Release identity revalidation required: the schema and contract "
+                "versions are current, but skill_version or validator_sha256 "
+                "changed.",
                 "Run revalidate-protocol, then rerun status and finalization.",
             ]
             finalization_view["current_gate_errors_omitted"] = len(
@@ -28343,6 +30649,10 @@ def cmd_status(args: argparse.Namespace) -> int:
     )
     if coherent_legacy_upgrade:
         workflow_state = "upgrade_required"
+    elif coherent_evidence_upgrade:
+        workflow_state = "evidence_upgrade_required"
+    elif coherent_closure_upgrade:
+        workflow_state = "closure_upgrade_required"
     elif coherent_validator_revalidation:
         workflow_state = "validator_revalidation_required"
     elif malformed_or_stale:
@@ -28372,6 +30682,8 @@ def cmd_status(args: argparse.Namespace) -> int:
             protocol_view["next_action"]
             if (
                 coherent_legacy_upgrade
+                or coherent_evidence_upgrade
+                or coherent_closure_upgrade
                 or coherent_validator_revalidation
                 or protocol_mismatch
             )
@@ -28379,7 +30691,12 @@ def cmd_status(args: argparse.Namespace) -> int:
         ),
         "drift": (
             []
-            if coherent_legacy_upgrade or coherent_validator_revalidation
+            if (
+                coherent_legacy_upgrade
+                or coherent_evidence_upgrade
+                or coherent_closure_upgrade
+                or coherent_validator_revalidation
+            )
             else drift
         ),
         "candidate_completion_gate_error_count": len(
@@ -28439,6 +30756,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     status_code = 1 if workflow_state in {
         "malformed_or_stale",
         "upgrade_required",
+        "evidence_upgrade_required",
+        "closure_upgrade_required",
         "validator_revalidation_required",
     } else 0
     if getattr(args, "require_finalized", False) and not audit_complete:
@@ -28446,21 +30765,803 @@ def cmd_status(args: argparse.Namespace) -> int:
     return status_code
 
 
-def cmd_revalidate_protocol(args: argparse.Namespace) -> int:
-    """Rebind a current-schema WIP audit to the current validator safely."""
+@audit_migration_locked
+def cmd_migrate_closure(args: argparse.Namespace) -> int:
+    """Upgrade prior-closure state without transferring citation judgments."""
     root = args.root.resolve()
     errors: list[str] = audit_internal_redirect_errors(root)
     manifest_path, manifest_path_valid = canonical_artifact_path(
         root, "AUDIT_MANIFEST.json", "audit manifest", errors
     )
+    manifest_baseline_sha256 = (
+        sha256_file(manifest_path)
+        if manifest_path_valid and manifest_path.is_file()
+        else None
+    )
     manifest, manifest_errors = (
-        load_json_object(manifest_path, "audit manifest")
+        load_json_object(
+            manifest_path,
+            "audit manifest",
+            preserve_verified_challenge_rate=True,
+        )
+        if manifest_path_valid
+        else ({}, [])
+    )
+    errors.extend(manifest_errors)
+    if (
+        manifest_baseline_sha256 is not None
+        and sha256_file(manifest_path) != manifest_baseline_sha256
+    ):
+        errors.append("Audit manifest changed while migration preflight read it")
+    registry_path, registry_path_valid = (
+        manifest_canonical_artifact_path(
+            manifest,
+            root,
+            "dependency_registry",
+            "dependency registry",
+            errors,
+        )
+        if not manifest_errors
+        else (root / "audit" / "03_dependencies" / "DEPENDENCY_REGISTRY.json", False)
+    )
+    registry_baseline_sha256 = (
+        sha256_file(registry_path)
+        if registry_path_valid and registry_path.is_file()
+        else None
+    )
+    registry, registry_errors = (
+        load_json_object(registry_path, "dependency registry")
+        if registry_path_valid
+        else ({}, [])
+    )
+    errors.extend(registry_errors)
+    if (
+        registry_baseline_sha256 is not None
+        and not registry_errors
+        and sha256_file(registry_path) != registry_baseline_sha256
+    ):
+        errors.append(
+            "Dependency registry changed while migration preflight read it"
+        )
+
+    recorded_protocol = manifest.get("protocol")
+    if not isinstance(recorded_protocol, dict):
+        errors.append("AUDIT_MANIFEST.json protocol must be an object")
+        recorded_protocol = {}
+    current_protocol = protocol_identity()
+    recorded_closure = recorded_protocol.get("closure_contract_version")
+    registry_closure = registry.get("closure_contract_version")
+    closure_already_current = bool(
+        manifest.get("schema_version") == SCHEMA_VERSION
+        and all(
+            recorded_protocol.get(field) == expected
+            for field, expected in current_protocol.items()
+        )
+        and registry.get("schema_version") == SCHEMA_VERSION
+        and registry_closure == CLOSURE_CONTRACT_VERSION
+    )
+    if manifest.get("schema_version") != SCHEMA_VERSION:
+        errors.append("migrate-closure requires schema-5 audit state")
+    if recorded_protocol.get("artifact_schema_version") != SCHEMA_VERSION:
+        errors.append(
+            "protocol.artifact_schema_version is incompatible with migrate-closure"
+        )
+    if (
+        recorded_protocol.get("evidence_contract_version")
+        == PREVIOUS_EVIDENCE_CONTRACT_VERSION
+    ):
+        errors.append(
+            "protocol.evidence_contract_version is "
+            f"{PREVIOUS_EVIDENCE_CONTRACT_VERSION}; run migrate-evidence "
+            "before migrate-closure"
+        )
+    elif (
+        recorded_protocol.get("evidence_contract_version")
+        != EVIDENCE_CONTRACT_VERSION
+    ):
+        errors.append(
+            "protocol.evidence_contract_version is incompatible with migrate-closure"
+        )
+    expected_closure = (
+        CLOSURE_CONTRACT_VERSION
+        if closure_already_current
+        else PREVIOUS_CLOSURE_CONTRACT_VERSION
+    )
+    if recorded_closure != expected_closure:
+        errors.append(
+            "migrate-closure requires protocol.closure_contract_version "
+            f"{expected_closure}"
+        )
+    if registry.get("schema_version") != SCHEMA_VERSION:
+        errors.append("migrate-closure requires a schema-5 dependency registry")
+    if registry_closure != expected_closure:
+        errors.append(
+            "migrate-closure requires dependency registry "
+            "closure_contract_version "
+            f"{expected_closure}"
+        )
+    external_results = registry.get("external_results")
+    if not isinstance(external_results, list):
+        errors.append("Dependency registry external_results must be a list")
+        external_results = []
+    for result_index, result in enumerate(external_results, 1):
+        prefix = f"external_results[{result_index}]"
+        if not isinstance(result, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        if not is_nonempty_string(result.get("id")):
+            errors.append(f"{prefix}.id must be a nonempty string")
+        uses = result.get("uses")
+        if not isinstance(uses, list):
+            errors.append(f"{prefix}.uses must be a list")
+            continue
+        for use_index, use in enumerate(uses, 1):
+            if not isinstance(use, dict):
+                errors.append(f"{prefix}.uses[{use_index}] must be an object")
+                continue
+            keys = use.get("citation_keys")
+            if not isinstance(keys, list) or not all(
+                is_nonempty_string(key) for key in keys
+            ):
+                errors.append(
+                    f"{prefix}.uses[{use_index}].citation_keys must be a string list"
+                )
+            elif len(keys) != len(set(keys)):
+                errors.append(
+                    f"{prefix}.uses[{use_index}].citation_keys contains duplicates"
+                )
+        if "citation_bindings" in result and not isinstance(
+            result.get("citation_bindings"), list
+        ):
+            errors.append(f"{prefix}.citation_bindings must be a list when present")
+    if not manifest_errors:
+        try:
+            errors.extend(source_snapshot_freshness_errors(root, manifest))
+        except (TextArtifactReadError, OSError, UnicodeError, ValueError) as exc:
+            errors.append(f"Cannot check source snapshot freshness safely: {exc}")
+
+    errors = list(dict.fromkeys(errors))
+    if errors:
+        result = {
+            "command": "migrate-closure",
+            "audit_root": str(root),
+            "status": "failed",
+            "updated": False,
+            "errors": errors,
+        }
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        for error in errors:
+            print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+
+    if closure_already_current:
+        print(
+            json.dumps(
+                {
+                    "command": "migrate-closure",
+                    "audit_root": str(root),
+                    "status": "already_current",
+                    "updated": False,
+                    "finalization_invalidated": False,
+                    "next_action": "Continue the current audit workflow.",
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+
+    migrated_registry = json.loads(json.dumps(registry, ensure_ascii=False))
+    migrated_external = migrated_registry["external_results"]
+    pending_results: list[str] = []
+    for result in migrated_external:
+        result_id = str(result["id"])
+        required_keys = sorted(
+            {
+                key
+                for use in result["uses"]
+                for key in use["citation_keys"]
+            }
+        )
+        # The prior closure contract did not carry reviewed citation-identity
+        # judgments. Preserve any experimental rows only in the byte-exact
+        # legacy backup and require a fresh current-contract binding review.
+        result["citation_bindings"] = []
+        if required_keys:
+            pending_results.append(result_id)
+            result["citation_binding_review"] = {
+                "status": "pending",
+                "required_keys": required_keys,
+                "evidence": (
+                    "Migrated from closure contract "
+                    f"{PREVIOUS_CLOSURE_CONTRACT_VERSION}; exact bibliography "
+                    "identity bindings require manual review."
+                ),
+            }
+        else:
+            result["citation_binding_review"] = {
+                "status": "not_required",
+                "required_keys": [],
+                "evidence": (
+                    "No load-bearing citation key is recorded for this external result."
+                ),
+            }
+    migrated_registry["closure_contract_version"] = CLOSURE_CONTRACT_VERSION
+    review = migrated_registry.get("review")
+    if isinstance(review, dict):
+        review["status"] = "not_reviewed"
+    if not isinstance(registry_baseline_sha256, str) or not isinstance(
+        manifest_baseline_sha256, str
+    ):
+        raise ValueError("Cannot bind closure migration to stable live inputs")
+    legacy_digest = registry_baseline_sha256
+    migration_time = utc_now()
+    history_directory = registry_path.parent / "history"
+    backup_path = history_directory / (
+        "DEPENDENCY_REGISTRY.closure-"
+        f"{PREVIOUS_CLOSURE_CONTRACT_VERSION}.{legacy_digest}.json"
+    )
+    migrated_registry["closure_migration"] = {
+        "from_version": PREVIOUS_CLOSURE_CONTRACT_VERSION,
+        "to_version": CLOSURE_CONTRACT_VERSION,
+        "migrated_utc": migration_time,
+        "legacy_registry_sha256": legacy_digest,
+        "legacy_registry_backup": relative_or_absolute(backup_path, root),
+        "pending_external_results": pending_results,
+    }
+
+    migrated_manifest = copy.deepcopy(manifest)
+    migrated_manifest["protocol"] = dict(current_protocol)
+    completion = migrated_manifest.get("completion")
+    if isinstance(completion, dict):
+        completion["dependency_registry_reviewed"] = False
+        completion["final_report_ready"] = False
+    history_directory_existed = history_directory.exists()
+    backup_created = False
+    try:
+        if backup_path.exists():
+            if backup_path.is_symlink() or not backup_path.is_file():
+                raise ValueError(
+                    "Refusing a non-regular closure registry backup path"
+                )
+            if sha256_file(backup_path) != legacy_digest:
+                raise ValueError(
+                    "Refusing to replace a conflicting prior-closure registry backup"
+                )
+        else:
+            history_directory.mkdir(parents=True, exist_ok=True)
+            temporary_backup = _unique_sibling_temp_path(backup_path)
+            try:
+                with registry_path.open("rb") as source, temporary_backup.open(
+                    "wb"
+                ) as destination:
+                    shutil.copyfileobj(source, destination, length=1024 * 1024)
+                    destination.flush()
+                    os.fsync(destination.fileno())
+                if sha256_file(temporary_backup) != legacy_digest:
+                    raise ValueError(
+                        "Dependency registry changed during closure migration"
+                    )
+                try:
+                    publish_no_overwrite(
+                        temporary_backup,
+                        backup_path,
+                        "closure registry backup",
+                    )
+                except FileExistsError as publish_exc:
+                    if (
+                        backup_path.is_symlink()
+                        or not backup_path.is_file()
+                        or sha256_file(backup_path) != legacy_digest
+                    ):
+                        raise FileExistsError(
+                            "A conflicting closure registry backup appeared "
+                            f"during publication: {backup_path}"
+                        ) from publish_exc
+                else:
+                    backup_created = True
+            finally:
+                if temporary_backup.exists():
+                    temporary_backup.unlink()
+        transactional_write_texts(
+            [
+                (
+                    registry_path,
+                    json.dumps(migrated_registry, ensure_ascii=False, indent=2)
+                    + "\n",
+                ),
+                (
+                    manifest_path,
+                    render_audit_manifest_json(migrated_manifest) + "\n",
+                ),
+            ],
+            expected_sha256={
+                registry_path: registry_baseline_sha256,
+                manifest_path: manifest_baseline_sha256,
+            },
+        )
+    except BaseException as exc:
+        if isinstance(exc, MigrationRecoveryRequired):
+            raise
+        cleanup_errors: list[str] = []
+        if backup_created and backup_path.exists():
+            try:
+                backup_path.unlink()
+            except OSError as cleanup_exc:
+                cleanup_errors.append(f"{backup_path}: {cleanup_exc}")
+        if not history_directory_existed and history_directory.exists():
+            try:
+                history_directory.rmdir()
+            except OSError as cleanup_exc:
+                try:
+                    directory_nonempty = any(history_directory.iterdir())
+                except OSError:
+                    directory_nonempty = False
+                if not directory_nonempty:
+                    cleanup_errors.append(f"{history_directory}: {cleanup_exc}")
+        if cleanup_errors:
+            raise MigrationRecoveryRequired(
+                "Closure migration failed and backup cleanup was incomplete: "
+                + "; ".join(cleanup_errors)
+            ) from exc
+        raise
+    print(
+        json.dumps(
+            {
+                "command": "migrate-closure",
+                "audit_root": str(root),
+                "status": "migrated",
+                "updated": True,
+                "legacy_registry_backup": str(backup_path),
+                "pending_external_results": pending_results,
+                "finalization_invalidated": True,
+                "next_action": (
+                    "Manually complete citation_bindings and set each pending "
+                    "citation_binding_review to reviewed; refresh affected external "
+                    "dependency_contract_sha256 values and review the registry."
+                ),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
+@audit_migration_locked
+def cmd_migrate_evidence(args: argparse.Namespace) -> int:
+    """Advance a schema-5, evidence-contract-4 audit onto evidence contract 5.
+
+    The command validates and byte-backs up live proof artifacts, then stamps
+    versions only. It cannot author the judgments contract 5 demands, including
+    instantiated failure computations, repair-search records, repair-cost fields,
+    and source-anchored step evidence. After migration, the current gates fail
+    closed until those records are added and rechecked.
+    """
+    configure_console_errors()
+    root = args.root.resolve()
+    errors: list[str] = audit_internal_redirect_errors(root)
+    manifest_path, manifest_path_valid = canonical_artifact_path(
+        root, "AUDIT_MANIFEST.json", "audit manifest", errors
+    )
+    manifest_baseline_sha256 = (
+        sha256_file(manifest_path)
+        if manifest_path_valid and manifest_path.is_file()
+        else None
+    )
+    manifest, manifest_errors = (
+        load_json_object(
+            manifest_path,
+            "audit manifest",
+            preserve_verified_challenge_rate=True,
+        )
+        if manifest_path_valid
+        else ({}, [])
+    )
+    errors.extend(manifest_errors)
+    if (
+        manifest_baseline_sha256 is not None
+        and sha256_file(manifest_path) != manifest_baseline_sha256
+    ):
+        errors.append("Audit manifest changed while migration preflight read it")
+    recorded_protocol = manifest.get("protocol")
+    if not isinstance(recorded_protocol, dict):
+        errors.append("AUDIT_MANIFEST.json protocol must be an object")
+        recorded_protocol = {}
+    if manifest.get("schema_version") != SCHEMA_VERSION:
+        errors.append("migrate-evidence requires schema-5 audit state")
+    if recorded_protocol.get("artifact_schema_version") != SCHEMA_VERSION:
+        errors.append(
+            "protocol.artifact_schema_version is incompatible with migrate-evidence"
+        )
+    recorded_evidence = recorded_protocol.get("evidence_contract_version")
+    evidence_already_current = recorded_evidence == EVIDENCE_CONTRACT_VERSION
+    if (
+        not evidence_already_current
+        and recorded_evidence != PREVIOUS_EVIDENCE_CONTRACT_VERSION
+    ):
+        errors.append(
+            "migrate-evidence requires protocol.evidence_contract_version "
+            f"{PREVIOUS_EVIDENCE_CONTRACT_VERSION} or "
+            f"{EVIDENCE_CONTRACT_VERSION}"
+        )
+    recorded_closure = recorded_protocol.get("closure_contract_version")
+    if recorded_closure not in {
+        CLOSURE_CONTRACT_VERSION,
+        PREVIOUS_CLOSURE_CONTRACT_VERSION,
+    }:
+        errors.append(
+            "migrate-evidence requires closure_contract_version "
+            f"{PREVIOUS_CLOSURE_CONTRACT_VERSION} or {CLOSURE_CONTRACT_VERSION}"
+        )
+    dependency_registry_path, dependency_registry_path_valid = (
+        manifest_canonical_artifact_path(
+            manifest,
+            root,
+            "dependency_registry",
+            "dependency registry",
+            errors,
+        )
+        if not manifest_errors
+        else (root / "audit" / "03_dependencies" / "DEPENDENCY_REGISTRY.json", False)
+    )
+    dependency_registry_baseline_sha256 = (
+        sha256_file(dependency_registry_path)
+        if dependency_registry_path_valid and dependency_registry_path.is_file()
+        else None
+    )
+    dependency_registry, dependency_registry_errors = (
+        load_json_object(dependency_registry_path, "dependency registry")
+        if dependency_registry_path_valid
+        else ({}, [])
+    )
+    errors.extend(dependency_registry_errors)
+    if (
+        dependency_registry_baseline_sha256 is not None
+        and not dependency_registry_errors
+        and sha256_file(dependency_registry_path)
+        != dependency_registry_baseline_sha256
+    ):
+        errors.append(
+            "Dependency registry changed while migration preflight read it"
+        )
+    if dependency_registry_path_valid and not dependency_registry_errors:
+        if dependency_registry.get("schema_version") != recorded_protocol.get(
+            "artifact_schema_version"
+        ):
+            errors.append(
+                "Dependency registry schema_version does not match the "
+                "manifest protocol"
+            )
+        if dependency_registry.get(
+            "closure_contract_version"
+        ) != recorded_closure:
+            errors.append(
+                "Dependency registry closure_contract_version does not match "
+                "the manifest protocol"
+            )
+    if not manifest_errors:
+        try:
+            errors.extend(source_snapshot_freshness_errors(root, manifest))
+        except (TextArtifactReadError, OSError, UnicodeError, ValueError) as exc:
+            errors.append(f"Cannot check source snapshot freshness safely: {exc}")
+
+    artifact_updates: list[tuple[Path, dict[str, Any], str, Path]] = []
+    local_checks_directory = root / "audit" / "04_local_checks"
+    evidence_history_directory = local_checks_directory / "history"
+    if not errors:
+        if not local_checks_directory.is_dir():
+            errors.append(
+                "migrate-evidence requires the canonical audit/04_local_checks "
+                "directory"
+            )
+        live_artifacts = sorted(
+            [
+                *local_checks_directory.glob("*.ledger.json"),
+                *local_checks_directory.glob("*.skeleton.json"),
+            ]
+        )
+        for artifact_path in live_artifacts:
+            relative = artifact_path.relative_to(root).as_posix()
+            if artifact_path.is_symlink() or not artifact_path.is_file():
+                errors.append(
+                    f"Canonical proof artifact is not a regular file: {relative}"
+                )
+                continue
+            prior_sha = sha256_file(artifact_path)
+            artifact, artifact_errors = load_json_object(
+                artifact_path, f"canonical proof artifact {relative}"
+            )
+            if artifact_errors:
+                errors.extend(artifact_errors)
+                continue
+            compatible = True
+            expected_artifact_evidence = (
+                EVIDENCE_CONTRACT_VERSION
+                if evidence_already_current
+                else PREVIOUS_EVIDENCE_CONTRACT_VERSION
+            )
+            if artifact.get("schema_version") != SCHEMA_VERSION:
+                errors.append(
+                    f"{relative} schema_version must be {SCHEMA_VERSION} for "
+                    "migrate-evidence"
+                )
+                compatible = False
+            if (
+                artifact.get("evidence_contract_version")
+                != expected_artifact_evidence
+            ):
+                errors.append(
+                    f"{relative} evidence_contract_version must be "
+                    f"{expected_artifact_evidence} for migrate-evidence"
+                )
+                compatible = False
+            if not is_nonempty_string(artifact.get("unit_id")):
+                errors.append(f"{relative} unit_id must be a nonempty string")
+                compatible = False
+            artifact_validation_errors, _ = check_ledger_data(
+                artifact_path, False
+            )
+            fatal_artifact_errors = [
+                error
+                for error in artifact_validation_errors
+                if is_fatal_ledger_error(error)
+            ]
+            if fatal_artifact_errors:
+                errors.extend(
+                    f"{relative}: {error}" for error in fatal_artifact_errors
+                )
+                compatible = False
+            if sha256_file(artifact_path) != prior_sha:
+                errors.append(
+                    "Canonical proof artifact changed while migration preflight "
+                    f"read it: {relative}"
+                )
+                compatible = False
+            if not compatible:
+                continue
+            if evidence_already_current:
+                continue
+            backup_path = evidence_history_directory / (
+                f"{artifact_path.name}.evidence-"
+                f"{PREVIOUS_EVIDENCE_CONTRACT_VERSION}.{prior_sha}.json"
+            )
+            if backup_path.exists():
+                if backup_path.is_symlink() or not backup_path.is_file():
+                    errors.append(
+                        f"Evidence migration backup is not a regular file: "
+                        f"{relative_or_absolute(backup_path, root)}"
+                    )
+                    continue
+                if sha256_file(backup_path) != prior_sha:
+                    errors.append(
+                        "Refusing a conflicting evidence-contract backup: "
+                        f"{relative_or_absolute(backup_path, root)}"
+                    )
+                    continue
+            artifact["evidence_contract_version"] = EVIDENCE_CONTRACT_VERSION
+            artifact_updates.append(
+                (artifact_path, artifact, prior_sha, backup_path)
+            )
+
+    errors = list(dict.fromkeys(errors))
+    if errors:
+        result = {
+            "command": "migrate-evidence",
+            "audit_root": str(root),
+            "status": "failed",
+            "updated": False,
+            "errors": errors,
+        }
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        for error in errors:
+            print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+
+    if evidence_already_current:
+        next_action = (
+            "Run migrate-closure --root <audit-root>."
+            if recorded_closure == PREVIOUS_CLOSURE_CONTRACT_VERSION
+            else "Continue the current audit workflow."
+        )
+        print(
+            json.dumps(
+                {
+                    "command": "migrate-evidence",
+                    "audit_root": str(root),
+                    "status": "already_current",
+                    "updated": False,
+                    "finalization_invalidated": False,
+                    "closure_contract_version": recorded_closure,
+                    "next_action": next_action,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+
+    migrated_manifest = copy.deepcopy(manifest)
+    migrated_protocol = dict(protocol_identity())
+    migrated_protocol["closure_contract_version"] = recorded_closure
+    migrated_manifest["protocol"] = migrated_protocol
+    completion = migrated_manifest.get("completion")
+    if isinstance(completion, dict):
+        completion["final_report_ready"] = False
+    migrated_manifest["evidence_migration"] = {
+        "from_version": PREVIOUS_EVIDENCE_CONTRACT_VERSION,
+        "to_version": EVIDENCE_CONTRACT_VERSION,
+        "migrated_utc": utc_now(),
+        "restamped_artifacts": [
+            {
+                "file": relative_or_absolute(path, root),
+                "prior_sha256": prior_sha,
+                "legacy_backup": relative_or_absolute(backup_path, root),
+            }
+            for path, _, prior_sha, backup_path in artifact_updates
+        ],
+        "note": (
+            "Version stamp only. Evidence-contract-5 judgments must be "
+            "authored and rechecked before finalization."
+        ),
+    }
+    writes = list(
+        (path, json.dumps(artifact, ensure_ascii=False, indent=1) + "\n")
+        for path, artifact, _, _ in artifact_updates
+    )
+    writes.append(
+        (
+            manifest_path,
+            render_audit_manifest_json(migrated_manifest) + "\n",
+        )
+    )
+    evidence_history_existed = evidence_history_directory.exists()
+    created_backups: list[Path] = []
+    try:
+        if artifact_updates:
+            evidence_history_directory.mkdir(parents=True, exist_ok=True)
+        for artifact_path, _, prior_sha, backup_path in artifact_updates:
+            if sha256_file(artifact_path) != prior_sha:
+                raise ValueError(
+                    "Canonical proof artifact changed during evidence migration: "
+                    f"{relative_or_absolute(artifact_path, root)}"
+                )
+            if backup_path.exists():
+                continue
+            temporary_backup = _unique_sibling_temp_path(backup_path)
+            try:
+                with artifact_path.open("rb") as source, temporary_backup.open(
+                    "wb"
+                ) as destination:
+                    shutil.copyfileobj(source, destination, length=1024 * 1024)
+                    destination.flush()
+                    os.fsync(destination.fileno())
+                if sha256_file(temporary_backup) != prior_sha:
+                    raise ValueError(
+                        "Canonical proof artifact changed during backup: "
+                        f"{relative_or_absolute(artifact_path, root)}"
+                    )
+                try:
+                    publish_no_overwrite(
+                        temporary_backup,
+                        backup_path,
+                        "evidence-contract proof-artifact backup",
+                    )
+                except FileExistsError as publish_exc:
+                    if (
+                        backup_path.is_symlink()
+                        or not backup_path.is_file()
+                        or sha256_file(backup_path) != prior_sha
+                    ):
+                        raise FileExistsError(
+                            "A conflicting evidence-contract backup appeared "
+                            f"during publication: {backup_path}"
+                        ) from publish_exc
+                else:
+                    created_backups.append(backup_path)
+            finally:
+                if temporary_backup.exists():
+                    temporary_backup.unlink()
+        if not isinstance(manifest_baseline_sha256, str) or not isinstance(
+            dependency_registry_baseline_sha256, str
+        ):
+            raise ValueError("Cannot bind evidence migration to stable live inputs")
+        transactional_write_texts(
+            writes,
+            expected_sha256={
+                manifest_path: manifest_baseline_sha256,
+                dependency_registry_path: dependency_registry_baseline_sha256,
+                **{
+                    artifact_path: prior_sha
+                    for artifact_path, _, prior_sha, _ in artifact_updates
+                },
+            },
+        )
+    except BaseException as exc:
+        if isinstance(exc, MigrationRecoveryRequired):
+            raise
+        cleanup_errors: list[str] = []
+        for backup_path in reversed(created_backups):
+            if not backup_path.exists():
+                continue
+            try:
+                backup_path.unlink()
+            except OSError as cleanup_exc:
+                cleanup_errors.append(f"{backup_path}: {cleanup_exc}")
+        if not evidence_history_existed and evidence_history_directory.exists():
+            try:
+                evidence_history_directory.rmdir()
+            except OSError as cleanup_exc:
+                try:
+                    directory_nonempty = any(
+                        evidence_history_directory.iterdir()
+                    )
+                except OSError:
+                    directory_nonempty = False
+                if not directory_nonempty:
+                    cleanup_errors.append(
+                        f"{evidence_history_directory}: {cleanup_exc}"
+                    )
+        if cleanup_errors:
+            raise MigrationRecoveryRequired(
+                "Evidence migration failed and backup cleanup was incomplete: "
+                + "; ".join(cleanup_errors)
+            ) from exc
+        raise
+    print(
+        json.dumps(
+            {
+                "command": "migrate-evidence",
+                "audit_root": str(root),
+                "status": "migrated",
+                "updated": True,
+                "restamped_artifacts": len(artifact_updates),
+                "legacy_artifact_backups": [
+                    str(backup_path)
+                    for _, _, _, backup_path in artifact_updates
+                ],
+                "closure_contract_version": recorded_closure,
+                "finalization_invalidated": True,
+                "next_action": (
+                    "Author the evidence-contract-5 records the gates now "
+                    "demand (failure computations, repair searches, "
+                    "repair-cost fields, anchored step evidence), recheck the "
+                    "restamped ledgers with ledger-check --final, run "
+                    "migrate-closure if the closure contract is still "
+                    f"{PREVIOUS_CLOSURE_CONTRACT_VERSION}, and rerun the "
+                    "full gates."
+                ),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
+def cmd_revalidate_protocol(args: argparse.Namespace) -> int:
+    """Rebind a current-schema WIP audit to the current validator safely."""
+    root = args.root.resolve()
+    lock_error = migration_update_lock_error(root)
+    if lock_error is not None:
+        raise ValueError(lock_error)
+    errors: list[str] = audit_internal_redirect_errors(root)
+    manifest_path, manifest_path_valid = canonical_artifact_path(
+        root, "AUDIT_MANIFEST.json", "audit manifest", errors
+    )
+    manifest, manifest_errors = (
+        load_json_object(
+            manifest_path,
+            "audit manifest",
+            preserve_verified_challenge_rate=True,
+        )
         if manifest_path_valid
         else ({}, [])
     )
     errors.extend(manifest_errors)
     current_protocol = protocol_identity()
     previous_validator: Any = None
+    previous_skill_version: Any = None
 
     if not manifest_errors:
         if manifest.get("schema_version") != SCHEMA_VERSION:
@@ -28472,13 +31573,19 @@ def cmd_revalidate_protocol(args: argparse.Namespace) -> int:
             errors.append("AUDIT_MANIFEST.json protocol must be an object")
             recorded_protocol = {}
         previous_validator = recorded_protocol.get("validator_sha256")
+        previous_skill_version = recorded_protocol.get("skill_version")
+        # skill_version is release identity, not record compatibility: a
+        # version bump with unchanged contracts is exactly the drift this
+        # command exists to repair, and the stamp below rewrites it.
         for field, expected in current_protocol.items():
-            if field == "validator_sha256":
+            if field in {"validator_sha256", "skill_version"}:
                 continue
             if recorded_protocol.get(field) != expected:
                 errors.append(
                     f"protocol.{field} is not compatible with the current validator"
                 )
+        if not is_nonempty_string(previous_skill_version):
+            errors.append("protocol.skill_version must be a nonempty string")
         if not (
             isinstance(previous_validator, str)
             and SHA256_RE.fullmatch(previous_validator)
@@ -28649,13 +31756,18 @@ def cmd_revalidate_protocol(args: argparse.Namespace) -> int:
         return 1
 
     current_validator = current_protocol["validator_sha256"]
-    if previous_validator == current_validator:
+    if (
+        previous_validator == current_validator
+        and previous_skill_version == current_protocol["skill_version"]
+    ):
         status = "already_current"
         updated = False
     else:
         updated_manifest = dict(manifest)
         updated_manifest["protocol"] = dict(current_protocol)
-        atomic_write_json(manifest_path, updated_manifest)
+        atomic_write_text(
+            manifest_path, render_audit_manifest_json(updated_manifest) + "\n"
+        )
         status = "revalidated"
         updated = True
     result = {
@@ -28663,6 +31775,8 @@ def cmd_revalidate_protocol(args: argparse.Namespace) -> int:
         "audit_root": str(root),
         "status": status,
         "updated": updated,
+        "previous_skill_version": previous_skill_version,
+        "current_skill_version": current_protocol["skill_version"],
         "previous_validator_sha256": previous_validator,
         "current_validator_sha256": current_validator,
         "finalization_invalidated": updated,
@@ -28812,6 +31926,139 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         "passed",
         "enabled" if getattr(args, "portable_sources", False) else "disabled",
     )
+    discovery_inputs_ok = False
+    discovery_project_root: Path | None = None
+    discovery_additional: list[tuple[Path, str, str]] = []
+    discovery_fls: Path | None = None
+    discovery_report: dict[str, Any] = {
+        "status": "skipped",
+        "files": [],
+        "warnings": [],
+        "outside_project_inputs": [],
+        "closure_sha256": None,
+    }
+    if source_ok and kind_ok:
+        try:
+            (
+                discovery_project_root,
+                discovery_additional,
+                discovery_fls,
+            ) = resolve_source_discovery_inputs(
+                paper,
+                str(input_kind),
+                additional_source=getattr(args, "additional_source", None),
+                fls=getattr(args, "fls", None),
+                project_root=getattr(args, "project_root", None),
+            )
+        except (OSError, ValueError) as exc:
+            record("source_discovery_inputs", "input", "failed", str(exc))
+        else:
+            discovery_inputs_ok = True
+            record(
+                "project_root",
+                "input",
+                "passed",
+                discovery_project_root.as_posix(),
+            )
+            record(
+                "additional_sources",
+                "input",
+                "passed" if discovery_additional else "skipped",
+                (
+                    f"{len(discovery_additional)} validated"
+                    if discovery_additional
+                    else "None supplied"
+                ),
+            )
+            record(
+                "recorder_file",
+                "input",
+                "passed" if discovery_fls is not None else "skipped",
+                discovery_fls.as_posix() if discovery_fls is not None else "None supplied",
+            )
+    else:
+        record(
+            "source_discovery_inputs",
+            "input",
+            "skipped",
+            "Input-kind or source-path check failed",
+        )
+
+    if discovery_inputs_ok and input_kind == "latex":
+        try:
+            discovery = discover_source_closure(
+                paper,
+                additional_files=[entry[0] for entry in discovery_additional],
+                fls_file=discovery_fls,
+                project_root=discovery_project_root,
+                warning_path_base=(
+                    paper.parent
+                    if getattr(args, "portable_sources", False)
+                    else None
+                ),
+            )
+            discovered_files = [
+                path.resolve() for path in discovery.get("files", [])
+            ]
+            if getattr(args, "portable_sources", False):
+                outside = [
+                    path
+                    for path in discovered_files
+                    if discovery_project_root is not None
+                    and not path.is_relative_to(discovery_project_root)
+                ]
+                if outside:
+                    raise ValueError(
+                        "--portable-sources cannot preserve relative source "
+                        "topology outside --project-root; rerun with a broader "
+                        "--project-root containing: "
+                        + ", ".join(path.as_posix() for path in outside)
+                    )
+            closure_rows = [
+                {
+                    "file": source_path_identity(path, paper.parent),
+                    "sha256": sha256_file(path),
+                }
+                for path in discovered_files
+            ]
+        except (OSError, UnicodeError, ValueError) as exc:
+            discovery_report["status"] = "failed"
+            discovery_report["error"] = str(exc)
+            record("source_discovery", "source_read", "failed", str(exc))
+        else:
+            discovery_report = {
+                "status": "passed",
+                "files": [row["file"] for row in closure_rows],
+                "warnings": list(discovery.get("warnings", [])),
+                "outside_project_inputs": list(
+                    discovery.get("outside_project_inputs", [])
+                ),
+                "closure_sha256": canonical_sha256(closure_rows),
+            }
+            record(
+                "source_discovery",
+                "source_read",
+                "passed",
+                (
+                    f"{len(discovered_files)} source file(s), "
+                    f"{len(discovery.get('warnings', []))} review warning(s); "
+                    f"closure_sha256={canonical_sha256(closure_rows)}"
+                ),
+            )
+    elif discovery_inputs_ok:
+        record(
+            "source_discovery",
+            "source_read",
+            "skipped",
+            "LaTeX discovery does not apply to PDF transcription",
+        )
+    else:
+        record(
+            "source_discovery",
+            "source_read",
+            "skipped",
+            "Source-discovery input check failed",
+        )
 
     output = args.output.resolve()
     resume_valid = False
@@ -28842,6 +32089,26 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     resume_errors.append(
                         f"Resume input provenance could not be validated: {exc}"
                     )
+            if not resume_errors:
+                try:
+                    provenance_errors = source_snapshot_freshness_errors(
+                        output, resume_manifest
+                    )
+                except (OSError, UnicodeError, ValueError) as exc:
+                    provenance_errors = [
+                        f"Resume source provenance could not be validated: {exc}"
+                    ]
+                record(
+                    "resume_source_provenance",
+                    "source_read",
+                    "failed" if provenance_errors else "passed",
+                    (
+                        "; ".join(provenance_errors)
+                        if provenance_errors
+                        else "Recorded source snapshot and discovery provenance are current."
+                    ),
+                )
+                resume_errors.extend(provenance_errors)
             if manifest_input_kind != input_kind:
                 resume_errors.append(
                     "The supplied input kind does not match the recorded audit "
@@ -28994,11 +32261,1080 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         "ready": ready,
         "mode": mode,
         "input_kind": input_kind,
+        "source_discovery": discovery_report,
         "checks": checks,
         "failures_by_category": failures,
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if ready else 1
+
+
+CANARY_ARGUMENT_STATUSES = {"valid", "gap", "invalid", "unclear"}
+CANARY_STATEMENT_STATUSES = {
+    "established",
+    "refuted",
+    "not_established",
+    "unclear",
+}
+CANARY_RESPONSE_FIELDS = {
+    "canary_id",
+    "argument_status",
+    "statement_status",
+    "defect_lines",
+    "justification",
+}
+CANARY_MAX_DEFECT_LINES = 6
+CALIBRATION_SCHEMA_VERSION = 2
+CANARY_BUNDLE_SCHEMA_VERSION = 1
+CHECKER_BINDING_SCOPE = "prospective_local_proof_checks"
+CHECKER_BINDING_LIMITATION = (
+    "Checker profile, configuration, and context identifiers are reviewed "
+    "coordinator declarations; proofcheck.py cannot independently verify "
+    "runtime checker identity. Any change requires a new balanced calibration "
+    "before further local checking."
+)
+
+
+def canaries_directory() -> Path:
+    return Path(__file__).resolve().parent.parent / "assets" / "canaries"
+
+
+def load_canary_index() -> list[dict[str, Any]]:
+    index_path = canaries_directory() / "index.json"
+    index, errors = load_json_object(index_path, "canary index")
+    if errors:
+        raise ValueError(errors[0])
+    if index.get("canary_index_schema_version") != 1:
+        raise ValueError("Unsupported canary_index_schema_version")
+    rows = index.get("canaries")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("canary index must list at least one canary")
+    validated: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("canary index rows must be objects")
+        canary_id = row.get("id")
+        if not is_nonempty_string(canary_id) or canary_id in seen:
+            raise ValueError("canary index rows need unique nonempty ids")
+        seen.add(str(canary_id))
+        for field in ("title", "source", "key"):
+            if not is_nonempty_string(row.get(field)):
+                raise ValueError(f"canary {canary_id} index row needs {field}")
+        validated.append(dict(row))
+    return validated
+
+
+def load_canary_key(canary_id: str) -> dict[str, Any]:
+    rows = {row["id"]: row for row in load_canary_index()}
+    row = rows.get(canary_id)
+    if row is None:
+        raise ValueError(f"Unknown canary id: {canary_id}")
+    key_path = canaries_directory() / str(row["key"])
+    key, errors = load_json_object(key_path, "canary answer key")
+    if errors:
+        raise ValueError(errors[0])
+    expected = key.get("expected")
+    if (
+        key.get("canary_id") != canary_id
+        or not isinstance(expected, dict)
+        or not isinstance(expected.get("argument_status"), list)
+        or not isinstance(expected.get("statement_status"), list)
+        or not isinstance(expected.get("defect_line_ranges"), list)
+    ):
+        raise ValueError(f"Malformed canary answer key: {key_path}")
+    return key
+
+
+def canary_bundle_identity() -> dict[str, Any]:
+    """Hash-bind the blinded sources, sealed keys, and public index."""
+    directory = canaries_directory().resolve()
+    rows = load_canary_index()
+    relative_files = {"index.json"}
+    for row in rows:
+        relative_files.add(str(row["source"]))
+        relative_files.add(str(row["key"]))
+    files: list[dict[str, str]] = []
+    for relative in sorted(relative_files):
+        path = (directory / relative).resolve()
+        if not path.is_relative_to(directory) or not path.is_file():
+            raise ValueError(f"Unsafe or missing canary bundle file: {relative}")
+        files.append(
+            {
+                "file": path.relative_to(directory).as_posix(),
+                "sha256": sha256_portable_text_file(path),
+            }
+        )
+    payload = {
+        "canary_bundle_schema_version": CANARY_BUNDLE_SCHEMA_VERSION,
+        "files": files,
+    }
+    return {**payload, "sha256": canonical_sha256(payload)}
+
+
+def calibration_proof_artifacts(root: Path) -> list[dict[str, str]]:
+    """Snapshot checker-authored ledgers already present at calibration."""
+    local_root = root / "audit" / "04_local_checks"
+    if not local_root.is_dir():
+        return []
+    root_resolved = root.resolve()
+    rows: list[dict[str, str]] = []
+    for path in live_local_check_artifacts(root, ".ledger.json"):
+        resolved = path.resolve()
+        if not resolved.is_relative_to(root_resolved):
+            raise ValueError(f"Proof artifact escapes audit root: {path}")
+        rows.append(
+            {
+                "file": resolved.relative_to(root_resolved).as_posix(),
+                "sha256": sha256_file(resolved),
+            }
+        )
+    return rows
+
+
+def archive_calibration_record(calibration_path: Path) -> Path:
+    """Preserve a stale calibration byte-for-byte under its content hash."""
+    redirect_kind = path_redirect_kind(calibration_path)
+    if redirect_kind is not None:
+        raise ValueError(
+            "Refusing to archive a redirected calibration record "
+            f"({redirect_kind}): {calibration_path}"
+        )
+    if not calibration_path.is_file():
+        raise ValueError(
+            "Calibration recovery requires an existing regular non-symlink "
+            f"file: {calibration_path}"
+        )
+    source_bytes = calibration_path.read_bytes()
+    digest = hashlib.sha256(source_bytes).hexdigest()
+    history = calibration_path.parent / "calibration-history"
+    history_redirect = path_redirect_kind(history)
+    if history_redirect is not None:
+        raise ValueError(
+            "Refusing a redirected calibration history location "
+            f"({history_redirect}): {history}"
+        )
+    if history.exists() and not history.is_dir():
+        raise ValueError(
+            f"Calibration history location is not a directory: {history}"
+        )
+    history.mkdir(parents=True, exist_ok=True)
+    archive = history / f"CALIBRATION.{digest}.json"
+    archive_redirect = path_redirect_kind(archive)
+    if archive_redirect is not None:
+        raise ValueError(
+            "Refusing a redirected calibration history record "
+            f"({archive_redirect}): {archive}"
+        )
+    if archive.exists() and not archive.is_file():
+        raise ValueError(
+            f"Calibration history record is not a regular file: {archive}"
+        )
+    if archive.is_file():
+        if archive.read_bytes() != source_bytes:
+            raise OSError(
+                "Hash-addressed calibration archive exists with different bytes: "
+                f"{archive}"
+            )
+        return archive
+    temporary = _unique_sibling_temp_path(archive)
+    created_archive = False
+    try:
+        with temporary.open("wb") as target:
+            target.write(source_bytes)
+            target.flush()
+            os.fsync(target.fileno())
+        publish_no_overwrite(temporary, archive, "Calibration history record")
+        created_archive = True
+        if archive.read_bytes() != source_bytes:
+            raise OSError(f"Calibration archive hash verification failed: {archive}")
+    except Exception:
+        if created_archive and archive.is_file():
+            archive.unlink()
+        raise
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return archive
+
+
+def archived_calibration_checker_context_ids(
+    root: Path,
+) -> tuple[set[str], list[str]]:
+    """Read declared context IDs from intact schema-2 history records."""
+    history = root / "audit" / "07_runtime" / "calibration-history"
+    errors: list[str] = []
+    redirect_kind = path_redirect_kind(history)
+    if redirect_kind is not None:
+        return set(), [
+            "checker calibration history is redirected "
+            f"({redirect_kind}): {history}"
+        ]
+    if not history.exists():
+        return set(), []
+    if not history.is_dir():
+        return set(), [f"checker calibration history is not a directory: {history}"]
+    try:
+        entries = sorted(history.iterdir())
+    except OSError as exc:
+        return set(), [f"cannot read checker calibration history {history}: {exc}"]
+    context_ids: set[str] = set()
+    prefix = "CALIBRATION."
+    suffix = ".json"
+    for archive in entries:
+        archive_redirect = path_redirect_kind(archive)
+        if archive_redirect is not None:
+            errors.append(
+                "checker calibration history entry is redirected "
+                f"({archive_redirect}): {archive}"
+            )
+            continue
+        if not archive.is_file():
+            errors.append(
+                f"checker calibration history entry is not a regular file: {archive}"
+            )
+            continue
+        name = archive.name
+        expected_digest = (
+            name[len(prefix) : -len(suffix)]
+            if name.startswith(prefix) and name.endswith(suffix)
+            else ""
+        )
+        if not SHA256_RE.fullmatch(expected_digest):
+            errors.append(
+                "checker calibration history entry has a noncanonical name: "
+                f"{archive}"
+            )
+            continue
+        try:
+            source_bytes = archive.read_bytes()
+        except OSError as exc:
+            errors.append(f"cannot read checker calibration history entry {archive}: {exc}")
+            continue
+        if hashlib.sha256(source_bytes).hexdigest() != expected_digest:
+            errors.append(
+                f"checker calibration history entry hash is stale: {archive}"
+            )
+            continue
+        try:
+            record = json.loads(source_bytes.decode("utf-8-sig"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if (
+            not isinstance(record, dict)
+            or record.get("calibration_schema_version")
+            != CALIBRATION_SCHEMA_VERSION
+            or not isinstance(record.get("sessions"), list)
+        ):
+            continue
+        for session in record["sessions"]:
+            checker = (
+                session.get("checker_binding")
+                if isinstance(session, dict)
+                else None
+            )
+            context_id = (
+                checker.get("checker_context_id")
+                if isinstance(checker, dict)
+                else None
+            )
+            if is_substantive_string(context_id):
+                context_ids.add(str(context_id))
+    return context_ids, errors
+
+
+def calibration_update_lock_path(root: Path) -> Path:
+    return (
+        root.resolve()
+        / "audit"
+        / "07_runtime"
+        / ".CALIBRATION.json.proofcheck.lock"
+    )
+
+
+def calibration_update_lock_error(root: Path) -> str | None:
+    lock = calibration_update_lock_path(root)
+    redirect_kind = path_redirect_kind(lock)
+    if redirect_kind is not None:
+        return (
+            "checker calibration update lock is redirected "
+            f"({redirect_kind}): {lock}"
+        )
+    if lock.exists():
+        return (
+            "checker calibration update is in progress or a stale lock remains: "
+            f"{lock}. If canary-grade is not running, inspect the lock and "
+            "CALIBRATION.json, then remove the lock manually and rerun; it is "
+            "never cleared automatically after a crash"
+        )
+    return None
+
+
+def acquire_calibration_update_lock(
+    root: Path, session_id: str
+) -> tuple[Path, bytes]:
+    lock = calibration_update_lock_path(root)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    redirect_kind = path_redirect_kind(lock)
+    if redirect_kind is not None:
+        raise ValueError(
+            "Refusing a redirected checker calibration update lock "
+            f"({redirect_kind}): {lock}"
+        )
+    record = {
+        "transaction_schema_version": 1,
+        "target": "CALIBRATION.json",
+        "session_id": session_id,
+        "process_id": os.getpid(),
+        "created_utc": datetime.now(timezone.utc).isoformat(
+            timespec="microseconds"
+        ),
+        "recovery": (
+            "If canary-grade is not running, inspect this lock and "
+            "CALIBRATION.json, remove the lock manually, and rerun."
+        ),
+    }
+    payload = (json.dumps(record, sort_keys=True) + "\n").encode("utf-8")
+    try:
+        descriptor = os.open(
+            lock,
+            os.O_CREAT
+            | os.O_EXCL
+            | os.O_WRONLY
+            | getattr(os, "O_BINARY", 0),
+        )
+    except FileExistsError as exc:
+        raise ValueError(
+            calibration_update_lock_error(root)
+            or f"checker calibration update lock appeared concurrently: {lock}"
+        ) from exc
+    try:
+        offset = 0
+        while offset < len(payload):
+            written = os.write(descriptor, payload[offset:])
+            if written <= 0:
+                raise OSError(f"Cannot write checker calibration lock: {lock}")
+            offset += written
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    return lock, payload
+
+
+def release_calibration_update_lock(lock: Path, payload: bytes) -> None:
+    if (
+        path_redirect_kind(lock) is not None
+        or not lock.is_file()
+        or lock.read_bytes() != payload
+    ):
+        raise OSError(
+            "Checker calibration update lock changed during the transaction; "
+            f"inspect and remove it manually only after recovery: {lock}"
+        )
+    lock.unlink()
+
+
+def calibration_audit_binding(root: Path) -> dict[str, Any]:
+    root = root.resolve()
+    lock_error = migration_update_lock_error(root)
+    if lock_error is not None:
+        raise ValueError(lock_error)
+    manifest, errors = load_json_object(
+        root / "AUDIT_MANIFEST.json", "audit manifest"
+    )
+    if errors:
+        raise ValueError(errors[0])
+    protocol = manifest.get("protocol")
+    current_protocol = protocol_identity()
+    if not isinstance(protocol, dict) or any(
+        protocol.get(field) != expected
+        for field, expected in current_protocol.items()
+    ):
+        raise ValueError(
+            "Audit protocol is not current; run status and the required "
+            "migration or revalidate-protocol before canary-grade"
+        )
+    snapshot = manifest.get("source_snapshot")
+    snapshot_sha256 = snapshot.get("sha256") if isinstance(snapshot, dict) else None
+    if not isinstance(snapshot_sha256, str) or not SHA256_RE.fullmatch(
+        snapshot_sha256
+    ):
+        raise ValueError("Audit manifest has no valid source snapshot binding")
+    return {
+        "source_snapshot_sha256": snapshot_sha256,
+        "validator_sha256": current_protocol["validator_sha256"],
+        "preexisting_proof_artifacts": calibration_proof_artifacts(root),
+    }
+
+
+def calibration_checker_binding(args: argparse.Namespace) -> dict[str, Any]:
+    fields = {
+        "checker_profile_id": getattr(args, "checker_profile_id", None),
+        "checker_configuration_id": getattr(
+            args, "checker_configuration_id", None
+        ),
+        "checker_context_id": getattr(args, "checker_context_id", None),
+    }
+    for field, value in fields.items():
+        if not is_substantive_string(value):
+            raise ValueError(f"{field.replace('_', '-')} must be substantive")
+    if getattr(args, "reviewed_binding", False) is not True:
+        raise ValueError(
+            "--reviewed-binding is required to record the explicit checker "
+            "profile/configuration/context contract"
+        )
+    return {
+        **fields,
+        "reviewed": True,
+        "scope": CHECKER_BINDING_SCOPE,
+        "automatic_identity_verification": False,
+        "limitation": CHECKER_BINDING_LIMITATION,
+    }
+
+
+def cmd_canary_list(args: argparse.Namespace) -> int:
+    configure_console_errors()
+    rows = load_canary_index()
+    print(
+        json.dumps(
+            {
+                "command": "canary-list",
+                "canaries": [
+                    {"id": row["id"], "title": row["title"]} for row in rows
+                ],
+                "note": (
+                    "Grade with canary-grade. Never open a key file in a "
+                    "checking context."
+                ),
+            },
+            ensure_ascii=True,
+            indent=2,
+        )
+    )
+    return 0
+
+
+def cmd_canary_packet(args: argparse.Namespace) -> int:
+    configure_console_errors()
+    rows = {row["id"]: row for row in load_canary_index()}
+    row = rows.get(args.canary_id)
+    if row is None:
+        raise ValueError(f"Unknown canary id: {args.canary_id}")
+    source_path = canaries_directory() / str(row["source"])
+    lines = read_lines(source_path)
+    output_path = args.output.resolve()
+    if containing_audit_root(output_path) is not None:
+        raise ValueError("Canary packets must be written outside any audit root")
+    packet = {
+        "kind": "canary_packet",
+        "canary_packet_schema_version": 1,
+        "canary_id": row["id"],
+        "title": row["title"],
+        "instructions": (
+            "Audit the single lemma and proof below as a fresh checker, using "
+            "only this packet. Judge the written argument against the exact "
+            "stated hypotheses: do not repair it, and do not import outside "
+            "facts beyond standard definitions. Then respond with exactly one "
+            "JSON object matching response_schema. argument_status judges the "
+            "written proof; statement_status judges the stated conclusion "
+            "itself, where refuted requires an exact counterexample you "
+            "verified and established requires the written proof to be valid. "
+            "defect_lines lists the physical line numbers of the defective "
+            "source sentences, or [] when you find no defect. Never open any "
+            "file under assets/canaries."
+        ),
+        "response_schema": {
+            "canary_id": row["id"],
+            "argument_status": sorted(CANARY_ARGUMENT_STATUSES),
+            "statement_status": sorted(CANARY_STATEMENT_STATUSES),
+            "defect_lines": "list of physical source line numbers, [] if none",
+            "justification": "2-6 sentences of paper-specific reasoning",
+        },
+        "source": [
+            {"line": index, "text": text}
+            for index, text in enumerate(lines, 1)
+        ],
+    }
+    atomic_create_json(output_path, packet, "Canary packet")
+    print(
+        json.dumps(
+            {
+                "command": "canary-packet",
+                "status": "written",
+                "canary_id": row["id"],
+                "packet": output_path.as_posix(),
+            },
+            ensure_ascii=True,
+            indent=2,
+        )
+    )
+    return 0
+
+
+def grade_canary_response(
+    response: Any, key: dict[str, Any]
+) -> tuple[bool, list[str], dict[str, Any]]:
+    reasons: list[str] = []
+    got: dict[str, Any] = {}
+    if not isinstance(response, dict):
+        return False, ["response must be a JSON object"], got
+    got = dict(response)
+    unknown = set(response) - CANARY_RESPONSE_FIELDS
+    missing = CANARY_RESPONSE_FIELDS - set(response)
+    if unknown:
+        reasons.append(f"unknown fields: {', '.join(sorted(unknown))}")
+    if missing:
+        reasons.append(f"missing fields: {', '.join(sorted(missing))}")
+    if response.get("canary_id") != key.get("canary_id"):
+        reasons.append("canary_id does not match the graded canary")
+    argument = response.get("argument_status")
+    statement = response.get("statement_status")
+    defect_lines = response.get("defect_lines")
+    if not is_enum_value(argument, CANARY_ARGUMENT_STATUSES):
+        reasons.append("argument_status is not a valid enum value")
+    if not is_enum_value(statement, CANARY_STATEMENT_STATUSES):
+        reasons.append("statement_status is not a valid enum value")
+    if not isinstance(defect_lines, list) or not all(
+        is_int(line) and line >= 1 for line in defect_lines
+    ):
+        reasons.append("defect_lines must be a list of positive line numbers")
+        defect_lines = None
+    elif len(defect_lines) != len(set(defect_lines)):
+        reasons.append("defect_lines contains duplicates")
+    if not is_substantive_string(response.get("justification")):
+        reasons.append("justification must be nonempty and substantive")
+    if reasons:
+        return False, reasons, got
+    expected = key["expected"]
+    if argument not in expected["argument_status"]:
+        reasons.append("argument_status is not an accepted judgment")
+    if statement not in expected["statement_status"]:
+        reasons.append("statement_status is not an accepted judgment")
+    ranges = expected["defect_line_ranges"]
+    if ranges:
+        in_range = any(
+            any(
+                isinstance(span, list)
+                and len(span) == 2
+                and span[0] <= line <= span[1]
+                for span in ranges
+            )
+            for line in defect_lines
+        )
+        if not defect_lines or not in_range:
+            reasons.append("defect_lines do not locate the defective sentence")
+        if len(defect_lines) > CANARY_MAX_DEFECT_LINES:
+            reasons.append("defect_lines flags too many lines to be a location")
+    elif defect_lines:
+        reasons.append("defect_lines flags a defect where none exists")
+    return not reasons, reasons, got
+
+
+def canary_session_composition_errors(
+    canary_ids: list[str], prefix: str
+) -> list[str]:
+    """Require a session to grade at least one flawed-style and one
+    correct-style canary, judged from the sealed keys without disclosing
+    which submitted canary is which."""
+    flawed = 0
+    correct = 0
+    for canary_id in canary_ids:
+        try:
+            key = load_canary_key(str(canary_id))
+        except (OSError, UnicodeError, ValueError) as exc:
+            return [f"{prefix}: cannot verify canary {canary_id!r}: {exc}"]
+        if key["expected"]["defect_line_ranges"]:
+            flawed += 1
+        else:
+            correct += 1
+    if not flawed or not correct:
+        return [
+            f"{prefix} must grade at least one flawed-style and one "
+            "correct-style canary in the same session"
+        ]
+    return []
+
+
+def calibration_exact_fields(
+    value: Any, expected: set[str], prefix: str, errors: list[str]
+) -> bool:
+    if not isinstance(value, dict):
+        errors.append(f"{prefix} must be an object")
+        return False
+    actual = set(value)
+    if actual != expected:
+        errors.append(
+            f"{prefix} must have exact fields: {', '.join(sorted(expected))}"
+        )
+        return False
+    return True
+
+
+def calibration_record_errors(root: Path, calibration: Any) -> list[str]:
+    """Validate every deterministic calibration receipt without gating pass."""
+    errors: list[str] = []
+    if not calibration_exact_fields(
+        calibration,
+        {"calibration_schema_version", "canary_bundle", "sessions"},
+        "CALIBRATION.json",
+        errors,
+    ):
+        return errors
+    if calibration.get("calibration_schema_version") != CALIBRATION_SCHEMA_VERSION:
+        return ["CALIBRATION.json has an unsupported calibration_schema_version"]
+    try:
+        current_bundle = canary_bundle_identity()
+    except (OSError, UnicodeError, ValueError) as exc:
+        return [f"Cannot verify the sealed canary bundle: {exc}"]
+    if calibration.get("canary_bundle") != current_bundle:
+        errors.append(
+            "CALIBRATION.json canary_bundle does not match the sealed bundle "
+            "in the validator; run a new balanced calibration"
+        )
+    sessions = calibration.get("sessions")
+    if not isinstance(sessions, list) or not sessions:
+        errors.append("CALIBRATION.json must record at least one session")
+        return errors
+    seen_sessions: set[str] = set()
+    seen_checker_contexts, history_errors = (
+        archived_calibration_checker_context_ids(root)
+    )
+    errors.extend(history_errors)
+    session_fields = {
+        "session_id",
+        "graded_utc",
+        "checker_binding",
+        "audit_binding",
+        "results",
+        "passed",
+    }
+    checker_fields = {
+        "checker_profile_id",
+        "checker_configuration_id",
+        "checker_context_id",
+        "reviewed",
+        "scope",
+        "automatic_identity_verification",
+        "limitation",
+    }
+    audit_fields = {
+        "source_snapshot_sha256",
+        "validator_sha256",
+        "preexisting_proof_artifacts",
+    }
+    result_fields = {
+        "canary_id",
+        "passed",
+        "reasons",
+        "got",
+        "response_sha256",
+    }
+    previous_graded: datetime | None = None
+    for session_index, session in enumerate(sessions, 1):
+        prefix = f"CALIBRATION.json sessions[{session_index}]"
+        if not calibration_exact_fields(session, session_fields, prefix, errors):
+            continue
+        session_id = session.get("session_id")
+        if not is_substantive_string(session_id):
+            errors.append(f"{prefix}.session_id must be substantive")
+        elif session_id in seen_sessions:
+            errors.append(f"{prefix}.session_id is duplicated")
+        else:
+            seen_sessions.add(str(session_id))
+        if not is_utc_timestamp(session.get("graded_utc")):
+            errors.append(f"{prefix}.graded_utc must be UTC")
+        else:
+            graded = datetime.fromisoformat(
+                str(session["graded_utc"]).replace("Z", "+00:00")
+            )
+            if previous_graded is not None and graded <= previous_graded:
+                errors.append(
+                    f"{prefix}.graded_utc is not strictly later than the "
+                    "preceding session"
+                )
+            previous_graded = graded
+
+        checker = session.get("checker_binding")
+        if calibration_exact_fields(
+            checker, checker_fields, f"{prefix}.checker_binding", errors
+        ):
+            for field in (
+                "checker_profile_id",
+                "checker_configuration_id",
+                "checker_context_id",
+            ):
+                if not is_substantive_string(checker.get(field)):
+                    errors.append(
+                        f"{prefix}.checker_binding.{field} must be substantive"
+                    )
+            context_id = checker.get("checker_context_id")
+            if is_substantive_string(context_id):
+                if context_id in seen_checker_contexts:
+                    errors.append(
+                        f"{prefix}.checker_binding.checker_context_id is reused "
+                        "across sessions"
+                    )
+                else:
+                    seen_checker_contexts.add(str(context_id))
+            if (
+                checker.get("reviewed") is not True
+                or checker.get("scope") != CHECKER_BINDING_SCOPE
+                or checker.get("automatic_identity_verification") is not False
+                or checker.get("limitation") != CHECKER_BINDING_LIMITATION
+            ):
+                errors.append(
+                    f"{prefix}.checker_binding does not match the reviewed "
+                    "binding contract"
+                )
+
+        audit_binding = session.get("audit_binding")
+        artifact_rows: list[Any] = []
+        if calibration_exact_fields(
+            audit_binding, audit_fields, f"{prefix}.audit_binding", errors
+        ):
+            # The snapshot and validator hashes are recorded provenance, not
+            # currency requirements: calibration attests the CHECKER, and the
+            # canaries are self-contained, so a paper edit or validator
+            # release does not invalidate a session. Requiring equality with
+            # the current audit here would force a full recalibration (and,
+            # through the receipt binding, a mandated re-review of every
+            # ledger) after every routine source repair. Currency is enforced
+            # where it belongs: the canary-bundle digest stales sessions when
+            # the canaries change, per-response re-grading under the current
+            # grader stales them when grading semantics change, and a changed
+            # checker binding requires a new session by contract.
+            for field in ("source_snapshot_sha256", "validator_sha256"):
+                value = audit_binding.get(field)
+                if not isinstance(value, str) or not SHA256_RE.fullmatch(value):
+                    errors.append(
+                        f"{prefix}.audit_binding.{field} must be a SHA-256 digest"
+                    )
+            artifact_rows = audit_binding.get("preexisting_proof_artifacts")
+            if not isinstance(artifact_rows, list):
+                errors.append(
+                    f"{prefix}.audit_binding.preexisting_proof_artifacts "
+                    "must be a list"
+                )
+                artifact_rows = []
+            seen_files: set[str] = set()
+            for artifact_index, artifact in enumerate(artifact_rows, 1):
+                artifact_prefix = (
+                    f"{prefix}.audit_binding.preexisting_proof_artifacts"
+                    f"[{artifact_index}]"
+                )
+                if not calibration_exact_fields(
+                    artifact, {"file", "sha256"}, artifact_prefix, errors
+                ):
+                    continue
+                file_value = artifact.get("file")
+                digest = artifact.get("sha256")
+                if (
+                    not is_nonempty_string(file_value)
+                    or "\\" in file_value
+                    or not file_value.startswith("audit/04_local_checks/")
+                    or not file_value.endswith(".ledger.json")
+                    or "/"
+                    in file_value.removeprefix("audit/04_local_checks/")
+                ):
+                    errors.append(f"{artifact_prefix}.file is not canonical")
+                elif file_value in seen_files:
+                    errors.append(f"{artifact_prefix}.file is duplicated")
+                else:
+                    seen_files.add(str(file_value))
+                    resolved = (root / str(file_value)).resolve()
+                    if not resolved.is_relative_to(root.resolve()):
+                        errors.append(f"{artifact_prefix}.file escapes audit root")
+                if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest):
+                    errors.append(f"{artifact_prefix}.sha256 is invalid")
+
+        results = session.get("results")
+        if not isinstance(results, list) or not results:
+            errors.append(f"{prefix}.results must be a nonempty list")
+            continue
+        seen_canaries: set[str] = set()
+        recomputed_passes: list[bool] = []
+        for result_index, result in enumerate(results, 1):
+            result_prefix = f"{prefix}.results[{result_index}]"
+            if not calibration_exact_fields(
+                result, result_fields, result_prefix, errors
+            ):
+                continue
+            canary_id = result.get("canary_id")
+            if not is_nonempty_string(canary_id):
+                errors.append(f"{result_prefix}.canary_id must be nonempty")
+                continue
+            if canary_id in seen_canaries:
+                errors.append(f"{result_prefix}.canary_id is duplicated")
+                continue
+            seen_canaries.add(str(canary_id))
+            got = result.get("got")
+            if not isinstance(got, dict):
+                errors.append(f"{result_prefix}.got must be an object")
+                continue
+            expected_response_sha256 = canonical_sha256(got)
+            if result.get("response_sha256") != expected_response_sha256:
+                errors.append(f"{result_prefix}.response_sha256 is stale")
+            try:
+                key = load_canary_key(str(canary_id))
+                recomputed_passed, recomputed_reasons, _ = grade_canary_response(
+                    got, key
+                )
+            except (OSError, UnicodeError, ValueError) as exc:
+                errors.append(f"{result_prefix} cannot be re-graded: {exc}")
+                continue
+            recomputed_passes.append(recomputed_passed)
+            if result.get("passed") is not recomputed_passed:
+                errors.append(f"{result_prefix}.passed disagrees with re-grading")
+            if result.get("reasons") != recomputed_reasons:
+                errors.append(f"{result_prefix}.reasons disagree with re-grading")
+        recomputed_session_passed = bool(recomputed_passes) and all(
+            recomputed_passes
+        )
+        if session.get("passed") is not recomputed_session_passed:
+            errors.append(f"{prefix}.passed disagrees with its result receipts")
+        errors.extend(
+            canary_session_composition_errors(sorted(seen_canaries), prefix)
+        )
+    return errors
+
+
+def current_calibration_receipt(root: Path) -> dict[str, Any]:
+    """Return the validated latest passing calibration session identity.
+
+    This intentionally omits the unchanged-preexisting-artifact gate so a
+    checker can regenerate packets needed to perform the required full recheck.
+    """
+    lock_error = calibration_update_lock_error(root)
+    if lock_error is not None:
+        raise ValueError(
+            "Cannot generate packet while checker calibration is locked: "
+            + lock_error
+        )
+    calibration_path = root / "audit" / "07_runtime" / "CALIBRATION.json"
+    calibration, read_errors = load_json_object(
+        calibration_path, "checker calibration record"
+    )
+    if read_errors:
+        raise ValueError(
+            "Cannot generate packet without a current checker calibration: "
+            + read_errors[0]
+        )
+    record_errors = calibration_record_errors(root, calibration)
+    if record_errors:
+        raise ValueError(
+            "Cannot generate packet without a current checker calibration: "
+            + record_errors[0]
+        )
+    latest = calibration["sessions"][-1]
+    if latest["passed"] is not True:
+        raise ValueError(
+            "Cannot generate packet until the latest balanced checker "
+            "calibration session passes"
+        )
+    identity = {
+        "calibration_schema_version": CALIBRATION_SCHEMA_VERSION,
+        "canary_bundle_sha256": calibration["canary_bundle"]["sha256"],
+        "session_id": latest["session_id"],
+        "graded_utc": latest["graded_utc"],
+        "session_sha256": canonical_sha256(latest),
+    }
+    return {**identity, "sha256": canonical_sha256(identity)}
+
+
+def checker_calibration_errors(root: Path) -> list[str]:
+    """Gate finalization on a current, passing, auditable calibration."""
+    lock_error = calibration_update_lock_error(root)
+    if lock_error is not None:
+        return [lock_error]
+    calibration_path = root / "audit" / "07_runtime" / "CALIBRATION.json"
+    if not calibration_path.is_file():
+        return [
+            "checker calibration required: no calibration session is "
+            "recorded; run canary-grade --root with a balanced session "
+            "before finalization"
+        ]
+    calibration, errors = load_json_object(
+        calibration_path, "checker calibration record"
+    )
+    if errors:
+        return errors
+    errors = calibration_record_errors(root, calibration)
+    if errors:
+        return errors
+    latest = calibration["sessions"][-1]
+    if latest["passed"] is not True:
+        return [
+            "checker calibration failed: the most recent recorded canary "
+            f"session {latest['session_id']!r} did not pass; rerun "
+            "canary-grade with a passing session before finalization"
+        ]
+    latest_ids = [str(result["canary_id"]) for result in latest["results"]]
+    errors = canary_session_composition_errors(
+        latest_ids,
+        "checker calibration: the most recent session "
+        f"{latest['session_id']!r}",
+    )
+    for artifact in latest["audit_binding"]["preexisting_proof_artifacts"]:
+        path = (root / artifact["file"]).resolve()
+        if path.is_file() and sha256_file(path) == artifact["sha256"]:
+            errors.append(
+                "checker calibration post-hoc recheck required: preexisting "
+                f"proof artifact {artifact['file']} is unchanged; fully recheck "
+                "and replace or recompile it after this calibration session"
+            )
+    return errors
+
+
+def commit_calibration_session(
+    root: Path,
+    calibration_path: Path,
+    bundle: dict[str, Any],
+    session: dict[str, Any],
+) -> None:
+    """Append one session while the exclusive calibration lock is held."""
+    if calibration_path.exists() and not calibration_path.is_file():
+        raise ValueError(
+            "Checker calibration record must be a regular non-symlink file"
+        )
+    if calibration_path.is_file():
+        calibration, errors = load_json_object(
+            calibration_path, "checker calibration record"
+        )
+        if errors:
+            archive_calibration_record(calibration_path)
+            calibration = {
+                "calibration_schema_version": CALIBRATION_SCHEMA_VERSION,
+                "canary_bundle": bundle,
+                "sessions": [],
+            }
+        elif calibration.get("calibration_schema_version") == 1:
+            archive_calibration_record(calibration_path)
+            calibration = {
+                "calibration_schema_version": CALIBRATION_SCHEMA_VERSION,
+                "canary_bundle": bundle,
+                "sessions": [],
+            }
+        else:
+            record_errors = calibration_record_errors(root, calibration)
+            if record_errors:
+                archive_calibration_record(calibration_path)
+                calibration = {
+                    "calibration_schema_version": CALIBRATION_SCHEMA_VERSION,
+                    "canary_bundle": bundle,
+                    "sessions": [],
+                }
+        sessions = calibration["sessions"]
+    else:
+        calibration = {
+            "calibration_schema_version": CALIBRATION_SCHEMA_VERSION,
+            "canary_bundle": bundle,
+            "sessions": [],
+        }
+        sessions = calibration["sessions"]
+    if any(
+        row.get("session_id") == session["session_id"] for row in sessions
+    ):
+        raise ValueError(
+            f"Calibration session {session['session_id']!r} already exists"
+        )
+    sessions.append(session)
+    post_append_errors = calibration_record_errors(root, calibration)
+    if post_append_errors:
+        raise ValueError(post_append_errors[0])
+    atomic_write_json(calibration_path, calibration)
+
+
+def cmd_canary_grade(args: argparse.Namespace) -> int:
+    configure_console_errors()
+    root = args.root.resolve()
+    if not (root / "AUDIT_MANIFEST.json").is_file():
+        raise ValueError(f"No audit manifest under {root}")
+    audit_binding = calibration_audit_binding(root)
+    checker_binding = calibration_checker_binding(args)
+    bundle = canary_bundle_identity()
+    results: list[dict[str, Any]] = []
+    seen_ids: list[str] = []
+    for response_path in args.response:
+        resolved = response_path.resolve()
+        response, errors = load_json_object(resolved, "canary response")
+        if errors:
+            raise ValueError(errors[0])
+        canary_id = response.get("canary_id")
+        if not is_nonempty_string(canary_id):
+            raise ValueError(f"{resolved} does not name a canary_id")
+        if canary_id in seen_ids:
+            raise ValueError(f"Duplicate response for canary {canary_id}")
+        seen_ids.append(str(canary_id))
+        key = load_canary_key(str(canary_id))
+        passed, reasons, got = grade_canary_response(response, key)
+        results.append(
+            {
+                "canary_id": canary_id,
+                "passed": passed,
+                "reasons": reasons,
+                "got": got,
+                "response_sha256": canonical_sha256(got),
+            }
+        )
+    composition_errors = canary_session_composition_errors(
+        seen_ids, "a calibration session"
+    )
+    if composition_errors:
+        raise ValueError(composition_errors[0])
+    session_passed = all(result["passed"] for result in results)
+    session = {
+        "session_id": args.session_id,
+        "graded_utc": datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+        "checker_binding": checker_binding,
+        "audit_binding": audit_binding,
+        "results": results,
+        "passed": session_passed,
+    }
+    path_errors: list[str] = []
+    calibration_path, path_valid = canonical_artifact_path(
+        root,
+        "audit/07_runtime/CALIBRATION.json",
+        "checker calibration record",
+        path_errors,
+    )
+    if not path_valid:
+        raise ValueError(path_errors[0])
+    if calibration_path.exists() and not calibration_path.is_file():
+        raise ValueError(
+            "Checker calibration record must be a regular non-symlink file"
+        )
+    lock, lock_payload = acquire_calibration_update_lock(root, args.session_id)
+    try:
+        commit_calibration_session(
+            root, calibration_path, bundle, session
+        )
+    finally:
+        release_calibration_update_lock(lock, lock_payload)
+    recorded_to = calibration_path.as_posix()
+    print(
+        json.dumps(
+            {
+                "command": "canary-grade",
+                "session_id": args.session_id,
+                "passed": session_passed,
+                "results": results,
+                "recorded_to": recorded_to,
+                "preexisting_proof_artifacts": audit_binding[
+                    "preexisting_proof_artifacts"
+                ],
+                "note": (
+                    "A recorded failing session blocks finalization until a "
+                    "later session passes. Any proof artifacts listed as "
+                    "preexisting must be fully rechecked and replaced or "
+                    "recompiled before finalization. Expected verdicts are "
+                    "never disclosed by this command."
+                ),
+            },
+            ensure_ascii=True,
+            indent=2,
+        )
+    )
+    return 0 if session_passed else 1
 
 
 def cmd_delivery_check(args: argparse.Namespace) -> int:
@@ -29122,6 +33458,82 @@ def build_parser() -> argparse.ArgumentParser:
     annotation_scaffold.add_argument("--output", type=Path, required=True)
     annotation_scaffold.set_defaults(func=cmd_annotation_scaffold)
 
+    canary_list = subparsers.add_parser(
+        "canary-list",
+        help="List bundled checker-calibration canaries (ids and titles only)",
+    )
+    canary_list.set_defaults(func=cmd_canary_list)
+
+    canary_packet = subparsers.add_parser(
+        "canary-packet",
+        help="Write one blinded calibration packet for a fresh checker context",
+    )
+    canary_packet.add_argument("--canary-id", required=True)
+    canary_packet.add_argument("--output", type=Path, required=True)
+    canary_packet.set_defaults(func=cmd_canary_packet)
+
+    canary_grade = subparsers.add_parser(
+        "canary-grade",
+        help=(
+            "Grade canary responses against the bundled answer keys and "
+            "record the session"
+        ),
+    )
+    canary_grade.add_argument(
+        "--response",
+        type=Path,
+        action="append",
+        required=True,
+        help="Path to one CANARY_RESPONSE JSON file; repeat per canary",
+    )
+    canary_grade.add_argument("--session-id", required=True)
+    canary_grade.add_argument(
+        "--root",
+        type=Path,
+        required=True,
+        help="Audit root that records this session in audit/07_runtime/CALIBRATION.json",
+    )
+    canary_grade.add_argument(
+        "--checker-profile-id",
+        required=True,
+        help="Reviewed identifier for the checker model/profile",
+    )
+    canary_grade.add_argument(
+        "--checker-configuration-id",
+        required=True,
+        help="Reviewed identifier for the checker configuration",
+    )
+    canary_grade.add_argument(
+        "--checker-context-id",
+        required=True,
+        help="Reviewed identifier for the fresh checker context",
+    )
+    canary_grade.add_argument(
+        "--reviewed-binding",
+        action="store_true",
+        help=(
+            "Confirm the declared checker profile, configuration, and context "
+            "binding after reviewing the fixed responses"
+        ),
+    )
+    canary_grade.set_defaults(func=cmd_canary_grade)
+
+    rebind_annotations = subparsers.add_parser(
+        "rebind-annotations",
+        help=(
+            "Copy current packet binding hashes into a compact annotation file"
+        ),
+    )
+    rebind_annotations.add_argument("annotations", type=Path)
+    rebind_annotations.add_argument("--packet", type=Path, required=True)
+    rebind_annotations.add_argument(
+        "--skeleton",
+        type=Path,
+        default=None,
+        help="Also refresh source_unit_sha256 from this extracted skeleton",
+    )
+    rebind_annotations.set_defaults(func=cmd_rebind_annotations)
+
     annotation_check = subparsers.add_parser(
         "annotation-check",
         help=(
@@ -29188,6 +33600,16 @@ def build_parser() -> argparse.ArgumentParser:
     migrate.add_argument("--output", type=Path, required=True)
     migrate.add_argument("--force", action="store_true")
     migrate.set_defaults(func=cmd_migrate_ledger)
+
+    migrate_closure = subparsers.add_parser(
+        "migrate-closure",
+        help=(
+            "Back up and atomically upgrade prior-closure dependency state "
+            "while leaving bibliography identity judgments pending"
+        ),
+    )
+    migrate_closure.add_argument("--root", type=Path, required=True)
+    migrate_closure.set_defaults(func=cmd_migrate_closure)
 
     ledger = subparsers.add_parser(
         "ledger-check", help="Validate source coverage and proof-step evidence"
@@ -29260,6 +33682,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_output_arguments(status)
     status.set_defaults(func=cmd_status)
+    migrate_evidence = subparsers.add_parser(
+        "migrate-evidence",
+        help=(
+            "Validate and make byte-exact backups of live evidence-contract-4 "
+            "proof artifacts before advancing them to contract 5; new records "
+            "remain to author"
+        ),
+    )
+    migrate_evidence.add_argument("--root", type=Path, required=True)
+    migrate_evidence.set_defaults(func=cmd_migrate_evidence)
+
     revalidate_protocol = subparsers.add_parser(
         "revalidate-protocol",
         help=(
@@ -29285,6 +33718,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor.add_argument("--publisher-pdf", type=Path)
     doctor.add_argument("--portable-sources", action="store_true")
+    doctor.add_argument(
+        "--additional-source",
+        action="append",
+        nargs=3,
+        metavar=("PATH", "REASON", "EVIDENCE"),
+        help=(
+            "Validate a load-bearing source file with its inclusion reason and "
+            "evidence; repeat for multiple files"
+        ),
+    )
+    doctor.add_argument(
+        "--fls",
+        type=Path,
+        help="Validate an existing TeX recorder file during source discovery",
+    )
+    doctor.add_argument(
+        "--project-root",
+        type=Path,
+        help=(
+            "Project boundary and fallback root for local source discovery; "
+            "defaults to the paper directory"
+        ),
+    )
     doctor.set_defaults(func=cmd_doctor)
 
     delivery = subparsers.add_parser(

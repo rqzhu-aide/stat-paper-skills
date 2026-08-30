@@ -8,20 +8,34 @@ these records but does not redefine them.
 
 The effective-critical set is the union of:
 
-- manifest-declared critical units; and
+- manifest-declared critical units (every target unit must be declared
+  critical);
 - every in-scope unit affected by an open, deferred, or resolved load-bearing
   S0 or S1 issue, including a historical required challenge retained after
-  repair.
+  repair; and
+- when the manifest sets `audit_scope.verified_challenge_sample_rate` to a
+  finite number in (0, 1], a deterministic sample drawn from all in-scope
+  units: score each as sha256 of `<source_snapshot_sha256>:<unit_id>` and take
+  the exact ceiling of rate times the in-scope count with the lowest scores.
+  Membership is a pure function of the source snapshot and the in-scope set,
+  so the sample is reproducible, identical at every computation site, and
+  cannot be steered by editing critical declarations or issue records; units
+  the sample shares with the other two branches are already required, so the
+  overlap costs nothing. Set a nonzero rate (0.2 is a reasonable default) for
+  a Full audit so that units the primary checker marked verified without
+  incident still receive independent re-derivation; a unit wrongly marked
+  verified never promotes itself through an issue.
 
 For each unit, set covered_issue_ids to the exact sorted triggering issue set.
-Use an empty list only when the unit is critical solely by manifest declaration.
-A resolved severe issue remains a trigger for the fresh post-repair challenge.
+Use an empty list only when the unit is critical solely by manifest declaration
+or sampling. A resolved severe issue remains a trigger for the fresh
+post-repair challenge.
 
 ## Build a blinded packet
 
 Start the challenger from a fresh context and generate:
 
-    python "<skill-root>/scripts/proofcheck.py" packet --root <audit-root> --unit-id <unit-id> --mode challenge --output <challenge-packet.json>
+    python "<skill-root>/scripts/proofcheck.py" packet --root "<audit-root>" --unit-id <unit-id> --mode challenge --output "<challenge-packet.json>"
 
 The packet must contain the current source-snapshot identity, exact locked
 source, normalized obligation, unit inventory, direct dependency contracts,
@@ -53,6 +67,11 @@ A same-context reread is not independent. Record one of:
 - fresh_context_same_model;
 - different_model;
 - independent_human.
+
+For a challenge covering an S0 issue, prefer `different_model` or
+`independent_human` when available: same-model blind spots correlate exactly
+where a fatal finding matters most. `fresh_context_same_model` remains valid;
+the recorded independence level discloses the limitation in the final report.
 
 One fresh challenger pass should assess all triggering issues for one unit.
 Closely related units may share one call only when every complete packet fits
@@ -110,7 +129,7 @@ a substantive resolution.
 
 After the blinded narrative, verdict, and assessment rows are fixed, run:
 
-    python "<skill-root>/scripts/proofcheck.py" bind-challenge --root <audit-root> --unit-id <unit-id>
+    python "<skill-root>/scripts/proofcheck.py" bind-challenge --root "<audit-root>" --unit-id <unit-id>
 
 The command inserts or replaces exactly one proofcheck-challenge-binding-v1
 JSON block, verifies current packet semantics, and writes the artifact and

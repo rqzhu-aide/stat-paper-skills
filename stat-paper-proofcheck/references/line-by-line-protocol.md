@@ -17,9 +17,9 @@
 
 Use this protocol for every detailed proof-unit audit. Its two central controls are complete source coverage and atomic mathematical verification records. Neither control substitutes for mathematical judgment, and neither provides formal soundness.
 Final verification requires artifact schema `5` and
-`evidence_contract_version: 4`. A schema-4 or evidence-contract-3 ledger may
-be inspected, but it cannot support a current final verification claim until
-it is explicitly migrated and rechecked.
+`evidence_contract_version: 5`. A schema-4, evidence-contract-3, or
+evidence-contract-4 ledger may be inspected, but it cannot support a current
+final verification claim until it is explicitly migrated and rechecked.
 
 ## 1. Lock the unit
 
@@ -103,10 +103,22 @@ separately, but normally inspect one complete proof unit and produce all of its
 ordered atomic records in one model call. Do not create one call per source
 line, risk row, or inference move.
 
+Model tiering may reduce cost without moving judgment. A lighter model may
+draft transcription-grade content: reviewing prefilled literals, goals, exact
+claim restatements, and source grouping. The judgment-bearing fields, including status,
+all risk dispositions, side conditions, failures and computations, premise and
+rule choices, conclusion rows, and everything in an issue or challenge,
+require the strongest available model, which must review any drafted content
+it builds on. The compiler and validators apply identical gates to every
+author, and telemetry's `stage` field can record the tier used per call. The
+strongest-model requirement is auditable through the calibration record: the
+declared `checker_profile_id` names the judgment-bearing checker, and a
+changed profile requires a fresh calibration session before further judgment.
+
 When a compact context projection is useful, generate a primary packet:
 
 ```bash
-python "<skill-root>/scripts/proofcheck.py" packet --root <audit-root> --unit-id <unit-id> --mode primary --output <packet.json>
+python "<skill-root>/scripts/proofcheck.py" packet --root "<audit-root>" --unit-id <unit-id> --mode primary --output "<packet.json>"
 ```
 
 The packet is noncanonical context and must be written outside the audit root.
@@ -122,21 +134,23 @@ primary_work_packet_ready: true and a completed normalized obligation.
 
 For a fresh extracted skeleton, generate a deterministic packet-bound draft:
 
-    python "<skill-root>/scripts/proofcheck.py" annotation-scaffold <unit.skeleton.json> --packet <primary-packet.json> --output <annotations.json>
+    python "<skill-root>/scripts/proofcheck.py" annotation-scaffold "<unit.skeleton.json>" --packet "<primary-packet.json>" --output "<annotations.json>"
 
 The scaffold pre-fills deterministic hashes, IDs, dependency mirrors, source
-line ranges, and all eight risk slots. Every null is an unfinished semantic
-judgment. Review multiline source grouping and replace every null with
-paper-specific analysis. Do not use placeholder prose.
+line ranges, all eight risk slots, and a literal transcription of each step's
+locked line. Every null is an unfinished semantic judgment. Review multiline
+source grouping and replace every null with paper-specific analysis; when a
+source group merges lines into one step, rewrite that step's prefilled
+`literal` to quote the complete merged unit. Do not use placeholder prose.
 
 Run one aggregate preflight before compilation:
 
-    python "<skill-root>/scripts/proofcheck.py" annotation-check <unit.skeleton.json> --annotations <annotations.json> --packet <primary-packet.json> --json
+    python "<skill-root>/scripts/proofcheck.py" annotation-check "<unit.skeleton.json>" --annotations "<annotations.json>" --packet "<primary-packet.json>" --json
 
 The checker reports detectable schema, binding, and reconciliation problems
 together with JSON pointers. It does not publish a ledger. Then compile:
 
-    python "<skill-root>/scripts/proofcheck.py" compile-annotations <unit.skeleton.json> --annotations <annotations.json> --packet <primary-packet.json> --output <unit.ledger.json>
+    python "<skill-root>/scripts/proofcheck.py" compile-annotations "<unit.skeleton.json>" --annotations "<annotations.json>" --packet "<primary-packet.json>" --output "<unit.ledger.json>"
 
 The skeleton must be inside the canonical audit and end in .skeleton.json.
 The packet and annotation file remain outside the audit root. The compiler
@@ -157,18 +171,22 @@ Stable references may replace copied claims only when the compiler can resolve
 them exactly from the normalized obligation, earlier moves, or declared result
 uses.
 
-Use annotation schema version `1`. Its top level contains exactly
+Use annotation schema version `2`. Its top level contains exactly
 `annotation_schema_version`, `unit_id`, `source_unit_sha256`,
-`obligation_sha256`, `context_binding_sha256`, `source_groups`,
-`dependencies`, `steps`, `conclusions`, and `review`. Copy
+`obligation_sha256`, `context_binding_sha256`,
+`calibration_receipt_sha256`, `source_groups`, `dependencies`, `steps`,
+`conclusions`, and `review`. Copy
 `source_unit_sha256` from skeleton `source.unit_sha256`. Copy
-`obligation_sha256` and `context_binding_sha256` from the exact primary packet.
+the other three hashes from the exact primary packet. A changed calibration
+receipt requires a fresh scaffold and full judgment review; it cannot be
+rebound.
 Keep `source_groups` empty unless a genuine multiline sentence or
 display requires one. Each step uses a stable local `key`, exact `lines`,
 `mode`, `kind`, `goal`, `claim`, literal and atomicity evidence, adversarial
 checks, the eight-aspect `risks` object, inputs, side conditions, status, and
 issue IDs. A derivation or reuse also supplies its rule and justification; a
-failed move supplies the structured failure when required. Each conclusion
+failed move supplies the structured failure when required, including the
+`computation` record for a counterexample or contradiction. Each conclusion
 names its `Cxxx` ID and support-step key.
 
 The review contains exactly `explicit_assumptions`, `inherited_assumptions`,
@@ -216,7 +234,16 @@ gates remain mandatory.
 
 If compilation reports stale semantic context, regenerate the packet and renew
 the annotation binding only after confirming that every affected judgment
-remains valid. Operational-only drift does not justify rewriting the binding.
+remains valid. Use mechanical rebinding only when
+`calibration_receipt_sha256` is unchanged:
+
+    python "<skill-root>/scripts/proofcheck.py" rebind-annotations "<annotations.json>" --packet "<primary-packet.json>" --skeleton "<unit.skeleton.json>"
+
+Rebinding copies current hashes only; it never certifies the authored
+judgments. If the calibration receipt changed, archive any old ledger under a
+name not ending in `.ledger.json`, regenerate the packet, create a fresh
+scaffold, and fully re-review. Operational-only drift does not justify
+rewriting the binding.
 
 If a proof unit does not fit in one complete packet, process contiguous
 source-unit blocks in manuscript order. Carry forward only canonical
@@ -345,6 +372,19 @@ a zero-input move. A `refuted` conclusion requires `counterexample` or
 exactly equal that `Cxxx` conclusion claim. An invalid proof alone supports only
 `not_established`.
 
+Every `counterexample` or `contradiction` failure must carry a
+`failure.computation` record. Instantiate the failure numerically whenever
+feasible: `status: instantiated` with a `script_file` under
+`audit/05_adversarial/` (relative to the ledger directory), its exact
+`script_sha256`, the exact `command`, and a substantive `output_excerpt`
+showing the violation at concrete values, using exact or validated arithmetic
+where rounding could matter. Otherwise record `status: not_instantiable` with
+a substantive reason. Final validation rejects a refutation-kind failure
+without this record, a missing script, or a stale script hash. The computation
+falsifies only the exact encoded instance; it never replaces the recorded
+mathematical failure analysis, and a counterexample that resists numerical
+instantiation deserves heightened scrutiny before `refuted` is assigned.
+
 Every recorded move must be load-bearing in the backward closure of
 `conclusion_move`; an earlier move used to discharge a side condition counts
 only when that condition is generated by a reachable move. The final move's
@@ -385,8 +425,8 @@ A `gap`, `incorrect`, or `unclear` step may retain an open secondary risk,
 but it cannot use that unresolved risk to upgrade its status.
 
 Evidence must identify the actual source claim, mathematical objects, premises,
-operation, and failure mode relevant to that record. Evidence contract 4 treats
-repeated stock evidence as nonspecific under the exact gates in
+operation, and failure mode relevant to that record. The current evidence
+contract treats repeated stock evidence as nonspecific under the exact gates in
 [evidence-and-verdicts.md](evidence-and-verdicts.md). Do not use
 generic checklist prose or cosmetic wording changes in place of local evidence.
 

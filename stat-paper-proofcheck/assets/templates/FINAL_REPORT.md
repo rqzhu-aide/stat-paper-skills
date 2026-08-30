@@ -18,10 +18,10 @@ confidence, and limitations text that cannot be derived mechanically.
 - Target results:
 - Checked scope:
 - Source revision:
-- Skill version: 1.0
+- Skill version: 1.2
 - Artifact schema version: 5
-- Evidence contract version: 4
-- Closure contract version: 3
+- Evidence contract version: 5
+- Closure contract version: 4
 - Method-interface schema version: 1
 - Source snapshot ID:
 - Finalization record: audit/06_reports/FINALIZATION.json
@@ -115,13 +115,19 @@ invalidation.
 | Severity | Load-bearing | Confidence | Invalidation kind | Current unit effect | Current conclusion effect | Overall assessment effect |
 |---|---|---|---|---|---|---|
 
+For an S0 or S1 issue, the generator also renders the canonical repair-search
+conclusion and one row per attempted repair strategy.
+
+| Strategy | Attempt | Outcome | Evidence |
+|---|---|---|---|
+
 #### 4. Suggested changes and recheck
 
 Copy the issue's structured `suggested_changes`. Keep diagnosis and repair
 separate. Do not claim sufficiency before the required rechecks pass.
 
-| Target | Action | Proposal | Verification status | Required rechecks |
-|---|---|---|---|---|
+| Target | Action | Repair scope | Assumption cost | Claim cost | Proposal | Verification status | Required rechecks |
+|---|---|---|---|---|---|---|---|
 
 Derive full closure from the union of archived and current affected results,
 dependency uses, critical challenges, and `report_deliverables`. Record

@@ -157,6 +157,70 @@ def make_compatibility_checks() -> list[dict]:
     ]
 
 
+
+def make_repair_search(severity: str) -> dict:
+    if severity == "S0":
+        return {
+            "strategies": [
+                {
+                    "name": "union_bound",
+                    "attempt": (
+                        "Bound the failure event by the sum of the per-index "
+                        "tail probabilities under the stated hypotheses."
+                    ),
+                    "outcome": "failed",
+                    "evidence": (
+                        "The available per-index bound is not summable over "
+                        "the growing index range, so the union bound does not "
+                        "close the step."
+                    ),
+                },
+                {
+                    "name": "weakened_conclusion_variant",
+                    "attempt": (
+                        "Derive the stated conclusion for a fixed finite index "
+                        "range instead of the growing range."
+                    ),
+                    "outcome": "failed",
+                    "evidence": (
+                        "The fixed-range variant is provable but does not "
+                        "support the stated main claim at its use site."
+                    ),
+                },
+            ],
+            "conclusion": "no_local_repair_found",
+        }
+    return {
+        "strategies": [
+            {
+                "name": "direct_repair",
+                "attempt": (
+                    "Close the recorded failure directly from the stated "
+                    "hypotheses without new assumptions."
+                ),
+                "outcome": "failed",
+                "evidence": (
+                    "The stated hypotheses do not supply the missing control "
+                    "identified at the failed move."
+                ),
+            },
+            {
+                "name": "strengthened_hypothesis_variant",
+                "attempt": (
+                    "Add an explicit uniform bound strong enough to close the "
+                    "failed move, and re-derive the conclusion from it."
+                ),
+                "outcome": "survives_local_inspection",
+                "evidence": (
+                    "With the strengthened hypothesis the failed move closes "
+                    "locally; the full recheck closure remains required."
+                ),
+            },
+        ],
+        "conclusion": "candidate_repair_exists",
+    }
+
+
 class FinalizationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -422,7 +486,7 @@ class FinalizationTests(unittest.TestCase):
             },
         ]
         ledger["schema_version"] = 5
-        ledger["evidence_contract_version"] = 4
+        ledger["evidence_contract_version"] = proofcheck.EVIDENCE_CONTRACT_VERSION
         ledger["source_units"] = [
             {
                 "id": "U001",
@@ -545,6 +609,15 @@ class FinalizationTests(unittest.TestCase):
         }
         write_json(interface_registry_path, interface_registry)
 
+        self.install_calibration()
+        primary_packet = proofcheck.build_context_packet(
+            self.audit, "lem:main", "primary"
+        )
+        ledger = read_json(ledger_path)
+        ledger["work_context_sha256"] = primary_packet[
+            "work_context_sha256"
+        ]
+        write_json(ledger_path, ledger)
         self.seal_schema5_challenge(ledger_path, read_json(ledger_path))
         challenge_record = read_json(ledger_path)["independent_check"]
         final_report = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
@@ -554,7 +627,7 @@ class FinalizationTests(unittest.TestCase):
             "- Overall judgment: No defect found under the stated non-formal protocol.\n"
             "- Checked scope: lem:main\n"
             "- Source revision: scaffolded source snapshot.\n"
-            "- Skill version: 1.0\n"
+            f"- Skill version: {proofcheck.SKILL_VERSION}\n"
             f"- Artifact schema version: {proofcheck.SCHEMA_VERSION}\n"
             f"- Evidence contract version: {proofcheck.EVIDENCE_CONTRACT_VERSION}\n"
             "- Method-interface schema version: 1\n"
@@ -616,6 +689,191 @@ class FinalizationTests(unittest.TestCase):
         )
         write_json(progress_path, progress)
         return ledger_path
+
+    def install_calibration(self, root: Path | None = None) -> None:
+        audit_root = self.audit if root is None else root
+        calibration_path = (
+            audit_root / "audit" / "07_runtime" / "CALIBRATION.json"
+        )
+        calibration_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest = read_json(audit_root / "AUDIT_MANIFEST.json")
+        responses = [
+            {
+                "canary_id": "bounded-drift",
+                "argument_status": "invalid",
+                "statement_status": "refuted",
+                "defect_lines": [15],
+                "justification": (
+                    "The recurrence permits an equality sequence whose product "
+                    "grows without bound, so the proof and conclusion fail."
+                ),
+            },
+            {
+                "canary_id": "finite-max",
+                "argument_status": "valid",
+                "statement_status": "established",
+                "defect_lines": [],
+                "justification": (
+                    "The maximum is over a fixed finite set, so the displayed "
+                    "union bound and finite-sum limit establish the conclusion."
+                ),
+            },
+        ]
+        results = []
+        for response in responses:
+            key = proofcheck.load_canary_key(response["canary_id"])
+            passed, reasons, got = proofcheck.grade_canary_response(response, key)
+            results.append(
+                {
+                    "canary_id": response["canary_id"],
+                    "passed": passed,
+                    "reasons": reasons,
+                    "got": got,
+                    "response_sha256": proofcheck.canonical_sha256(got),
+                }
+            )
+        write_json(
+            calibration_path,
+            {
+                "calibration_schema_version": proofcheck.CALIBRATION_SCHEMA_VERSION,
+                "canary_bundle": proofcheck.canary_bundle_identity(),
+                "sessions": [
+                    {
+                        "session_id": "cal-001",
+                        "graded_utc": "2026-08-09T00:00:00+00:00",
+                        "checker_binding": {
+                            "checker_profile_id": "gpt-test-profile",
+                            "checker_configuration_id": "proofcheck-test-config",
+                            "checker_context_id": "fresh-context-cal-001",
+                            "reviewed": True,
+                            "scope": proofcheck.CHECKER_BINDING_SCOPE,
+                            "automatic_identity_verification": False,
+                            "limitation": proofcheck.CHECKER_BINDING_LIMITATION,
+                        },
+                        "audit_binding": {
+                            "source_snapshot_sha256": manifest["source_snapshot"][
+                                "sha256"
+                            ],
+                            "validator_sha256": manifest["protocol"][
+                                "validator_sha256"
+                            ],
+                            "preexisting_proof_artifacts": [],
+                        },
+                        "results": results,
+                        "passed": True,
+                    }
+                ],
+            },
+        )
+
+    def add_snapshot_source(self, path: Path, ledger_path: Path) -> None:
+        """Register an additional authoritative source (as --additional-source
+        would) and re-stamp every fixture binding of the snapshot hash."""
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        row = {
+            "file": proofcheck.relative_or_absolute(path, self.audit),
+            "sha256": proofcheck.sha256_file(path),
+        }
+        files = manifest["source_snapshot"]["files"]
+        files[:] = [
+            record
+            for record in files
+            if record.get("file") != row["file"]
+        ]
+        files.append(row)
+        old_sha = manifest["source_snapshot"]["sha256"]
+        new_sha = proofcheck.canonical_sha256(files)
+        manifest["source_snapshot"]["sha256"] = new_sha
+        additional = manifest["source_discovery"]["additional_files"]
+        additional[:] = [
+            record
+            for record in additional
+            if record.get("file") != row["file"]
+        ]
+        if True:
+            additional.append(
+                {
+                    **row,
+                    "reason": "Load-bearing bibliography identity source.",
+                    "evidence": (
+                        "The bound citation entries live in this file, so it "
+                        "belongs to the authoritative source closure."
+                    ),
+                }
+            )
+        write_json(manifest_path, manifest)
+        paper = proofcheck.resolve_stored_path(
+            manifest["paper_file"], self.audit
+        )
+        closure = proofcheck.discover_source_closure(
+            paper,
+            additional_files=[
+                proofcheck.resolve_stored_path(record["file"], self.audit)
+                for record in additional
+            ],
+            fls_file=None,
+            project_root=paper.parent,
+        )
+        fresh_cross_references = proofcheck.scan_cross_references(
+            paper,
+            source_files=closure["files"],
+            source_warnings=closure["warnings"],
+        )
+        index_dir = self.audit / "audit" / "01_index"
+        write_json(
+            index_dir / "cross_reference_audit.json", fresh_cross_references
+        )
+        (index_dir / "cross_reference_audit.md").write_text(
+            proofcheck.crossref_markdown(fresh_cross_references),
+            encoding="utf-8",
+            newline="\n",
+        )
+        for artifact in [
+            self.audit / "PROGRESS.json",
+            ledger_path,
+            self.audit / "audit" / "06_reports" / "FINAL_REPORT.md",
+            index_dir / "theorem_inventory.json",
+            index_dir / "theorem_inventory.md",
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json",
+        ]:
+            if artifact.is_file():
+                content = artifact.read_text(encoding="utf-8")
+                artifact.write_text(
+                    content.replace(old_sha, new_sha),
+                    encoding="utf-8",
+                    newline="\n",
+                )
+        self.install_calibration()
+        ledger = read_json(ledger_path)
+        old_challenge = dict(ledger.get("independent_check", {}))
+        if old_challenge.get("required") is True:
+            self.seal_schema5_challenge(
+                ledger_path,
+                ledger,
+                covered_issue_ids=old_challenge.get("covered_issue_ids"),
+            )
+            new_challenge = read_json(ledger_path)["independent_check"]
+            report_path = (
+                self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
+            )
+            if report_path.is_file():
+                report = report_path.read_text(encoding="utf-8")
+                for field in (
+                    "source_snapshot_sha256",
+                    "challenged_ledger_sha256",
+                    "challenge_context_sha256",
+                    "challenge_artifact_sha256",
+                    "generated_utc",
+                ):
+                    report = report.replace(
+                        str(old_challenge.get(field)),
+                        str(new_challenge.get(field)),
+                    )
+                report_path.write_text(report, encoding="utf-8", newline="\n")
 
     def refresh_dependency_review(self) -> dict:
         manifest = read_json(self.audit / "AUDIT_MANIFEST.json")
@@ -877,8 +1135,7 @@ class FinalizationTests(unittest.TestCase):
             / "DEPENDENCY_REGISTRY.json"
         )
         write_json(registry_path, registry)
-        self.seal_schema5_challenge(ledger_path, read_json(ledger_path))
-        self.seal_schema5_challenge(prior_path, read_json(prior_path))
+        self.seal_live_challenges()
         return prior_path, use
 
     def install_external_dependency(self, ledger_path: Path) -> tuple[Path, dict]:
@@ -920,12 +1177,49 @@ class FinalizationTests(unittest.TestCase):
         }
         write_json(ledger_path, ledger)
 
-        contract_payload = {
+        core_contract = {
             "source_identity": "doi:10.0000/reflexivity",
             "version": "version 1",
             "theorem_location": "External Result 1",
             "exact_statement": exact_statement,
             "source_evidence": source_evidence,
+        }
+        bibliography_path = self.base / "external-reflexivity.bib"
+        bibliography_path.write_text(
+            "@article{smith,\n"
+            "  author = {Smith, A.},\n"
+            "  title = {Reflexivity of equality},\n"
+            "  year = {2026}\n"
+            "}\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        self.add_snapshot_source(bibliography_path, ledger_path)
+        citation_bindings = [
+            {
+                "key": "smith",
+                "source_kind": "bibtex_entry",
+                "external_result_id": dependency["id"],
+                "external_identity_sha256": (
+                    proofcheck.external_result_identity_sha256(
+                        {"id": dependency["id"], **core_contract}
+                    )
+                ),
+                "file": proofcheck.relative_or_absolute(
+                    bibliography_path, self.audit
+                ),
+                "start_line": 1,
+                "end_line": 5,
+                "sha256": proofcheck.source_span_sha256(
+                    bibliography_path, 1, 5
+                ),
+                "role": "bibliography_identity",
+                "locator": "BibTeX entry smith",
+            }
+        ]
+        contract_payload = {
+            **core_contract,
+            "citation_bindings": citation_bindings,
         }
         use = {
             "dependent_unit": "lem:main",
@@ -966,6 +1260,14 @@ class FinalizationTests(unittest.TestCase):
             "id": dependency["id"],
             "status": "verified",
             **contract_payload,
+            "citation_binding_review": {
+                "status": "reviewed",
+                "required_keys": ["smith"],
+                "evidence": (
+                    "The locked BibTeX entry key equals the manuscript citation key "
+                    "and is bound to this external result identity."
+                ),
+            },
             "issue_ids": [],
             "uses": [use],
         }
@@ -1232,13 +1534,49 @@ class FinalizationTests(unittest.TestCase):
             }
         ]
         exact_statement = "For every real x, x equals x."
-        contract_payload = {
+        core_contract = {
             "source_identity": "doi:10.0000/imported-reflexivity",
             "version": "version 1",
             "theorem_location": "External Result 1",
             "exact_statement": exact_statement,
             "source_evidence": source_evidence,
         }
+        citation_bindings = []
+        if with_statement_citation:
+            bibliography_path = self.base / "external-imported-result.bbl"
+            bibliography_path.write_text(
+                "\\begin{thebibliography}{1}\n"
+                "\\bibitem{smith} A. Smith. Reflexivity of equality. 2026.\n"
+                "\\end{thebibliography}\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            self.add_snapshot_source(bibliography_path, ledger_path)
+            citation_bindings = [
+                {
+                    "key": "smith",
+                    "source_kind": "bibitem",
+                    "external_result_id": "ext:reflexivity",
+                    "external_identity_sha256": (
+                        proofcheck.external_result_identity_sha256(
+                            {"id": "ext:reflexivity", **core_contract}
+                        )
+                    ),
+                    "file": proofcheck.relative_or_absolute(
+                        bibliography_path, self.audit
+                    ),
+                    "start_line": 2,
+                    "end_line": 2,
+                    "sha256": proofcheck.source_span_sha256(
+                        bibliography_path, 2, 2
+                    ),
+                    "role": "bibliography_identity",
+                    "locator": "thebibliography item smith",
+                }
+            ]
+        contract_payload = dict(core_contract)
+        if citation_bindings:
+            contract_payload["citation_bindings"] = citation_bindings
         use = {
             "dependent_unit": "lem:main",
             "use_id": "D001",
@@ -1280,6 +1618,20 @@ class FinalizationTests(unittest.TestCase):
                 "id": "ext:reflexivity",
                 "status": "verified",
                 **contract_payload,
+                **(
+                    {
+                        "citation_binding_review": {
+                            "status": "reviewed",
+                            "required_keys": ["smith"],
+                            "evidence": (
+                                "The locked bibitem key equals the statement citation "
+                                "key and is bound to this external result identity."
+                            ),
+                        }
+                    }
+                    if with_statement_citation
+                    else {}
+                ),
                 "issue_ids": [],
                 "uses": [use],
             }
@@ -1464,6 +1816,16 @@ class FinalizationTests(unittest.TestCase):
                     ),
                 },
                 "action": "repair_step",
+                "repair_scope": (
+                    "unit_statement"
+                    if issue.get("severity") == "S0"
+                    else "local_step"
+                ),
+                "assumption_cost": (
+                    "adds_regularity_or_moment"
+                    if issue.get("severity") == "S0"
+                    else "none"
+                ),
                 "proposal": proposal,
                 "verification_status": "candidate",
                 "required_rechecks": required_rechecks,
@@ -1517,8 +1879,7 @@ class FinalizationTests(unittest.TestCase):
             issue_path,
             {"schema_version": proofcheck.SCHEMA_VERSION, "issues": [issue]},
         )
-        if ledger_path is not None:
-            self.seal_schema5_challenge(ledger_path, read_json(ledger_path))
+        self.seal_live_challenges()
         summary_path = self.audit / "audit" / "06_reports" / "ISSUE_SUMMARY.md"
         summary_path.write_text(
             proofcheck.render_issue_summary([issue]),
@@ -1615,6 +1976,8 @@ class FinalizationTests(unittest.TestCase):
             ),
             "summary": summary,
         }
+        if severity in {"S0", "S1"}:
+            issue["repair_search"] = make_repair_search(severity)
         issue, _ = self.migrate_issue_fixture_to_schema5(issue)
         return issue
 
@@ -3366,7 +3729,27 @@ class FinalizationTests(unittest.TestCase):
             errors,
         )
 
-    def test_counterexample_failure_can_support_refuted_status(self) -> None:
+    def install_failure_computation(
+        self, name: str = "witness-check.py"
+    ) -> dict:
+        script_path = self.audit / "audit" / "05_adversarial" / name
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        script_path.write_text(
+            "value = 1\n"
+            "assert value == value\n"
+            "print('witness violates the claim')\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        return {
+            "status": "instantiated",
+            "script_file": f"../05_adversarial/{name}",
+            "script_sha256": proofcheck.sha256_file(script_path),
+            "command": f"python3 {name}",
+            "output_excerpt": "witness violates the claim",
+        }
+
+    def refuted_ledger_with_failure(self, failure_extra: dict) -> Path:
         ledger_path = self.make_complete_audit()
         ledger = read_json(ledger_path)
         step = ledger["steps"][2]
@@ -3382,6 +3765,7 @@ class FinalizationTests(unittest.TestCase):
             "issue_id": "I-001",
             "evidence": "Record the exact witness and evaluate both sides.",
             "target": ledger["obligation"]["conclusion"],
+            **failure_extra,
         }
         step["status"] = "incorrect"
         step["issue_ids"] = ["I-001"]
@@ -3396,8 +3780,84 @@ class FinalizationTests(unittest.TestCase):
         ledger["independent_check"]["reconciled_verdict"] = "incorrect"
         write_json(ledger_path, ledger)
         self.seal_schema5_challenge(ledger_path, read_json(ledger_path))
+        return ledger_path
+
+    def test_counterexample_failure_can_support_refuted_status(self) -> None:
+        ledger_path = self.refuted_ledger_with_failure(
+            {"computation": self.install_failure_computation()}
+        )
         errors, _ = proofcheck.check_ledger_data(ledger_path, True)
         self.assertEqual([], errors)
+
+    def test_not_instantiable_computation_needs_substantive_reason(self) -> None:
+        ledger_path = self.refuted_ledger_with_failure(
+            {
+                "computation": {
+                    "status": "not_instantiable",
+                    "reason": (
+                        "The witness is a non-measurable construction with no "
+                        "finite numerical instantiation."
+                    ),
+                }
+            }
+        )
+        errors, _ = proofcheck.check_ledger_data(ledger_path, True)
+        self.assertEqual([], errors)
+        ledger = read_json(ledger_path)
+        failure = ledger["steps"][2]["inference"]["moves"][0]["failure"]
+        failure["computation"] = {"status": "not_instantiable", "reason": "TBD"}
+        write_json(ledger_path, ledger)
+        errors, _ = proofcheck.check_ledger_data(ledger_path, True)
+        self.assertTrue(
+            any("reason must be nonempty and substantive" in error for error in errors),
+            errors,
+        )
+
+    def test_refutation_failure_requires_computation_record(self) -> None:
+        ledger_path = self.refuted_ledger_with_failure({})
+        errors, _ = proofcheck.check_ledger_data(ledger_path, True)
+        self.assertTrue(
+            any(
+                "failure.computation is required for a counterexample failure"
+                in error
+                for error in errors
+            ),
+            errors,
+        )
+
+    def test_instantiated_computation_locks_a_real_adversarial_script(self) -> None:
+        computation = self.install_failure_computation()
+        ledger_path = self.refuted_ledger_with_failure(
+            {"computation": computation}
+        )
+        cases = {
+            "stale_hash": {**computation, "script_sha256": "0" * 64},
+            "missing_file": {
+                **computation,
+                "script_file": "../05_adversarial/absent.py",
+            },
+            "outside_adversarial": {
+                **computation,
+                "script_file": "../../PROGRESS.json",
+            },
+        }
+        expected = {
+            "stale_hash": "does not match the current script file",
+            "missing_file": "script_file not found",
+            "outside_adversarial": "must resolve inside audit/05_adversarial",
+        }
+        for case, bad_computation in cases.items():
+            with self.subTest(case=case):
+                ledger = read_json(ledger_path)
+                failure = ledger["steps"][2]["inference"]["moves"][0]["failure"]
+                failure["computation"] = bad_computation
+                write_json(ledger_path, ledger)
+                self.seal_schema5_challenge(ledger_path, read_json(ledger_path))
+                errors, _ = proofcheck.check_ledger_data(ledger_path, True)
+                self.assertTrue(
+                    any(expected[case] in error for error in errors),
+                    errors,
+                )
 
     def test_malformed_failure_kind_is_rejected_without_crashing(self) -> None:
         ledger_path = self.make_complete_audit()
@@ -5379,7 +5839,10 @@ class FinalizationTests(unittest.TestCase):
         self.assertEqual("requires_manual_recheck", payload["artifact_state"])
         self.assertTrue(payload["next_action"].strip())
         self.assertEqual(5, migrated["schema_version"])
-        self.assertEqual(4, migrated["evidence_contract_version"])
+        self.assertEqual(
+            proofcheck.EVIDENCE_CONTRACT_VERSION,
+            migrated["evidence_contract_version"],
+        )
         self.assertEqual([], migrated["steps"])
         self.assertEqual("not_checked", migrated["review"]["unit_status"])
         self.assertFalse(migrated["independent_check"]["required"])
@@ -5767,6 +6230,561 @@ class FinalizationTests(unittest.TestCase):
         errors, _ = proofcheck.validate_issues(issues, {"I-001"}, True)
         self.assertTrue(
             any("S0 and S1 issues must be load-bearing" in error for error in errors),
+            errors,
+        )
+
+    def test_severe_issue_requires_repair_search_record(self) -> None:
+        issue = self.make_schema5_issue(severity="S1", status="open")
+        del issue["repair_search"]
+        errors, _ = proofcheck.validate_issues([issue], {"I-001"}, True)
+        self.assertTrue(
+            any(
+                "severity S1 requires a repair_search record" in error
+                for error in errors
+            ),
+            errors,
+        )
+        moderate = self.make_schema5_issue(severity="S2", status="open")
+        moderate["finding_status"] = "inconclusive"
+        moderate.pop("repair_search", None)
+        errors, _ = proofcheck.validate_issues([moderate], {"I-001"}, True)
+        self.assertFalse(
+            any("repair_search" in error for error in errors),
+            errors,
+        )
+
+    def test_repair_search_conclusion_must_match_severity_and_outcomes(self) -> None:
+        base = make_repair_search("S1")
+        cases = {
+            "s0_with_candidate": (
+                "S0",
+                make_repair_search("S1"),
+                "severity S0 requires conclusion no_local_repair_found",
+            ),
+            "s1_with_no_local_repair": (
+                "S1",
+                make_repair_search("S0"),
+                "severity S1 requires conclusion candidate_repair_exists",
+            ),
+            "candidate_without_survivor": (
+                "S1",
+                {
+                    "strategies": [
+                        {
+                            **base["strategies"][0],
+                            "outcome": "failed",
+                        }
+                    ],
+                    "conclusion": "candidate_repair_exists",
+                },
+                "requires at least one strategy with outcome "
+                "survives_local_inspection",
+            ),
+            "no_local_repair_with_survivor": (
+                "S0",
+                {
+                    "strategies": [
+                        {
+                            **base["strategies"][1],
+                            "outcome": "survives_local_inspection",
+                        }
+                    ],
+                    "conclusion": "no_local_repair_found",
+                },
+                "requires every attempted strategy to record outcome failed",
+            ),
+            "placeholder_attempt": (
+                "S1",
+                {
+                    "strategies": [
+                        {
+                            "name": "union_bound",
+                            "attempt": "TBD",
+                            "outcome": "survives_local_inspection",
+                            "evidence": "The bound closes the failed move locally.",
+                        }
+                    ],
+                    "conclusion": "candidate_repair_exists",
+                },
+                "attempt must be nonempty and substantive",
+            ),
+            "unknown_field": (
+                "S1",
+                {**make_repair_search("S1"), "difficulty": "easy"},
+                "has unknown fields: difficulty",
+            ),
+        }
+        for case, (severity, record, expected) in cases.items():
+            with self.subTest(case=case):
+                errors = proofcheck.validate_repair_search(
+                    record, severity, "I-001.repair_search"
+                )
+                self.assertTrue(
+                    any(expected in error for error in errors),
+                    (case, errors),
+                )
+        self.assertEqual(
+            [],
+            proofcheck.validate_repair_search(
+                make_repair_search("S0"), "S0", "I-001.repair_search"
+            ),
+        )
+        self.assertEqual(
+            [],
+            proofcheck.validate_repair_search(
+                make_repair_search("S1"), "S1", "I-001.repair_search"
+            ),
+        )
+
+    def test_verified_challenge_sampling_is_deterministic_and_seeded(self) -> None:
+        manifest = {
+            "source_snapshot": {"sha256": "a" * 64},
+            "audit_scope": {
+                "critical_units": ["thm:main"],
+                "in_scope_units": [
+                    "thm:main",
+                    "lem:a",
+                    "lem:b",
+                    "lem:c",
+                    "lem:d",
+                ],
+                "verified_challenge_sample_rate": 0.5,
+            },
+        }
+        first, _ = proofcheck.effective_critical_requirements(manifest, [])
+        second, _ = proofcheck.effective_critical_requirements(manifest, [])
+        self.assertEqual(first, second)
+        self.assertIn("thm:main", first)
+        sampled = proofcheck.sampled_challenge_units(
+            manifest["audit_scope"],
+            manifest,
+            set(manifest["audit_scope"]["in_scope_units"]),
+        )
+        self.assertEqual(3, len(sampled))
+        self.assertTrue(set(first) >= sampled)
+
+        reseeded = json.loads(json.dumps(manifest))
+        reseeded["source_snapshot"]["sha256"] = "b" * 64
+        reseeded_sample = proofcheck.sampled_challenge_units(
+            reseeded["audit_scope"],
+            reseeded,
+            set(reseeded["audit_scope"]["in_scope_units"]),
+        )
+        self.assertEqual(3, len(reseeded_sample))
+
+        no_rate = json.loads(json.dumps(manifest))
+        del no_rate["audit_scope"]["verified_challenge_sample_rate"]
+        unsampled, _ = proofcheck.effective_critical_requirements(no_rate, [])
+        self.assertEqual(["thm:main"], unsampled)
+
+        full = json.loads(json.dumps(manifest))
+        full["audit_scope"]["verified_challenge_sample_rate"] = 1
+        everything, _ = proofcheck.effective_critical_requirements(full, [])
+        self.assertEqual(
+            ["lem:a", "lem:b", "lem:c", "lem:d", "thm:main"], everything
+        )
+
+    def test_sample_membership_cannot_be_steered_by_declarations(self) -> None:
+        """Only the source snapshot and the in-scope set determine the
+        sample; toggling critical declarations or severe issues must not
+        change which units it selects."""
+        scope = {
+            "critical_units": [],
+            "in_scope_units": ["thm:main", "lem:a", "lem:b", "lem:c"],
+            "verified_challenge_sample_rate": 0.5,
+        }
+        manifest = {"source_snapshot": {"sha256": "a" * 64}, "audit_scope": scope}
+        in_scope = set(scope["in_scope_units"])
+        baseline = proofcheck.sampled_challenge_units(scope, manifest, in_scope)
+        for critical in ([], ["thm:main"], ["thm:main", "lem:a"], ["lem:b"]):
+            steered_scope = {**scope, "critical_units": critical}
+            steered = {
+                "source_snapshot": {"sha256": "a" * 64},
+                "audit_scope": steered_scope,
+            }
+            self.assertEqual(
+                baseline,
+                proofcheck.sampled_challenge_units(
+                    steered_scope, steered, in_scope
+                ),
+            )
+            effective, _ = proofcheck.effective_critical_requirements(
+                steered,
+                [
+                    {
+                        "id": "I-001",
+                        "status": "open",
+                        "load_bearing": True,
+                        "severity": "S1",
+                        "affected_results": ["lem:c"],
+                    }
+                ],
+            )
+            self.assertTrue(baseline.issubset(effective))
+
+    def test_sampling_rate_rejects_invalid_values_and_uses_decimal_count(
+        self,
+    ) -> None:
+        scope = {
+            "critical_units": [],
+            "in_scope_units": [f"lem:{index}" for index in range(100)],
+        }
+        manifest = {"source_snapshot": {"sha256": "a" * 64}, "audit_scope": scope}
+        in_scope = set(scope["in_scope_units"])
+        for silent_rate in (0, -0.0, float("nan"), float("inf")):
+            self.assertEqual(
+                set(),
+                proofcheck.sampled_challenge_units(
+                    {**scope, "verified_challenge_sample_rate": silent_rate},
+                    manifest,
+                    in_scope,
+                ),
+            )
+        # 100 * 0.07 is slightly above 7 in binary floating point. Decimal
+        # arithmetic must still yield ceil(7) = 7, never 8.
+        self.assertEqual(
+            7,
+            len(
+                proofcheck.sampled_challenge_units(
+                    {**scope, "verified_challenge_sample_rate": 0.07},
+                    manifest,
+                    in_scope,
+                )
+            ),
+        )
+
+    def test_manifest_sampling_uses_exact_json_decimal_token(self) -> None:
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        baseline = read_json(manifest_path)
+        marker = "__verified_challenge_sample_rate_token__"
+        encoded_marker = json.dumps(marker)
+        in_scope = {"lem:0", "lem:1", "lem:2"}
+        cases = (
+            ("0.3333333333333333", 1),
+            ("0.33333333333333334", 2),
+        )
+        self.assertEqual(float(cases[0][0]), float(cases[1][0]))
+
+        for token, expected_count in cases:
+            with self.subTest(token=token):
+                manifest = read_json(manifest_path)
+                manifest.clear()
+                manifest.update(baseline)
+                manifest["audit_scope"] = dict(baseline["audit_scope"])
+                manifest["protocol"] = dict(baseline["protocol"])
+                manifest["audit_scope"][
+                    "verified_challenge_sample_rate"
+                ] = marker
+                manifest["protocol"]["validator_sha256"] = "0" * 64
+                text = json.dumps(manifest, ensure_ascii=False, indent=2)
+                self.assertEqual(1, text.count(encoded_marker))
+                manifest_path.write_text(
+                    text.replace(encoded_marker, token, 1) + "\n",
+                    encoding="utf-8",
+                    newline="\n",
+                )
+
+                _, loaded, errors = proofcheck.load_audit_manifest(self.audit)
+                self.assertEqual([], errors)
+                rate = loaded["audit_scope"][
+                    "verified_challenge_sample_rate"
+                ]
+                self.assertIsInstance(rate, float)
+                self.assertEqual(float(token), rate)
+                self.assertEqual(hash(float(token)), hash(rate))
+
+                generic, generic_errors = proofcheck.load_json_object(
+                    manifest_path, "audit manifest"
+                )
+                self.assertEqual([], generic_errors)
+                generic_rate = generic["audit_scope"][
+                    "verified_challenge_sample_rate"
+                ]
+                self.assertIs(type(generic_rate), float)
+                self.assertEqual(
+                    proofcheck.canonical_sha256(generic),
+                    proofcheck.canonical_sha256(loaded),
+                )
+                self.assertEqual(
+                    expected_count,
+                    len(
+                        proofcheck.sampled_challenge_units(
+                            loaded["audit_scope"], loaded, in_scope
+                        )
+                    ),
+                )
+
+                observed_status_counts = []
+                derive_progress_records = proofcheck.derive_progress_records
+
+                def capture_status_manifest(*args, **kwargs):
+                    status_manifest = args[1]
+                    observed_status_counts.append(
+                        len(
+                            proofcheck.sampled_challenge_units(
+                                status_manifest["audit_scope"],
+                                status_manifest,
+                                in_scope,
+                            )
+                        )
+                    )
+                    return derive_progress_records(*args, **kwargs)
+
+                with mock.patch.object(
+                    proofcheck,
+                    "derive_progress_records",
+                    side_effect=capture_status_manifest,
+                ), contextlib.redirect_stdout(io.StringIO()):
+                    status_result = proofcheck.cmd_status(
+                        argparse.Namespace(
+                            root=self.audit,
+                            format="json",
+                            output=None,
+                            force=False,
+                            verbose=False,
+                        )
+                    )
+                self.assertEqual(1, status_result)
+                self.assertEqual([expected_count], observed_status_counts)
+
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    status = proofcheck.cmd_revalidate_protocol(
+                        argparse.Namespace(root=self.audit)
+                    )
+                self.assertEqual(0, status, output.getvalue())
+                rewritten = manifest_path.read_text(encoding="utf-8")
+                self.assertIn(
+                    f'"verified_challenge_sample_rate": {token}', rewritten
+                )
+                _, reloaded, reload_errors = proofcheck.load_audit_manifest(
+                    self.audit
+                )
+                self.assertEqual([], reload_errors)
+                self.assertEqual(
+                    expected_count,
+                    len(
+                        proofcheck.sampled_challenge_units(
+                            reloaded["audit_scope"], reloaded, in_scope
+                        )
+                    ),
+                )
+
+    def test_sampled_units_never_shrink_severe_coverage(self) -> None:
+        manifest = {
+            "source_snapshot": {"sha256": "a" * 64},
+            "audit_scope": {
+                "critical_units": [],
+                "in_scope_units": ["thm:main", "lem:a"],
+                "verified_challenge_sample_rate": 1,
+            },
+        }
+        issues = [
+            {
+                "id": "I-001",
+                "status": "open",
+                "load_bearing": True,
+                "severity": "S1",
+                "affected_results": ["thm:main"],
+            }
+        ]
+        effective, severe = proofcheck.effective_critical_requirements(
+            manifest, issues
+        )
+        self.assertIn("thm:main", effective)
+        self.assertEqual({"thm:main": {"I-001"}}, severe)
+        self.assertIn("lem:a", effective)
+
+    def test_manifest_rejects_invalid_sample_rate_and_noncritical_targets(
+        self,
+    ) -> None:
+        self.make_complete_audit()
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        for invalid_rate in (1.5, 0, float("nan")):
+            manifest["audit_scope"]["verified_challenge_sample_rate"] = (
+                invalid_rate
+            )
+            write_json(manifest_path, manifest)
+            errors, _ = proofcheck.check_audit_finalization(self.audit)
+            self.assertTrue(
+                any(
+                    "verified_challenge_sample_rate must be a finite number"
+                    in error
+                    for error in errors
+                ),
+                (invalid_rate, errors),
+            )
+        manifest["audit_scope"]["verified_challenge_sample_rate"] = 0.2
+        manifest["audit_scope"]["critical_units"] = []
+        write_json(manifest_path, manifest)
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+        self.assertTrue(
+            any(
+                "Every target unit must also be critical" in error
+                for error in errors
+            ),
+            errors,
+        )
+
+    def test_failed_checker_calibration_blocks_finalization(self) -> None:
+        self.make_complete_audit()
+        calibration_path = (
+            self.audit / "audit" / "07_runtime" / "CALIBRATION.json"
+        )
+        calibration = read_json(calibration_path)
+        passing_session = json.loads(json.dumps(calibration["sessions"][0]))
+        failing_response = {
+            "canary_id": "finite-max",
+            "argument_status": "invalid",
+            "statement_status": "not_established",
+            "defect_lines": [15],
+            "justification": (
+                "This deliberately incorrect calibration response claims a "
+                "defect in the valid finite-union-bound proof."
+            ),
+        }
+        passed, reasons, got = proofcheck.grade_canary_response(
+            failing_response, proofcheck.load_canary_key("finite-max")
+        )
+        calibration["sessions"][0]["results"][1] = {
+            "canary_id": "finite-max",
+            "passed": passed,
+            "reasons": reasons,
+            "got": got,
+            "response_sha256": proofcheck.canonical_sha256(got),
+        }
+        calibration["sessions"][0]["passed"] = False
+        write_json(calibration_path, calibration)
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+        self.assertTrue(
+            any("checker calibration failed" in error for error in errors),
+            errors,
+        )
+        passing_session["session_id"] = "cal-002"
+        passing_session["graded_utc"] = "2026-08-09T01:00:00+00:00"
+        passing_session["checker_binding"]["checker_context_id"] = (
+            "fresh-context-cal-002"
+        )
+        calibration["sessions"].append(passing_session)
+        write_json(calibration_path, calibration)
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+        self.assertFalse(
+            any("checker calibration" in error for error in errors),
+            errors,
+        )
+
+    def test_repair_cost_fields_are_required_and_coherent(self) -> None:
+        base = self.make_schema5_issue(severity="S1", status="open")
+
+        def errors_for(mutate) -> list[str]:
+            issue = json.loads(json.dumps(base))
+            mutate(issue["suggested_changes"][0], issue)
+            errors, _ = proofcheck.validate_issues([issue], {"I-001"}, True)
+            return errors
+
+        def unchanged(change, issue):
+            return None
+
+        self.assertFalse(
+            any(
+                "repair_scope" in e or "assumption_cost" in e or "claim_cost" in e
+                for e in errors_for(unchanged)
+            ),
+            errors_for(unchanged),
+        )
+
+        def drop_scope(change, issue):
+            del change["repair_scope"]
+
+        self.assertTrue(
+            any("repair_scope must be" in e for e in errors_for(drop_scope))
+        )
+
+        def bad_cost(change, issue):
+            change["assumption_cost"] = "easy"
+
+        self.assertTrue(
+            any("assumption_cost must be" in e for e in errors_for(bad_cost))
+        )
+
+        def free_strengthening(change, issue):
+            change["action"] = "strengthen_assumption"
+            change["assumption_cost"] = "none"
+
+        self.assertTrue(
+            any(
+                "cannot be none for strengthen_assumption" in e
+                for e in errors_for(free_strengthening)
+            )
+        )
+
+        def weaken_without_cost(change, issue):
+            change["action"] = "weaken_claim"
+
+        self.assertTrue(
+            any(
+                "claim_cost is required for weaken_claim" in e
+                for e in errors_for(weaken_without_cost)
+            )
+        )
+
+        def costless_weakening(change, issue):
+            change["action"] = "weaken_claim"
+            change["claim_cost"] = "none"
+
+        self.assertTrue(
+            any(
+                "cannot be none for weaken_claim" in e
+                for e in errors_for(costless_weakening)
+            )
+        )
+
+        def stray_claim_cost(change, issue):
+            change["claim_cost"] = "restricts_scope"
+
+        self.assertTrue(
+            any(
+                "allowed only for a weaken_claim action" in e
+                for e in errors_for(stray_claim_cost)
+            )
+        )
+
+        def costly_presentation(change, issue):
+            change["action"] = "presentation_edit"
+            change["repair_scope"] = "global"
+            change["assumption_cost"] = "structural"
+
+        presentation_errors = errors_for(costly_presentation)
+        self.assertTrue(
+            any("cannot carry an assumption cost" in e for e in presentation_errors)
+        )
+        self.assertTrue(
+            any(
+                "must have repair_scope local_step" in e
+                for e in presentation_errors
+            )
+        )
+
+    def test_no_local_repair_forbids_a_free_local_suggested_change(self) -> None:
+        issue = self.make_schema5_issue(severity="S0", status="open")
+        self.assertEqual(
+            "no_local_repair_found", issue["repair_search"]["conclusion"]
+        )
+        clean_errors, _ = proofcheck.validate_issues([issue], {"I-001"}, True)
+        self.assertFalse(
+            any("repair_search concluded does not exist" in e for e in clean_errors),
+            clean_errors,
+        )
+        issue["suggested_changes"][0]["repair_scope"] = "local_step"
+        issue["suggested_changes"][0]["assumption_cost"] = "none"
+        errors, _ = proofcheck.validate_issues([issue], {"I-001"}, True)
+        self.assertTrue(
+            any(
+                "asserts exactly the local repair" in e
+                and "repair_search concluded does not exist" in e
+                for e in errors
+            ),
             errors,
         )
 
@@ -6423,6 +7441,7 @@ class FinalizationTests(unittest.TestCase):
         second_use["status"] = "incorrect"
         registry["internal_uses"].append(second_use)
         write_json(registry_path, registry)
+        self.seal_live_challenges()
 
         ledger_errors, summaries, _ = proofcheck.audit_ledgers(
             self.audit, True
@@ -6802,7 +7821,9 @@ class FinalizationTests(unittest.TestCase):
             self.audit / "audit" / "06_reports" / "FINALIZATION.json"
         )
         self.assertEqual("passed", record["status"])
-        self.assertEqual("1.0", record["protocol"]["skill_version"])
+        self.assertEqual(
+            proofcheck.SKILL_VERSION, record["protocol"]["skill_version"]
+        )
         self.assertTrue(record["audit_state_sha256"])
 
     def test_portable_finalization_stays_fresh_after_relocation_with_warning(
@@ -7586,13 +8607,9 @@ class FinalizationTests(unittest.TestCase):
             "closure_contract_version": 2,
         }
         expected_current = {
-            "artifact_schema_version": proofcheck.SCHEMA_VERSION,
-            "evidence_contract_version": (
-                proofcheck.EVIDENCE_CONTRACT_VERSION
-            ),
-            "closure_contract_version": (
-                proofcheck.CLOSURE_CONTRACT_VERSION
-            ),
+            field: value
+            for field, value in proofcheck.protocol_identity().items()
+            if field != "validator_sha256"
         }
 
         self.assertEqual(1, concise_status)
@@ -7600,8 +8617,8 @@ class FinalizationTests(unittest.TestCase):
         self.assertEqual("upgrade_required", concise["workflow_state"])
         self.assertEqual("upgrade_required", verbose["workflow_state"])
         self.assertEqual("upgrade_required", concise["protocol"]["status"])
-        self.assertEqual(
-            expected_recorded, concise["protocol"]["recorded"]
+        self.assertLessEqual(
+            expected_recorded.items(), concise["protocol"]["recorded"].items()
         )
         self.assertEqual(expected_current, concise["protocol"]["current"])
         self.assertTrue(
@@ -7645,6 +8662,590 @@ class FinalizationTests(unittest.TestCase):
             len(verbose["finalization"]["current_gate_errors"]),
             len(concise["finalization"]["current_gate_errors"]),
         )
+
+    def test_schema5_closure3_has_distinct_nonfinal_upgrade_path(self) -> None:
+        self.make_complete_audit()
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["protocol"]["closure_contract_version"] = (
+            proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION
+        )
+        write_json(manifest_path, manifest)
+        registry_path = (
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        registry = read_json(registry_path)
+        registry["closure_contract_version"] = (
+            proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION
+        )
+        write_json(registry_path, registry)
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            status = proofcheck.cmd_status(
+                argparse.Namespace(
+                    root=self.audit,
+                    format="json",
+                    output=None,
+                    force=False,
+                    verbose=False,
+                )
+            )
+        payload = json.loads(output.getvalue())
+
+        self.assertEqual(1, status)
+        self.assertEqual("closure_upgrade_required", payload["workflow_state"])
+        self.assertEqual(
+            "closure_upgrade_required", payload["protocol"]["status"]
+        )
+        self.assertEqual([], payload["protocol"]["legacy_ledgers"])
+        self.assertIn("migrate-closure", payload["protocol"]["next_action"])
+        self.assertFalse(payload["audit_complete"])
+        self.assertEqual("NONFINAL", payload["delivery_status"])
+
+    def test_migrate_closure_preserves_registry_and_forces_citation_recheck(
+        self,
+    ) -> None:
+        ledger_path = self.make_complete_audit()
+        self.install_external_dependency(ledger_path)
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["protocol"]["closure_contract_version"] = (
+            proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION
+        )
+        write_json(manifest_path, manifest)
+        registry_path = (
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        registry = read_json(registry_path)
+        external = registry["external_results"][0]
+        self.assertTrue(external["citation_bindings"])
+        external.pop("citation_binding_review")
+        external["uses"][0]["dependency_contract_sha256"] = (
+            proofcheck.canonical_sha256(
+                proofcheck.external_result_core_contract(external)
+            )
+        )
+        registry["closure_contract_version"] = (
+            proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION
+        )
+        write_json(registry_path, registry)
+        legacy_bytes = registry_path.read_bytes()
+        legacy_use_hash = external["uses"][0]["dependency_contract_sha256"]
+
+        output = io.StringIO()
+        errors = io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            status = proofcheck.cmd_migrate_closure(
+                argparse.Namespace(root=self.audit)
+            )
+        payload = json.loads(output.getvalue())
+
+        self.assertEqual(0, status, errors.getvalue())
+        self.assertEqual("migrated", payload["status"])
+        self.assertTrue(payload["finalization_invalidated"])
+        backup_path = Path(payload["legacy_registry_backup"])
+        self.assertEqual(legacy_bytes, backup_path.read_bytes())
+        migrated = read_json(registry_path)
+        migrated_external = migrated["external_results"][0]
+        self.assertEqual(
+            proofcheck.CLOSURE_CONTRACT_VERSION,
+            migrated["closure_contract_version"],
+        )
+        self.assertEqual([], migrated_external["citation_bindings"])
+        self.assertEqual(
+            "pending",
+            migrated_external["citation_binding_review"]["status"],
+        )
+        self.assertEqual(
+            ["smith"],
+            migrated_external["citation_binding_review"]["required_keys"],
+        )
+        self.assertEqual(
+            legacy_use_hash,
+            migrated_external["uses"][0]["dependency_contract_sha256"],
+        )
+        self.assertEqual("not_reviewed", migrated["review"]["status"])
+        migrated_manifest = read_json(manifest_path)
+        self.assertEqual(
+            proofcheck.CLOSURE_CONTRACT_VERSION,
+            migrated_manifest["protocol"]["closure_contract_version"],
+        )
+        self.assertFalse(
+            migrated_manifest["completion"]["dependency_registry_reviewed"]
+        )
+        final_errors, _ = proofcheck.check_audit_finalization(self.audit)
+        self.assertTrue(
+            any("citation_bindings" in error for error in final_errors),
+            final_errors,
+        )
+        self.assertTrue(
+            any("citation_binding_review.status" in error for error in final_errors),
+            final_errors,
+        )
+
+    def test_migrate_closure_rejects_incompatible_already_current_state(
+        self,
+    ) -> None:
+        self.make_complete_audit()
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["protocol"]["evidence_contract_version"] = (
+            proofcheck.LEGACY_EVIDENCE_CONTRACT_VERSION
+        )
+        write_json(manifest_path, manifest)
+
+        output = io.StringIO()
+        errors = io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            status = proofcheck.cmd_migrate_closure(
+                argparse.Namespace(root=self.audit)
+            )
+        payload = json.loads(output.getvalue())
+
+        self.assertEqual(1, status)
+        self.assertEqual("failed", payload["status"])
+        self.assertFalse(payload["updated"])
+        self.assertTrue(
+            any(
+                "protocol.evidence_contract_version is incompatible" in error
+                for error in payload["errors"]
+            ),
+            payload,
+        )
+
+    def test_migrate_closure_already_current_rejects_malformed_registry(
+        self,
+    ) -> None:
+        self.make_complete_audit()
+        registry_path = (
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        registry = read_json(registry_path)
+        registry["external_results"] = {}
+        write_json(registry_path, registry)
+        registry_bytes = registry_path.read_bytes()
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(
+            io.StringIO()
+        ):
+            status = proofcheck.cmd_migrate_closure(
+                argparse.Namespace(root=self.audit)
+            )
+        payload = json.loads(stdout.getvalue())
+
+        self.assertEqual(1, status)
+        self.assertEqual("failed", payload["status"])
+        self.assertTrue(
+            any("external_results must be a list" in error for error in payload["errors"]),
+            payload,
+        )
+        self.assertEqual(registry_bytes, registry_path.read_bytes())
+        self.assertFalse((registry_path.parent / "history").exists())
+
+    def test_migrate_closure_already_current_rejects_source_drift(
+        self,
+    ) -> None:
+        self.make_complete_audit()
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        registry_path = (
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        manifest_bytes = manifest_path.read_bytes()
+        registry_bytes = registry_path.read_bytes()
+        self.paper.write_text(
+            self.paper.read_text(encoding="utf-8") + "% source drift\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(
+            io.StringIO()
+        ):
+            status = proofcheck.cmd_migrate_closure(
+                argparse.Namespace(root=self.audit)
+            )
+        payload = json.loads(stdout.getvalue())
+
+        self.assertEqual(1, status)
+        self.assertEqual("failed", payload["status"])
+        self.assertTrue(
+            any("source" in error.lower() for error in payload["errors"]),
+            payload,
+        )
+        self.assertEqual(manifest_bytes, manifest_path.read_bytes())
+        self.assertEqual(registry_bytes, registry_path.read_bytes())
+        self.assertFalse((registry_path.parent / "history").exists())
+
+    def test_migrate_closure_removes_new_backup_when_transaction_fails(
+        self,
+    ) -> None:
+        self.make_complete_audit()
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["protocol"]["closure_contract_version"] = (
+            proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION
+        )
+        write_json(manifest_path, manifest)
+        registry_path = (
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        registry = read_json(registry_path)
+        registry["closure_contract_version"] = (
+            proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION
+        )
+        write_json(registry_path, registry)
+        manifest_bytes = manifest_path.read_bytes()
+        registry_bytes = registry_path.read_bytes()
+        history_directory = registry_path.parent / "history"
+        backup_path = history_directory / (
+            "DEPENDENCY_REGISTRY.closure-"
+            f"{proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION}."
+            f"{proofcheck.sha256_file(registry_path)}.json"
+        )
+
+        with mock.patch.object(
+            proofcheck,
+            "transactional_write_texts",
+            side_effect=OSError("injected migration transaction failure"),
+        ):
+            with self.assertRaisesRegex(
+                OSError, "injected migration transaction failure"
+            ):
+                proofcheck.cmd_migrate_closure(
+                    argparse.Namespace(root=self.audit)
+                )
+
+        self.assertEqual(manifest_bytes, manifest_path.read_bytes())
+        self.assertEqual(registry_bytes, registry_path.read_bytes())
+        self.assertFalse(backup_path.exists())
+        self.assertFalse(history_directory.exists())
+
+    def test_migrate_closure_rejects_interleaved_registry_edit(self) -> None:
+        self.make_complete_audit()
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["protocol"]["closure_contract_version"] = (
+            proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION
+        )
+        write_json(manifest_path, manifest)
+        registry_path = (
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        registry = read_json(registry_path)
+        registry["closure_contract_version"] = (
+            proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION
+        )
+        write_json(registry_path, registry)
+        manifest_bytes = manifest_path.read_bytes()
+        registry_bytes = registry_path.read_bytes()
+        interleaved_bytes = registry_bytes + b" "
+        original_transaction = proofcheck.transactional_write_texts
+
+        def edit_before_commit(writes: list, **kwargs: object) -> None:
+            self.assertTrue(
+                proofcheck.migration_update_lock_path(self.audit).is_file()
+            )
+            registry_path.write_bytes(interleaved_bytes)
+            original_transaction(writes, **kwargs)
+
+        with mock.patch.object(
+            proofcheck,
+            "transactional_write_texts",
+            side_effect=edit_before_commit,
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "Transactional baseline changed before commit"
+            ):
+                proofcheck.cmd_migrate_closure(
+                    argparse.Namespace(root=self.audit)
+                )
+
+        self.assertEqual(manifest_bytes, manifest_path.read_bytes())
+        self.assertEqual(interleaved_bytes, registry_path.read_bytes())
+        self.assertFalse((registry_path.parent / "history").exists())
+        self.assertFalse(
+            proofcheck.migration_update_lock_path(self.audit).exists()
+        )
+
+    def test_migrate_closure_retains_lock_and_backups_for_recovery(self) -> None:
+        self.make_complete_audit()
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["protocol"]["closure_contract_version"] = (
+            proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION
+        )
+        write_json(manifest_path, manifest)
+        registry_path = (
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        registry = read_json(registry_path)
+        registry["closure_contract_version"] = (
+            proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION
+        )
+        write_json(registry_path, registry)
+        registry_bytes = registry_path.read_bytes()
+        backup_path = registry_path.parent / "history" / (
+            "DEPENDENCY_REGISTRY.closure-"
+            f"{proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION}."
+            f"{proofcheck.sha256_file(registry_path)}.json"
+        )
+        original_replace = proofcheck.os.replace
+        replace_calls = 0
+
+        def fail_commit_and_rollback(source: Path, destination: Path) -> None:
+            nonlocal replace_calls
+            replace_calls += 1
+            if replace_calls in {2, 3, 4}:
+                raise OSError("injected commit or rollback failure")
+            original_replace(source, destination)
+
+        with mock.patch.object(
+            proofcheck.os,
+            "replace",
+            side_effect=fail_commit_and_rollback,
+        ):
+            with self.assertRaisesRegex(
+                proofcheck.MigrationRecoveryRequired,
+                "rollback was incomplete",
+            ):
+                proofcheck.cmd_migrate_closure(
+                    argparse.Namespace(root=self.audit)
+                )
+
+        lock_path = proofcheck.migration_update_lock_path(self.audit)
+        self.assertTrue(lock_path.is_file())
+        self.assertEqual(registry_bytes, backup_path.read_bytes())
+        self.assertTrue(list(self.audit.rglob("*.proofcheck.tmp")))
+        with self.assertRaisesRegex(
+            ValueError, "audit migration is in progress"
+        ):
+            proofcheck.cmd_status(
+                argparse.Namespace(
+                    root=self.audit,
+                    format="json",
+                    output=None,
+                    force=False,
+                    verbose=False,
+                )
+            )
+        finalization_errors, _ = proofcheck.check_audit_finalization(
+            self.audit
+        )
+        self.assertTrue(
+            any(
+                "audit migration is in progress" in error
+                for error in finalization_errors
+            ),
+            finalization_errors,
+        )
+
+    def test_migrate_closure_retains_lock_if_backup_cleanup_fails(self) -> None:
+        self.make_complete_audit()
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["protocol"]["closure_contract_version"] = (
+            proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION
+        )
+        write_json(manifest_path, manifest)
+        registry_path = (
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        registry = read_json(registry_path)
+        registry["closure_contract_version"] = (
+            proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION
+        )
+        write_json(registry_path, registry)
+        registry_bytes = registry_path.read_bytes()
+        backup_path = registry_path.parent / "history" / (
+            "DEPENDENCY_REGISTRY.closure-"
+            f"{proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION}."
+            f"{proofcheck.sha256_file(registry_path)}.json"
+        )
+        original_unlink = Path.unlink
+
+        def reject_backup_cleanup(path: Path, *args: object, **kwargs: object) -> None:
+            if path == backup_path:
+                raise OSError("injected backup cleanup failure")
+            original_unlink(path, *args, **kwargs)
+
+        with mock.patch.object(
+            proofcheck,
+            "transactional_write_texts",
+            side_effect=OSError("injected clean transaction failure"),
+        ), mock.patch.object(
+            Path,
+            "unlink",
+            autospec=True,
+            side_effect=reject_backup_cleanup,
+        ):
+            with self.assertRaisesRegex(
+                proofcheck.MigrationRecoveryRequired,
+                "backup cleanup was incomplete",
+            ):
+                proofcheck.cmd_migrate_closure(
+                    argparse.Namespace(root=self.audit)
+                )
+
+        self.assertTrue(
+            proofcheck.migration_update_lock_path(self.audit).is_file()
+        )
+        self.assertEqual(registry_bytes, backup_path.read_bytes())
+        finalization_errors, _ = proofcheck.check_audit_finalization(
+            self.audit
+        )
+        self.assertTrue(
+            any(
+                "audit migration is in progress" in error
+                for error in finalization_errors
+            ),
+            finalization_errors,
+        )
+
+    def test_migrate_closure_retains_recovery_after_committed_cleanup_failure(
+        self,
+    ) -> None:
+        self.make_complete_audit()
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["protocol"]["closure_contract_version"] = (
+            proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION
+        )
+        write_json(manifest_path, manifest)
+        registry_path = (
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        registry = read_json(registry_path)
+        registry["closure_contract_version"] = (
+            proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION
+        )
+        write_json(registry_path, registry)
+        legacy_registry_bytes = registry_path.read_bytes()
+        backup_path = registry_path.parent / "history" / (
+            "DEPENDENCY_REGISTRY.closure-"
+            f"{proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION}."
+            f"{proofcheck.sha256_file(registry_path)}.json"
+        )
+        original_unlink = Path.unlink
+
+        def fail_manifest_recovery_cleanup(
+            path: Path, *args: object, **kwargs: object
+        ) -> None:
+            if (
+                path.parent == manifest_path.parent
+                and path.name.startswith(".AUDIT_MANIFEST.json.")
+                and path.name.endswith(".proofcheck.tmp")
+            ):
+                raise OSError("injected committed cleanup failure")
+            original_unlink(path, *args, **kwargs)
+
+        with mock.patch.object(
+            Path,
+            "unlink",
+            autospec=True,
+            side_effect=fail_manifest_recovery_cleanup,
+        ):
+            with self.assertRaisesRegex(
+                proofcheck.MigrationRecoveryRequired,
+                "Live writes were committed",
+            ):
+                proofcheck.cmd_migrate_closure(
+                    argparse.Namespace(root=self.audit)
+                )
+
+        self.assertEqual(
+            proofcheck.CLOSURE_CONTRACT_VERSION,
+            read_json(manifest_path)["protocol"]["closure_contract_version"],
+        )
+        self.assertEqual(
+            proofcheck.CLOSURE_CONTRACT_VERSION,
+            read_json(registry_path)["closure_contract_version"],
+        )
+        self.assertEqual(legacy_registry_bytes, backup_path.read_bytes())
+        self.assertTrue(
+            list(manifest_path.parent.glob(".AUDIT_MANIFEST.json.*.proofcheck.tmp"))
+        )
+        self.assertTrue(
+            proofcheck.migration_update_lock_path(self.audit).is_file()
+        )
+
+    def test_migrate_closure_never_overwrites_racing_backup(self) -> None:
+        self.make_complete_audit()
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["protocol"]["closure_contract_version"] = (
+            proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION
+        )
+        write_json(manifest_path, manifest)
+        registry_path = (
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        registry = read_json(registry_path)
+        registry["closure_contract_version"] = (
+            proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION
+        )
+        write_json(registry_path, registry)
+        manifest_bytes = manifest_path.read_bytes()
+        registry_bytes = registry_path.read_bytes()
+        conflict_bytes = b"racing conflicting backup\n"
+        original_publish = proofcheck.publish_no_overwrite
+
+        def publish_after_conflict(
+            temporary: Path, destination: Path, description: str
+        ) -> str:
+            destination.write_bytes(conflict_bytes)
+            return original_publish(temporary, destination, description)
+
+        with mock.patch.object(
+            proofcheck,
+            "publish_no_overwrite",
+            side_effect=publish_after_conflict,
+        ):
+            with self.assertRaisesRegex(
+                FileExistsError, "conflicting closure registry backup"
+            ):
+                proofcheck.cmd_migrate_closure(
+                    argparse.Namespace(root=self.audit)
+                )
+
+        history_directory = registry_path.parent / "history"
+        backups = list(history_directory.glob("DEPENDENCY_REGISTRY.closure-*.json"))
+        self.assertEqual(1, len(backups))
+        self.assertEqual(conflict_bytes, backups[0].read_bytes())
+        self.assertEqual(manifest_bytes, manifest_path.read_bytes())
+        self.assertEqual(registry_bytes, registry_path.read_bytes())
 
     def test_status_requires_explicit_same_schema_validator_revalidation(
         self,
@@ -7694,6 +9295,132 @@ class FinalizationTests(unittest.TestCase):
             read_json(manifest_path)["protocol"],
         )
         self.assertEqual([], proofcheck.check_audit_finalization(self.audit)[0])
+
+    def test_release_identity_drift_routes_through_revalidation(self) -> None:
+        """A skill_version bump with unchanged contracts must be reported as
+        revalidation work that cmd_revalidate_protocol actually accepts, and
+        identity drift it rejects must never be reported as current."""
+        self.make_complete_audit()
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["protocol"]["skill_version"] = "0.9"
+        write_json(manifest_path, manifest)
+
+        view = proofcheck.status_protocol_view(read_json(manifest_path), [])
+        self.assertEqual("validator_revalidation_required", view["status"])
+        self.assertIn("revalidate-protocol", view["next_action"])
+
+        status_output = io.StringIO()
+        with contextlib.redirect_stdout(status_output):
+            status_result = proofcheck.cmd_status(
+                argparse.Namespace(
+                    root=self.audit,
+                    format="json",
+                    output=None,
+                    force=False,
+                    verbose=False,
+                )
+            )
+        status_text = status_output.getvalue()
+        self.assertEqual(1, status_result)
+        self.assertIn("release identity", status_text)
+        self.assertIn("skill_version or validator_sha256 changed", status_text)
+        self.assertNotIn("but validator_sha256 changed.", status_text)
+        self.assertNotIn("different validator implementation", status_text)
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            status = proofcheck.cmd_revalidate_protocol(
+                argparse.Namespace(root=self.audit)
+            )
+        payload = json.loads(output.getvalue())
+        self.assertEqual(0, status)
+        self.assertEqual("revalidated", payload["status"])
+        self.assertEqual("0.9", payload["previous_skill_version"])
+        self.assertEqual(
+            proofcheck.protocol_identity(),
+            read_json(manifest_path)["protocol"],
+        )
+        self.assertEqual(
+            "current",
+            proofcheck.status_protocol_view(read_json(manifest_path), [])[
+                "status"
+            ],
+        )
+
+        missing = object()
+        for label, field, value, expected_error in (
+            (
+                "wrong skill name",
+                "skill_name",
+                "another-skill",
+                "protocol.skill_name is not compatible",
+            ),
+            (
+                "wrong method schema",
+                "method_interface_schema_version",
+                99,
+                "protocol.method_interface_schema_version is not compatible",
+            ),
+            (
+                "missing skill version",
+                "skill_version",
+                missing,
+                "protocol.skill_version must be a nonempty string",
+            ),
+            (
+                "blank skill version",
+                "skill_version",
+                "",
+                "protocol.skill_version must be a nonempty string",
+            ),
+            (
+                "non-string skill version",
+                "skill_version",
+                12,
+                "protocol.skill_version must be a nonempty string",
+            ),
+            (
+                "missing validator digest",
+                "validator_sha256",
+                missing,
+                "protocol.validator_sha256 must be a SHA-256 digest",
+            ),
+            (
+                "malformed validator digest",
+                "validator_sha256",
+                "not-a-digest",
+                "protocol.validator_sha256 must be a SHA-256 digest",
+            ),
+        ):
+            with self.subTest(case=label):
+                drifted = read_json(manifest_path)
+                if value is missing:
+                    drifted["protocol"].pop(field)
+                else:
+                    drifted["protocol"][field] = value
+                write_json(manifest_path, drifted)
+                drift_view = proofcheck.status_protocol_view(drifted, [])
+                self.assertEqual(
+                    "mismatch",
+                    drift_view["status"],
+                )
+                self.assertNotIn("revalidate-protocol", drift_view["next_action"])
+                rejection = io.StringIO()
+                with contextlib.redirect_stdout(
+                    rejection
+                ), contextlib.redirect_stderr(io.StringIO()):
+                    rejected = proofcheck.cmd_revalidate_protocol(
+                        argparse.Namespace(root=self.audit)
+                    )
+                self.assertEqual(1, rejected)
+                self.assertIn(
+                    expected_error,
+                    "".join(json.loads(rejection.getvalue())["errors"]),
+                )
+                restored = read_json(manifest_path)
+                restored["protocol"] = proofcheck.protocol_identity()
+                write_json(manifest_path, restored)
 
     def test_protocol_revalidation_accepts_a_valid_scaffold_wip(self) -> None:
         manifest_path = self.audit / "AUDIT_MANIFEST.json"
@@ -9998,6 +11725,61 @@ class FinalizationTests(unittest.TestCase):
 
         self.assertEqual([], errors)
 
+    def test_duplicate_bibliography_keys_across_source_closure_fail(self) -> None:
+        first = self.base / "references-a.bib"
+        second = self.base / "references-b.bib"
+        for path, title in ((first, "First identity"), (second, "Second identity")):
+            path.write_text(
+                "@article{smith,\n"
+                "  author = {Smith, A.},\n"
+                f"  title = {{{title}}},\n"
+                "  year = {2026}\n"
+                "}\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+        self.audit = self.base / "duplicate-bibliography-audit"
+        with contextlib.redirect_stdout(io.StringIO()):
+            status = proofcheck.cmd_scaffold(
+                argparse.Namespace(
+                    paper=self.paper,
+                    output=self.audit,
+                    input_kind="latex",
+                    publisher_pdf=None,
+                    visual_review_status="not_started",
+                    visual_review_notes="",
+                    portable_sources=False,
+                    additional_source=[
+                        (
+                            first,
+                            "Bibliography source",
+                            "The manuscript citation key is resolved from this file.",
+                        ),
+                        (
+                            second,
+                            "Bibliography source",
+                            "The manuscript citation key is also defined in this file.",
+                        ),
+                    ],
+                    fls=None,
+                    project_root=self.base,
+                )
+            )
+        self.assertEqual(0, status)
+        ledger_path = self.make_complete_audit()
+        self.install_external_dependency(ledger_path)
+
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+
+        self.assertTrue(
+            any(
+                "bibliography key 'smith' is ambiguous across the authoritative "
+                "source snapshot" in error
+                for error in errors
+            ),
+            errors,
+        )
+
     def test_external_restatement_without_inline_citation_passes(self) -> None:
         self.make_external_restatement_audit()
 
@@ -10205,6 +11987,1322 @@ class FinalizationTests(unittest.TestCase):
 
         self.assertTrue(
             any("source drift" in error.lower() for error in errors),
+            errors,
+        )
+
+    def test_external_bibtex_identity_binding_is_finalizable(self) -> None:
+        ledger_path = self.make_complete_audit()
+        self.install_external_dependency(ledger_path)
+
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+
+        self.assertEqual([], errors)
+
+    def test_citation_binding_must_lock_the_authoritative_snapshot_entry(
+        self,
+    ) -> None:
+        ledger_path = self.make_complete_audit()
+        self.install_external_dependency(ledger_path)
+        registry_path = (
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        original = read_json(registry_path)
+        authoritative_binding = original["external_results"][0][
+            "citation_bindings"
+        ][0]
+
+        foreign_path = self.base / "foreign-duplicate.bib"
+        foreign_path.write_text(
+            proofcheck.resolve_stored_path(
+                authoritative_binding["file"], self.audit
+            ).read_text(encoding="utf-8"),
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        def with_binding(mutate) -> list[str]:
+            registry = json.loads(json.dumps(original))
+            external = registry["external_results"][0]
+            binding = external["citation_bindings"][0]
+            mutate(binding)
+            external["uses"][0]["dependency_contract_sha256"] = (
+                proofcheck.canonical_sha256(
+                    proofcheck.external_result_contract(external)
+                )
+            )
+            write_json(registry_path, registry)
+            errors, _ = proofcheck.check_audit_finalization(self.audit)
+            return errors
+
+        def foreign_file(binding):
+            binding["file"] = proofcheck.relative_or_absolute(
+                foreign_path, self.audit
+            )
+            binding["sha256"] = proofcheck.source_span_sha256(
+                foreign_path, binding["start_line"], binding["end_line"]
+            )
+
+        errors = with_binding(foreign_file)
+        self.assertTrue(
+            any(
+                "must equal the unique authoritative snapshot entry" in error
+                for error in errors
+            ),
+            errors,
+        )
+
+        def rendered_shadow(binding):
+            binding["source_kind"] = "rendered_reference"
+
+        errors = with_binding(rendered_shadow)
+        self.assertTrue(
+            any(
+                "bind that entry instead of a rendered transcription" in error
+                for error in errors
+            ),
+            errors,
+        )
+
+        registry = json.loads(json.dumps(original))
+        external = registry["external_results"][0]
+        external["uses"][0]["citation_keys"] = ["ghost"]
+        binding = external["citation_bindings"][0]
+        binding["key"] = "ghost"
+        external["citation_binding_review"]["required_keys"] = ["ghost"]
+        external["uses"][0]["dependency_contract_sha256"] = (
+            proofcheck.canonical_sha256(
+                proofcheck.external_result_contract(external)
+            )
+        )
+        write_json(registry_path, registry)
+        ledger = read_json(ledger_path)
+        ledger["review"]["citation_dispositions"][0]["key"] = "ghost"
+        write_json(ledger_path, ledger)
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+        self.assertTrue(
+            any(
+                "does not resolve to any authoritative entry" in error
+                for error in errors
+            ),
+            errors,
+        )
+
+    def test_evidence_upgrade_path_reaches_closure_migration(self) -> None:
+        ledger_path = self.make_complete_audit()
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        registry_path = (
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        manifest = read_json(manifest_path)
+        manifest["protocol"]["evidence_contract_version"] = (
+            proofcheck.PREVIOUS_EVIDENCE_CONTRACT_VERSION
+        )
+        manifest["protocol"]["closure_contract_version"] = (
+            proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION
+        )
+        write_json(manifest_path, manifest)
+        registry = read_json(registry_path)
+        registry["closure_contract_version"] = (
+            proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION
+        )
+        write_json(registry_path, registry)
+        ledger = read_json(ledger_path)
+        ledger["evidence_contract_version"] = (
+            proofcheck.PREVIOUS_EVIDENCE_CONTRACT_VERSION
+        )
+        legacy_ledger_bytes = (
+            (json.dumps(ledger, ensure_ascii=False, indent=2) + "\n")
+            .replace("\n", "\r\n")
+            .encode("utf-8")
+        )
+        ledger_path.write_bytes(legacy_ledger_bytes)
+
+        view = proofcheck.status_protocol_view(read_json(manifest_path), [])
+        self.assertEqual("evidence_upgrade_required", view["status"])
+        self.assertIn("migrate-evidence", view["next_action"])
+        version_probe = read_json(manifest_path)
+        with mock.patch.object(
+            proofcheck, "PREVIOUS_CLOSURE_CONTRACT_VERSION", 17
+        ):
+            version_probe["protocol"]["closure_contract_version"] = 17
+            patched_view = proofcheck.status_protocol_view(version_probe, [])
+        self.assertEqual("evidence_upgrade_required", patched_view["status"])
+        self.assertIn("closure contract is still 17", patched_view["next_action"])
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            status = proofcheck.cmd_status(
+                argparse.Namespace(
+                    root=self.audit,
+                    format="json",
+                    output=None,
+                    force=False,
+                    verbose=False,
+                )
+            )
+        status_payload = json.loads(stdout.getvalue())
+        self.assertEqual(1, status)
+        self.assertEqual(
+            "evidence_upgrade_required", status_payload["workflow_state"]
+        )
+        self.assertIn(
+            "migrate-evidence", status_payload["progress"]["next_action"]
+        )
+        self.assertEqual([], status_payload["progress"]["drift"])
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(
+            io.StringIO()
+        ):
+            status = proofcheck.cmd_migrate_closure(
+                argparse.Namespace(root=self.audit)
+            )
+        self.assertEqual(1, status)
+        self.assertIn(
+            "run migrate-evidence before migrate-closure", stdout.getvalue()
+        )
+
+        historical_path = (
+            self.audit
+            / "audit"
+            / "04_local_checks"
+            / "history"
+            / "old.ledger.json"
+        )
+        historical_path.parent.mkdir(parents=True)
+        historical = json.loads(json.dumps(ledger))
+        historical["unit_id"] = "historical-only"
+        historical["evidence_contract_version"] = (
+            proofcheck.LEGACY_EVIDENCE_CONTRACT_VERSION
+        )
+        write_json(historical_path, historical)
+        historical_bytes = historical_path.read_bytes()
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            status = proofcheck.cmd_migrate_evidence(
+                argparse.Namespace(root=self.audit)
+            )
+        self.assertEqual(0, status)
+        result = json.loads(stdout.getvalue())
+        self.assertEqual("migrated", result["status"])
+        self.assertGreaterEqual(result["restamped_artifacts"], 1)
+        self.assertEqual(
+            result["restamped_artifacts"],
+            len(result["legacy_artifact_backups"]),
+        )
+        migrated_manifest = read_json(manifest_path)
+        self.assertEqual(
+            proofcheck.EVIDENCE_CONTRACT_VERSION,
+            migrated_manifest["protocol"]["evidence_contract_version"],
+        )
+        self.assertEqual(
+            proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION,
+            migrated_manifest["protocol"]["closure_contract_version"],
+        )
+        self.assertEqual(
+            proofcheck.EVIDENCE_CONTRACT_VERSION,
+            read_json(ledger_path)["evidence_contract_version"],
+        )
+        ledger_migration = next(
+            row
+            for row in migrated_manifest["evidence_migration"][
+                "restamped_artifacts"
+            ]
+            if row["file"].endswith(ledger_path.name)
+        )
+        backup_path = proofcheck.resolve_stored_path(
+            ledger_migration["legacy_backup"], self.audit
+        )
+        self.assertEqual(legacy_ledger_bytes, backup_path.read_bytes())
+        self.assertEqual(historical_bytes, historical_path.read_bytes())
+        self.assertEqual(
+            proofcheck.PREVIOUS_EVIDENCE_CONTRACT_VERSION,
+            migrated_manifest["evidence_migration"]["from_version"],
+        )
+
+        view = proofcheck.status_protocol_view(migrated_manifest, [])
+        self.assertEqual("closure_upgrade_required", view["status"])
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            status = proofcheck.cmd_migrate_evidence(
+                argparse.Namespace(root=self.audit)
+            )
+        self.assertEqual(0, status)
+        self.assertEqual(
+            "already_current", json.loads(stdout.getvalue())["status"]
+        )
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            status = proofcheck.cmd_migrate_closure(
+                argparse.Namespace(root=self.audit)
+            )
+        self.assertEqual(0, status)
+        closure_result = json.loads(stdout.getvalue())
+        self.assertEqual("migrated", closure_result["status"])
+        migrated_manifest = read_json(manifest_path)
+        self.assertEqual(
+            proofcheck.protocol_identity(), migrated_manifest["protocol"]
+        )
+        self.assertEqual(
+            proofcheck.CLOSURE_CONTRACT_VERSION,
+            read_json(registry_path)["closure_contract_version"],
+        )
+        self.assertEqual(
+            "current",
+            proofcheck.status_protocol_view(migrated_manifest, [])["status"],
+        )
+
+        parser = proofcheck.build_parser()
+        args = parser.parse_args(["migrate-evidence", "--root", "x"])
+        self.assertIs(args.func, proofcheck.cmd_migrate_evidence)
+
+    def test_evidence_upgrade_rejects_registry_closure_mismatch(self) -> None:
+        ledger_path = self.make_complete_audit()
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["protocol"]["evidence_contract_version"] = (
+            proofcheck.PREVIOUS_EVIDENCE_CONTRACT_VERSION
+        )
+        manifest["protocol"]["closure_contract_version"] = (
+            proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION
+        )
+        write_json(manifest_path, manifest)
+        ledger = read_json(ledger_path)
+        ledger["evidence_contract_version"] = (
+            proofcheck.PREVIOUS_EVIDENCE_CONTRACT_VERSION
+        )
+        write_json(ledger_path, ledger)
+        manifest_bytes = manifest_path.read_bytes()
+        ledger_bytes = ledger_path.read_bytes()
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            status = proofcheck.cmd_status(
+                argparse.Namespace(
+                    root=self.audit,
+                    format="json",
+                    output=None,
+                    force=False,
+                    verbose=False,
+                )
+            )
+        status_payload = json.loads(stdout.getvalue())
+        self.assertEqual(1, status)
+        self.assertEqual(
+            "evidence_upgrade_required", status_payload["protocol"]["status"]
+        )
+        self.assertEqual("malformed_or_stale", status_payload["workflow_state"])
+        self.assertTrue(
+            any(
+                "registry closure_contract_version" in error
+                for error in status_payload["structural_errors"]
+            ),
+            status_payload,
+        )
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(
+            io.StringIO()
+        ):
+            status = proofcheck.cmd_migrate_evidence(
+                argparse.Namespace(root=self.audit)
+            )
+        migration_payload = json.loads(stdout.getvalue())
+        self.assertEqual(1, status)
+        self.assertTrue(
+            any(
+                "registry closure_contract_version" in error
+                for error in migration_payload["errors"]
+            ),
+            migration_payload,
+        )
+        self.assertEqual(manifest_bytes, manifest_path.read_bytes())
+        self.assertEqual(ledger_bytes, ledger_path.read_bytes())
+        self.assertFalse((ledger_path.parent / "history").exists())
+
+    def test_migrate_evidence_rejects_incompatible_live_artifact_atomically(
+        self,
+    ) -> None:
+        ledger_path = self.make_complete_audit()
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["protocol"]["evidence_contract_version"] = (
+            proofcheck.PREVIOUS_EVIDENCE_CONTRACT_VERSION
+        )
+        write_json(manifest_path, manifest)
+        ledger = read_json(ledger_path)
+        ledger["evidence_contract_version"] = (
+            proofcheck.LEGACY_EVIDENCE_CONTRACT_VERSION
+        )
+        write_json(ledger_path, ledger)
+        manifest_bytes = manifest_path.read_bytes()
+        ledger_bytes = ledger_path.read_bytes()
+        history_directory = ledger_path.parent / "history"
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(
+            io.StringIO()
+        ):
+            status = proofcheck.cmd_migrate_evidence(
+                argparse.Namespace(root=self.audit)
+            )
+        payload = json.loads(stdout.getvalue())
+
+        self.assertEqual(1, status)
+        self.assertEqual("failed", payload["status"])
+        self.assertTrue(
+            any(
+                "evidence_contract_version must be"
+                in error
+                for error in payload["errors"]
+            ),
+            payload,
+        )
+        self.assertEqual(manifest_bytes, manifest_path.read_bytes())
+        self.assertEqual(ledger_bytes, ledger_path.read_bytes())
+        self.assertFalse(history_directory.exists())
+
+    def test_migrate_evidence_removes_new_backups_when_transaction_fails(
+        self,
+    ) -> None:
+        ledger_path = self.make_complete_audit()
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["protocol"]["evidence_contract_version"] = (
+            proofcheck.PREVIOUS_EVIDENCE_CONTRACT_VERSION
+        )
+        write_json(manifest_path, manifest)
+        ledger = read_json(ledger_path)
+        ledger["evidence_contract_version"] = (
+            proofcheck.PREVIOUS_EVIDENCE_CONTRACT_VERSION
+        )
+        write_json(ledger_path, ledger)
+        manifest_bytes = manifest_path.read_bytes()
+        ledger_bytes = ledger_path.read_bytes()
+        history_directory = ledger_path.parent / "history"
+
+        with mock.patch.object(
+            proofcheck,
+            "transactional_write_texts",
+            side_effect=OSError("injected evidence transaction failure"),
+        ):
+            with self.assertRaisesRegex(
+                OSError, "injected evidence transaction failure"
+            ):
+                proofcheck.cmd_migrate_evidence(
+                    argparse.Namespace(root=self.audit)
+                )
+
+        self.assertEqual(manifest_bytes, manifest_path.read_bytes())
+        self.assertEqual(ledger_bytes, ledger_path.read_bytes())
+        self.assertFalse(history_directory.exists())
+
+    def test_migrate_evidence_rejects_interleaved_manifest_edit(self) -> None:
+        ledger_path = self.make_complete_audit()
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["protocol"]["evidence_contract_version"] = (
+            proofcheck.PREVIOUS_EVIDENCE_CONTRACT_VERSION
+        )
+        manifest["protocol"]["closure_contract_version"] = (
+            proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION
+        )
+        write_json(manifest_path, manifest)
+        registry_path = (
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        registry = read_json(registry_path)
+        registry["closure_contract_version"] = (
+            proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION
+        )
+        write_json(registry_path, registry)
+        ledger = read_json(ledger_path)
+        ledger["evidence_contract_version"] = (
+            proofcheck.PREVIOUS_EVIDENCE_CONTRACT_VERSION
+        )
+        write_json(ledger_path, ledger)
+        manifest_bytes = manifest_path.read_bytes()
+        ledger_bytes = ledger_path.read_bytes()
+        interleaved_bytes = manifest_bytes + b" "
+        original_transaction = proofcheck.transactional_write_texts
+
+        def edit_before_commit(writes: list, **kwargs: object) -> None:
+            self.assertTrue(
+                proofcheck.migration_update_lock_path(self.audit).is_file()
+            )
+            self.assertEqual(manifest_path, writes[-1][0])
+            self.assertIn(ledger_path, [path for path, _ in writes[:-1]])
+            manifest_path.write_bytes(interleaved_bytes)
+            original_transaction(writes, **kwargs)
+
+        with mock.patch.object(
+            proofcheck,
+            "transactional_write_texts",
+            side_effect=edit_before_commit,
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "Transactional baseline changed before commit"
+            ):
+                proofcheck.cmd_migrate_evidence(
+                    argparse.Namespace(root=self.audit)
+                )
+
+        self.assertEqual(interleaved_bytes, manifest_path.read_bytes())
+        self.assertEqual(ledger_bytes, ledger_path.read_bytes())
+        self.assertFalse((ledger_path.parent / "history").exists())
+        self.assertFalse(
+            proofcheck.migration_update_lock_path(self.audit).exists()
+        )
+
+    def test_migrate_evidence_rejects_interleaved_artifact_edit(self) -> None:
+        ledger_path = self.make_complete_audit()
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["protocol"]["evidence_contract_version"] = (
+            proofcheck.PREVIOUS_EVIDENCE_CONTRACT_VERSION
+        )
+        manifest["protocol"]["closure_contract_version"] = (
+            proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION
+        )
+        write_json(manifest_path, manifest)
+        registry_path = (
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        registry = read_json(registry_path)
+        registry["closure_contract_version"] = (
+            proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION
+        )
+        write_json(registry_path, registry)
+        ledger = read_json(ledger_path)
+        ledger["evidence_contract_version"] = (
+            proofcheck.PREVIOUS_EVIDENCE_CONTRACT_VERSION
+        )
+        write_json(ledger_path, ledger)
+        manifest_bytes = manifest_path.read_bytes()
+        ledger_bytes = ledger_path.read_bytes()
+        interleaved_bytes = ledger_bytes + b" "
+        original_transaction = proofcheck.transactional_write_texts
+
+        def edit_before_commit(writes: list, **kwargs: object) -> None:
+            self.assertTrue(
+                proofcheck.migration_update_lock_path(self.audit).is_file()
+            )
+            ledger_path.write_bytes(interleaved_bytes)
+            original_transaction(writes, **kwargs)
+
+        with mock.patch.object(
+            proofcheck,
+            "transactional_write_texts",
+            side_effect=edit_before_commit,
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "Transactional baseline changed before commit"
+            ):
+                proofcheck.cmd_migrate_evidence(
+                    argparse.Namespace(root=self.audit)
+                )
+
+        self.assertEqual(manifest_bytes, manifest_path.read_bytes())
+        self.assertEqual(interleaved_bytes, ledger_path.read_bytes())
+        self.assertFalse((ledger_path.parent / "history").exists())
+        self.assertFalse(
+            proofcheck.migration_update_lock_path(self.audit).exists()
+        )
+
+    def test_migrate_evidence_retains_recovery_after_committed_cleanup_failure(
+        self,
+    ) -> None:
+        ledger_path = self.make_complete_audit()
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["protocol"]["evidence_contract_version"] = (
+            proofcheck.PREVIOUS_EVIDENCE_CONTRACT_VERSION
+        )
+        manifest["protocol"]["closure_contract_version"] = (
+            proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION
+        )
+        write_json(manifest_path, manifest)
+        registry_path = (
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        registry = read_json(registry_path)
+        registry["closure_contract_version"] = (
+            proofcheck.PREVIOUS_CLOSURE_CONTRACT_VERSION
+        )
+        write_json(registry_path, registry)
+        ledger = read_json(ledger_path)
+        ledger["evidence_contract_version"] = (
+            proofcheck.PREVIOUS_EVIDENCE_CONTRACT_VERSION
+        )
+        write_json(ledger_path, ledger)
+        legacy_ledger_bytes = ledger_path.read_bytes()
+        backup_path = ledger_path.parent / "history" / (
+            f"{ledger_path.name}.evidence-"
+            f"{proofcheck.PREVIOUS_EVIDENCE_CONTRACT_VERSION}."
+            f"{proofcheck.sha256_file(ledger_path)}.json"
+        )
+        original_unlink = Path.unlink
+
+        def fail_manifest_recovery_cleanup(
+            path: Path, *args: object, **kwargs: object
+        ) -> None:
+            if (
+                path.parent == manifest_path.parent
+                and path.name.startswith(".AUDIT_MANIFEST.json.")
+                and path.name.endswith(".proofcheck.tmp")
+            ):
+                raise OSError("injected committed cleanup failure")
+            original_unlink(path, *args, **kwargs)
+
+        with mock.patch.object(
+            Path,
+            "unlink",
+            autospec=True,
+            side_effect=fail_manifest_recovery_cleanup,
+        ):
+            with self.assertRaisesRegex(
+                proofcheck.MigrationRecoveryRequired,
+                "Live writes were committed",
+            ):
+                proofcheck.cmd_migrate_evidence(
+                    argparse.Namespace(root=self.audit)
+                )
+
+        migrated_manifest = read_json(manifest_path)
+        self.assertEqual(
+            proofcheck.EVIDENCE_CONTRACT_VERSION,
+            migrated_manifest["protocol"]["evidence_contract_version"],
+        )
+        self.assertEqual(
+            proofcheck.EVIDENCE_CONTRACT_VERSION,
+            read_json(ledger_path)["evidence_contract_version"],
+        )
+        self.assertEqual(legacy_ledger_bytes, backup_path.read_bytes())
+        self.assertTrue(
+            list(manifest_path.parent.glob(".AUDIT_MANIFEST.json.*.proofcheck.tmp"))
+        )
+        self.assertTrue(
+            proofcheck.migration_update_lock_path(self.audit).is_file()
+        )
+
+    def test_migrate_evidence_reuses_exact_racing_backup(self) -> None:
+        ledger_path = self.make_complete_audit()
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["protocol"]["evidence_contract_version"] = (
+            proofcheck.PREVIOUS_EVIDENCE_CONTRACT_VERSION
+        )
+        write_json(manifest_path, manifest)
+        ledger = read_json(ledger_path)
+        ledger["evidence_contract_version"] = (
+            proofcheck.PREVIOUS_EVIDENCE_CONTRACT_VERSION
+        )
+        write_json(ledger_path, ledger)
+        legacy_bytes = ledger_path.read_bytes()
+        original_publish = proofcheck.publish_no_overwrite
+
+        def publish_after_exact_retry(
+            temporary: Path, destination: Path, description: str
+        ) -> str:
+            destination.write_bytes(temporary.read_bytes())
+            return original_publish(temporary, destination, description)
+
+        stdout = io.StringIO()
+        with mock.patch.object(
+            proofcheck,
+            "publish_no_overwrite",
+            side_effect=publish_after_exact_retry,
+        ), contextlib.redirect_stdout(stdout):
+            status = proofcheck.cmd_migrate_evidence(
+                argparse.Namespace(root=self.audit)
+            )
+        payload = json.loads(stdout.getvalue())
+
+        self.assertEqual(0, status)
+        self.assertEqual("migrated", payload["status"])
+        self.assertEqual(1, len(payload["legacy_artifact_backups"]))
+        backup_path = Path(payload["legacy_artifact_backups"][0])
+        self.assertEqual(legacy_bytes, backup_path.read_bytes())
+        self.assertEqual(
+            proofcheck.EVIDENCE_CONTRACT_VERSION,
+            read_json(ledger_path)["evidence_contract_version"],
+        )
+
+    def test_migrate_evidence_already_current_still_validates_state(
+        self,
+    ) -> None:
+        ledger_path = self.make_complete_audit()
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        original_manifest = read_json(manifest_path)
+        original_ledger = read_json(ledger_path)
+
+        def run_migration() -> tuple[int, dict]:
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                status = proofcheck.cmd_migrate_evidence(
+                    argparse.Namespace(root=self.audit)
+                )
+            return status, json.loads(stdout.getvalue())
+
+        invalid_closure = json.loads(json.dumps(original_manifest))
+        invalid_closure["protocol"]["closure_contract_version"] = 999
+        write_json(manifest_path, invalid_closure)
+        status, payload = run_migration()
+        self.assertEqual(1, status)
+        self.assertTrue(
+            any("closure_contract_version" in error for error in payload["errors"]),
+            payload,
+        )
+
+        write_json(manifest_path, original_manifest)
+        write_json(
+            ledger_path,
+            {
+                "schema_version": proofcheck.SCHEMA_VERSION,
+                "evidence_contract_version": (
+                    proofcheck.EVIDENCE_CONTRACT_VERSION
+                ),
+                "unit_id": "lem:main",
+            },
+        )
+        status, payload = run_migration()
+        self.assertEqual(1, status)
+        self.assertTrue(
+            any(
+                "Missing source object" in error
+                for error in payload["errors"]
+            ),
+            payload,
+        )
+
+        write_json(ledger_path, original_ledger)
+        self.paper.write_text(
+            self.paper.read_text(encoding="utf-8") + "% source drift\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        status, payload = run_migration()
+        self.assertEqual(1, status)
+        self.assertTrue(
+            any("source" in error.lower() for error in payload["errors"]),
+            payload,
+        )
+        self.assertFalse((ledger_path.parent / "history").exists())
+
+    def test_migration_lock_blocks_status_and_finalization_reads(self) -> None:
+        self.make_complete_audit()
+        lock, payload = proofcheck.acquire_migration_update_lock(
+            self.audit, "test-migration"
+        )
+        try:
+            with mock.patch.object(
+                proofcheck, "audit_internal_redirect_errors"
+            ) as status_reader:
+                with self.assertRaisesRegex(
+                    ValueError, "audit migration is in progress"
+                ):
+                    proofcheck.cmd_status(
+                        argparse.Namespace(
+                            root=self.audit,
+                            format="json",
+                            output=None,
+                            force=False,
+                            verbose=False,
+                        )
+                    )
+                status_reader.assert_not_called()
+
+            with mock.patch.object(
+                proofcheck, "_check_audit_finalization"
+            ) as finalization_reader:
+                errors, result = proofcheck.check_audit_finalization(
+                    self.audit
+                )
+                finalization_reader.assert_not_called()
+            self.assertTrue(
+                any("audit migration is in progress" in error for error in errors),
+                errors,
+            )
+            self.assertEqual(errors[0], result["read_error"])
+
+            with mock.patch.object(
+                proofcheck, "sync_workflow_views"
+            ) as view_writer:
+                with self.assertRaisesRegex(
+                    ValueError, "audit migration is in progress"
+                ):
+                    proofcheck.cmd_finalize(argparse.Namespace(root=self.audit))
+                view_writer.assert_not_called()
+
+            with mock.patch.object(
+                proofcheck, "load_workflow_records"
+            ) as packet_reader:
+                with self.assertRaisesRegex(
+                    ValueError, "audit migration is in progress"
+                ):
+                    proofcheck.build_context_packet(
+                        self.audit, "lem:main", "primary"
+                    )
+                packet_reader.assert_not_called()
+
+            with self.assertRaisesRegex(
+                ValueError, "audit migration is in progress"
+            ):
+                proofcheck.sync_workflow_views(self.audit)
+            with self.assertRaisesRegex(
+                ValueError, "audit migration is in progress"
+            ):
+                proofcheck.cmd_checkpoint(
+                    argparse.Namespace(root=self.audit)
+                )
+            with self.assertRaisesRegex(
+                ValueError, "audit migration is in progress"
+            ):
+                proofcheck.cmd_revalidate_protocol(
+                    argparse.Namespace(root=self.audit)
+                )
+            with self.assertRaisesRegex(
+                ValueError, "audit migration is in progress"
+            ):
+                proofcheck.calibration_audit_binding(self.audit)
+
+            skeleton_path = (
+                self.audit
+                / "audit"
+                / "04_local_checks"
+                / "locked.skeleton.json"
+            )
+            with self.assertRaisesRegex(
+                ValueError, "audit migration is in progress"
+            ):
+                proofcheck.cmd_extract(
+                    argparse.Namespace(
+                        file=self.paper,
+                        output=skeleton_path,
+                    )
+                )
+            self.assertFalse(skeleton_path.exists())
+        finally:
+            proofcheck.release_migration_update_lock(lock, payload)
+
+        self.assertFalse(lock.exists())
+
+    def test_status_does_not_mask_fatal_ledger_as_evidence_upgrade(
+        self,
+    ) -> None:
+        ledger_path = self.make_complete_audit()
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["protocol"]["evidence_contract_version"] = (
+            proofcheck.PREVIOUS_EVIDENCE_CONTRACT_VERSION
+        )
+        write_json(manifest_path, manifest)
+        ledger_path.write_text("{", encoding="utf-8", newline="\n")
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            status = proofcheck.cmd_status(
+                argparse.Namespace(
+                    root=self.audit,
+                    format="json",
+                    output=None,
+                    force=False,
+                    verbose=False,
+                )
+            )
+        payload = json.loads(stdout.getvalue())
+
+        self.assertEqual(1, status)
+        self.assertEqual(
+            "evidence_upgrade_required", payload["protocol"]["status"]
+        )
+        self.assertEqual("malformed_or_stale", payload["workflow_state"])
+        self.assertGreater(payload["ledger_errors"], 0)
+
+    def test_external_citation_binding_is_required_and_unique(self) -> None:
+        ledger_path = self.make_complete_audit()
+        self.install_external_dependency(ledger_path)
+        registry_path = (
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        original = read_json(registry_path)
+        cases = {
+            "missing": [],
+            "duplicate": [
+                original["external_results"][0]["citation_bindings"][0],
+                original["external_results"][0]["citation_bindings"][0],
+            ],
+        }
+        for name, bindings in cases.items():
+            with self.subTest(name=name):
+                registry = json.loads(json.dumps(original))
+                external = registry["external_results"][0]
+                external["citation_bindings"] = bindings
+                external["uses"][0]["dependency_contract_sha256"] = (
+                    proofcheck.canonical_sha256(
+                        proofcheck.external_result_contract(external)
+                    )
+                )
+                write_json(registry_path, registry)
+
+                errors, _ = proofcheck.check_audit_finalization(self.audit)
+
+                self.assertTrue(
+                    any("citation_bindings" in error for error in errors),
+                    errors,
+                )
+
+    def test_external_citation_binding_rejects_wrong_or_changed_key(self) -> None:
+        ledger_path = self.make_complete_audit()
+        self.install_external_dependency(ledger_path)
+        registry_path = (
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        original = read_json(registry_path)
+        binding = original["external_results"][0]["citation_bindings"][0]
+        bibliography_path = proofcheck.resolve_stored_path(
+            binding["file"], self.audit
+        )
+
+        wrong = json.loads(json.dumps(original))
+        wrong_external = wrong["external_results"][0]
+        wrong_external["citation_bindings"][0]["key"] = "wrong"
+        wrong_external["uses"][0]["dependency_contract_sha256"] = (
+            proofcheck.canonical_sha256(
+                proofcheck.external_result_contract(wrong_external)
+            )
+        )
+        write_json(registry_path, wrong)
+        wrong_errors, _ = proofcheck.check_audit_finalization(self.audit)
+        self.assertTrue(
+            any(
+                "expected ['smith'], found ['wrong']" in error
+                or "bibliography key 'wrong'" in error
+                for error in wrong_errors
+            ),
+            wrong_errors,
+        )
+
+        changed = json.loads(json.dumps(original))
+        bibliography_path.write_text(
+            "@article{smyth,\n"
+            "  author = {Smith, A.},\n"
+            "  title = {Reflexivity of equality},\n"
+            "  year = {2026}\n"
+            "}\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        changed_external = changed["external_results"][0]
+        changed_binding = changed_external["citation_bindings"][0]
+        changed_binding["sha256"] = proofcheck.source_span_sha256(
+            bibliography_path, 1, 5
+        )
+        changed_external["uses"][0]["dependency_contract_sha256"] = (
+            proofcheck.canonical_sha256(
+                proofcheck.external_result_contract(changed_external)
+            )
+        )
+        write_json(registry_path, changed)
+        changed_errors, _ = proofcheck.check_audit_finalization(self.audit)
+        self.assertTrue(
+            any(
+                "bibliography key 'smith' must resolve exactly once; found 0"
+                in error
+                for error in changed_errors
+            ),
+            changed_errors,
+        )
+
+    def test_external_citation_binding_rejects_duplicate_bibtex_key(self) -> None:
+        ledger_path = self.make_complete_audit()
+        self.install_external_dependency(ledger_path)
+        registry = read_json(
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        binding = registry["external_results"][0]["citation_bindings"][0]
+        bibliography_path = proofcheck.resolve_stored_path(
+            binding["file"], self.audit
+        )
+        with bibliography_path.open("a", encoding="utf-8", newline="\n") as stream:
+            stream.write(
+                "@book{smith,\n"
+                "  author = {Smith, B.},\n"
+                "  title = {Another source},\n"
+                "  year = {2025}\n"
+                "}\n"
+            )
+
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+
+        self.assertTrue(
+            any(
+                "bibliography key 'smith' must resolve exactly once; found 2"
+                in error
+                for error in errors
+            ),
+            errors,
+        )
+
+    def test_external_citation_binding_ignores_commented_bibtex_entry(self) -> None:
+        ledger_path = self.make_complete_audit()
+        self.install_external_dependency(ledger_path)
+        registry = read_json(
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        binding = registry["external_results"][0]["citation_bindings"][0]
+        bibliography_path = proofcheck.resolve_stored_path(
+            binding["file"], self.audit
+        )
+        with bibliography_path.open("a", encoding="utf-8", newline="\n") as stream:
+            stream.write("% @article{smith, title={Commented duplicate}}\n")
+        self.add_snapshot_source(bibliography_path, ledger_path)
+
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+
+        self.assertEqual([], errors)
+
+    def test_bibtex_parser_ignores_literal_escaped_braces(self) -> None:
+        bibliography_path = self.base / "escaped-braces.bib"
+        bibliography_path.write_text(
+            "@article{smith,\n"
+            "  title = {Literal \\{left\\} braces},\n"
+            "  year = {2026}\n"
+            "}\n",
+            encoding="utf-8",
+        )
+
+        entries = proofcheck.bibtex_entry_spans(bibliography_path)
+
+        self.assertEqual(
+            [("smith", 1, 4)],
+            [(entry["key"], entry["start_line"], entry["end_line"]) for entry in entries],
+        )
+
+    def test_bibtex_parser_preserves_crlf_offsets_across_entries(self) -> None:
+        bibliography_path = self.base / "crlf-entries.bib"
+        text = (
+            "@article{first,\r\n"
+            "  title = {First entry},\r\n"
+            "  year = {2025}\r\n"
+            "}\r\n"
+            "% masked comment between entries\r\n"
+            "\r\n"
+            "@book{second,\r\n"
+            "  title = {Second entry},\r\n"
+            "  year = {2026}\r\n"
+            "}\r\n"
+        )
+        bibliography_path.write_bytes(text.encode("utf-8"))
+
+        with mock.patch.object(proofcheck, "read_text", return_value=text):
+            entries = proofcheck.bibtex_entry_spans(bibliography_path)
+
+        self.assertEqual(
+            [("first", 1, 4), ("second", 7, 10)],
+            [
+                (entry["key"], entry["start_line"], entry["end_line"])
+                for entry in entries
+            ],
+        )
+        self.assertEqual(
+            [
+                "@article{first,\r\n"
+                "  title = {First entry},\r\n"
+                "  year = {2025}\r\n"
+                "}",
+                "@book{second,\r\n"
+                "  title = {Second entry},\r\n"
+                "  year = {2026}\r\n"
+                "}",
+            ],
+            [
+                text[entry["start_offset"] : entry["end_offset"] + 1]
+                for entry in entries
+            ],
+        )
+
+    def test_bibitem_parser_indexes_only_thebibliography_items(self) -> None:
+        bibliography_path = self.base / "scoped-bibitems.bbl"
+        bibliography_path.write_text(
+            "\\bibitem{outside-before} Not a bibliography item.\n"
+            "\\begin{thebibliography}{1}\n"
+            "\\bibitem{inside} A. Smith. Reflexivity of equality. 2026.\n"
+            "\\end{thebibliography}\n"
+            "\\bibitem{outside-after} Also not a bibliography item.\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        entries = proofcheck.bibitem_entry_spans(bibliography_path)
+
+        self.assertEqual(
+            [("inside", 3, 3)],
+            [
+                (entry["key"], entry["start_line"], entry["end_line"])
+                for entry in entries
+            ],
+        )
+        malformed_path = self.base / "malformed-bibitem.bbl"
+        malformed_path.write_text(
+            "\\begin{thebibliography}{1}\n"
+            "\\bibitem missing-braces\n"
+            "\\end{thebibliography}\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        with self.assertRaisesRegex(ValueError, "malformed bibitem command"):
+            proofcheck.bibitem_entry_spans(malformed_path)
+
+    def test_source_bibliography_index_fails_closed_on_parse_and_read_errors(
+        self,
+    ) -> None:
+        self.make_complete_audit()
+        malformed = self.base / "malformed.bib"
+        malformed.write_text(
+            "@article{smith,\n  title = {Unterminated entry}\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        malformed_header = self.base / "malformed-header.bib"
+        malformed_header.write_text(
+            "@article{smith\n  title = {Missing key delimiter}\n}\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        unreadable = self.base / "unreadable.bib"
+        unreadable.write_bytes(b"\xff\xfe\x00")
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        for path in (malformed, malformed_header, unreadable):
+            manifest["source_snapshot"]["files"].append(
+                {
+                    "file": proofcheck.relative_or_absolute(path, self.audit),
+                    "sha256": proofcheck.sha256_file(path),
+                }
+            )
+        manifest["source_snapshot"]["sha256"] = proofcheck.canonical_sha256(
+            manifest["source_snapshot"]["files"]
+        )
+        write_json(manifest_path, manifest)
+        errors: list[str] = []
+
+        proofcheck.source_snapshot_bibliography_key_locations(self.audit, errors)
+
+        self.assertTrue(
+            any("unterminated BibTeX directive" in error for error in errors),
+            errors,
+        )
+        self.assertTrue(
+            any("malformed BibTeX entry header" in error for error in errors),
+            errors,
+        )
+        self.assertTrue(
+            any("Unreadable UTF-8 text artifact" in error for error in errors),
+            errors,
+        )
+
+    def test_rendered_reference_requires_machine_checked_snapshot_mapping(
+        self,
+    ) -> None:
+        ledger_path = self.make_complete_audit()
+        self.install_external_dependency(ledger_path)
+        registry_path = (
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        bibliography_path = self.base / "external-reflexivity.bib"
+        bibliography_path.write_text(
+            "@article{other,\n"
+            "  author = {Other, B.},\n"
+            "  title = {A different result},\n"
+            "  year = {2026}\n"
+            "}\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        self.add_snapshot_source(bibliography_path, ledger_path)
+
+        rendered_path = self.base / "rendered-references.txt"
+        rendered_path.write_text(
+            "[1] A. Smith. Reflexivity of equality. 2026.\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        unrelated_path = self.base / "unrelated-rendered-reference.txt"
+        unrelated_path.write_text(
+            "[2] B. Other. A different result. 2026.\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        self.add_snapshot_source(rendered_path, ledger_path)
+        self.add_snapshot_source(unrelated_path, ledger_path)
+
+        rendered_file = proofcheck.relative_or_absolute(rendered_path, self.audit)
+        rendered_sha = proofcheck.source_span_sha256(rendered_path, 1, 1)
+        mapping_path = self.base / "rendered-reference-map.json"
+        mapping_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "citation_key": "smith",
+                    "rendered_reference": {
+                        "file": rendered_file,
+                        "start_line": 1,
+                        "end_line": 1,
+                        "sha256": rendered_sha,
+                    },
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        self.add_snapshot_source(mapping_path, ledger_path)
+
+        manifest = read_json(self.audit / "AUDIT_MANIFEST.json")
+        registry = read_json(registry_path)
+        external = registry["external_results"][0]
+        binding = external["citation_bindings"][0]
+        binding.update(
+            {
+                "source_kind": "rendered_reference",
+                "file": rendered_file,
+                "start_line": 1,
+                "end_line": 1,
+                "sha256": rendered_sha,
+                "locator": "Rendered reference list item 1",
+                "rendered_provenance": {
+                    "authority": "source_snapshot",
+                    "source_snapshot_sha256": manifest["source_snapshot"]["sha256"],
+                    "source_file_sha256": proofcheck.sha256_file(rendered_path),
+                    "key_mapping": {
+                        "file": proofcheck.relative_or_absolute(
+                            mapping_path, self.audit
+                        ),
+                        "start_line": 1,
+                        "end_line": 1,
+                        "sha256": proofcheck.source_span_sha256(
+                            mapping_path, 1, 1
+                        ),
+                        "role": "rendered_reference_key_mapping",
+                    },
+                },
+            }
+        )
+        external["citation_binding_review"]["evidence"] = (
+            "The authoritative snapshot mapping binds citation key smith to "
+            "the exact rendered reference span for the external result."
+        )
+        external["uses"][0]["dependency_contract_sha256"] = (
+            proofcheck.canonical_sha256(
+                proofcheck.external_result_contract(external)
+            )
+        )
+
+        errors: list[str] = []
+        proofcheck.validate_external_result_catalog(registry, self.audit, errors)
+        self.assertEqual([], errors)
+
+        missing_mapping = json.loads(json.dumps(registry))
+        del missing_mapping["external_results"][0]["citation_bindings"][0][
+            "rendered_provenance"
+        ]["key_mapping"]
+        missing_errors: list[str] = []
+        proofcheck.validate_external_result_catalog(
+            missing_mapping, self.audit, missing_errors
+        )
+        self.assertTrue(
+            any("key_mapping" in error for error in missing_errors),
+            missing_errors,
+        )
+
+        unrelated = json.loads(json.dumps(registry))
+        unrelated_binding = unrelated["external_results"][0]["citation_bindings"][0]
+        unrelated_binding.update(
+            {
+                "file": proofcheck.relative_or_absolute(
+                    unrelated_path, self.audit
+                ),
+                "sha256": proofcheck.source_span_sha256(
+                    unrelated_path, 1, 1
+                ),
+            }
+        )
+        unrelated_binding["rendered_provenance"]["source_file_sha256"] = (
+            proofcheck.sha256_file(unrelated_path)
+        )
+        unrelated_errors: list[str] = []
+        proofcheck.validate_external_result_catalog(
+            unrelated, self.audit, unrelated_errors
+        )
+        self.assertTrue(
+            any(
+                "does not map to this rendered_reference span" in error
+                for error in unrelated_errors
+            ),
+            unrelated_errors,
+        )
+
+    def test_external_citation_binding_is_tied_to_result_identity(self) -> None:
+        ledger_path = self.make_complete_audit()
+        self.install_external_dependency(ledger_path)
+        registry_path = (
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        registry = read_json(registry_path)
+        external = registry["external_results"][0]
+        external["source_identity"] = "doi:10.0000/different-result"
+        external["uses"][0]["dependency_contract_sha256"] = (
+            proofcheck.canonical_sha256(
+                proofcheck.external_result_contract(external)
+            )
+        )
+        write_json(registry_path, registry)
+
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+
+        self.assertTrue(
+            any("external_identity_sha256 is stale" in error for error in errors),
             errors,
         )
 
@@ -11456,12 +14554,18 @@ class FinalizationTests(unittest.TestCase):
             }
         )
         write_json(issue_path, issue_record)
+        self.seal_schema5_challenge(
+            ledger_path, read_json(ledger_path), covered_issue_ids=["I-001"]
+        )
         ordered_context = proofcheck.build_context_packet(
             self.audit, "lem:main", "challenge"
         )["context_binding_sha256"]
         self.assertNotEqual(original_context, ordered_context)
         issue_record["issues"][0]["contract_refs"].reverse()
         write_json(issue_path, issue_record)
+        self.seal_schema5_challenge(
+            ledger_path, read_json(ledger_path), covered_issue_ids=["I-001"]
+        )
         reordered_context = proofcheck.build_context_packet(
             self.audit, "lem:main", "challenge"
         )["context_binding_sha256"]
@@ -11483,6 +14587,9 @@ class FinalizationTests(unittest.TestCase):
         issue_record = read_json(issue_path)
         issue_record["issues"][0]["severity"] = "S0"
         write_json(issue_path, issue_record)
+        self.seal_schema5_challenge(
+            ledger_path, read_json(ledger_path), covered_issue_ids=["I-001"]
+        )
         self.assertNotEqual(
             reordered_context,
             proofcheck.build_context_packet(
@@ -11735,6 +14842,7 @@ class FinalizationTests(unittest.TestCase):
         issue_path = self.audit / "audit" / "06_reports" / "ISSUE_LOG.json"
         issue_log = read_json(issue_path)
         issue_log["issues"][0]["severity"] = "S1"
+        issue_log["issues"][0]["repair_search"] = make_repair_search("S1")
         write_json(issue_path, issue_log)
         self.seal_schema5_challenge(
             ledger_path,
@@ -11975,6 +15083,7 @@ class FinalizationTests(unittest.TestCase):
         issue_path = self.audit / "audit" / "06_reports" / "ISSUE_LOG.json"
         issue_log = read_json(issue_path)
         issue_log["issues"][0]["severity"] = "S1"
+        issue_log["issues"][0]["repair_search"] = make_repair_search("S1")
         write_json(issue_path, issue_log)
         progress_path = self.audit / "PROGRESS.json"
         progress = read_json(progress_path)
@@ -13709,6 +16818,20 @@ class FinalizationTests(unittest.TestCase):
         covered_issue_ids: list[str] | None = None,
         artifact_text: str | None = None,
     ) -> None:
+        write_json(ledger_path, ledger)
+        try:
+            primary_packet = proofcheck.build_context_packet(
+                self.audit, ledger["unit_id"], "primary"
+            )
+        except ValueError:
+            # Standalone schema fixtures can intentionally disagree with the
+            # canonical inventory and therefore cannot have a current packet.
+            primary_packet = None
+        if primary_packet is not None:
+            ledger["work_context_sha256"] = primary_packet[
+                "work_context_sha256"
+            ]
+            write_json(ledger_path, ledger)
         independent = ledger["independent_check"]
         if independent.get("required") is not True:
             independent.update(
@@ -13859,6 +16982,22 @@ class FinalizationTests(unittest.TestCase):
                     newline="\n",
                 )
 
+    def seal_live_challenges(self) -> None:
+        for ledger_path in reversed(
+            proofcheck.live_local_check_artifacts(
+                self.audit, ".ledger.json"
+            )
+        ):
+            ledger = read_json(ledger_path)
+            covered = ledger.get("independent_check", {}).get(
+                "covered_issue_ids"
+            )
+            self.seal_schema5_challenge(
+                ledger_path,
+                ledger,
+                covered_issue_ids=(covered if isinstance(covered, list) else None),
+            )
+
     def downgrade_ledger_fixture_to_schema4(self, ledger: dict) -> dict:
         source_units = {
             unit["id"]: unit
@@ -13949,7 +17088,7 @@ class FinalizationTests(unittest.TestCase):
             "- Evidence contract version: 3",
         )
         report = report.replace(
-            "- Closure contract version: 3",
+            "- Closure contract version: 4",
             "- Closure contract version: 2",
         )
         report_path.write_text(report, encoding="utf-8", newline="\n")
@@ -14004,7 +17143,7 @@ class FinalizationTests(unittest.TestCase):
             if step.get("inference", {}).get("moves"):
                 step["support_role"] = "derivation"
         ledger["schema_version"] = 5
-        ledger["evidence_contract_version"] = 4
+        ledger["evidence_contract_version"] = proofcheck.EVIDENCE_CONTRACT_VERSION
         ledger["source_units"] = source_units
         self.seal_schema5_challenge(ledger_path, ledger)
         return read_json(ledger_path)
@@ -14022,11 +17161,11 @@ class FinalizationTests(unittest.TestCase):
         manifest["protocol"].update(
             {
                 "skill_name": "stat-paper-proofcheck",
-                "skill_version": "1.0",
+                "skill_version": proofcheck.SKILL_VERSION,
                 "artifact_schema_version": 5,
-                "evidence_contract_version": 4,
+                "evidence_contract_version": proofcheck.EVIDENCE_CONTRACT_VERSION,
                 "method_interface_schema_version": 1,
-                "closure_contract_version": 3,
+                "closure_contract_version": proofcheck.CLOSURE_CONTRACT_VERSION,
                 "validator_sha256": proofcheck.protocol_identity()[
                     "validator_sha256"
                 ],
@@ -14066,7 +17205,7 @@ class FinalizationTests(unittest.TestCase):
         )
         registry = read_json(registry_path)
         registry["schema_version"] = 5
-        registry["closure_contract_version"] = 3
+        registry["closure_contract_version"] = proofcheck.CLOSURE_CONTRACT_VERSION
         registry["review"]["inventory_sha256"] = proofcheck.sha256_file(
             inventory_path
         )
@@ -14075,10 +17214,10 @@ class FinalizationTests(unittest.TestCase):
         report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
         report_lines = report_path.read_text(encoding="utf-8").splitlines()
         replacements = {
-            "Skill version": "1.0",
+            "Skill version": proofcheck.SKILL_VERSION,
             "Artifact schema version": "5",
             "Evidence contract version": "4",
-            "Closure contract version": "3",
+            "Closure contract version": str(proofcheck.CLOSURE_CONTRACT_VERSION),
         }
         for index, line in enumerate(report_lines):
             for label, value in replacements.items():
@@ -14088,7 +17227,9 @@ class FinalizationTests(unittest.TestCase):
             "\n".join(report_lines) + "\n", encoding="utf-8", newline="\n"
         )
 
-        self.assertEqual("1.0", manifest["protocol"]["skill_version"])
+        self.assertEqual(
+            proofcheck.SKILL_VERSION, manifest["protocol"]["skill_version"]
+        )
         return ledger_paths
 
     def replace_ledger_source(
@@ -14222,7 +17363,7 @@ class FinalizationTests(unittest.TestCase):
             },
         ]
         ledger["schema_version"] = 5
-        ledger["evidence_contract_version"] = 4
+        ledger["evidence_contract_version"] = proofcheck.EVIDENCE_CONTRACT_VERSION
         self.seal_schema5_challenge(ledger_path, ledger)
         return ledger_path
 
@@ -14417,7 +17558,7 @@ class FinalizationTests(unittest.TestCase):
             for line in range(1, 9)
         ]
         ledger["schema_version"] = 5
-        ledger["evidence_contract_version"] = 4
+        ledger["evidence_contract_version"] = proofcheck.EVIDENCE_CONTRACT_VERSION
         self.seal_schema5_challenge(ledger_path, ledger)
         return ledger_path
 
@@ -16579,7 +19720,7 @@ class FinalizationTests(unittest.TestCase):
         cases = {
             "changed-skill-version": (
                 baseline_user.replace(
-                    "- Skill version: 1.0",
+                    f"- Skill version: {proofcheck.SKILL_VERSION}",
                     "- Skill version: 9.9",
                     1,
                 ),
@@ -16973,12 +20114,22 @@ class FinalizationTests(unittest.TestCase):
                         "sha256": proofcheck.source_span_sha256(self.paper, 6, 6),
                     },
                     "action": "repair_step",
+                    "repair_scope": (
+                        "unit_statement" if severity == "S0" else "local_step"
+                    ),
+                    "assumption_cost": (
+                        "adds_regularity_or_moment"
+                        if severity == "S0"
+                        else "none"
+                    ),
                     "proposal": "Supply the missing premise and recheck the conclusion.",
                     "verification_status": "candidate",
                     "required_rechecks": ["lem:main"],
                 }
             ],
         }
+        if severity in {"S0", "S1"}:
+            issue["repair_search"] = make_repair_search(severity)
         if status == "resolved":
             manifest = read_json(self.audit / "AUDIT_MANIFEST.json")
             issue.update(
