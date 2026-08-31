@@ -48,4 +48,6 @@ Do not reproduce the entire reading trace. Report only sequence failures that ma
 - whether and where it is resolved later;
 - a concrete edit specification for relocation, preflight explanation, or transition function.
 
+Report the first encounter and its later resolution as one finding unless the later passage creates a separate consequential defect.
+
 Preserve this first-reader record after conducting literature searches or repeated readings.

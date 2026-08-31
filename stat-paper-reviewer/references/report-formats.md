@@ -7,7 +7,7 @@ An edit specification states what must change, where, why it matters to the pape
 ## Contents
 
 - [Default integrated review](#default-integrated-review)
-- [Requested scorecards](#requested-scorecards)
+- [Scorecards](#scorecards)
 - [Focused review](#focused-review)
 - [Pre-submission readiness memo](#pre-submission-readiness-memo)
 - [Multiple lenses](#multiple-lenses)
@@ -25,9 +25,9 @@ Use this structure for a full manuscript review:
    - concise verdict;
    - strongest defensible aspect, if one is visible;
    - principal obstacle to a convincing paper.
-3. **Requested scorecard, when requested**
-   - all requested relevant dimensions, with an integer score when assessable and `N/A` otherwise;
-   - support status, brief basis, and limiting issue.
+3. **Category scorecard**
+   - the default four categories from [scoring-rubric.md](scoring-rubric.md), plus any requested dimensions, each with an integer 1-10 score when assessable and `N/A` otherwise;
+   - support status, brief basis, and limiting issue per row, then a one-or-two-sentence verdict per category.
 4. **Main strengths**
    - up to three manuscript-specific strengths supported by the reviewed material;
    - do not count an important topic, an ambitious aim, the mere presence of paper components, stated intentions, or conditional future coherence as a strength;
@@ -60,7 +60,7 @@ Use this structure for a full manuscript review:
    - distinguish rewrites from new scientific work;
    - end the integrated report here.
 
-Do not include a score, acceptance probability, or editorial decision unless requested. If a recommendation posture is useful, use calibrated categories such as:
+The category scorecard is part of the full review. Do not add other scores, an acceptance probability, or an editorial decision unless requested. If a recommendation posture is useful, use calibrated categories such as:
 
 - ready for external review;
 - promising, but revise before submission;
@@ -69,11 +69,11 @@ Do not include a score, acceptance probability, or editorial decision unless req
 - venue or framing mismatch;
 - assessment incomplete from supplied material.
 
-## Requested scorecards
+## Scorecards
 
-Use [scoring-rubric.md](scoring-rubric.md) whenever scores are requested. Place the scorecard immediately after the overall assessment. Show `N/A` rather than penalizing dimensions that cannot be assessed from a partial manuscript or incomplete verification.
+Use [scoring-rubric.md](scoring-rubric.md) for the default category scorecard in every full or pre-submission review and for any requested scores. Place the scorecard immediately after the overall assessment. Show `N/A` rather than penalizing categories that cannot be assessed from a partial manuscript or incomplete verification.
 
-Do not calculate an arithmetic mean by default. Keep the qualitative readiness posture separate from requested aspect scores. For named-venue scores, use current official criteria or mark venue fit unassessed and provide only a qualitative general fit judgment.
+Do not calculate an arithmetic mean by default. Keep the qualitative readiness posture separate from the category scores. For named-venue scores, use current official criteria or mark venue fit unassessed and provide only a qualitative general fit judgment. In a full or pre-submission review, retain the default scorecard and place any user-supplied or venue rubric in a separate labeled table.
 
 ## Focused review
 
@@ -101,7 +101,7 @@ Organize around action:
 6. optional venue-positioning note;
 7. recommended revision order, which ends the memo.
 
-If the user requests a score, apply [scoring-rubric.md](scoring-rubric.md). If the user requests outcome probabilities, state that they are judgmental rather than calibrated forecasts and explain the evidence behind them.
+Include the default category scorecard from [scoring-rubric.md](scoring-rubric.md) after the submit-or-revise judgment, and apply that rubric to any additionally requested scores. If the user requests outcome probabilities, state that they are judgmental rather than calibrated forecasts and explain the evidence behind them.
 
 ## Multiple lenses
 

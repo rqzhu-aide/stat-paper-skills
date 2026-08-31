@@ -88,17 +88,17 @@ Deduplicate by DOI first, then by PMID or arXiv ID, then by normalized title, ye
 
 ## 6. Use the bundled fallback when needed
 
-If no scholarly search interface is available, run the bundled standard-library script from this skill folder:
+If no scholarly search interface is available, resolve the bundled standard-library script from the directory containing the loaded `SKILL.md`. Do not assume the caller's current working directory is the skill directory. Quote the resolved path when it contains spaces.
 
 Use any available Python 3.10 or later launcher. Depending on the environment, this may be `python`, `python3`, `py -3`, or a bundled interpreter path. In the examples below, `python` denotes that launcher.
 
 ```bash
-python scripts/academic_search.py "target method statistical regime" --limit 20
-python scripts/academic_search.py "guarantee key assumption" --limit 20 --sort relevance_score
-python scripts/academic_search.py "method application" --year-from 2020 --limit 20
+python "<skill-root>/scripts/academic_search.py" "target method statistical regime" --limit 20
+python "<skill-root>/scripts/academic_search.py" "guarantee key assumption" --limit 20 --sort relevance_score
+python "<skill-root>/scripts/academic_search.py" "method application" --year-from 2020 --limit 20
 ```
 
-Set `OPENALEX_API_KEY` in the environment before running these commands so the key does not enter shell history. If environment configuration is unavailable, use `--api-key`. Use `python scripts/academic_search.py --help` for all options. The script queries OpenAlex and returns title, DOI, authors, date, venue, work and source types, version when supplied, retraction and open-access flags, citations, abstract text when available, and OpenAlex ID.
+Set `OPENALEX_API_KEY` in the environment before running these commands so the key does not enter shell history. If environment configuration is unavailable, use `--api-key`. Use `python "<skill-root>/scripts/academic_search.py" --help` for all options. The script queries OpenAlex and returns title, DOI, authors, date, venue, work and source types, version when supplied, retraction and open-access flags, citations, abstract text when available, and OpenAlex ID.
 
 The request sends the API key, search terms, and any author, affiliation, or ORCID filters to OpenAlex over HTTPS. Do not submit confidential manuscript prose or unnecessary personal identifiers.
 

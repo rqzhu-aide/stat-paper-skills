@@ -11,7 +11,7 @@ verification. The skills can be used independently or in sequence.
 | Skill | Version |
 |---|---|
 | `stat-paper-writing` | v1.2 |
-| `stat-paper-reviewer` | v1.0 |
+| `stat-paper-reviewer` | v1.2 |
 | `stat-paper-proofcheck` | v1.2 |
 
 ## stat-paper-writing
@@ -42,6 +42,7 @@ Usage: `Use $stat-paper-proofcheck to audit this theorem and its dependency clos
 ## Runtime and tests
 
 The proofcheck and writing helpers and tests require Python 3.10 or later.
+The reviewer helper and tests also require Python 3.10 or later.
 
 For Full writing audits with PDF sources, install `pypdf` (preferred) or
 `PyPDF2`. If neither reader is available, or automatic page inspection fails,
@@ -52,3 +53,23 @@ Run the writing skill tests from the repository root:
 ```text
 python -m unittest discover -s stat-paper-writing/tests
 ```
+
+Run the reviewer skill tests from the repository root:
+
+```text
+python -m unittest discover -s stat-paper-reviewer/tests
+```
+
+Run the proofcheck skill tests from the repository root:
+
+```text
+python -m unittest discover -s stat-paper-proofcheck/tests -p "test_*.py"
+```
+
+The reviewer behavioral cases are defined in
+`stat-paper-reviewer/evals/evals.json`. Historical single-run evaluation
+artifacts are retained under `stat-paper-reviewer/evals/results/` as
+exploratory evidence only. For a release benchmark, run at least three
+independent repetitions per configuration and record the executor and grader
+models, repository commit, protocol digest, and any literature-search evidence.
+The deterministic test command above does not run that behavioral benchmark.

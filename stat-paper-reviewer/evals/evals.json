@@ -1,0 +1,148 @@
+{
+  "skill_name": "stat-paper-reviewer",
+  "evals": [
+    {
+      "id": 0,
+      "eval_name": "combo-novelty-default-scorecard",
+      "prompt": "You are refereeing for a statistics journal. Please give me your full review of the attached manuscript.",
+      "expected_output": "Integrated referee review with the four-category scorecard (integer 1-10 or N/A) present by default, a combination-test judgment on the assembled contribution, a bounded novelty conclusion, an aggregate mechanical-editing basis for the writing score, and edit specifications only.",
+      "files": ["fixtures/combo-paper.md"],
+      "assertions": [
+        "The review contains a category scorecard covering novelty, theory, computation and evidence, and writing, each with an integer score on the 1-10 scale or N/A, without the user having asked for scores",
+        "The default writing score has an aggregate mechanical-editing basis covering applicable typography, notation or terminology stability, citation and cross-reference hygiene, and formatting, without itemized copyediting",
+        "The novelty assessment classifies the contribution as a combination of established components and judges whether the combination enables a capability existing methods lack (combination test), rather than stopping at 'builds on prior work'",
+        "The novelty conclusion is bounded: the manuscript's 'no existing method' claim is challenged or qualified (e.g., versus Lei and Candes 2021), and no unqualified endorsement of firstness appears; search boundary or verification status is stated, or novelty is N/A",
+        "The review contains no rewritten manuscript prose; recommendations are edit specifications (location, problem, consequence, change) rather than replacement text",
+        "Because this is a single-manuscript interactive review, the response does not require run-bundle ceremony or label the review NONFINAL solely because no bundle was initialized"
+      ]
+    },
+    {
+      "id": 1,
+      "eval_name": "partial-manuscript-na-scoring",
+      "prompt": "Full referee review with your standard scorecard, please. Note that only the abstract and introduction are available so far.",
+      "expected_output": "Bounded review of the excerpt with a scorecard in which unassessable categories are N/A rather than low scores, and no fabricated content.",
+      "files": ["fixtures/partial-abstract.md"],
+      "assertions": [
+        "The exact four-category scorecard contains novelty, theory, computation and evidence, and writing rows, with at least two of those named rows marked N/A; an alternative or proxy scorecard does not satisfy this assertion",
+        "The claimed '40 percent improvement' and 'extensive simulations' are treated as manuscript assertions, not established evidence, and the evidence category is not scored positively on their basis",
+        "The review explicitly states it is bounded to the abstract and introduction and does not project missing evidence onto the full paper",
+        "No fabricated details: the review does not cite sections, theorems, figures, or results that the excerpt does not contain"
+      ]
+    },
+    {
+      "id": 2,
+      "eval_name": "review-plus-rewrite-boundary",
+      "prompt": "Review this paper, and also please rewrite the abstract and introduction to make them more compelling.",
+      "expected_output": "Reviewer diagnosis with edit specifications; no rewritten abstract or introduction text.",
+      "files": ["fixtures/combo-paper.md"],
+      "assertions": [
+        "No rewritten or replacement abstract or introduction appears anywhere in the response (no 'Revised Abstract' style block, no paste-ready manuscript prose)",
+        "Warranted changes are expressed as edit specifications identifying location, problem, consequence, and intended change",
+        "The response still contains a substantive review (diagnosis and prioritized findings), not just a refusal to rewrite"
+      ]
+    },
+    {
+      "id": 3,
+      "eval_name": "cost-practicality-audit",
+      "prompt": "Referee review with scores. I especially want to know whether this method is computationally practical.",
+      "expected_output": "Review that flags the scalability-claim versus O(n^3)-evidence mismatch, missing runtime reporting, and weak baseline; computation scored consistently with those findings.",
+      "files": ["fixtures/heavy-cost-paper.md"],
+      "assertions": [
+        "The review flags the mismatch between the 'scalable to modern datasets' claim and the O(n^3)-per-iteration cost with experiments only at n <= 500, including the absence of wall-clock or hardware reporting",
+        "The exact computation-and-evidence category receives an explicit score with a justification consistent with the cost finding and is not 8 or higher while the scalability claim is an unresolved Major or Critical finding; scores in proxy dimensions do not satisfy this assertion",
+        "The review notes the inadequate competitor set (e.g., BART or boosted trees as obvious baselines, or the default-hyperparameter random forest as an unfair comparison)"
+      ]
+    },
+    {
+      "id": 4,
+      "eval_name": "ai-writing-question-clean-text",
+      "prompt": "Does this excerpt read like it was written by AI? Give me your writing assessment.",
+      "expected_output": "Exactly one public classification with the provenance disclaimer; no internal state names; no dash-rule violations.",
+      "files": ["fixtures/clean-excerpt.md"],
+      "assertions": [
+        "The response gives exactly one public classification from: Not assessable, No reportable pattern, or Reportable recurrent pattern",
+        "The response states that textual evidence does not establish authorship, AI use, intent, or a particular writing tool",
+        "The response never exposes internal state names such as 'Private watch'",
+        "The response contains no en dash (U+2013) or em dash (U+2014) characters outside verbatim quoted material"
+      ]
+    },
+    {
+      "id": 5,
+      "eval_name": "full-review-offline-novelty-na",
+      "prompt": "Give me a full pre-submission review with your standard scorecard. Do not use external search; treat the supplied manuscript as the only available evidence.",
+      "expected_output": "Full review with the default scorecard retained, substantive novelty marked N/A, positioning assessed only within the packet, and no invented external comparison.",
+      "files": ["fixtures/combo-paper.md"],
+      "assertions": [
+        "The review contains the default novelty, theory, computation and evidence, and writing scorecard even though external search is excluded",
+        "The novelty row is N/A, not a low numeric penalty, and the review distinguishes positioning clarity from substantive novelty",
+        "Any manuscript-supplied comparator is labeled packet-only or not independently verified, and the review does not claim firstness or global novelty",
+        "The theory, computation and evidence, and writing rows are justified from the supplied manuscript rather than being made N/A solely because novelty search was unavailable"
+      ]
+    },
+    {
+      "id": 6,
+      "eval_name": "user-rubric-kept-separate",
+      "prompt": "Give me a full pre-submission review. Also apply this supplied Journal X rubric in a separate assessment: methodological validity, importance, and clarity are integers from 1 to 5, where 1 is inadequate, 3 is adequate with material limitations, and 5 is exceptional. The Journal X overall score is the minimum of validity and importance, capped at 2 when clarity is 2 or lower.",
+      "expected_output": "Default four-category scorecard plus a separate labeled Journal X table on its 1-5 scale, with its stated aggregation rule applied without blending the two systems.",
+      "files": ["fixtures/combo-paper.md"],
+      "assertions": [
+        "The full review retains the default four-category 1-10 scorecard",
+        "A separate Journal X table reports methodological validity, importance, and clarity on the supplied 1-5 scale",
+        "Any Journal X overall score follows the supplied minimum-and-cap rule, while no arithmetic blending with the default scorecard occurs",
+        "The response labels the rubric as user supplied and does not claim that it is a verified official venue rubric"
+      ]
+    },
+    {
+      "id": 7,
+      "eval_name": "theorem-plausibility-without-external-comparator",
+      "prompt": "Assess whether the theorem in this excerpt is plausible. Use only the supplied excerpt and do not search for external results.",
+      "expected_output": "Internal plausibility challenge based on the stated Gaussian model, with external lower-bound comparison explicitly unassessed and no claim of proof verification.",
+      "files": ["fixtures/theorem-no-comparator.md"],
+      "assertions": [
+        "The response marks comparison with external known results or lower bounds unassessed because no supplied or verified comparator is available",
+        "The response performs the manuscript-internal special-case calculation that the stated estimator has mean squared error 1/n under the supplied model, contradicting the n^-2 theorem for n greater than 1",
+        "The theorem is classified as challenged with the exact contradiction identified, rather than being rejected through an invented citation or remembered lower bound",
+        "The response labels the conclusion as a plausibility screen and does not claim line-by-line proof verification"
+      ]
+    },
+    {
+      "id": 8,
+      "eval_name": "patterned-prose-reportable-case",
+      "prompt": "Does this manuscript read like it was written by AI? Give me the bounded patterned-prose assessment.",
+      "expected_output": "One public Reportable recurrent pattern classification, grounded in at least six independent instances across three sections and multiple evidence classes, with the provenance disclaimer.",
+      "files": ["fixtures/patterned-reportable.md"],
+      "assertions": [
+        "The response emits exactly one public classification and it is Reportable recurrent pattern",
+        "The basis identifies at least six independent instances across at least three substantive sections and at least two evidence classes, including the required S1/S2 or S3 severity subcount",
+        "Exactly two to four representative locations are identified across the complete response; remaining instances are summarized only in aggregate",
+        "The response states that textual evidence does not establish authorship, AI use, intent, or a particular writing tool"
+      ]
+    },
+    {
+      "id": 9,
+      "eval_name": "patterned-prose-private-watch-public-mapping",
+      "prompt": "Does this manuscript read like it was written by AI? Give me the bounded patterned-prose assessment.",
+      "expected_output": "One public No reportable pattern classification, no internal state name, representative claim-traceability defects, and the provenance disclaimer.",
+      "files": ["fixtures/patterned-private-watch.md"],
+      "assertions": [
+        "The response emits exactly one public classification and it is No reportable pattern",
+        "The response never exposes the internal state name Private watch or its minima",
+        "The response identifies one to three supplied S1, S2, or S3 defects and states at least one bounded reader-facing consequence",
+        "The response states that textual evidence does not establish authorship, AI use, intent, or a particular writing tool"
+      ]
+    },
+    {
+      "id": 10,
+      "eval_name": "alternative-scale-explicit-mapping",
+      "prompt": "Focus only on computation and evidence. Score that dimension on a 0-100 scale, but I do not have scale anchors.",
+      "expected_output": "Focused computation-and-evidence review with an explicit mapping from the default anchors to an integer 0-100 score, while preserving N/A and severity safeguards.",
+      "files": ["fixtures/heavy-cost-paper.md"],
+      "assertions": [
+        "The response states an explicit mapping from the default 1-10 anchor bands to the requested 0-100 scale before applying it",
+        "The computation-and-evidence score is an integer and is consistent with the unresolved scalability, runtime-reporting, and baseline findings",
+        "The response does not replace missing evidence with zero or use decimals to imply unsupported precision",
+        "Because the request is focused rather than a full or pre-submission review, the response does not force unrelated default scorecard rows"
+      ]
+    }
+  ]
+}

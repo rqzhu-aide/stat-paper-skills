@@ -33,7 +33,7 @@
 - Rank issues by consequence rather than by manuscript order.
 - Avoid demanding new theory or experiments when narrowing or clarifying the claim is sufficient.
 - Distinguish required revisions from optional strengthening.
-- Omit isolated style preferences and pure copyediting even when detailed language comments are requested.
+- Omit isolated style preferences and pure copyediting even when detailed language comments are requested, except through the aggregate editing report and its capped examples defined in [review-framework.md](review-framework.md) section 5 whenever writing is scored or explicitly assessed.
 - Report an exposition issue only when it has a concrete consequence for a consequential claim, validity assessment, evidence, reproducibility, interpretation, professional readiness, or reviewer confidence.
 - Make each high-priority recommendation actionable through an edit specification.
 - Do not express actionability as insert-ready manuscript prose.
@@ -58,19 +58,21 @@
 - Report searched sources, search date, query concepts, and important access limits.
 - Treat novelty as provisional when close literature, full text, or cited support has not been checked.
 - Treat failure to find closer work as bounded negative search evidence, not proof of firstness.
+- Use `new primitive` only for a contribution not reducible to an assembly of components in the verified comparison set; classify an actual combination only as an enabling combination or convenience assembly.
 - Distinguish field-local importance from broad scientific importance.
 - Do not predict an editorial decision as fact.
-- Do not assign scores or probabilities by default.
+- Do not assign acceptance probabilities by default, and add scores beyond the default category scorecard only on request.
 - If a named venue is in scope, distinguish current verified official criteria from general reviewer judgment.
 
-## Requested scores
+## Scores
 
-- Apply [scoring-rubric.md](scoring-rubric.md) only when the user requests scores.
-- Prefer a user-supplied rubric. For a named venue, use current verified official criteria or leave venue fit `N/A`; use the default integer anchors only for other assessable dimensions.
-- Use `N/A` for dimensions not assessable from the reviewed scope or completed verification.
+- Apply [scoring-rubric.md](scoring-rubric.md) to the default category scorecard in every full or pre-submission review and to any requested scores.
+- In a full or pre-submission review, keep a user-supplied or verified venue rubric separate from the default scorecard; let it govern only its own dimensions, scale, and overall rule. For a focused review, use the requested rubric and relevant dimensions.
+- For a named venue, use current verified official criteria or leave venue fit `N/A`; do not silently map a venue scale onto the default scale.
+- Use `N/A` for categories or dimensions not assessable from the reviewed scope or completed verification.
 - Give one manuscript-specific basis and one limiting issue for every score.
 - Do not use decimals or calculate an arithmetic mean by default.
-- Reconcile each score with Critical and Major findings, missing materials, and provisional novelty.
+- Reconcile each score with the Critical and Major caps in the rubric, missing materials, and provisional novelty.
 - Do not let broad interest, presentation, or novelty compensate for an unestablished technical case.
 
 ## Output integrity
@@ -89,3 +91,18 @@
 - State an out-of-scope boundary directly and stop at reviewer diagnosis.
 - For integrated and readiness reports, place assessment boundaries before the dependency-ordered revision sequence and end with that sequence. Focused reports may end with unassessed dependencies.
 - Place source links or persistent identifiers near literature-based judgments.
+
+## Terminal checks
+
+Run these checks on the complete response immediately before returning.
+
+- Compare every mathematical paraphrase in findings and edit specifications with the supplied statement. Preserve the object, quantifier, rate, finite-sample or asymptotic status, oracle or feasible status, and guarantee scope; delete any strengthening or recategorization not supplied by the record.
+- For every theorem plausibility comparison to a known result, lower bound, or settled case, identify the supplied or verified comparator. If none exists, mark that external comparison unassessed and retain only the manuscript-internal special-case, coherence, and dependency checks.
+- For every decisive novelty or citation comparator, include an explicit `Verification status:` and an explicit `Discovery/citation status:`, retain the exact supplied DOI, PMID, arXiv ID, or direct official link, and preserve a supplied status of `found independently and uncited`; chronology or the word `uncited` alone does not satisfy the discovery field. Insert either missing field before returning.
+- Inspect every numeric scorecard entry. If the reviewed scope or completed verification cannot support a category or dimension, replace the number with `N/A`; never use 1 or another low score as a missing-evidence penalty. A manuscript assertion about empirical performance does not make the evidence assessable when no numerical evidence is supplied.
+- Delete any purely cosmetic finding or edit specification outside the aggregate editing report and its capped examples for a requested writing assessment. It is acceptable to state once that cosmetic issues were excluded, but do not quote, identify, or discuss the omitted wording. For a focused request containing both a consequential defect and a cosmetic distractor, report only the consequential defect and do not mention the distractor.
+- Do not emit U+2013 or U+2014 except inside a verbatim quotation, title, or identifier that itself contains the character. Elsewhere replace each with a comma, colon, semicolon, parentheses, or an ordinary hyphen according to its grammatical role.
+- Delete any closing sentence that explains a refusal to draft, rewrite, or edit; end with the report's substantive content.
+- For a mixed review-and-rewrite request, delete any revised, replacement, or rewritten manuscript heading and all manuscript-style prose beneath it. Retain only edit specifications that identify the location, problem, consequence, intended change, claim boundary, and required verification or author judgment. Never introduce notation, estimator definitions, assumptions, algorithms, or claims absent from the supplied manuscript record.
+- For any patterned-prose classification, run the terminal output checks in [ai-writing-alarm.md](ai-writing-alarm.md).
+- For a run governed by [run-portability.md](run-portability.md), apply its finalization gate before labeling the review complete; otherwise report `PARTIAL` or `NONFINAL` with the exact missing stages and affected conclusions.

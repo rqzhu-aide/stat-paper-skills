@@ -49,6 +49,18 @@ Check whether the paper moves correctly between them. Ask:
 
 Treat a mismatch between the headline target and the evaluated object as a high-priority concern.
 
+### Computational cost and practicality
+
+For a proposed method, assess cost explicitly rather than leaving it to the evidence review:
+
+- the stated time and memory complexity, per iteration and in total, and whether the manuscript states one at all;
+- whether the reported experiments are consistent with that cost and include problem sizes near the intended scale of use;
+- wall-clock time, hardware, and implementation reported symmetrically for the proposal and its competitors;
+- the tuning and model-selection budget, counted as part of the method's cost;
+- whether cost grows with a quantity the application cannot bound, such as dimension, sample size, or resampling count.
+
+Report a heavy but honestly stated cost as a boundary of the contribution. Report an unstated, understated, or asymmetrically reported cost as a finding.
+
 ## 3. Assumptions, validity, and theory
 
 Group assumptions by role:
@@ -69,6 +81,19 @@ For the theorem story, ask:
 - Are oracle and feasible guarantees distinguished?
 - Do proof sketches expose the main device and assumption use?
 - Are limitations or failure regimes stated where the claim is made?
+
+### Theorem plausibility screen
+
+Without performing line-by-line verification, screen every headline result for plausibility:
+
+- compare claimed rates, conditions, and constants only against results, lower bounds, or settled cases supplied in the manuscript packet or verified from an external source; identify the comparator and its verification status;
+- when no verified external comparator is available, mark the external-comparison component unassessed rather than supplying a remembered benchmark, while continuing the internal checks below;
+- specialize the statement to degenerate or limiting cases, such as no noise, one dimension, a known submodel, or the sample size growing without bound, and check that it behaves sensibly;
+- check quantifiers, convergence modes, and constants for coherence across the statement, the proof sketch, and later restatements;
+- ask whether the named or sketched proof technique appears adequate for this claim type and whether each stated assumption is visibly used, labeling that assessment as reviewer inference unless it is source-supported;
+- treat a guarantee strictly stronger than the literature's under strictly weaker assumptions as requiring explanation, not as impossible.
+
+Conclude the internally supported screen with one of: plausible; plausible with named risks; or challenged, identifying the exact step, dependency, or contradiction. Report the external-comparison component separately as assessed, limited, or unassessed. Label both results as plausibility judgments, not verification.
 
 Separate theorem exposition from proof verification. An unclear proof is not automatically an incorrect proof. A proof-level objection must identify the exact unsupported step or dependency.
 
@@ -112,6 +137,8 @@ Treat software-manual prose, unexplained jargon, formula-first exposition, unran
 Also notice whether fluent prose repeatedly loses the exact statistical object, action, evidence, or boundary; drifts across sections; retains drafting residue; or repeats one rhetorical shell without advancing the argument. These are claim-traceability problems before they are questions about writing provenance. When the user requests an AI-writing assessment, or a recurrent pattern survives cross-section reconstruction, apply [ai-writing-alarm.md](ai-writing-alarm.md). Do not infer authorship from surface style.
 
 Report exposition problems only when they materially affect comprehension of a consequential claim, claim traceability, validity assessment, evidentiary interpretation, reproducibility, professional readiness, or reviewer confidence. Omit isolated style preferences and pure copyediting even when the user asks for detailed language comments. Do not include an otherwise clear sentence merely because it is awkward, redundant, inelegant, or wordy.
+
+Whenever writing is scored or explicitly assessed, additionally report mechanical editing quality in aggregate: the approximate density and kinds of typographical errors, notation and terminology instability, citation and cross-reference hygiene, and formatting consistency. Give at most two to four representative examples, and only when the user explicitly asks for examples. Do not itemize copyedits beyond that cap, and do not supply corrected wording.
 
 Give an edit specification rather than replacement prose. State the affected location, intended effect, content that must change, and any scientific or verification dependency.
 

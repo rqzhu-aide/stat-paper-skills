@@ -1,4 +1,4 @@
 interface:
   display_name: "Statistical Paper Reviewer"
   short_description: "Referee-style statistical diagnosis and readiness review"
-  default_prompt: "Use $stat-paper-reviewer to assess this manuscript as a first-time critical reviewer, prioritize evidence-backed objections, and provide edit specifications without rewriting the paper."
+  default_prompt: "Use $stat-paper-reviewer to assess this manuscript as a first-time critical reviewer, prioritize evidence-backed objections, score novelty, theory, computation and evidence, and writing on the 1-10 scale, and provide edit specifications without rewriting the paper."

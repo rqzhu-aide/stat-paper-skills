@@ -47,6 +47,18 @@ Compare the intellectual contribution rather than surface vocabulary. Report sep
 - **Contribution form:** new target, construction, guarantee, evidence, application, combination, implementation, proof, extension, or interpretation.
 - **Citation status:** cited and distinguished fairly; cited but distinguished inadequately; found independently and uncited; or not assessable.
 
+### The combination test
+
+First distinguish a new primitive from a combination. Use **new primitive** only when the central target, construction, or guarantee is not reducible to an assembly of components in the verified comparison set, and the verified comparison supports that specific distinction. Do not use **new primitive** for a contribution already classified as a combination, and do not infer it from new terminology.
+
+When the contribution form is a combination of established components, do not stop at the label. Determine:
+
+1. **Capability:** does the combination deliver a target, guarantee, or application that no publication in the verified comparison set achieves or approximates? Name the closest approximation and what it misses.
+2. **Nontrivial development:** did making the combination work require a new identification argument, a new analysis, or a non-obvious algorithmic or theoretical step, or does it follow directly from the components in their published forms?
+3. **Classification:** conclude with either `enabling combination`, meaning a new capability or nontrivial development supported by the comparison set, or `convenience assembly`, meaning components joined as published with the capability already approximated by existing methods.
+
+State the classification and its basis in the novelty conclusion and let it constrain any novelty score.
+
 When no closer publication is identified, say:
 
 > No closer work was identified within the documented search boundary.
