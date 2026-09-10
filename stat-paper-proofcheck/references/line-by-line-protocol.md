@@ -23,9 +23,34 @@ final verification claim until it is explicitly migrated and rechecked.
 
 ## 1. Lock the unit
 
-Identify the formal statement, full proof, exact source file or files, inclusive line ranges, dependencies, definitions, inherited assumptions, and later use sites. Generate a source-locked ledger with the bundled `proofcheck.py extract` command resolved from the directory containing `SKILL.md`, passing the exact statement file and range so its contract anchor is created automatically. If the proof ledger does not include the statement because it is distant or in another file, record a precise separate-statement reason.
+Identify the exact statement, complete proof, source ranges, dependencies,
+definitions, inherited assumptions, and later uses. Extract a locked skeleton
+with the statement anchor; for a distant statement, explain its separation:
+
+```bash
+python "<skill-root>/scripts/proofcheck.py" extract --file "<proof.tex>" --start 20 --end 40 --statement-file "<main.tex>" --statement-start 5 --statement-end 12 --separate-statement-reason "Statement is in the main text; proof is in the appendix." --unit-id <unit-id> --output "<audit-root>/audit/04_local_checks/unit.skeleton.json"
+```
+
+Replace example ranges with the complete reviewed regions. Read locked passages:
+
+```bash
+python "<skill-root>/scripts/proofcheck.py" source-lookup "<audit-root>/audit/04_local_checks/unit.skeleton.json" --part proof
+```
 
 Include proof delimiters and intervening prose. Do not omit setup sentences, displayed-equation lines, "clearly" clauses, or the final conclusion. These locations often carry hidden scope changes.
+
+Standalone literal `\input{file}` and `\include{file}` expand recursively,
+retaining directives and included lines. `source_fragments.version: 1` indexes
+ordered coverage positions; lines and source units also retain original file
+and physical line coordinates. Use original coordinates for citations, issues,
+and reports, never coverage positions. Groups cannot cross files or gaps.
+
+Missing, ambiguous, cyclic, repeated, dynamic, and inline inclusions fail with
+source locations. Resolve source or supply a reviewed literal transcription;
+the extractor does not execute TeX. Re-extract older wrapper-only ledgers and
+review the collected argument; refreshing hashes is insufficient. Ordinary
+single-file format is unchanged. Lock included statement passages in the
+normalized obligation too.
 
 Treat the analyzer's proof region as canonical. Every automatic or reviewed
 proof span must match either a complete proof environment or one uniquely
@@ -103,19 +128,20 @@ separately, but normally inspect one complete proof unit and produce all of its
 ordered atomic records in one model call. Do not create one call per source
 line, risk row, or inference move.
 
-Model tiering may reduce cost without moving judgment. A lighter model may
-draft transcription-grade content: reviewing prefilled literals, goals, exact
-claim restatements, and source grouping. The judgment-bearing fields, including status,
-all risk dispositions, side conditions, failures and computations, premise and
-rule choices, conclusion rows, and everything in an issue or challenge,
-require the strongest available model, which must review any drafted content
-it builds on. The compiler and validators apply identical gates to every
-author, and telemetry's `stage` field can record the tier used per call. The
-strongest-model requirement is auditable through the calibration record: the
-declared `checker_profile_id` names the judgment-bearing checker, and a
-changed profile requires a fresh calibration session before further judgment.
+A lighter model may draft transcription: prefilled literals, goals, exact claim
+restatements, and source grouping. The strongest available model must review
+that draft and supply every judgment: status, risks, side conditions, failures,
+computations, premises, rules, conclusions, issues, and challenges. All authors
+face identical gates; telemetry's `stage` can record the tier. Calibration's
+`checker_profile_id` names the judgment-bearing checker. A changed profile or
+configuration requires fresh calibration before further judgment. A worker or
+context handoff under the same profile and configuration reuses the passing
+receipt and completed proof work; the context ID records canary provenance.
 
-When a compact context projection is useful, generate a primary packet:
+For a new unit, use the primary packet, annotation scaffold, and submit-unit as
+the normal authoring route. They supply deterministic structure without
+inventing judgments. Manual ledgers remain supported when needed, subject to
+the same final local and audit-wide checks. Generate the primary packet:
 
 ```bash
 python "<skill-root>/scripts/proofcheck.py" packet --root "<audit-root>" --unit-id <unit-id> --mode primary --output "<packet.json>"
@@ -134,7 +160,18 @@ primary_work_packet_ready: true and a completed normalized obligation.
 
 For a fresh extracted skeleton, generate a deterministic packet-bound draft:
 
-    python "<skill-root>/scripts/proofcheck.py" annotation-scaffold "<unit.skeleton.json>" --packet "<primary-packet.json>" --output "<annotations.json>"
+    python "<skill-root>/scripts/proofcheck.py" annotation-scaffold "<unit.skeleton.json>" --packet "<primary-packet.json>" --output "<unit.annotations.json>"
+
+Use a unit-prefixed `.annotations.json` filename, such as
+`variance.annotations.json`; bare `annotations.json` is invalid. For unfamiliar
+anchor fields, Windows writes or renewal, read the narrow
+[authoring example](../assets/templates/AUTHORING_AND_RENEWAL.md).
+
+Write formulas in new claims, reasons, and checks as explicit LaTeX using
+`$...$` or `\(...\)` for inline math and `$$...$$` or `\[...\]` for display
+math. In JSON strings, escape each backslash, for example
+`"$\\hat\\theta_n \\to \\theta_0$"`. Keep exact notation and conditions;
+do not rewrite historical mathematical evidence just to improve typesetting.
 
 The scaffold pre-fills deterministic hashes, IDs, dependency mirrors, source
 line ranges, all eight risk slots, and a literal transcription of each step's
@@ -143,17 +180,23 @@ source grouping and replace every null with paper-specific analysis; when a
 source group merges lines into one step, rewrite that step's prefilled
 `literal` to quote the complete merged unit. Do not use placeholder prose.
 
-Run one aggregate preflight before compilation:
+Publish the authored unit and its exact dependency-step bindings together:
 
-    python "<skill-root>/scripts/proofcheck.py" annotation-check "<unit.skeleton.json>" --annotations "<annotations.json>" --packet "<primary-packet.json>" --json
+    python "<skill-root>/scripts/proofcheck.py" submit-unit "<unit.skeleton.json>" --annotations "<unit.annotations.json>" --packet "<primary-packet.json>"
 
-The checker reports detectable schema, binding, and reconciliation problems
-together with JSON pointers. It does not publish a ledger. Then compile:
+The registry must already contain the reviewed exact uses and applicability.
+The checker supplies each dependency status; submission verifies it and derives
+invoking step IDs from draft keys and inputs. It validates once, publishes the
+registry and sibling ledger together, and rejects changed inputs. A repeated
+successful submission returns unchanged without overwriting evidence.
 
-    python "<skill-root>/scripts/proofcheck.py" compile-annotations "<unit.skeleton.json>" --annotations "<annotations.json>" --packet "<primary-packet.json>" --output "<unit.ledger.json>"
+For read-only diagnosis, use `annotation-check SKELETON --annotations DRAFT
+--packet PACKET --json`; it checks the same dependency bindings as manual
+`compile-annotations SKELETON --annotations DRAFT --packet PACKET --output LEDGER`.
 
-The skeleton must be inside the canonical audit and end in .skeleton.json.
-The packet and annotation file remain outside the audit root. The compiler
+The skeleton belongs inside the canonical audit. Compile `unit.skeleton.json`
+only to its sibling `unit.ledger.json`; arbitrary candidate names are rejected.
+Packets and annotations remain outside the audit root. The compiler
 rebuilds current state and requires exact equality of the dependency-closed
 semantic projection. Progress, next action, and unrelated metadata may drift
 without invalidating sound semantic work; relevant source, obligation,
@@ -162,11 +205,18 @@ closed. The compiler never overwrites an existing output. Its receipt records
 the exact packet hash, submitted and current operational binding hashes, and an
 operational-drift flag, so accepted reuse remains traceable.
 
-The annotation file is not a second evidence standard. It must still contain
-one record per substantive move and all judgment-bearing content required by
-this protocol: exact local restatement, goal, premise or earlier-move
-references, rule and justification, side-condition disposition, all eight risk
-dispositions with local evidence, status, issue IDs, and conclusion support.
+An unchecked row with `step_ids: []` supports the first packet. Submit-unit
+resolves those bindings from reviewed draft inputs; manual compilation still
+requires current exact registry bindings. Neither route invents applicability.
+
+Annotations retain every required field per substantive move: exact claim,
+goal, input references, rule, justification, side conditions, all eight risk
+dispositions, status, issue IDs, and conclusion support. Give separate local
+evidence for every applicable, open, failed, or unclear risk. For routine
+absences, set each such risk to the literal `"not_applicable"` and add one
+substantive, step-specific `not_applicable_basis`; the compiler expands these
+entries into the complete canonical risk matrix. Legacy per-aspect
+`not_applicable` objects remain valid.
 Stable references may replace copied claims only when the compiler can resolve
 them exactly from the normalized obligation, earlier moves, or declared result
 uses.
@@ -179,7 +229,8 @@ Use annotation schema version `2`. Its top level contains exactly
 `source_unit_sha256` from skeleton `source.unit_sha256`. Copy
 the other three hashes from the exact primary packet. A changed calibration
 receipt requires a fresh scaffold and full judgment review; it cannot be
-rebound.
+rebound. A context-only handoff under the same checker profile and
+configuration does not change the receipt.
 Keep `source_groups` empty unless a genuine multiline sentence or
 display requires one. Each step uses a stable local `key`, exact `lines`,
 `mode`, `kind`, `goal`, `claim`, literal and atomicity evidence, adversarial
@@ -192,14 +243,15 @@ names its `Cxxx` ID and support-step key.
 The review contains exactly `explicit_assumptions`, `inherited_assumptions`,
 `source_reference_dispositions`, `candidate_dependency_dispositions`,
 `citation_dispositions`, `verification_basis`, and `reviewer_notes`. It does
-not author `use_sites`; the compiler derives those exact canonical locations
-from packet `inventory.downstream_use_sites`. The compiler rejects unknown
-fields so a typo cannot silently become unused evidence.
+not author `use_sites` or `use_site_sufficiency`. The compiler derives exact
+use locations from packet `inventory.downstream_use_sites`; the audit-wide
+gate derives sufficiency from the outgoing internal dependency edges after
+closure. The compiler rejects unknown fields so a typo cannot silently become
+unused evidence.
 
-Make annotation `dependencies` equal the packet's registry-backed direct uses
-exactly. Each dependency row has `id`, `use_id`, `kind`, `status`,
-`needed_form`, and `compatibility_check`; an internal result also has its exact
-`conclusion_id`.
+Mirror packet direct uses exactly in annotation `dependencies`: `id`, `use_id`,
+`kind`, `status`, `needed_form`, `compatibility_check`, and internal `conclusion_id`.
+For exact result reuse, follow the [compact example](../assets/templates/INTERNAL_RESULT_REUSE.md).
 
 Cover every packet proof reference occurrence once with the same
 `occurrence_id`, `target`, and `command`, plus `disposition` and substantive
@@ -215,9 +267,12 @@ and `dependency_use_id`; other dispositions are `bibliographic_only` or
 `unresolved`. Cover every candidate internal dependency and all of its `CPxxx`
 path IDs exactly once with `candidate_id`, `path_ids`, `disposition`, and
 substantive `evidence`. Map a load-bearing candidate to its internal dependency
-use. A candidate with no registry edge may be only `navigation` or
-`non_load_bearing`. A verified unit cannot leave a reference or citation
-unresolved.
+use. A candidate with no registry edge may be `obligation_context` only when
+its exact root occurrence names a reviewed proof-free `assumption` or
+`definition` and the linked premise uses the corresponding normalized
+obligation scalar with a locked context anchor. Otherwise it may be only
+`navigation` or `non_load_bearing`. A verified unit cannot leave a reference or
+citation unresolved.
 
 The compiler may generate only deterministic projections, including source
 text and hashes, exact referenced claims and origins, mirrored dependency rows,
@@ -232,18 +287,15 @@ Manual ledgers and any compiled ledger later modified or moved still require
 ledger-check --final. Audit-wide dependency, issue, challenge, and finalization
 gates remain mandatory.
 
-If compilation reports stale semantic context, regenerate the packet and renew
-the annotation binding only after confirming that every affected judgment
-remains valid. Use mechanical rebinding only when
-`calibration_receipt_sha256` is unchanged:
+After semantic context changes, regenerate the packet and recheck affected
+judgments before rebinding. Rebinding requires unchanged calibration:
 
-    python "<skill-root>/scripts/proofcheck.py" rebind-annotations "<annotations.json>" --packet "<primary-packet.json>" --skeleton "<unit.skeleton.json>"
+    python "<skill-root>/scripts/proofcheck.py" rebind-annotations "<unit.annotations.json>" --packet "<primary-packet.json>" --skeleton "<unit.skeleton.json>"
 
-Rebinding copies current hashes only; it never certifies the authored
-judgments. If the calibration receipt changed, archive any old ledger under a
-name not ending in `.ledger.json`, regenerate the packet, create a fresh
-scaffold, and fully re-review. Operational-only drift does not justify
-rewriting the binding.
+Rebinding copies hashes, not judgments. Renew an existing ledger through the
+[fresh-skeleton sequence](../assets/templates/AUTHORING_AND_RENEWAL.md#renew-an-existing-ledger),
+preserving independent history. Changed calibration requires a fresh scaffold
+and full re-review. Operational-only drift does not require rebinding.
 
 If a proof unit does not fit in one complete packet, process contiguous
 source-unit blocks in manuscript order. Carry forward only canonical
@@ -328,11 +380,12 @@ Record:
 15. `issue_ids`: canonical IDs for any gap, incorrect, or unclear step.
 
 An obligation-origin premise must use a JSON Pointer that resolves to one
-concrete scalar string, such as `/hypotheses/0` or `/quantifier_scope`, and must
+concrete scalar fact, such as `/hypotheses/0`, and must
 name the one-based locked statement or context span that anchors it. Its claim
 must exactly match the resolved string. A pointer to a list or object, including
 a whole quantified-variable record, cannot supply a load-bearing premise claim.
-Select or normalize the exact scalar fact instead.
+Select or normalize the exact scalar fact instead. A scope field may include
+the target; that target cannot supply a premise.
 
 A prior-step or result premise must have a matching declared dependency, and
 its claim must exactly match that dependency's `needed_form`. A result premise
@@ -340,7 +393,13 @@ origin names its `Dxxx` use, not merely the dependency result ID. For a prior-st
 dependency, `needed_form` must also equal the earlier step's restatement exactly.
 When a source occurrence points to a labeled earlier step, record both
 `source_reference_occurrence_id` and `source_reference_id`; the target label
-must be statically active inside that exact earlier step range.
+must be statically active inside that exact earlier step range, or inside an
+exact normalized conclusion span supported by that earlier step and its
+conclusion move. In the latter case the conclusion claim must equal the
+consumed claim. This represents equations labeled in a theorem statement and
+established later in its proof. Each conclusion in a shared labeled display
+needs its own exact support. The statement label supplies location, never
+proof. See the [worked example](../assets/templates/AUTHORING_AND_RENEWAL.md#a-statement-labeled-equation-used-later-in-its-proof).
 Every `internal_result` or `external_result` record must exactly mirror the
 record with the same `use_id` in `review.direct_dependencies`, including
 `kind`, `status`,
@@ -354,10 +413,32 @@ regime, constant, or genuinely established earlier result instead. Every
 declared dependency must be used by a premise, and every premise must be
 consumed by an inference move. Standard logical or algebraic rules belong in
 the move's `rule` and `justification`; do not invent an unanchored "standard
-fact" premise. Duplicate exact premise claims do not provide independent
-support.
+fact" premise. Duplicate claims add no independent support.
 
 Use `non_inferential` only for statement, setup, or definition rows.
+Such a row records what is introduced or stated; it cannot supply a factual
+premise to a later inference. If later reasoning needs its mathematical content,
+link the exact normalized premise directly or record an introduction inference
+with its authorized inputs. A source-locked declaration alone is not evidence
+that its asserted property holds. Relabeling an inference as setup must never
+erase its assumption ancestry.
+
+Use the existing premise, inference, and side-condition fields for ordinary
+proof introductions:
+
+| Written move | Record when the content is used later |
+|---|---|
+| Fix an arbitrary real `x` | An introduction inference from the normalized quantifier/domain; check that `x` remains arbitrary. |
+| Define `y := x + 1` | A definition-introduction inference from the existing real domain; review freshness and well-definedness. |
+| Suppose `A` within a subargument | Keep `A` in conditional intermediate claims such as `A implies B`; discharge it in the closing rule. Do not publish `A` as an unconditional fact. |
+| Split into cases `A` and `not A` | Record each conditional branch and the exhaustive-case inference using both branches. |
+| Induct on `n` | Record the base and the quantified conditional induction step before the induction inference. Do not treat the induction hypothesis as unconditional. |
+
+The checker must still judge whether introductions and discharges are valid.
+These records preserve the argument's conditions; they are not a formal logic
+kernel. Missing cases or an induction base remain gaps when the mathematical
+review establishes that they are necessary.
+
 Every `verified` or `conditionally_verified` derivation must consume at least
 one premise or strictly earlier move.
 
@@ -503,7 +584,10 @@ For logical proof rules, also check variable freshness for universal introductio
 
 Use [evidence-and-verdicts.md](evidence-and-verdicts.md) for severity and confidence.
 
-Record separate component judgments for contract fidelity, argument validity, statement status, dependency closure, and use-site sufficiency. An invalid proof does not by itself show that the theorem statement is false.
+Record separate local component judgments for contract fidelity, argument
+validity, statement status, and dependency closure. The audit-wide gate derives
+use-site sufficiency from the completed internal dependency edges. An invalid
+proof does not by itself show that the theorem statement is false.
 
 ## 8. Check the use site
 
@@ -545,7 +629,7 @@ claim.
 Compilation success does not establish that authored judgments are
 mathematically true. It already includes the full final local ledger validator,
 but it does not replace dependency closure, issue reconciliation, the
-critical-path challenge, or audit-wide finalization.
+independent check of every in-scope unit, or audit-wide finalization.
 
 For PDF-only input, create a UTF-8 numbered transcription for the exact page
 range and pass that text file as `--paper` with
@@ -555,18 +639,18 @@ the transcription hash and the separate publisher-PDF hash, byte size, and
 nonauthoritative original location under `input_provenance`. These records
 establish identity, not transcription accuracy.
 
-Visually compare every displayed equation and symbol against the rendered
-pages, record page and equation anchors in the contract, and manually build
-the reviewed inventory. At scaffold, set `--visual-review-status` only to
-`not_started` or `partial` and give specific `--visual-review-notes` for work
-already performed. Scaffold cannot assert completion because page anchors and
-completion time are not supplied through that command. After the actual visual
-comparison, update `input_provenance.visual_review.status` to `complete` and
-record a nonempty `reviewed_pages` string list, substantive `notes`, and a UTC
-`completed_utc` timestamp. An incomplete visual review or manual inventory
-keeps the audit nonfinal. State that LaTeX-level cross-reference, macro,
-include-closure, and source-authenticity checks were unavailable. Do not claim
-that either hash authenticates the transcription-to-PDF correspondence.
+Compare every equation and symbol with rendered pages, record page/equation
+anchors, and manually review the inventory. Scaffold accepts visual status
+`not_started` or `partial` with notes. After actual comparison, set
+`input_provenance.visual_review.status: complete`, a nonempty `reviewed_pages`
+string list, substantive `notes`, and the actual UTC `completed_utc`.
+Previously completed preparation may be reused only for the identical PDF and
+transcription with retained page-review evidence. Record that reuse and its
+original review time; do not describe it as fresh visual inspection. Reconcile
+any changed text against the PDF. Hash equality identifies bytes, not accuracy.
+Incomplete visual review or inventory keeps the audit nonfinal. State that
+LaTeX-level reference, macro, include-closure and source-authenticity checks
+were unavailable.
 
 For a relocatable PDF audit, use `--portable-sources`. Both the transcription
 and publisher PDF are copied into `audit/00_sources/` and hash locked there;

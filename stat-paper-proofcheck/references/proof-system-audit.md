@@ -4,6 +4,11 @@
 
 Index every formal statement, definition, assumption, named event, important equation, proof range, label, and external theorem citation. Record exact locations and parser limitations. Snapshot every file in the static LaTeX include closure. Reconcile the generated inventory against custom theorem environments, macros, generated content, and the rendered document before marking it reviewed.
 
+Inspect `proofcheck_source_check.py` items before bulk ledger extraction.
+For association or boundary failures, follow
+[source-layout-diagnostics.md](source-layout-diagnostics.md); source inspection
+must distinguish an absent argument from an unsupported layout.
+
 Keep reviewed depth, targets, scope, critical units, exclusions, parser limits,
 and the few genuinely judgmental planning notes in canonical JSON. Do not
 rewrite those facts into a separate authored plan. Generate the concise plan,
@@ -97,7 +102,8 @@ Also review the method-interface trigger. Inventory each load-bearing estimated 
 For `depth: full`, put every inventory unit with `proof_required: true` in
 `audit_scope.in_scope_units`. Do not exclude a proof-required result because its
 proof is absent or defective. Audit it and record the resulting gap, incorrect,
-or unclear status. Continue to classify every non-proof-required unit as either
+or unclear status. Source-layout rejection alone establishes none of these.
+Continue to classify every non-proof-required unit as either
 in scope or explicitly excluded.
 
 For `depth: focused`, set a nonempty ordered `audit_scope.target_units` list.
@@ -119,6 +125,15 @@ compatibility judgment and evidence, use status, and issue link. Generation
 must fail or retain an unchecked state when any of those semantic inputs is
 absent.
 
+Build this record in two explicit stages. First normalize every in-scope unit
+and create a reviewed scheduling map from source references and exact Cxxx
+contracts. Before a dependent has a final primary ledger, its registry row may
+have an empty `step_ids` list and `unchecked` status. This schedules work but
+does not establish closure. Once the checker fixes the dependent's atomic step
+plan, replace those temporary fields with the exact invoking steps, ledger
+mirrors, status, and issue links. Regenerate the primary packet before final
+compilation. Compilation and finalization require the complete binding.
+
 Set the registry `review` object only after reviewing the complete current
 assembly. Record:
 
@@ -132,8 +147,8 @@ Any mismatch makes the registry stale. Rebind and recheck it after the source
 snapshot, inventory, or scope changes.
 
 Record every direct internal dependency exactly once in `internal_uses`. Use one
-row per `(dependent_unit, use_id)` pair, with a `Dxxx` use ID that matches the
-dependent ledger. Each row must contain:
+row per `(dependent_unit, use_id)` pair, with a `Dxxx` use ID that will match
+the dependent ledger. In the final binding, each row must contain:
 
 - `dependent_unit`, `use_id`, and `dependency_id`;
 - the exact `dependency_conclusion_id` naming a `Cxxx` conclusion in the
@@ -250,22 +265,28 @@ Maintain only ledgers that the paper needs:
 
 Update ledgers during local checking. Do not build exhaustive tables that never affect verification.
 
-## 4. Check the critical path first
+## 4. Check in dependency order
 
-Trace the main theorem backward to base assumptions. Prioritize the final assembly proof, highly reused lemmas, and results carrying probability, rates, optimization, or external-theorem dependence.
+Trace target results backward to identify their exact prerequisite closure, then
+check forward from base assumptions and prerequisite lemmas to their
+dependents. A dependent unit is ready only after its internal prerequisites
+have current ledgers and their exact conclusion contracts are known.
 
 Generate the current dependency layers and execution order with `sync-views`.
 Use one complete primary packet per ordinary unit. Short adjacent units in the
 same ready layer may share one model call only when each unit's full statement,
 proof, assumptions, and dependency contracts fit and the output keeps their
-records separate. A full audit still checks every scoped unit; prioritization
-and batching do not sample or omit routine units.
+records separate. Every audit still checks every scoped unit. A priority label
+may break ties between units in the same ready layer, but it never changes
+coverage or moves a dependent ahead of an unchecked prerequisite.
 
-Use the exact effective-critical set defined in
-[challenge-protocol.md](challenge-protocol.md). Prioritization and batching
-cannot omit any unit in that set.
+Follow [challenge-protocol.md](challenge-protocol.md) for every in-scope unit.
+Prioritization and batching cannot omit an independent check.
 
-If a critical dependency fails, mark downstream units blocked or conditional. Continue only when checking them can independently expose useful issues.
+If a prerequisite fails, propagate that failure into every dependent's inputs
+and verdict, but continue checking every in-scope dependent line by line. A
+failed prerequisite prevents an unsupported verified verdict; it does not
+remove the dependent from coverage or prevent discovery of independent flaws.
 
 ## 5. Run the global consistency pass
 
@@ -281,13 +302,13 @@ exactly these eight aspects:
 7. `use_site_sufficiency`
 8. `issue_propagation`
 
-Each row contains `aspect`, `status`, substantive `evidence`, `affected_units`,
-and `issue_ids`. Use only `passed`, `not_applicable`, `defect`, or
-`inconclusive`. Keep the aspect set exact, without duplicates. A `defect` or
-`inconclusive` row must identify its affected in-scope units and canonical
-issues. Use `not_applicable` only when the evidence explains why the aspect is
-absent from the checked scope. A `no_defect_found` assessment requires every
-row to be `passed` or specifically `not_applicable`.
+Each row has `aspect`, `status`, substantive `evidence`, `affected_units`, and
+`issue_ids`. `affected_units` means defect impact: use `[]` for both lists on
+`passed` or `not_applicable` rows; describe checked scope in `evidence`.
+`defect` and `inconclusive` rows require affected in-scope units and canonical
+issues. These are the only four statuses; aspects cannot repeat.
+`not_applicable` requires evidence of absence from scope. `no_defect_found`
+requires every row to be `passed` or specifically `not_applicable`.
 
 Use the matrix to test statement versus proof conclusion, proof conclusion
 versus later use, assumption propagation, notation and measure stability,
@@ -296,6 +317,12 @@ composition, quantifier order, uniformity, finite-sample versus asymptotic
 scope, and issue propagation through the main chain. Keep method-interface
 consistency in its canonical registry while reflecting any load-bearing result
 impact in the relevant global rows.
+
+When non-vacuity is not immediate, use the assumption-propagation and regime
+rows to verify that all assumptions, domains, and regimes are jointly
+realizable by an admissible model, parameter choice, sequence, or verified
+existence result. Impossibility is a defect; unresolved realizability is
+inconclusive. Keep proof validity separate from applicability.
 
 Local validity does not imply global sufficiency.
 
@@ -308,7 +335,10 @@ Remove or weaken each assumption and identify the first proof step that fails. S
 Use [domain-risk-checks.md](domain-risk-checks.md) only for domains actually present.
 
 
-For every effective-critical unit, follow [challenge-protocol.md](challenge-protocol.md). That file is the sole authority for challenge selection, blinding, issue assessments, freshness hashes, reconciliation, and artifact binding. This system audit only verifies that every required challenge exists and passes its current gate.
+For every in-scope unit, follow [challenge-protocol.md](challenge-protocol.md).
+That file is the sole authority for blinding, issue assessments, freshness,
+reconciliation, and artifact binding. This system audit verifies that every
+required independent check exists and passes its current gate.
 ## 7. Apply completion gates
 
 A full audit is complete only when:
@@ -332,8 +362,8 @@ A full audit is complete only when:
 - every resolved issue preserves a validated historical archive and clean
   current resolution, and its historical-current unit, dependency-use,
   challenge, and deliverable closure is fully rechecked;
-- every effective-critical unit has a reconciled, issue-complete, fresh
-  independent challenger record;
+- every in-scope unit has a reconciled, issue-complete, fresh independent
+  checker record;
 - canonical issue and method-interface consistency passes;
 - `PROGRESS.json` exactly matches the source snapshot, scope, unit statuses, and
   open S0 and S1 issue set;

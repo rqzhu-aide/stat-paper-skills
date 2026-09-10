@@ -1,235 +1,158 @@
 # Reporting and Release
 
-This file is the canonical contract for generated report projections, finalization, delivery checks, and final assurance language. Challenger semantics are defined only in [challenge-protocol.md](challenge-protocol.md).
+Canonical JSON owns the mathematical judgments. New reader reports are `proofcheck-report.html` beside `AUDIT_MANIFEST.json`, inside the audit folder. Existing audits retain their declared path, including `audit/06_reports/FINAL_REPORT.html`, until explicit migration. The graph, results, findings, repairs, source excerpts, and scope describe the same snapshot. Rendering requires no model call or network service.
 
-## Report directory and declared deliverables
+## Working reports
 
-Reserve the top level of `audit/06_reports/` for `FINAL_REPORT.md`,
-`ISSUE_SUMMARY.md`, and complete manifest-declared user-facing reports. Move
-drafts, partial reports, and working notes elsewhere. An undeclared Markdown
-file there is a report-integrity error.
+For a new HTML audit, generate a working view at any checkpoint:
 
-When delivering a report outside the canonical `FINAL_REPORT.md`, declare it in
-the optional manifest `report_deliverables` list. Each row contains an `Rxxx`
-`id`, `role: user_facing_report`, `path`, `sha256`, `issue_ids`, and
-`overall_verdict`. The path and hash must be current. The issue set, verdict,
-and canonical report sections must match `FINAL_REPORT.md` exactly. This
-includes `Verdict` when present, `Audit boundary and limitations`, `Main theorem
-chain`, `Conclusion judgments`, `Dependency closure`, `Issue index`, `Detailed
-findings`, `Independent critical-path challenges`, `Method-interface findings`,
-`Computational evidence`, `Unchecked scope`, and `Assurance boundary`. A
-different title and extra orientation prose are allowed. Do not declare a
-draft, partial export, or summary as a delivered report.
+```bash
+python "<skill-root>/scripts/proofcheck.py" report --root "<audit-root>"
+```
 
-Keep the scaffolded `NONFINAL SCAFFOLD` notice and title
-`NONFINAL Proof-Check Working Report` until the canonical report and generated
-issue views are complete and `completion.final_report_ready` is true. Then use
-the title `Final Proof-Check Report`, remove the notice, and run the status,
-issue-reconciliation, finalization, and delivery sequence. Finalization rejects
-either nonfinal marker.
+An unfinished or changed audit produces a NONFINAL view. It counts expected units from the declared scope or identifies unresolved scope. Missing, malformed, or unchecked records remain visible. An empty issue list never establishes a clean audit. On an unchanged current FINAL audit, `report` returns the existing deliverable and `checkpoint` returns current state without rewriting durable files; repeated `finalize` preserves those bytes.
 
-## Final report contract
+The graph starts with a Paper overview: one group per source-identified manuscript result in the recorded audit scope. It shows the complete overview when readable; bounded pages disclose omitted results and connections and retain access to every recorded dependency. Grouping is a reading view, not a new whole-theorem verdict. Mixed outcomes, unresolved conclusion coverage, and problems in associated assertions remain qualified in group summaries. Full statements come from the current source snapshot; fallback passages are explicitly labeled incomplete. No new authoring record or model call is required.
 
-Use `assets/templates/FINAL_REPORT.md`. Report:
+Open a group for its individual conclusions, or switch to Detailed proof for the existing exact graph. Returning to the overview retains the selected manuscript result. Grouped arrows expose their exact contributing uses, consumed forms, conditions, and source/target links. In the detailed view, premises enter an argument jointly, and written and supplemental arguments remain separate routes. A failed argument does not automatically refute its statement or downstream results; only exact-target evidence has a refutation arrow. Native result groups and technical evidence start collapsed, open when targeted, and remain available without scripting.
 
-Treat the report as a reviewed projection of canonical records, not a second
-authored evidence store. Generate protocol metadata, exact ID sets, unit and
-conclusion statuses, dependency rows, issue views, challenger rows,
-method-interface rows, and deliverable rows directly from their canonical
-records whenever the bundled tooling provides that projection. Author only
-the concise overall interpretation, confidence, and limitations that require
-judgment. Do not load every completed ledger into a separate reporting model
-call merely to copy fields into Markdown.
+Node colors identify mathematical types, with neutral judgment text. Red, green, and yellow belong to connections and matching arrowheads: failed, checked, or unresolved/conditional use. Gray identifies explicit givens. Hover or keyboard focus previews the statement, conditions, judgments, and location; touch can pin the preview and open details. Selection never changes a node's type color. No essential finding belongs only in a preview.
 
-1. overall verdict, exact target results, and exact checked scope;
-2. source revision, closure contract version, and tooling limitations;
-3. main theorem chain, with the exact unit-level status and component judgments
-   for every in-scope result, plus one exact conclusion-judgment row per `Cxxx`
-   conclusion;
-4. the generated issue index and one exact detailed finding for every canonical
-   issue;
-5. external-result status through the dependency-closure table and exact set
-   fields;
-6. structured suggested changes and the full required recheck closure,
-   separated from the diagnostic finding;
-7. unchecked scope and final confidence.
+An accepted supplement can establish the unchanged statement while the written argument retains a gap or invalidity. A restricted supplement instead appears as a separate form with its additional conditions; it has no support arrow to the unrestricted statement. A later application uses that form only when the canonical dependency record explicitly selects it and checks its conditions. The original lemma's broader defect remains visible. Pending supplemental review is displayed as pending support. This records reviewer evidence, not a completed manuscript edit.
 
-Include the conclusion-judgments table with these columns exactly:
+Essential claims, findings, repairs, source excerpts, scope, and the non-formal boundary remain readable without JavaScript and in print. The script only improves navigation. LaTeX formulas are converted to static MathML during report generation using the shared `latex2mathml` Python package, so the delivered HTML needs no network service, fonts, or math JavaScript.
 
-| Result | Conclusion | Contract fidelity | Argument status | Statement status | Dependency closure | Use-site sufficiency | Support | Dependency use IDs | Issue IDs |
-|---|---|---|---|---|---|---|---|---|---|
+Write formulas in authored mathematical prose with `$...$` or `\(...\)` for inline math, and `$$...$$` or `\[...\]` for display math. Preserve exact notation and conditions; do not turn formula display into a new mathematical transcription. Unknown commands or malformed expressions retain visibly labeled literal TeX. The converter does not execute TeX or expand manuscript macros. Install the package once in the shared interpreter used for proofcheck, for example `py -3.14 -m pip install --user latex2mathml` on Windows. A missing converter is reported explicitly; it is not silently downloaded.
 
-Write `Support` as exact `step_id/move_id`. Include one row for every ordered
-conclusion in every in-scope ledger.
+Historical normalized claims can contain ASCII shorthand rather than delimited LaTeX. For these, the report offers a typeset reading view from that conclusion's locked source spans, keeping the normalized wording in a disclosure. It does not invent backslashes or infer a replacement formula. Exact numbered source remains alongside its typeset reading view. The compact graph remains a navigation overview; complete typeset statements are in the linked result details.
 
-Include the protocol identity fields and the required dependency-closure table
-with these columns exactly:
+## Canonical report context
 
-| Dependent | Use ID | Dependency | Dependency conclusion | Kind | Source status | Applicability status | Effective status | Issue IDs |
-|---|---|---|---|---|---|---|---|---|
+Keep judgments, scope, counts, dependencies, and repairs in their canonical records. Optional `report_context` holds authored `title`, `essential_scope`, `limitations`, `confidence`, `confidence_rationale`, and `notes`. Limitations and notes are string lists; other fields are strings. Use `essential_scope` for one concise sentence beside the main judgment when a qualification is decisive, such as a separately assumed Gaussian approximation, fixed grid, or algorithmic target. Retain full limitations below and a reason for authored confidence. Do not infer a stronger judgment or a preferred repair from presentation order.
 
-Include one row for every canonical internal or external use. Match identifiers,
-statuses, and issues exactly to `DEPENDENCY_REGISTRY.json` and the ledgers.
+Additional or legacy context is displayed separately as authored or historical prose, including names resembling canonical scope fields. It cannot overwrite a reviewed fact. The assurance checks apply to authored assertions before either HTML or Markdown publication; formatting a claim as code does not exempt it. Literal locked-source quotations remain attributed evidence.
 
-Include exactly one independent-challenge row for every unit required by
-[challenge-protocol.md](challenge-protocol.md), and include only records that
-pass that protocol's current binding and reconciliation gates. Copy challenge
-status, independence level, challenger and reconciled verdicts, ordered
-disagreements, resolution, artifact, hashes, `covered_issue_ids`, and
-`issue_assessments` from the canonical ledger exactly. Render `Issue
-assessments` as a compact JSON array sorted by `issue_id`, using key order
-`issue_id`, `target_contract_sha256`, `assessment`, `target_assessment`,
-`downstream_assessment`. Render `Disagreements` as a compact JSON array in
-canonical ledger order. Escape a literal pipe inside either Markdown cell as
-`\|`.
+Result details preserve the selected support reasoning, conclusion-specific initial review and source anchors, and portable response/reconciliation links. Technical records and normalized wording start collapsed, remain available without JavaScript, and expand for print. Historical responses that omitted a judgment dimension say so. Resolved findings show the original failure as historical beside the actual resolution, current mapping, and completed rechecks. Source provenance appears with scope and evidence. These details do not lengthen the four-item overview.
 
-Use this exact challenge table:
+The four summary items are overall finding, key issues, impact, and repair
+outlook. Generate them from the existing reviewed records and manuscript
+groups; do not author a second summary or repeat mathematical review for
+presentation. Feature at most three active findings with existing paper and
+evidence links, disclose additional findings, and count resolved history
+separately. Preserve a short finding's complete explanation; long explanations
+remain linked in full so a shortened excerpt cannot discard qualifications.
 
-| Result | Challenge status | Independence | Covered issue IDs | Issue assessments | Challenger verdict | Reconciled verdict | Disagreements | Artifact | Source snapshot SHA256 | Challenged ledger SHA256 | Challenge context SHA256 | Artifact SHA256 | Generated UTC | Resolution |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+Count affected manuscript results separately from their individual conclusions
+and associated assertions. Grouping supplies no whole-theorem verdict. Keep
+written proof defects, exact statement refutations, conditional or unavailable
+support, and accepted supplements distinct. Describe repair directions and
+scientific costs from the recorded options, without preferring the first one.
+A candidate or locally inspected repair is not verified sufficient; verified
+support does not mean the manuscript was edited or the issue resolved. A
+failed bounded search does not establish that no local repair exists.
 
-Also include a method-interface table with the canonical issue ID, finding
-class, interface ID, estimator-target status, implementation inspection status,
-inspection mode, both code-comparison verdicts, and execution-provenance
-status. These fields, together with the canonical affected layer, must match
-the registry and issue log exactly. State whether an
-implementation result came from static inspection, execution, or both. Resolve
-its exact evidence and consequences through the canonical detailed finding
-rather than adding another evidence or consequence narrative to this table.
+Keep each repair direction attached to its finding and target. A list of
+suggestions does not establish that they are interchangeable alternatives.
+Use the same recorded finding classification in path headings, source links,
+and explanation links; an inconclusive concern must not become a confirmed
+failed inference in its detail view.
 
-Set `Method-interface schema version` to exactly `1` and use this
-exact method-interface table:
+Distinguish release state from mathematical assessment. NONFINAL means no
+overall judgment is released; report known incomplete checks or unavailable
+evidence without guessing the remaining cause. Complete local counts alone
+cannot establish publication-only readiness. Unknown scope stays unknown,
+and an empty issue list cannot establish a clean audit. Keep the opening
+compact, with complete reasons, qualifications, and rechecks in linked details.
 
-| Issue | Finding class | Interface ID | Estimator-target status | Implementation inspection | Inspection mode | Code to documented estimator | Code to required target | Execution provenance | Affected layer |
-|---|---|---|---|---|---|---|---|---|---|
+Reader labels use authenticated literal headings, source titles, or reviewed
+PDF numbering through optional `report_context.manuscript_labels`; see
+[manuscript label review](manuscript-labels.md) for its small schema and checks.
+Never infer numbers from audit IDs, inventory order, or LaTeX counters. Stale
+or conflicting PDF labels fall back to independent literal headings or
+descriptive source locations, with a display note, not a proof defect. For reviewed PDF
+transcriptions, explicit sequential `[PDF page 1; journal page 60]` or
+`[PDF page 1]` markers can supply the paper page; exact transcription file
+and lines remain in the result details. Missing or ambiguous mappings keep
+the original file-and-line locator.
 
-Treat these report fields as exact machine-reconciled sets: `Target results`, `Checked scope`,
-`Results not checked`, `External results checked`, `External results not
-checked`, `Declared external deliverables`, and `Highest-consequence issue`.
-Write sorted IDs separated by a comma and one space, with no trailing
-punctuation. Write exactly `none` for an empty set. Use `none` for `Tooling,
-extraction, or rendering limitations` only when no such limitation exists. Use
-only the exact independence enum values
-`none`, `fresh_context_same_model`, `different_model`, or `independent_human`;
-when more than one value applies, list the unique values in sorted
-comma-separated form.
+Give distinct conclusions a short, faithful `reader_description` in their
+canonical obligation when useful, such as "Lower-tail probability bound"
+and "Exponential comparison". This is an authored navigation caption, not
+a manuscript title or a replacement for the complete mathematical claim.
+Keep it within 120 characters on one line; avoid audit IDs and invented
+numbering. Coincident captions without descriptions fall back to exact
+claim previews. Audit IDs, JSON pointers, and exact normalized records
+remain in technical disclosures. Source links identify their role, such as
+the statement, premise, failed inference, citation, or downstream use.
 
-The `Declared external deliverables` scalar is mandatory and equals the
-exact sorted manifest `report_deliverables` ID set, or `none`. The
-`## Declared external deliverables` table is present exactly when that set
-is nonempty, with one exact canonical row per declared deliverable.
+An unnumbered LaTeX environment is presented as an unnumbered result; its
+trailing `*` remains source metadata. A separately normalized assertion outside
+the formal statement keeps its own descriptive conclusion caption. For original
+LaTeX with an actually reviewed PDF, the existing `reader_description` may also
+name a verified equation and PDF page, with that review recorded in source or
+normalization evidence. This remains an authored navigation caption. Do not
+insert transcription markers into the original TeX or infer a page from its
+line number; exact file/line coordinates remain available.
 
-Every declared user-facing report must retain all canonical scalar metadata
-and every semantic section exactly, including `## Computational evidence`.
-Only its title and additional orientation prose may differ. Required report
-content must be active Markdown, not HTML comments, fenced or indented code, or
-raw HTML. Active raw HTML is rejected because rendered visibility cannot be
-reconciled reliably. Literal code, mathematical expressions, block quotations,
-and exact locked-evidence cells do not count as authorial assurance claims.
+Each current finding can expose a short source-located path from its actual
+premise through the failed move to the affected result and recorded dependent
+use. These connections come from canonical premise and dependency records,
+not proximity in the paper. Repair targets link back to the affected result.
+Multiple conclusions stay distinct; missing evidence remains unavailable,
+and historical failure paths remain labeled historical. Included-source
+locations use original physical lines, never internal coverage positions.
 
-Set `Overall assessment code` to exactly `no_defect_found`, `defects_found`, or
-`inconclusive`, matching `AUDIT_MANIFEST.json`. The finalizer derives precedence
-from the evidence: a recorded defect overrides inconclusive units, and
-inconclusive units override a no-defect assessment. Set `Closure contract
-version` to exactly `4`.
+## Finalize and deliver
 
-Generate issue counts in `ISSUE_SUMMARY.md` with
-`proofcheck.py issues --write-summary`. At final reporting, add
-`--write-report-views --final` as shown below. `--write-report-views` requires
-`--final` and rewrites only the canonical `Issue index` and `Detailed
-findings` sections of `FINAL_REPORT.md` from validated issue, ledger, and
-dependency records. It leaves every other report section unchanged. Do not
-type competing counts, finding rows, quotations, or repairs manually. Use these
-stable report headings:
-
-- `## Issue index`;
-- `## Detailed findings`;
-- one `### I-001 [S1] summary` heading per issue, using its actual ID,
-  severity, and summary;
-- `#### 1. Exact failure site and contract`;
-- `#### 2. Downstream consequences`;
-- `#### 3. Severity and validity effect`;
-- `#### 4. Suggested changes and recheck`.
-
-For an open or deferred issue, derive the exact locked failure span, quotation,
-premises, rule, and failure evidence from its current `origin_ref`. For a
-resolved issue, derive those failure fields only from the validated historical
-archive. In all cases, derive the normalized statement, applicable assumptions,
-and scope from current `contract_refs`. Derive every current downstream
-row from the reviewed dependency graph and invoking `Dxxx` use, including
-its exact locked use-site span, quotation, dependency conclusion, and validity
-effect. Show severity, confidence, lifecycle, finding status,
-`invalidation_kind`, and current invalidation effect, and for an S0 or S1
-issue also the canonical repair-search conclusion and strategy rows. Render
-each structured suggested change with its source-locked target, action,
-repair scope, assumption cost, claim cost, proposal, verification status,
-and required rechecks, followed by the full recheck closure across affected
-units, dependency uses, challenges, and declared report deliverables.
-
-The issue index and detailed findings are generated projections of
-`ISSUE_LOG.json`, ledgers, the dependency registry, and locked source.
-They do not define issues again. If a current reference or a validated
-historical archive reference, hash, or quotation cannot be resolved exactly,
-or the rendered issue set differs from the canonical log, fail finalization.
-When the issue log is empty, write exactly `No issues.` in the index and
-do not invent detailed findings.
-
-Reconcile the main-theorem rows, dependency-closure rows, generated issue
-views, exact set fields, protocol fields, and all `report_deliverables` against
-the canonical JSON records. Do not duplicate the full external-use records,
-global consistency matrix, or result-status sections; those remain canonical in
-the main-theorem table, `DEPENDENCY_REGISTRY.json`, manifest completion checks,
-and `ISSUE_LOG.json`.
-
-Before release, write the final derived progress state through `checkpoint`,
-then run the strict issue and finalization gates:
+Complete the mathematical work and coordinator checkpoint, then run:
 
 ```bash
 python "<skill-root>/scripts/proofcheck.py" checkpoint --root "<audit-root>" --clear-active-unit --next-action "Run final issue reconciliation and finalization."
-python "<skill-root>/scripts/proofcheck.py" issues --root "<audit-root>" --write-summary --write-report-views --final
-python "<skill-root>/scripts/proofcheck.py" sync-views --root "<audit-root>"
+python "<skill-root>/scripts/proofcheck.py" issues --root "<audit-root>" --write-summary --final
 python "<skill-root>/scripts/proofcheck.py" finalize --root "<audit-root>"
 python "<skill-root>/scripts/proofcheck.py" delivery-check --root "<audit-root>"
 ```
 
-The final command writes `FINALIZATION.json` with pass or fail status, protocol
-identity, closure contract version, source snapshot identifier, file-level
-audit-artifact manifest, audit-state hash, and validation errors. Treat that
-generated file as the persisted gate result.
+For HTML audits, `finalize` first checks source, scope, atomic evidence, dependencies, issues, independent review, and completion. It fixes the snapshot time, derives the report, validates the exact visible output, and publishes the report, updated manifest/progress, and finalization record together. Failed publication restores the previous files. An interrupted mixed state cannot pass the read-only delivery check.
 
-`delivery-check` is the last, read-only release gate. Deliver a proofcheck
-report as final only when its JSON output contains `delivery_status: FINAL`
-and `usable_finalization: true`. A missing, failed, stale, foreign-path-bound,
-or otherwise unusable finalization returns `NONFINAL` and a nonzero exit code.
-This gate applies even if an earlier report exists or an informal reviewer
-found a plausible defect.
+Deliver only when `delivery_status` is `FINAL` and `usable_finalization` is true. A completed audit may contain defects or an inconclusive mathematical assessment. A saved HTML file describes the snapshot finalized at its recorded time; current workspace freshness is checked separately.
 
-Before finalization, `proofcheck.py status --root "<audit-root>"` always runs the
-current gate as a preflight. Its default output gives a concise work-in-progress
-summary; add `--verbose` for the complete current gate errors. It reports
-`preflight_status` and `finalizable_now` even when `FINALIZATION.json` is
-missing. A missing record is a normal work-in-progress state and does not alone
-make the command fail.
+The manifest's `report_contract` records version 2, the preferred HTML path, optional Markdown export, and renderer identity. `report_release` records the release state, snapshot time, and projection digest. Output hashes belong in `report_deliverables`; the report never embeds a finalization hash that would depend on its own bytes. HTML and its generated Markdown export share report group `R001`, with distinct paths and byte hashes. Adding an export does not add a mathematical reconciliation obligation. Do not modify a sealed report to add a badge.
 
-Work-in-progress validation still checks every populated record. In particular,
-it rejects stale source locks, broken links, and inferential steps that do not
-contain exactly one atomic move. It relaxes only final completeness. A zero
-status for a coherent partial audit does not make it complete or final.
+Report-only changes require rendering and resealing. The renderer identity includes the math adapter and converter version, configuration, and package resources. Installing or changing the converter requires regenerating and resealing the presentation, without repeating unchanged mathematical review. Changes to the mathematical validator or evidence require the existing relevance and revalidation checks. Renderer identity is separate and is not an exemption for mathematical changes.
 
-After finalization, `proofcheck.py status --root "<audit-root>"` recomputes artifact
-hashes and the full gate, including source files, external source-evidence
-files, and other locked evidence outside the audit workspace. It reports record
-status, freshness, exact changed artifact paths, current gate errors, and
-whether the finalization is usable. A stale, failed, or invalid finalization
-returns a nonzero status. Do not write status output inside a finalized audit
-root because that would mutate the sealed state. After any audit, source,
-evidence, registry, scope, or validator change, rerun finalization rather than
-citing the old record.
+An older graph needs regeneration to obtain the current compact cards and
+mathematical previews. A renderer mismatch alone does not invalidate unchanged
+mathematical evidence, but delivery remains NONFINAL until report renewal and
+the applicable checks pass. Source and review links resolve from the declared
+HTML location; do not move a sealed HTML file manually.
 
-## Final language
+For deliberate repairs or an unfinished alternative report, work in a copy of the delivered audit. Preserve the original as historical evidence, then use the existing archive, repair/recheck, and finalize workflow in the copy. Actual source or evidence changes remain NONFINAL until renewed. Archiving an issue preserves its origin; it does not resolve the defect by itself.
 
-Use "verified within the stated scope" only when all completion gates pass, and immediately define this as a non-formal audit judgment. Prefer "no defect found under the stated non-formal protocol." Otherwise say exactly what was checked and use conditional, gap, incorrect, unclear, or not-checked language.
+## Existing report locations and legacy Markdown audits
 
-Do not state that a paper, appendix, or theorem is correct when the audit covered only selected proof units or when a load-bearing dependency remains unchecked.
+To move an existing HTML report to the audit root, work in a preserved copy and
+run `migrate-report --root "<audit-root>" --top-level`, then `finalize` and
+`delivery-check`. The old manifest, report, and seal remain in
+`audit/06_reports/history/report-location-<identity>/`. The manifest declares one
+authoritative reader report; migration creates an honest NONFINAL view first.
 
-Do not infer that a theorem is false merely because its written proof is invalid. Report argument status and statement status separately.
+Legacy audits without `report_contract` retain their original report checks. Their exact format and generation procedure are in [legacy-markdown-report.md](legacy-markdown-report.md).
+
+To migrate presentation explicitly:
+
+```bash
+python "<skill-root>/scripts/proofcheck.py" migrate-report --root "<audit-root>"
+python "<skill-root>/scripts/proofcheck.py" finalize --root "<audit-root>"
+python "<skill-root>/scripts/proofcheck.py" delivery-check --root "<audit-root>"
+```
+
+Migration preserves the original manifest, report, and finalization bytes under `audit/06_reports/history/report-v1-<identity>/`. It retains an existing Markdown report as a generated secondary export and makes HTML primary. New audits default to HTML only. Migration preserves authored scope/confidence/limitation prose as report context. It does not rewrite mathematical judgments, calibration, challenge records, or old finalization history to make stale evidence appear current.
+
+A migration initially creates a NONFINAL working report. History, active declarations, and generated reports are published in one transaction; a failed publication restores the previous files. Stale mathematical records still require the normal revalidation/review process before finalization.
+
+## Scope of assurance
+
+Prefer "no load-bearing defect found under the stated non-formal protocol" to an unqualified claim that the paper is correct. Keep contract fidelity, argument validity, statement status, dependency availability, and use-site sufficiency distinct. Neither deterministic validation nor agreement between reviewers is a formal proof certificate.
+
+Maintainers evaluate release behavior separately using [release-evaluation.md](release-evaluation.md). The supplied corpus and offline harness support blinded comparisons and observed usage, but the provisional keys still require independent expert review. Their software tests do not measure mathematical reliability.

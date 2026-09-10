@@ -9,7 +9,7 @@
 - Closure contract version: 4
 - Review status: reviewed
 - Source snapshot SHA256: 3f8b5733b8151109077b4cb9ba689810977c85ca977fbf57b53412d5e235c466
-- Inventory SHA256: da7a7ba7ec8406c5e901fb625f275a3c0f24987b3178911a3623302144e5c4e2
+- Inventory SHA256: 4e2bc7a872c8703f9ac582e1f4eb920dca7203bd834e4bf7ef11af31903b74e2
 - In-scope units: lem:growing-max, thm:main
 
 ## Dependency uses

@@ -1,0 +1,18 @@
+{
+  "tests": 1072,
+  "passed": 1071,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 1,
+  "expected_failures": 0,
+  "unexpected_successes": 0,
+  "unittest_seconds": 1080.7739954999997,
+  "skip_reasons": [
+    {
+      "test": "test_proofcheck.FinalizationTests.test_finalization_rejects_redirected_challenge_artifact",
+      "reason": "Symlink creation is unavailable: [WinError 1314] A required privilege is not held by the client: 'C:\\\\Users\\\\zrq\\\\AppData\\\\Local\\\\Temp\\\\tmpy7tsk3kp\\\\redirected challenge.md' -> 'C:\\\\Users\\\\zrq\\\\AppData\\\\Local\\\\Temp\\\\tmpy7tsk3kp\\\\audit-root\\\\audit\\\\05_adversarial\\\\redirected-challenge.md'"
+    }
+  ],
+  "expected_failure_tests": [],
+  "unexpected_success_tests": []
+}

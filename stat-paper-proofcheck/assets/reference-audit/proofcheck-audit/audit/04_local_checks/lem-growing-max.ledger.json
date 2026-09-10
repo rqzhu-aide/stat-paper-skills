@@ -237,7 +237,6 @@
         "argument_status": "invalid",
         "statement_status": "refuted",
         "dependency_closure": "verified",
-        "use_site_sufficiency": "insufficient",
         "dependency_use_ids": [],
         "issue_ids": [
           "I-001"
@@ -248,7 +247,6 @@
     "argument_status": "invalid",
     "statement_status": "refuted",
     "dependency_closure": "verified",
-    "use_site_sufficiency": "insufficient",
     "explicit_assumptions": [
       "For each fixed j, X_{n,j} -> 0 in probability as n -> infinity.",
       "m_n -> infinity as n -> infinity."
@@ -267,7 +265,15 @@
       "Exact Bernoulli(1/n) counterexample with m_n = n^2, instantiated in exact rational arithmetic by the hash-locked script under audit/05_adversarial."
     ],
     "reviewer_notes": [
-      "The proof fails exactly at the pointwise-to-uniform promotion on line 16; the statement itself is refuted by the recorded counterexample, so downstream uses of C001 receive an incorrect dependency."
+      "The proof fails exactly at the pointwise-to-uniform promotion on line 16; the statement itself is refuted by the recorded counterexample, so downstream uses of C001 receive an incorrect dependency.",
+      "Primary source review on 2026-09-04 in existing maintenance context: reread every normalized condition and proof line, checked actual support inputs and the counterexample, and reconfirmed the judgments under proofcheck 1.4. This is primary review, not a fresh-context independent challenge.",
+      "After the final validator maintenance fix for unreadable shared style files, the primary reviewer reconfirmed these unchanged source spans and mathematical conditions. The current source-bound candidate was rebuilt and locally validated; this statement makes no claim of another independent review.",
+      "Primary renewal on 2026-09-07 in the existing implementation maintenance context: reread the exact manuscript, normalized conditions, every atomic annotation and registered dependency. Both direct counterexamples remain valid. This is a new primary review, not another independent challenge. Earlier annotations and complete independent checks remain preserved.",
+      "New primary review after the practical source and report repairs on 2026-09-07: reread the exact manuscript and declarations, every normalized condition, every source-locked inference and counterexample, and the D001 compatibility checks. Recompiled the unchanged mathematical judgments under the repaired validator. Historical conditional-versus-whole-argument disagreement remains preserved; this is primary review, not a new independent challenge.",
+      "Primary reconfirmation after the final unreadable auxiliary-context regression repair on 2026-09-07: reread the unchanged manuscript, complete obligations, all six source-locked moves, both counterexample programs and the eight D001 compatibility checks. Recompiled the unchanged mathematical judgments against a newly constructed current packet. The reference contains no unreadable or included source, so the repair changes validator context but no mathematical premise. This is an actual primary review; a fresh independent challenge is recorded separately and all earlier responses remain preserved.",
+      "Primary renewal completed 2026-09-08T01:22:55.422867+00:00 in /root/renew_release_reference. Fresh-scaffold primary review under the new five-canary qualification: checked the statement at lines 6 to 11, complete proof at lines 13 to 18, every normalized scalar, and all four substantive records. Line 14 introduces arbitrary $\\varepsilon>0$ without serving as an unanchored premise. Line 15 unfolds the pointwise hypothesis. Line 16 wrongly promotes it to the growing union, and line 17 states the false conclusion. Both the Bernoulli tail formula and the deterministic moving-coordinate witness meet the exact assumptions. All eight risks, inputs, failure targets, side-condition absences and C001 support were re-reviewed. No mathematical judgment changed; this is primary review, and renewed independent responses are required separately.",
+      "Primary maintenance re-review completed 2026-09-08T03:04:35.909663+00:00 in /root/surgical_reference_renewal. The complete original source and normalized obligation were reread, with every substantive annotation, premise, eight risk dispositions, exact failure target and C001 support. The Bernoulli and moving-coordinate constructions satisfy the stated pointwise hypotheses and directly refute both conclusions. D001 keeps the exact same contract and failed support. The source, mathematical judgments and inherited checker configuration are unchanged. This is primary review; the previous independent evidence remains historical pending renewal.",
+      "SRF revision renewal: The step from convergence for each fixed coordinate to convergence of an increasing maximum remains invalid. The deterministic array m_n=n and X_{n,j}=1 when j=n and zero otherwise satisfies every fixed-coordinate premise but has maximum one. Retain the explicit refutation of the statement and the source-anchored failure of its written argument."
     ]
   },
   "independent_check": {
@@ -276,26 +282,31 @@
     "independence_level": "fresh_context_same_model",
     "challenger_verdict": "incorrect",
     "reconciled_verdict": "incorrect",
-    "artifact": "audit/05_adversarial/lem-growing-max-challenge.md",
+    "artifact": "audit/05_adversarial/lem-growing-max-challenge-srf-revision.md",
     "covered_issue_ids": [
       "I-001"
     ],
     "source_snapshot_sha256": "3f8b5733b8151109077b4cb9ba689810977c85ca977fbf57b53412d5e235c466",
-    "challenged_ledger_sha256": "1ca8a3693ed4a49be3b6d0edf1638e2e5c7e53e3b5729f6430353a905ea08ab6",
-    "challenge_context_sha256": "dd5618fa59b1081b764462224461114f23a46eb429621bbf91a9169648fe8ceb",
-    "challenge_artifact_sha256": "e0a3fe9e6823370115d0e1fac654bed9a6d04453edff806a37ea49b6c8b932cf",
+    "challenged_ledger_sha256": "b5b241b6530fa01effdf2be598c9827f882b3b52d255c4942a49c2c5cddd3817",
+    "challenge_context_sha256": "4c896c54f344dbd74354d9e9c38f60a4d372e62abfb9faba7fbd07bb0f34b94e",
+    "challenge_artifact_sha256": "c006335b8b6b2a4eff5dd337b2c2d40e13f31ed55ba93ee340b2cb6d83666e08",
     "issue_assessments": [
       {
         "issue_id": "I-001",
-        "target_contract_sha256": "a2d101ec5357283027a977690b1c47aedd8d31c52a511e68d1d4185887c37a39",
         "assessment": "confirmed",
-        "target_assessment": "Independently re-derived: the pointwise hypothesis cannot control the maximum over the growing range 1..m_n. The Bernoulli(1/n) array with m_n = n^2 satisfies both hypotheses and gives P(max > 1/2) = 1 - (1 - 1/n)^{n^2} -> 1, so the target contract's conclusion is false and the issue's target is confirmed.",
-        "downstream_assessment": "thm:main consumes exactly this conclusion through use D001 and offers no independent control of the maximum, so the propagation to thm:main is confirmed."
+        "target_assessment": "The targeted inference at paper.tex:16 promotes fixed-coordinate tail convergence to convergence of a maximum over an increasing number of coordinates. The deterministic array $m_n=n$, $X_{n,j}=\\mathbf{1}_{\\{j=n\\}}$ has all fixed-coordinate tails eventually zero while the maximum tail at $\\varepsilon=1/2$ equals $1$. This directly disproves the targeted move under its stated premises.",
+        "downstream_assessment": "The packet records that thm:main uses exactly this maximum-convergence conclusion. For its estimator $\\hat\\theta_n=\\theta_0+\\max_{1\\le j\\le m_n}|X_{n,j}|$, the same admissible array gives $\\hat\\theta_n=\\theta_0+1$ for every $n$. Consequently the dependency cannot establish consistency, and the stated downstream consistency claim is also refuted.",
+        "target_contract_sha256": "a55282aebd9fabb477429cd8cfeab159f679748a19e859e6f1c9b894d3aab215"
       }
     ],
-    "generated_utc": "2026-08-30T14:54:12+00:00",
+    "generated_utc": "2026-09-08T23:08:11.982959Z",
     "disagreements": [],
-    "resolution": ""
+    "resolution": "",
+    "initial_response": {
+      "artifact": "audit/05_adversarial/initial-fef88974cf7442a7-058588ccb1752142804eb23cb34cf196b0440e00ec8c6b0ab094fbdacbaa2c7a.json",
+      "sha256": "7c4e50592bc6b3e7fe99205f796fce05eb22d62b57ec798f18ceeb487d7d7629",
+      "input_sha256": "058588ccb1752142804eb23cb34cf196b0440e00ec8c6b0ab094fbdacbaa2c7a"
+    }
   },
   "steps": [
     {
@@ -534,7 +545,8 @@
         },
         "adversarial": [
           "A union bound gives P(max > eps) <= sum_{j<=m_n} P(|X_{n,j}| > eps), but m_n -> infinity and no rate uniform in j is available, so the sum need not vanish.",
-          "Rare independent coordinates make each per-index tail 1/n while the union tail tends to one."
+          "Rare independent coordinates make each per-index tail 1/n while the union tail tends to one.",
+          "Fresh 1.5 re-review: for the independent Bernoulli array, $(1-1/n)^{n^2}\\leq e^{-n}$ for $n\\geq2$, so the exact maximum-tail formula tends to one. This analytical bound justifies the limit separately from the finite script outputs."
         ]
       },
       "side_conditions": [],
@@ -562,7 +574,7 @@
         {
           "aspect": "rate",
           "status": "failed",
-          "evidence": "No rate for P(|X_{n,j}| > eps) uniform in j is available, which is exactly what the growing union over 1..m_n needs."
+          "evidence": "The fixed-j hypothesis supplies no bound on the growing union's tail. A suitable rate uniform in j would be one sufficient remedy; it is not assumed."
         },
         {
           "aspect": "probability",
@@ -602,13 +614,13 @@
               "kind": "counterexample",
               "issue_id": "I-001",
               "target": "P(max_{1 <= j <= m_n} |X_{n,j}| > eps) -> 0 as n -> infinity.",
-              "evidence": "Take X_{n,j} independent Bernoulli(1/n) and m_n = n^2: each fixed j has P(|X_{n,j}| > eps) = 1/n -> 0 and m_n -> infinity, so both hypotheses hold, while P(max_{1<=j<=m_n} |X_{n,j}| > 1/2) = 1 - (1 - 1/n)^{n^2} -> 1.",
+              "evidence": "Take X_{n,j} independent Bernoulli(1/n) and m_n = n^2: each fixed j has P(|X_{n,j}| > eps) = 1/n -> 0 when 0 < eps < 1, and zero when eps >= 1; also m_n -> infinity. Thus both hypotheses hold, whereas P(max_{1<=j<=m_n} |X_{n,j}| > 1/2) = 1 - (1 - 1/n)^{n^2} -> 1.",
               "computation": {
                 "status": "instantiated",
                 "script_file": "../05_adversarial/lem-growing-max-counterexample.py",
                 "script_sha256": "ebae7bca362ec6fa722b2caa38c085b7ab346a577a9456af082164c864a8c289",
-                "command": "python3 lem-growing-max-counterexample.py",
-                "output_excerpt": "n=10,100,1000 with m_n=n^2: P(max > 1/2) = 0.999973, 1.000000, 1.000000 -> 1, never -> 0 (exact rational arithmetic)"
+                "command": "C:\\Users\\zrq\\AppData\\Local\\Python\\pythoncore-3.14-64\\python.exe -B lem-growing-max-counterexample.py",
+                "output_excerpt": "n=10: per-index tail=0.1000, P(max > 1/2)=0.999973\nn=100: per-index tail=0.0100, P(max > 1/2)=1.000000\nn=1000: per-index tail=0.0010, P(max > 1/2)=1.000000\nconclusion tail approaches 1, refuting max -> 0 in probability"
               }
             }
           }
@@ -717,13 +729,13 @@
               "kind": "counterexample",
               "issue_id": "I-001",
               "target": "max_{1 <= j <= m_n} |X_{n,j}| -> 0 in probability as n -> infinity.",
-              "evidence": "Take X_{n,j} independent Bernoulli(1/n) and m_n = n^2: each fixed j has P(|X_{n,j}| > eps) = 1/n -> 0 and m_n -> infinity, so both hypotheses hold, while P(max_{1<=j<=m_n} |X_{n,j}| > 1/2) = 1 - (1 - 1/n)^{n^2} -> 1. Hence the stated conclusion itself fails, not merely the written argument.",
+              "evidence": "Take X_{n,j} independent Bernoulli(1/n) and m_n = n^2: each fixed j has P(|X_{n,j}| > eps) = 1/n -> 0 when 0 < eps < 1, and zero when eps >= 1; also m_n -> infinity. Thus both hypotheses hold, whereas P(max_{1<=j<=m_n} |X_{n,j}| > 1/2) = 1 - (1 - 1/n)^{n^2} -> 1. Hence the stated conclusion itself fails, not merely the written argument.",
               "computation": {
                 "status": "instantiated",
                 "script_file": "../05_adversarial/lem-growing-max-counterexample.py",
                 "script_sha256": "ebae7bca362ec6fa722b2caa38c085b7ab346a577a9456af082164c864a8c289",
-                "command": "python3 lem-growing-max-counterexample.py",
-                "output_excerpt": "n=10,100,1000 with m_n=n^2: P(max > 1/2) = 0.999973, 1.000000, 1.000000 -> 1, never -> 0 (exact rational arithmetic)"
+                "command": "C:\\Users\\zrq\\AppData\\Local\\Python\\pythoncore-3.14-64\\python.exe -B lem-growing-max-counterexample.py",
+                "output_excerpt": "n=10: per-index tail=0.1000, P(max > 1/2)=0.999973\nn=100: per-index tail=0.0100, P(max > 1/2)=1.000000\nn=1000: per-index tail=0.0010, P(max > 1/2)=1.000000\nconclusion tail approaches 1, refuting max -> 0 in probability"
               }
             }
           }
@@ -739,5 +751,5 @@
       "issue_ids": []
     }
   ],
-  "work_context_sha256": "6220fcb56f038b8b48f033890e335ec28e8198c62df10fd4312d99dc3dc36a75"
+  "work_context_sha256": "584827b2fcd92d54365b4425563975bc7863f73bb3b3dfeaa3e4beaf3145c58f"
 }

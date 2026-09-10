@@ -13,7 +13,9 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
@@ -244,8 +246,14 @@ class FinalizationTests(unittest.TestCase):
         self.audit = self.base / "audit-root"
         with contextlib.redirect_stdout(io.StringIO()):
             proofcheck.cmd_scaffold(
-                argparse.Namespace(paper=self.paper, output=self.audit)
+                argparse.Namespace(paper=self.paper, output=self.audit, report_format="markdown")
             )
+        # These fixtures exercise the historical Markdown/challenge contract.
+        # New HTML and initial-response contracts have separate integration tests.
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["protocol"].pop("challenge_contract_version", None)
+        write_json(manifest_path, manifest)
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -533,7 +541,9 @@ class FinalizationTests(unittest.TestCase):
 
         challenge = self.audit / "audit" / "05_adversarial" / "lem-main-challenge.md"
         challenge.write_text(
-            "# Blinded challenge\n\nVerdict: verified.\n",
+            "# Blinded challenge\n\n"
+            "The blinded reconstruction was checked line by line; "
+            "its verdict is verified.\n",
             encoding="utf-8",
             newline="\n",
         )
@@ -619,12 +629,21 @@ class FinalizationTests(unittest.TestCase):
         ]
         write_json(ledger_path, ledger)
         self.seal_schema5_challenge(ledger_path, read_json(ledger_path))
-        challenge_record = read_json(ledger_path)["independent_check"]
         final_report = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
         final_report.write_text(
             "# Final Proof-Check Report\n\n"
+            "## Summary\n\n"
+            "- Overall judgment:\n"
+            "- Main reason:\n"
+            "- Impact on paper conclusions/results:\n"
+            "- Repair options and difficulty:\n\n"
+            "## Results and impact\n\n"
+            "Pending generation.\n\n"
+            "## Findings and repairs\n\n"
+            "No issues.\n\n"
+            "## Scope and assurance\n\n"
             "- Overall assessment code: no_defect_found\n"
-            "- Overall judgment: No defect found under the stated non-formal protocol.\n"
+            "- Target results: lem:main\n"
             "- Checked scope: lem:main\n"
             "- Source revision: scaffolded source snapshot.\n"
             f"- Skill version: {proofcheck.SKILL_VERSION}\n"
@@ -635,39 +654,21 @@ class FinalizationTests(unittest.TestCase):
             f"- Source snapshot ID: {manifest['source_snapshot']['sha256']}\n"
             "- Finalization record: audit/06_reports/FINALIZATION.json\n"
             "- Highest-consequence issue: none\n"
-            "- Final confidence: high within the declared non-formal scope.\n\n"
-            "## Audit boundary and limitations\n\n"
+            "- Final confidence: high within the declared non-formal scope.\n"
             "- Files and results checked: paper.tex and lem:main.\n"
-            "- Target results: lem:main\n"
             "- Results not checked: none\n"
             "- External results checked: none\n"
             "- External results not checked: none\n"
             "- Tooling, extraction, or rendering limitations: none\n"
-            "- Declared external deliverables: none\n"
-            "- Independence level of the critical-path challenge: fresh_context_same_model\n\n"
-            "## Main theorem chain\n\n"
-            "| Result | Unit status | Contract fidelity | Argument status | Statement status | Dependency closure | Use-site sufficiency | Evidence |\n"
-            "|---|---|---|---|---|---|---|---|\n"
-            "| lem:main | verified | verified | valid | established | verified | not_applicable | Exact source ledger and direct reconstruction. |\n\n"
-            "## Conclusion judgments\n\n"
-            "| Result | Conclusion | Contract fidelity | Argument status | Statement status | Dependency closure | Use-site sufficiency | Support | Dependency use IDs | Issue IDs |\n"
-            "|---|---|---|---|---|---|---|---|---|---|\n"
-            "| lem:main | C001 | verified | valid | established | verified | not_applicable | S003/M001 | none | none |\n\n"
-            "## Dependency closure\n\n"
-            "| Dependent | Use ID | Dependency | Dependency conclusion | Kind | Source status | Applicability status | Effective status | Issue IDs |\n"
-            "|---|---|---|---|---|---|---|---|---|\n"
-            "None.\n\n"
-            "## Issue index\n\nNo issues.\n\n"
-            "## Detailed findings\n\nNo issues.\n\n"
-            "## Independent critical-path challenges\n\n"
-            "| Result | Challenge status | Independence | Covered issue IDs | Issue assessments | Challenger verdict | Reconciled verdict | Disagreements | Artifact | Source snapshot SHA256 | Challenged ledger SHA256 | Challenge context SHA256 | Artifact SHA256 | Generated UTC | Resolution |\n"
-            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
-            f"| lem:main | agreed | fresh_context_same_model | none | [] | verified | verified | [] | {challenge_record['artifact']} | {challenge_record['source_snapshot_sha256']} | {challenge_record['challenged_ledger_sha256']} | {challenge_record['challenge_context_sha256']} | {challenge_record['challenge_artifact_sha256']} | {challenge_record['generated_utc']} | none |\n\n"
-            "## Method-interface findings\n\nNone.\n\n"
-            "## Computational evidence\n\nNone.\n\n"
-            "## Unchecked scope\n\nNone.\n\n"
-            "## Assurance boundary\n\n"
-            "This is a non-formal audit. This is not a kernel-checked proof certificate.\n",
+            "- Independent check levels: fresh_context_same_model\n"
+            "- Declared external deliverables: none\n\n"
+            "This is a non-formal audit. This is not a kernel-checked proof certificate.\n\n"
+            "### Independent verification\n\n"
+            "| Result | Check status | Independence | Challenger verdict | Final verdict | Reconciliation |\n"
+            "|---|---|---|---|---|---|\n"
+            "| lem:main | agreed | fresh_context_same_model | verified | verified | agreed |\n\n"
+            "### Declared external deliverables\n\n"
+            "None.\n",
             encoding="utf-8",
             newline="\n",
         )
@@ -688,6 +689,18 @@ class FinalizationTests(unittest.TestCase):
             "Audit complete; rerun finalization after any source or artifact change."
         )
         write_json(progress_path, progress)
+        output = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(stderr):
+            report_status = proofcheck.cmd_issues(
+                argparse.Namespace(
+                    root=self.audit,
+                    write_summary=True,
+                    write_report_views=True,
+                    final=True,
+                )
+            )
+        self.assertEqual(0, report_status, stderr.getvalue())
         return ledger_path
 
     def install_calibration(self, root: Path | None = None) -> None:
@@ -904,6 +917,20 @@ class FinalizationTests(unittest.TestCase):
         write_json(registry_path, registry)
         return registry
 
+    def refresh_report_views(self) -> None:
+        output = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(stderr):
+            status = proofcheck.cmd_issues(
+                argparse.Namespace(
+                    root=self.audit,
+                    write_summary=True,
+                    write_report_views=True,
+                    final=True,
+                )
+            )
+        self.assertEqual(0, status, stderr.getvalue())
+
     def attach_result_dependency(self, ledger_path: Path, dependency: dict) -> None:
         ledger = read_json(ledger_path)
         step = ledger["steps"][2]
@@ -931,28 +958,47 @@ class FinalizationTests(unittest.TestCase):
 
     def install_internal_dependency(self, ledger_path: Path) -> tuple[Path, dict]:
         prior_path = ledger_path.with_name("lem-prior.ledger.json")
+        prior_source = self.base / "prior.tex"
+        prior_source.write_text(
+            "\\begin{reviewedresult}\\label{lem:prior}\n"
+            "Equality is reflexive on the real numbers.\n"
+            "\\end{reviewedresult}\n"
+            "\\begin{proof}\n"
+            "This follows directly from reflexivity of equality.\n"
+            "\\end{proof}\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        self.add_snapshot_source(prior_source, ledger_path)
         prior = read_json(ledger_path)
         prior["unit_id"] = "lem:prior"
-        definition_text = self.definitions.read_text(encoding="utf-8").splitlines()[0]
+        prior["independent_check"]["artifact"] = (
+            "audit/05_adversarial/lem-prior-challenge.md"
+        )
+        prior_lines = prior_source.read_text(encoding="utf-8").splitlines()
+        prior_statement = " ".join(prior_lines[:3])
         prior_span = proofcheck.locked_span(
-            self.definitions, 1, 1, prior_path.parent
+            prior_source, 1, 3, prior_path.parent
         )
         prior["source"] = {
             "file": proofcheck.relative_or_absolute(
-                self.definitions, prior_path.parent
+                prior_source, prior_path.parent
             ),
             "start_line": 1,
-            "end_line": 1,
-            "unit_sha256": proofcheck.sha256_text(definition_text),
+            "end_line": 6,
+            "unit_sha256": proofcheck.source_span_sha256(
+                prior_source, 1, 6
+            ),
             "coverage_mode": "statement_and_proof",
             "separate_statement_reason": "",
         }
         prior["source_lines"] = [
             {
-                "line": 1,
-                "text": definition_text,
-                "sha256": proofcheck.sha256_text(definition_text),
+                "line": line_number,
+                "text": text,
+                "sha256": proofcheck.sha256_text(text),
             }
+            for line_number, text in enumerate(prior_lines, 1)
         ]
         prior["obligation"]["statement_spans"] = [prior_span]
         prior["obligation"]["conclusion"] = (
@@ -978,13 +1024,13 @@ class FinalizationTests(unittest.TestCase):
         prior["source_units"] = [
             {
                 "id": "U001",
-                "lines": [1, 1],
-                "kind": "one_line",
+                "lines": [1, 6],
+                "kind": "continued_sentence",
                 "source_sha256": proofcheck.source_span_sha256(
-                    self.definitions, 1, 1
+                    prior_source, 1, 6
                 ),
                 "partition_evidence": (
-                    "Line 1 is the complete locked source unit for lem:prior."
+                    "Lines 1-6 contain the complete statement and proof of lem:prior."
                 ),
             }
         ]
@@ -1001,21 +1047,27 @@ class FinalizationTests(unittest.TestCase):
         prior_unit = json.loads(json.dumps(inventory["units"][0]))
         prior_unit["id"] = "lem:prior"
         prior_unit["label"] = "lem:prior"
-        prior_unit["environment"] = "definition"
-        prior_unit["proof_required"] = False
+        prior_unit["environment"] = "lemma"
+        prior_unit["proof_required"] = True
         prior_unit["statement"] = {
             "file": proofcheck.relative_or_absolute(
-                self.definitions, self.paper.parent
+                prior_source, self.paper.parent
             ),
             "start_line": 1,
-            "end_line": 1,
+            "end_line": 3,
         }
-        prior_unit["statement_excerpt"] = definition_text
-        prior_unit["proof"] = None
+        prior_unit["statement_excerpt"] = prior_statement
+        prior_unit["proof"] = {
+            "file": proofcheck.relative_or_absolute(
+                prior_source, self.paper.parent
+            ),
+            "start_line": 4,
+            "end_line": 6,
+        }
         prior_unit["proof_redirects"] = []
         prior_unit["proof_association"] = {
-            "status": "not_required",
-            "method": "manual_nonproof",
+            "status": "associated",
+            "method": "reviewed_manual",
             "target": "lem:prior",
             "evidence_occurrence_ids": [],
         }
@@ -1033,10 +1085,54 @@ class FinalizationTests(unittest.TestCase):
             {
                 "unit_id": "lem:prior",
                 "kind": "manual_unit",
-                "reason": "The companion result is manually included for dependency tests.",
-                "evidence": "Rendered-source review identifies its exact nonproof statement.",
+                "reason": (
+                    "The synthetic prior lemma is added to exercise internal "
+                    "dependency closure."
+                ),
+                "evidence": (
+                    "Its exact statement, proof, association, and references are "
+                    "recorded in the reviewed inventory row."
+                ),
                 "reviewed_unit_sha256": proofcheck.canonical_sha256(prior_unit),
             }
+        ]
+        paper = proofcheck.resolve_stored_path(manifest["paper_file"], self.audit)
+        closure = proofcheck.discover_source_closure(
+            paper,
+            additional_files=[
+                proofcheck.resolve_stored_path(row["file"], self.audit)
+                for row in manifest["source_discovery"]["additional_files"]
+            ],
+            project_root=paper.parent,
+        )
+        fresh_inventory = proofcheck.scan_formal_units(
+            paper,
+            source_files=closure["files"],
+            source_warnings=closure["warnings"],
+        )
+        fresh_cross_references = proofcheck.scan_cross_references(
+            paper,
+            source_files=closure["files"],
+            source_warnings=closure["warnings"],
+        )
+        parser_warnings = sorted(
+            set(closure["warnings"])
+            | set(fresh_inventory["warnings"])
+            | set(fresh_cross_references["warnings"])
+        )
+        manifest["parser_warnings"] = parser_warnings
+        manifest["parser_warning_reviews"] = [
+            {
+                "warning": warning,
+                "disposition": "confirmed_non_load_bearing",
+                "affected_units": ["lem:prior"],
+                "evidence": (
+                    "The warning belongs to the intentionally parser-omitted "
+                    "manual unit whose exact statement and complete proof are "
+                    "bound by the manual_unit override."
+                ),
+            }
+            for warning in parser_warnings
         ]
         write_json(manifest_path, manifest)
 
@@ -1055,45 +1151,6 @@ class FinalizationTests(unittest.TestCase):
             "- Files and results checked: paper.tex and lem:main.",
             "- Files and results checked: paper.tex, lem:main, and lem:prior.",
         )
-        main_row = (
-            "| lem:main | verified | verified | valid | established | verified | "
-            "not_applicable | Exact source ledger and direct reconstruction. |"
-        )
-        prior_row = (
-            "| lem:prior | verified | verified | valid | established | verified | "
-            "not_applicable | Exact source ledger and direct reconstruction. |"
-        )
-        report = report.replace(main_row, main_row + "\n" + prior_row)
-        main_conclusion = (
-            "| lem:main | C001 | verified | valid | established | verified | "
-            "not_applicable | S003/M001 | none | none |"
-        )
-        dependent_conclusion = (
-            "| lem:main | C001 | verified | valid | established | verified | "
-            "not_applicable | S003/M001 | D001 | none |"
-        )
-        prior_conclusion = (
-            "| lem:prior | C001 | verified | valid | established | verified | "
-            "not_applicable | S001/M001 | none | none |"
-        )
-        report = report.replace(
-            main_conclusion,
-            dependent_conclusion + "\n" + prior_conclusion,
-        )
-        empty_closure = (
-            "| Dependent | Use ID | Dependency | Dependency conclusion | Kind | "
-            "Source status | Applicability status | Effective status | Issue IDs |\n"
-            "|---|---|---|---|---|---|---|---|---|\n"
-            "None."
-        )
-        internal_closure = (
-            "| Dependent | Use ID | Dependency | Dependency conclusion | Kind | "
-            "Source status | Applicability status | Effective status | Issue IDs |\n"
-            "|---|---|---|---|---|---|---|---|---|\n"
-            "| lem:main | D001 | lem:prior | C001 | internal_result | verified | "
-            "passed | verified | none |"
-        )
-        report = report.replace(empty_closure, internal_closure)
         report_path.write_text(report, encoding="utf-8", newline="\n")
 
         dependency = {
@@ -1136,9 +1193,15 @@ class FinalizationTests(unittest.TestCase):
         )
         write_json(registry_path, registry)
         self.seal_live_challenges()
+        self.refresh_report_views()
         return prior_path, use
 
-    def install_external_dependency(self, ledger_path: Path) -> tuple[Path, dict]:
+    def install_external_dependency(
+        self,
+        ledger_path: Path,
+        *,
+        reconcile_report_views: bool = True,
+    ) -> tuple[Path, dict]:
         source_path = self.base / "external-reflexivity.txt"
         source_path.write_text(
             "External Result 1\nEquality is reflexive on the real numbers.\n",
@@ -1286,28 +1349,10 @@ class FinalizationTests(unittest.TestCase):
             "- External results checked: none",
             "- External results checked: ext:reflexivity",
         )
-        report = report.replace(
-            "| lem:main | C001 | verified | valid | established | verified | "
-            "not_applicable | S003/M001 | none | none |",
-            "| lem:main | C001 | verified | valid | established | verified | "
-            "not_applicable | S003/M001 | D001 | none |",
-        )
-        empty_closure = (
-            "| Dependent | Use ID | Dependency | Dependency conclusion | Kind | "
-            "Source status | Applicability status | Effective status | Issue IDs |\n"
-            "|---|---|---|---|---|---|---|---|---|\n"
-            "None."
-        )
-        external_closure = (
-            "| Dependent | Use ID | Dependency | Dependency conclusion | Kind | "
-            "Source status | Applicability status | Effective status | Issue IDs |\n"
-            "|---|---|---|---|---|---|---|---|---|\n"
-            "| lem:main | D001 | ext:reflexivity | none | external_result | "
-            "verified | passed | verified | none |"
-        )
-        report = report.replace(empty_closure, external_closure)
         report_path.write_text(report, encoding="utf-8", newline="\n")
         self.seal_schema5_challenge(ledger_path, read_json(ledger_path))
+        if reconcile_report_views:
+            self.refresh_report_views()
         return source_path, use
 
     def make_external_restatement_audit(
@@ -1321,7 +1366,7 @@ class FinalizationTests(unittest.TestCase):
             f"$x=x$ for every real $x$.{citation}\n"
             "\\end{lemma}\n"
             "% This imported result has no local proof.\n"
-            "\n"
+            "Reflexivity establishes the claim.\n"
             "\n",
             encoding="utf-8",
             newline="\n",
@@ -1329,8 +1374,12 @@ class FinalizationTests(unittest.TestCase):
         self.audit = self.base / "imported-result-audit"
         with contextlib.redirect_stdout(io.StringIO()):
             proofcheck.cmd_scaffold(
-                argparse.Namespace(paper=self.paper, output=self.audit)
+                argparse.Namespace(paper=self.paper, output=self.audit, report_format="markdown")
             )
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["protocol"].pop("challenge_contract_version", None)
+        write_json(manifest_path, manifest)
         ledger_path = self.make_complete_audit()
         ledger = read_json(ledger_path)
         old_challenge = dict(ledger["independent_check"])
@@ -1687,6 +1736,7 @@ class FinalizationTests(unittest.TestCase):
                 str(new_challenge[field]),
             )
         report_path.write_text(report, encoding="utf-8", newline="\n")
+        self.refresh_report_views()
         return ledger_path
 
     def migrate_issue_fixture_to_schema5(
@@ -1847,6 +1897,7 @@ class FinalizationTests(unittest.TestCase):
         ledger_path: Path | None = None,
         step_index: int | None = None,
         migrate: bool = True,
+        reconcile_report_views: bool = True,
     ) -> None:
         if migrate:
             issue, step_index = self.migrate_issue_fixture_to_schema5(
@@ -1887,53 +1938,6 @@ class FinalizationTests(unittest.TestCase):
             newline="\n",
         )
 
-        _, summaries, _ = proofcheck.audit_ledgers(self.audit, True)
-        summaries_by_id = {
-            summary["unit_id"]: summary
-            for summary in summaries
-            if isinstance(summary.get("unit_id"), str)
-        }
-        manifest = read_json(self.audit / "AUDIT_MANIFEST.json")
-        registry_path = self.audit / "audit" / "03_dependencies" / "DEPENDENCY_REGISTRY.json"
-        registry = read_json(registry_path)
-        dependency_edges = list(registry.get("internal_uses", []))
-        for external in registry.get("external_results", []):
-            if isinstance(external, dict):
-                dependency_edges.extend(external.get("uses", []))
-        scope = manifest["audit_scope"]
-        critical, _ = proofcheck.effective_critical_requirements(
-            manifest,
-            [issue],
-        )
-        interface_registry = read_json(
-            self.audit
-            / "audit"
-            / "03_dependencies"
-            / "METHOD_INTERFACE_REGISTRY.json"
-        )
-        interfaces = {
-            row["id"]: row
-            for row in interface_registry.get("interfaces", [])
-            if isinstance(row, dict) and isinstance(row.get("id"), str)
-        }
-        global_pass = manifest.get("completion", {}).get(
-            "global_consistency_pass", {}
-        )
-        global_checks = {
-            row["aspect"]: row
-            for row in global_pass.get("checks", [])
-            if isinstance(row, dict) and isinstance(row.get("aspect"), str)
-        }
-        issue_index, detail = proofcheck.render_issue_report_views(
-            [issue],
-            summaries_by_id,
-            dependency_edges,
-            critical,
-            manifest.get("report_deliverables", []),
-            scope.get("overall_assessment"),
-            interfaces=interfaces,
-            global_checks=global_checks,
-        )
         report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
         report = report_path.read_text(encoding="utf-8")
         if issue.get("status") in {"open", "deferred"}:
@@ -1941,13 +1945,21 @@ class FinalizationTests(unittest.TestCase):
                 "- Highest-consequence issue: none",
                 f"- Highest-consequence issue: {issue['id']}",
             )
-        report = proofcheck.replace_report_section_text(
-            report, "## Issue index", issue_index
-        )
-        report = proofcheck.replace_report_section_text(
-            report, "## Detailed findings", detail
-        )
         report_path.write_text(report, encoding="utf-8", newline="\n")
+        if not reconcile_report_views:
+            return
+        output = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(stderr):
+            status = proofcheck.cmd_issues(
+                argparse.Namespace(
+                    root=self.audit,
+                    write_summary=True,
+                    write_report_views=True,
+                    final=True,
+                )
+            )
+        self.assertEqual(0, status, stderr.getvalue())
 
     def make_global_issue(
         self,
@@ -1984,7 +1996,7 @@ class FinalizationTests(unittest.TestCase):
     def set_expected_assessment(self, assessment: str) -> None:
         judgments = {
             "no_defect_found": (
-                "No defect found under the stated non-formal protocol."
+                "No load-bearing defect found under the stated non-formal protocol."
             ),
             "inconclusive": "Inconclusive under the stated non-formal protocol.",
             "defects_found": (
@@ -2016,109 +2028,8 @@ class FinalizationTests(unittest.TestCase):
         *,
         dependency_issue: bool = False,
     ) -> None:
-        ledger = read_json(ledger_path)
-        review = ledger["review"]
-        conclusion = review["conclusion_results"][0]
-        report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
-        report = report_path.read_text(encoding="utf-8")
-        clean_main = (
-            "| lem:main | verified | verified | valid | established | verified | "
-            "not_applicable | Exact source ledger and direct reconstruction. |"
-        )
-        current_main = (
-            f"| lem:main | {review['unit_status']} | "
-            f"{review['contract_fidelity']} | {review['argument_status']} | "
-            f"{review['statement_status']} | {review['dependency_closure']} | "
-            f"{review['use_site_sufficiency']} | Exact source ledger and direct "
-            "reconstruction. |"
-        )
-        report = report.replace(clean_main, current_main, 1)
-
-        dependency_ids = proofcheck.canonical_id_field(
-            conclusion.get("dependency_use_ids", [])
-        )
-        clean_conclusion = (
-            "| lem:main | C001 | verified | valid | established | verified | "
-            f"not_applicable | S003/M001 | {dependency_ids} | none |"
-        )
-        current_conclusion = (
-            f"| lem:main | C001 | {conclusion['contract_fidelity']} | "
-            f"{conclusion['argument_status']} | {conclusion['statement_status']} | "
-            f"{conclusion['dependency_closure']} | "
-            f"{conclusion['use_site_sufficiency']} | S003/M001 | "
-            f"{dependency_ids} | "
-            f"{proofcheck.canonical_id_field(conclusion.get('issue_ids', []))} |"
-        )
-        report = report.replace(clean_conclusion, current_conclusion, 1)
-
-        if dependency_issue:
-            clean_dependency = (
-                "| lem:main | D001 | lem:prior | C001 | internal_result | "
-                "verified | passed | verified | none |"
-            )
-            current_dependency = (
-                "| lem:main | D001 | lem:prior | C001 | internal_result | "
-                "verified | incorrect | incorrect | I-001 |"
-            )
-            report = report.replace(clean_dependency, current_dependency, 1)
-
-        check = ledger["independent_check"]
-        challenge = proofcheck.render_markdown_table(
-            [
-                "Result",
-                "Challenge status",
-                "Independence",
-                "Covered issue IDs",
-                "Issue assessments",
-                "Challenger verdict",
-                "Reconciled verdict",
-                "Disagreements",
-                "Artifact",
-                "Source snapshot SHA256",
-                "Challenged ledger SHA256",
-                "Challenge context SHA256",
-                "Artifact SHA256",
-                "Generated UTC",
-                "Resolution",
-            ],
-            [
-                [
-                    "lem:main",
-                    check["status"],
-                    check["independence_level"],
-                    proofcheck.canonical_id_field(
-                        check.get("covered_issue_ids", [])
-                    ),
-                    json.dumps(
-                        proofcheck.canonical_challenge_issue_assessments(
-                            check.get("issue_assessments", [])
-                        ),
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ),
-                    check["challenger_verdict"],
-                    check["reconciled_verdict"],
-                    json.dumps(
-                        check.get("disagreements", []),
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ),
-                    check["artifact"],
-                    check["source_snapshot_sha256"],
-                    check["challenged_ledger_sha256"],
-                    check["challenge_context_sha256"],
-                    check["challenge_artifact_sha256"],
-                    check["generated_utc"],
-                    check.get("resolution") or "none",
-                ]
-            ],
-        )
-        report = proofcheck.replace_report_section_text(
-            report,
-            "## Independent critical-path challenges",
-            challenge,
-        )
-        report_path.write_text(report, encoding="utf-8", newline="\n")
+        del ledger_path, dependency_issue
+        self.refresh_report_views()
 
     def make_ledger_move_defect_audit(self) -> tuple[Path, dict, str]:
         ledger_path = self.make_complete_audit()
@@ -2488,23 +2399,6 @@ class FinalizationTests(unittest.TestCase):
         record["issue_ids"] = [issue["id"]]
         self.install_interface_record(record)
         self.install_canonical_issue(issue)
-        report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
-        report = report_path.read_text(encoding="utf-8")
-        row = "| " + " | ".join(
-            proofcheck.escape_markdown(value)
-            for value in proofcheck.canonical_interface_issue_row(
-                issue,
-                {record["id"]: record},
-            )
-        ) + " |"
-        report = report.replace(
-            "## Method-interface findings\n\nNone.",
-            "## Method-interface findings\n\n"
-            "| Issue | Finding class | Interface ID | Estimator-target status | Implementation inspection | Inspection mode | Code to documented estimator | Code to required target | Execution provenance | Affected layer |\n"
-            "|---|---|---|---|---|---|---|---|---|---|\n"
-            + row,
-        )
-        report_path.write_text(report, encoding="utf-8", newline="\n")
 
     def test_complete_minimal_audit_passes(self) -> None:
         self.make_complete_audit()
@@ -4790,12 +4684,46 @@ class FinalizationTests(unittest.TestCase):
                     errors,
                 )
 
+    def record_domain_introduction(self, ledger: dict, prior: dict) -> None:
+        prior["kind"] = "setup"
+        prior["restatement"] = "x is fixed as a real number."
+        prior["support_role"] = "derivation"
+        prior["premise_uses"] = [
+            {
+                "id": "P001",
+                "role": "fact",
+                "claim": ledger["obligation"]["quantifier_scope"],
+                "origin": {
+                    "kind": "obligation",
+                    "reference": "/quantifier_scope",
+                    "anchor": {"kind": "statement_span", "index": 1},
+                },
+                "evidence": "The normalized universal quantifier authorizes this arbitrary real x.",
+            }
+        ]
+        prior["checks"]["atomicity"] = {
+            "status": "single_move",
+            "evidence": "This introduction specializes the real domain while keeping x arbitrary.",
+        }
+        prior["inference"] = {
+            "moves": [
+                {
+                    "id": "M001",
+                    "claim": prior["restatement"],
+                    "rule": "Introduction of an arbitrary element of the quantified domain",
+                    "premise_ids": ["P001"],
+                    "prior_move_ids": [],
+                    "justification": "The universal real-number domain permits fixing arbitrary x without imposing positivity or another restriction.",
+                }
+            ],
+            "conclusion_move": "M001",
+        }
+
     def test_prior_step_dependency_is_bound_to_prior_restatement(self) -> None:
         ledger_path = self.make_complete_audit()
         valid_ledger = read_json(ledger_path)
         prior = valid_ledger["steps"][0]
-        prior["kind"] = "setup"
-        prior["restatement"] = "x is fixed as a real number."
+        self.record_domain_introduction(valid_ledger, prior)
         dependency = {
             "id": "S001",
             "kind": "step",
@@ -4837,6 +4765,156 @@ class FinalizationTests(unittest.TestCase):
             ),
             errors,
         )
+
+    def add_consumed_definition_introduction(self, ledger: dict) -> dict:
+        conclusion = next(
+            step
+            for step in ledger["steps"]
+            if step["id"] == ledger["review"]["conclusion_step_id"]
+        )
+        introduction = json.loads(json.dumps(conclusion))
+        introduction.update(
+            {
+                "id": "S099",
+                "kind": "definition",
+                "support_role": "derivation",
+                "goal": "Expose the reflexive property of equality on the real domain.",
+                "restatement": "Equality is reflexive on the real numbers.",
+                "dependencies": [],
+                "premise_uses": [
+                    {
+                        "id": "P001",
+                        "role": "definition",
+                        "claim": ledger["obligation"]["definitions"][0],
+                        "origin": {
+                            "kind": "obligation",
+                            "reference": "/definitions/0",
+                            "anchor": {"kind": "statement_span", "index": 1},
+                        },
+                        "evidence": "The normalized definition fixes equality on the real domain.",
+                    }
+                ],
+            }
+        )
+        introduction["inference"] = {
+            "moves": [
+                {
+                    "id": "M001",
+                    "claim": introduction["restatement"],
+                    "rule": "Expose the reflexive property of real equality",
+                    "premise_ids": ["P001"],
+                    "prior_move_ids": [],
+                    "justification": "The equality relation used for real x is reflexive on its domain.",
+                }
+            ],
+            "conclusion_move": "M001",
+        }
+        introduction["checks"]["literal"] = (
+            "The locked proof invokes reflexivity for the current real x."
+        )
+        introduction["checks"]["atomicity"] = {
+            "status": "single_move",
+            "evidence": "The introduction isolates the reflexive property used for x.",
+        }
+        introduction["checks"]["adversarial"] = [
+            "The equality relation remains defined for every real x, including zero."
+        ]
+        conclusion["premise_uses"].append(
+            {
+                "id": "P099",
+                "role": "fact",
+                "claim": introduction["restatement"],
+                "origin": {"kind": "prior_step", "reference": "S099"},
+                "evidence": "S099 establishes the reflexive property used for the current x.",
+            }
+        )
+        conclusion["dependencies"].append(
+            {
+                "id": "S099",
+                "kind": "step",
+                "status": "verified",
+                "needed_form": introduction["restatement"],
+                "compatibility_check": "The same real equality relation is applied to x.",
+            }
+        )
+        conclusion["inference"]["moves"][0]["premise_ids"].append("P099")
+        ledger["steps"].insert(ledger["steps"].index(conclusion), introduction)
+        return introduction
+
+    def test_noninferential_setup_cannot_launder_forbidden_definition(self) -> None:
+        ledger_path = self.make_complete_audit()
+        baseline_errors, _ = proofcheck.check_audit_finalization(self.audit)
+        self.assertEqual([], baseline_errors)
+        ledger = read_json(ledger_path)
+        introduction = self.add_consumed_definition_introduction(ledger)
+        write_json(ledger_path, ledger)
+        errors, _ = proofcheck.check_ledger_data(ledger_path, True, primary_only=True)
+        self.assertTrue(
+            any("outside C001.applies_under: /definitions/0" in error for error in errors),
+            errors,
+        )
+
+        for kind in ("setup", "definition"):
+            with self.subTest(kind=kind):
+                introduction["kind"] = kind
+                introduction.pop("support_role", None)
+                introduction["premise_uses"] = []
+                introduction["dependencies"] = []
+                introduction["inference"] = {"moves": [], "conclusion_move": None}
+                introduction["checks"]["atomicity"]["status"] = "non_inferential"
+                write_json(ledger_path, ledger)
+                self.seal_live_challenges()
+                local_errors, _ = proofcheck.check_ledger_data(
+                    ledger_path, True, primary_only=True
+                )
+                final_errors, _ = proofcheck.check_audit_finalization(self.audit)
+                for level, observed in (("local", local_errors), ("final", final_errors)):
+                    with self.subTest(level=level):
+                        self.assertTrue(
+                            any("unsupported step S099 as a factual premise" in error for error in observed),
+                            observed,
+                        )
+                        self.assertTrue(
+                            any("support closure stops at S099" in error for error in observed),
+                            observed,
+                        )
+
+    def test_consumed_definition_introduction_keeps_authorized_assumptions(self) -> None:
+        ledger_path = self.make_complete_audit()
+        ledger = read_json(ledger_path)
+        self.add_consumed_definition_introduction(ledger)
+        ledger["obligation"]["conclusions"][0]["applies_under"].append("/definitions/0")
+        write_json(ledger_path, ledger)
+        self.seal_live_challenges()
+        self.refresh_report_views()
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+        self.assertEqual([], errors)
+
+    def test_unused_noninferential_declaration_is_still_allowed(self) -> None:
+        ledger_path = self.make_complete_audit()
+        ledger = read_json(ledger_path)
+        declaration = self.add_consumed_definition_introduction(ledger)
+        declaration.pop("support_role", None)
+        declaration["premise_uses"] = []
+        declaration["dependencies"] = []
+        declaration["inference"] = {"moves": [], "conclusion_move": None}
+        declaration["checks"]["atomicity"]["status"] = "non_inferential"
+        conclusion = next(
+            step for step in ledger["steps"]
+            if step["id"] == ledger["review"]["conclusion_step_id"]
+        )
+        conclusion["premise_uses"] = [
+            row for row in conclusion["premise_uses"] if row["id"] != "P099"
+        ]
+        conclusion["dependencies"] = [
+            row for row in conclusion["dependencies"] if row["id"] != "S099"
+        ]
+        conclusion["inference"]["moves"][0]["premise_ids"].remove("P099")
+        write_json(ledger_path, ledger)
+        self.seal_live_challenges()
+        self.refresh_report_views()
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+        self.assertEqual([], errors)
 
     def test_reserved_placeholders_cannot_form_a_prior_step_chain(self) -> None:
         ledger_path = self.make_complete_audit()
@@ -6129,6 +6207,7 @@ class FinalizationTests(unittest.TestCase):
         )
         write_json(ledger_path, proof_only)
         self.seal_schema5_challenge(ledger_path, read_json(ledger_path))
+        self.refresh_report_views()
         errors, _ = proofcheck.check_audit_finalization(self.audit)
         self.assertEqual([], errors)
 
@@ -6151,7 +6230,7 @@ class FinalizationTests(unittest.TestCase):
             "$x=x$ for every real $x$.\\label{eq:reflexive}\n"
             "\\end{lemma}\n"
             "% no proof is supplied\n"
-            "\n"
+            "Reflexivity establishes the claim.\n"
             "\n",
             encoding="utf-8",
             newline="\n",
@@ -6336,7 +6415,7 @@ class FinalizationTests(unittest.TestCase):
             ),
         )
 
-    def test_verified_challenge_sampling_is_deterministic_and_seeded(self) -> None:
+    def test_required_challenge_units_equal_in_scope(self) -> None:
         manifest = {
             "source_snapshot": {"sha256": "a" * 64},
             "audit_scope": {
@@ -6346,238 +6425,30 @@ class FinalizationTests(unittest.TestCase):
                     "lem:a",
                     "lem:b",
                     "lem:c",
-                    "lem:d",
                 ],
-                "verified_challenge_sample_rate": 0.5,
             },
         }
-        first, _ = proofcheck.effective_critical_requirements(manifest, [])
-        second, _ = proofcheck.effective_critical_requirements(manifest, [])
-        self.assertEqual(first, second)
-        self.assertIn("thm:main", first)
-        sampled = proofcheck.sampled_challenge_units(
-            manifest["audit_scope"],
-            manifest,
-            set(manifest["audit_scope"]["in_scope_units"]),
+        expected = ["lem:a", "lem:b", "lem:c", "thm:main"]
+        required, triggers = proofcheck.required_challenge_requirements(
+            manifest, []
         )
-        self.assertEqual(3, len(sampled))
-        self.assertTrue(set(first) >= sampled)
+        self.assertEqual(expected, required)
+        self.assertEqual({}, triggers)
 
-        reseeded = json.loads(json.dumps(manifest))
-        reseeded["source_snapshot"]["sha256"] = "b" * 64
-        reseeded_sample = proofcheck.sampled_challenge_units(
-            reseeded["audit_scope"],
-            reseeded,
-            set(reseeded["audit_scope"]["in_scope_units"]),
-        )
-        self.assertEqual(3, len(reseeded_sample))
-
-        no_rate = json.loads(json.dumps(manifest))
-        del no_rate["audit_scope"]["verified_challenge_sample_rate"]
-        unsampled, _ = proofcheck.effective_critical_requirements(no_rate, [])
-        self.assertEqual(["thm:main"], unsampled)
-
-        full = json.loads(json.dumps(manifest))
-        full["audit_scope"]["verified_challenge_sample_rate"] = 1
-        everything, _ = proofcheck.effective_critical_requirements(full, [])
+        changed = json.loads(json.dumps(manifest))
+        changed["source_snapshot"]["sha256"] = "b" * 64
+        changed["audit_scope"]["critical_units"] = []
         self.assertEqual(
-            ["lem:a", "lem:b", "lem:c", "lem:d", "thm:main"], everything
+            (expected, {}),
+            proofcheck.required_challenge_requirements(changed, []),
         )
 
-    def test_sample_membership_cannot_be_steered_by_declarations(self) -> None:
-        """Only the source snapshot and the in-scope set determine the
-        sample; toggling critical declarations or severe issues must not
-        change which units it selects."""
-        scope = {
-            "critical_units": [],
-            "in_scope_units": ["thm:main", "lem:a", "lem:b", "lem:c"],
-            "verified_challenge_sample_rate": 0.5,
-        }
-        manifest = {"source_snapshot": {"sha256": "a" * 64}, "audit_scope": scope}
-        in_scope = set(scope["in_scope_units"])
-        baseline = proofcheck.sampled_challenge_units(scope, manifest, in_scope)
-        for critical in ([], ["thm:main"], ["thm:main", "lem:a"], ["lem:b"]):
-            steered_scope = {**scope, "critical_units": critical}
-            steered = {
-                "source_snapshot": {"sha256": "a" * 64},
-                "audit_scope": steered_scope,
-            }
-            self.assertEqual(
-                baseline,
-                proofcheck.sampled_challenge_units(
-                    steered_scope, steered, in_scope
-                ),
-            )
-            effective, _ = proofcheck.effective_critical_requirements(
-                steered,
-                [
-                    {
-                        "id": "I-001",
-                        "status": "open",
-                        "load_bearing": True,
-                        "severity": "S1",
-                        "affected_results": ["lem:c"],
-                    }
-                ],
-            )
-            self.assertTrue(baseline.issubset(effective))
-
-    def test_sampling_rate_rejects_invalid_values_and_uses_decimal_count(
-        self,
-    ) -> None:
-        scope = {
-            "critical_units": [],
-            "in_scope_units": [f"lem:{index}" for index in range(100)],
-        }
-        manifest = {"source_snapshot": {"sha256": "a" * 64}, "audit_scope": scope}
-        in_scope = set(scope["in_scope_units"])
-        for silent_rate in (0, -0.0, float("nan"), float("inf")):
-            self.assertEqual(
-                set(),
-                proofcheck.sampled_challenge_units(
-                    {**scope, "verified_challenge_sample_rate": silent_rate},
-                    manifest,
-                    in_scope,
-                ),
-            )
-        # 100 * 0.07 is slightly above 7 in binary floating point. Decimal
-        # arithmetic must still yield ceil(7) = 7, never 8.
-        self.assertEqual(
-            7,
-            len(
-                proofcheck.sampled_challenge_units(
-                    {**scope, "verified_challenge_sample_rate": 0.07},
-                    manifest,
-                    in_scope,
-                )
-            ),
-        )
-
-    def test_manifest_sampling_uses_exact_json_decimal_token(self) -> None:
-        manifest_path = self.audit / "AUDIT_MANIFEST.json"
-        baseline = read_json(manifest_path)
-        marker = "__verified_challenge_sample_rate_token__"
-        encoded_marker = json.dumps(marker)
-        in_scope = {"lem:0", "lem:1", "lem:2"}
-        cases = (
-            ("0.3333333333333333", 1),
-            ("0.33333333333333334", 2),
-        )
-        self.assertEqual(float(cases[0][0]), float(cases[1][0]))
-
-        for token, expected_count in cases:
-            with self.subTest(token=token):
-                manifest = read_json(manifest_path)
-                manifest.clear()
-                manifest.update(baseline)
-                manifest["audit_scope"] = dict(baseline["audit_scope"])
-                manifest["protocol"] = dict(baseline["protocol"])
-                manifest["audit_scope"][
-                    "verified_challenge_sample_rate"
-                ] = marker
-                manifest["protocol"]["validator_sha256"] = "0" * 64
-                text = json.dumps(manifest, ensure_ascii=False, indent=2)
-                self.assertEqual(1, text.count(encoded_marker))
-                manifest_path.write_text(
-                    text.replace(encoded_marker, token, 1) + "\n",
-                    encoding="utf-8",
-                    newline="\n",
-                )
-
-                _, loaded, errors = proofcheck.load_audit_manifest(self.audit)
-                self.assertEqual([], errors)
-                rate = loaded["audit_scope"][
-                    "verified_challenge_sample_rate"
-                ]
-                self.assertIsInstance(rate, float)
-                self.assertEqual(float(token), rate)
-                self.assertEqual(hash(float(token)), hash(rate))
-
-                generic, generic_errors = proofcheck.load_json_object(
-                    manifest_path, "audit manifest"
-                )
-                self.assertEqual([], generic_errors)
-                generic_rate = generic["audit_scope"][
-                    "verified_challenge_sample_rate"
-                ]
-                self.assertIs(type(generic_rate), float)
-                self.assertEqual(
-                    proofcheck.canonical_sha256(generic),
-                    proofcheck.canonical_sha256(loaded),
-                )
-                self.assertEqual(
-                    expected_count,
-                    len(
-                        proofcheck.sampled_challenge_units(
-                            loaded["audit_scope"], loaded, in_scope
-                        )
-                    ),
-                )
-
-                observed_status_counts = []
-                derive_progress_records = proofcheck.derive_progress_records
-
-                def capture_status_manifest(*args, **kwargs):
-                    status_manifest = args[1]
-                    observed_status_counts.append(
-                        len(
-                            proofcheck.sampled_challenge_units(
-                                status_manifest["audit_scope"],
-                                status_manifest,
-                                in_scope,
-                            )
-                        )
-                    )
-                    return derive_progress_records(*args, **kwargs)
-
-                with mock.patch.object(
-                    proofcheck,
-                    "derive_progress_records",
-                    side_effect=capture_status_manifest,
-                ), contextlib.redirect_stdout(io.StringIO()):
-                    status_result = proofcheck.cmd_status(
-                        argparse.Namespace(
-                            root=self.audit,
-                            format="json",
-                            output=None,
-                            force=False,
-                            verbose=False,
-                        )
-                    )
-                self.assertEqual(1, status_result)
-                self.assertEqual([expected_count], observed_status_counts)
-
-                output = io.StringIO()
-                with contextlib.redirect_stdout(output):
-                    status = proofcheck.cmd_revalidate_protocol(
-                        argparse.Namespace(root=self.audit)
-                    )
-                self.assertEqual(0, status, output.getvalue())
-                rewritten = manifest_path.read_text(encoding="utf-8")
-                self.assertIn(
-                    f'"verified_challenge_sample_rate": {token}', rewritten
-                )
-                _, reloaded, reload_errors = proofcheck.load_audit_manifest(
-                    self.audit
-                )
-                self.assertEqual([], reload_errors)
-                self.assertEqual(
-                    expected_count,
-                    len(
-                        proofcheck.sampled_challenge_units(
-                            reloaded["audit_scope"], reloaded, in_scope
-                        )
-                    ),
-                )
-
-    def test_sampled_units_never_shrink_severe_coverage(self) -> None:
+    def test_severe_issues_change_triggers_not_challenge_coverage(self) -> None:
         manifest = {
-            "source_snapshot": {"sha256": "a" * 64},
             "audit_scope": {
                 "critical_units": [],
                 "in_scope_units": ["thm:main", "lem:a"],
-                "verified_challenge_sample_rate": 1,
-            },
+            }
         }
         issues = [
             {
@@ -6588,45 +6459,75 @@ class FinalizationTests(unittest.TestCase):
                 "affected_results": ["thm:main"],
             }
         ]
-        effective, severe = proofcheck.effective_critical_requirements(
+        required, triggers = proofcheck.required_challenge_requirements(
             manifest, issues
         )
-        self.assertIn("thm:main", effective)
-        self.assertEqual({"thm:main": {"I-001"}}, severe)
-        self.assertIn("lem:a", effective)
+        self.assertEqual(["lem:a", "thm:main"], required)
+        self.assertEqual({"thm:main": {"I-001"}}, triggers)
 
-    def test_manifest_rejects_invalid_sample_rate_and_noncritical_targets(
+    def test_manifest_rejects_obsolete_sampling_field_but_not_priority_choice(
         self,
     ) -> None:
         self.make_complete_audit()
         manifest_path = self.audit / "AUDIT_MANIFEST.json"
         manifest = read_json(manifest_path)
-        for invalid_rate in (1.5, 0, float("nan")):
-            manifest["audit_scope"]["verified_challenge_sample_rate"] = (
-                invalid_rate
-            )
-            write_json(manifest_path, manifest)
-            errors, _ = proofcheck.check_audit_finalization(self.audit)
-            self.assertTrue(
-                any(
-                    "verified_challenge_sample_rate must be a finite number"
-                    in error
-                    for error in errors
-                ),
-                (invalid_rate, errors),
-            )
         manifest["audit_scope"]["verified_challenge_sample_rate"] = 0.2
-        manifest["audit_scope"]["critical_units"] = []
         write_json(manifest_path, manifest)
         errors, _ = proofcheck.check_audit_finalization(self.audit)
         self.assertTrue(
+            any("verified_challenge_sample_rate is obsolete" in error for error in errors),
+            errors,
+        )
+
+        del manifest["audit_scope"]["verified_challenge_sample_rate"]
+        manifest["audit_scope"]["critical_units"] = []
+        write_json(manifest_path, manifest)
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+        self.assertFalse(
+            any("target unit must also be critical" in error.lower() for error in errors),
+            errors,
+        )
+
+    def test_noncritical_in_scope_unit_still_requires_independent_check(
+        self,
+    ) -> None:
+        ledger_path = self.make_complete_audit()
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["audit_scope"]["critical_units"] = []
+        write_json(manifest_path, manifest)
+        ledger = read_json(ledger_path)
+        ledger["independent_check"] = {
+            "required": False,
+            "status": "not_required",
+            "independence_level": "none",
+            "challenger_verdict": "not_checked",
+            "reconciled_verdict": "not_checked",
+            "artifact": "",
+            "covered_issue_ids": [],
+            "source_snapshot_sha256": "",
+            "challenged_ledger_sha256": "",
+            "challenge_context_sha256": "",
+            "challenge_artifact_sha256": "",
+            "issue_assessments": [],
+            "generated_utc": "",
+            "disagreements": [],
+            "resolution": "",
+        }
+        write_json(ledger_path, ledger)
+
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+        self.assertTrue(
             any(
-                "Every target unit must also be critical" in error
+                "In-scope unit lem:main requires an independent" in error
                 for error in errors
             ),
             errors,
         )
-
+        packet = proofcheck.build_context_packet(
+            self.audit, "lem:main", "challenge"
+        )
+        self.assertEqual([], packet["issue_triggers"])
     def test_failed_checker_calibration_blocks_finalization(self) -> None:
         self.make_complete_audit()
         calibration_path = (
@@ -6823,7 +6724,11 @@ class FinalizationTests(unittest.TestCase):
             "source_snapshot_sha256": manifest["source_snapshot"]["sha256"],
             "rechecked_units": ["lem:main"],
         }
-        self.install_canonical_issue(issue, ledger_path=ledger_path)
+        self.install_canonical_issue(
+            issue,
+            ledger_path=ledger_path,
+            reconcile_report_views=False,
+        )
         errors, _ = proofcheck.check_audit_finalization(self.audit)
         self.assertTrue(
             any("source_revision" in error for error in errors), errors
@@ -6850,7 +6755,11 @@ class FinalizationTests(unittest.TestCase):
             "downstream_consequences": ["lem:main is not established"],
             "possible_repair": "none proposed",
         }
-        self.install_canonical_issue(issue, ledger_path=ledger_path)
+        self.install_canonical_issue(
+            issue,
+            ledger_path=ledger_path,
+            reconcile_report_views=False,
+        )
         errors, result = proofcheck.check_audit_finalization(self.audit)
         self.assertEqual("defects_found", result["derived_assessment"])
         self.assertTrue(
@@ -6995,24 +6904,25 @@ class FinalizationTests(unittest.TestCase):
         self.assertEqual("no_defect_found", result["derived_assessment"])
         report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
         report = report_path.read_text(encoding="utf-8")
-        method_rows = proofcheck.markdown_table_rows(
-            proofcheck.report_section(
-                report,
-                "## Method-interface findings",
-            )
-            or ""
+        self.assertIn(
+            "- Overall judgment: No load-bearing defect found under the "
+            "stated non-formal protocol.",
+            report,
         )
-        self.assertEqual("static", method_rows[2][5])
-        drifted_row = list(method_rows[2])
-        drifted_row[5] = "executed"
+        self.assertNotIn(
+            "- Overall judgment: No defect found under the stated non-formal "
+            "protocol.",
+            report,
+        )
+        findings = proofcheck.report_section(
+            report, "## Findings and repairs"
+        ) or ""
+        self.assertIn("implementation inspection is inspected", findings)
         report_path.write_text(
-            proofcheck.replace_report_section_text(
-                report,
-                "## Method-interface findings",
-                proofcheck.render_markdown_table(
-                    method_rows[0],
-                    [drifted_row],
-                ),
+            report.replace(
+                "implementation inspection is inspected",
+                "implementation inspection is executed",
+                1,
             ),
             encoding="utf-8",
             newline="\n",
@@ -7022,7 +6932,7 @@ class FinalizationTests(unittest.TestCase):
 
         self.assertTrue(
             any(
-                "Method-interface findings rows disagree" in error
+                "Findings and repairs disagrees" in error
                 for error in errors
             ),
             errors,
@@ -7078,7 +6988,7 @@ class FinalizationTests(unittest.TestCase):
                 / "06_reports"
                 / "FINAL_REPORT.md"
             ).read_text(encoding="utf-8"),
-            "## Detailed findings",
+            "## Findings and repairs",
         )
         failure_row = proofcheck.markdown_tables(
             detail_section or ""
@@ -7091,6 +7001,7 @@ class FinalizationTests(unittest.TestCase):
         self.install_canonical_issue(
             issue_without_evidence,
             migrate=False,
+            reconcile_report_views=False,
         )
         errors, _ = proofcheck.check_audit_finalization(self.audit)
         self.assertTrue(
@@ -7683,6 +7594,18 @@ class FinalizationTests(unittest.TestCase):
         errors, result = proofcheck.check_audit_finalization(self.audit)
         self.assertEqual([], errors)
         self.assertEqual("no_defect_found", result["derived_assessment"])
+        report = (
+            self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "- Overall judgment: No load-bearing defect found under the "
+            "stated non-formal protocol.",
+            report,
+        )
+        self.assertIn(
+            "I-001: The archived revision differs from the recorded run revision.",
+            report,
+        )
 
     def test_load_bearing_interface_issue_requires_load_bearing_interface(self) -> None:
         record = self.make_interface_record(
@@ -7843,6 +7766,7 @@ class FinalizationTests(unittest.TestCase):
                 argparse.Namespace(
                     paper=self.paper,
                     output=self.audit,
+                    report_format="markdown",
                     input_kind="latex",
                     publisher_pdf=None,
                     portable_sources=True,
@@ -7857,6 +7781,8 @@ class FinalizationTests(unittest.TestCase):
 
         manifest_path = self.audit / "AUDIT_MANIFEST.json"
         manifest = read_json(manifest_path)
+        manifest["protocol"].pop("challenge_contract_version", None)
+        write_json(manifest_path, manifest)
         inventory = read_json(
             self.audit / "audit" / "01_index" / "theorem_inventory.json"
         )
@@ -8075,8 +8001,12 @@ class FinalizationTests(unittest.TestCase):
         self.audit = self.base / "warning-audit"
         with contextlib.redirect_stdout(io.StringIO()):
             proofcheck.cmd_scaffold(
-                argparse.Namespace(paper=self.paper, output=self.audit)
+                argparse.Namespace(paper=self.paper, output=self.audit, report_format="markdown")
             )
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["protocol"].pop("challenge_contract_version", None)
+        write_json(manifest_path, manifest)
         self.make_complete_audit()
         return self.audit / "AUDIT_MANIFEST.json"
 
@@ -9247,14 +9177,151 @@ class FinalizationTests(unittest.TestCase):
         self.assertEqual(manifest_bytes, manifest_path.read_bytes())
         self.assertEqual(registry_bytes, registry_path.read_bytes())
 
+    def test_sha256_file_detects_same_size_rewrite_with_restored_mtime(
+        self,
+    ) -> None:
+        target = self.audit / "digest-probe.bin"
+        target.write_bytes(b"alpha-content-0001")
+        before = target.stat()
+        first = proofcheck.sha256_file(target)
+
+        target.write_bytes(b"alpha-content-0002")
+        os.utime(
+            target,
+            ns=(before.st_atime_ns, before.st_mtime_ns),
+        )
+
+        self.assertEqual(before.st_size, target.stat().st_size)
+        self.assertEqual(before.st_mtime_ns, target.stat().st_mtime_ns)
+        self.assertNotEqual(first, proofcheck.sha256_file(target))
+
+    def test_gate_digest_snapshot_hashes_each_file_once(self) -> None:
+        target = self.audit / "digest-snapshot.bin"
+        target.write_bytes(b"stable gate input")
+        original_open = Path.open
+        binary_reads = 0
+
+        def counting_open(path: Path, *args, **kwargs):
+            nonlocal binary_reads
+            if path.resolve() == target.resolve() and args[:1] == ("rb",):
+                binary_reads += 1
+            return original_open(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "open", counting_open):
+            with proofcheck.gate_digest_snapshot():
+                first = proofcheck.sha256_file(target)
+                second = proofcheck.sha256_file(target)
+            third = proofcheck.sha256_file(target)
+
+        self.assertEqual(first, second)
+        self.assertEqual(second, third)
+        self.assertEqual(2, binary_reads)
+
+    def test_text_memo_returns_independent_copies(self) -> None:
+        source = "\\section{One}\nText\n\\subsection{Two}\n"
+        headings = proofcheck.scan_section_headings(source)
+        self.assertTrue(headings)
+        headings.clear()
+        self.assertEqual(
+            proofcheck._scan_section_headings_uncached(source),
+            proofcheck.scan_section_headings(source),
+        )
+
+    def test_status_runs_the_full_finalization_gate_at_most_once(self) -> None:
+        """Near completion, status must reuse the completion-candidate gate
+        instead of running a second full gate; the reused result must equal a
+        fresh freshness check exactly."""
+        self.make_complete_audit()
+        fresh = proofcheck.check_finalization_freshness(self.audit)
+        gate_errors, _ = proofcheck.check_audit_finalization(self.audit)
+        reused = proofcheck.check_finalization_freshness(
+            self.audit, gate_errors=list(gate_errors)
+        )
+        self.assertEqual(fresh, reused)
+
+        calls = 0
+        original = proofcheck.check_audit_finalization
+
+        def spy(root, **kwargs):
+            nonlocal calls
+            calls += 1
+            return original(root, **kwargs)
+
+        with mock.patch.object(
+            proofcheck, "check_audit_finalization", side_effect=spy
+        ):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = proofcheck.cmd_status(
+                    argparse.Namespace(
+                        root=self.audit,
+                        format="json",
+                        output=None,
+                        force=False,
+                        verbose=False,
+                    )
+                )
+        payload = json.loads(output.getvalue())
+        self.assertEqual(0, status, payload.get("structural_errors"))
+        self.assertEqual(1, calls)
+
+    def test_finalized_status_points_at_the_report_deliverable(self) -> None:
+        self.make_complete_audit()
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(
+                0, proofcheck.cmd_finalize(argparse.Namespace(root=self.audit))
+            )
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            status = proofcheck.cmd_status(
+                argparse.Namespace(
+                    root=self.audit,
+                    format="json",
+                    output=None,
+                    force=False,
+                    verbose=False,
+                )
+            )
+        payload = json.loads(output.getvalue())
+        self.assertEqual(0, status)
+        self.assertTrue(payload["audit_complete"])
+        self.assertEqual(
+            "Audit finalized. Deliver audit/06_reports/FINAL_REPORT.md "
+            "(delivery-check re-verifies the release).",
+            payload["progress"]["next_action"],
+        )
+
+    def test_tex_mask_cache_replays_warnings_identically(self) -> None:
+        source = (
+            "\\newcommand{\\broken"  # malformed definition: warning path
+            "\nText % comment\n\\verb|kept|\n"
+        )
+        first: list[str] = []
+        second: list[str] = ["existing note"]
+        masked_first = proofcheck.mask_nonexecuting_tex(
+            source, warnings=first, source_name="probe.tex"
+        )
+        masked_second = proofcheck.mask_nonexecuting_tex(
+            source, warnings=second, source_name="probe.tex"
+        )
+        self.assertEqual(masked_first, masked_second)
+        self.assertTrue(first)
+        self.assertEqual(["existing note", *first], second)
+        repeat = list(second)
+        proofcheck.mask_nonexecuting_tex(
+            source, warnings=second, source_name="probe.tex"
+        )
+        self.assertEqual(repeat, second)
+
     def test_status_requires_explicit_same_schema_validator_revalidation(
         self,
     ) -> None:
         self.make_complete_audit()
         manifest_path = self.audit / "AUDIT_MANIFEST.json"
-        manifest = read_json(manifest_path)
-        manifest["protocol"]["validator_sha256"] = "0" * 64
-        write_json(manifest_path, manifest)
+        newer = dict(proofcheck.protocol_identity(), validator_sha256="0" * 64)
+        protocol_patch = mock.patch.object(proofcheck, "protocol_identity", return_value=newer)
+        protocol_patch.start()
+        self.addCleanup(protocol_patch.stop)
 
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
@@ -9302,31 +9369,15 @@ class FinalizationTests(unittest.TestCase):
         identity drift it rejects must never be reported as current."""
         self.make_complete_audit()
         manifest_path = self.audit / "AUDIT_MANIFEST.json"
-        manifest = read_json(manifest_path)
-        manifest["protocol"]["skill_version"] = "0.9"
-        write_json(manifest_path, manifest)
+        previous_version = proofcheck.protocol_identity()["skill_version"]
+        newer = dict(proofcheck.protocol_identity(), skill_version="next-release")
+        protocol_patch = mock.patch.object(proofcheck, "protocol_identity", return_value=newer)
+        protocol_patch.start()
+        self.addCleanup(protocol_patch.stop)
 
         view = proofcheck.status_protocol_view(read_json(manifest_path), [])
         self.assertEqual("validator_revalidation_required", view["status"])
         self.assertIn("revalidate-protocol", view["next_action"])
-
-        status_output = io.StringIO()
-        with contextlib.redirect_stdout(status_output):
-            status_result = proofcheck.cmd_status(
-                argparse.Namespace(
-                    root=self.audit,
-                    format="json",
-                    output=None,
-                    force=False,
-                    verbose=False,
-                )
-            )
-        status_text = status_output.getvalue()
-        self.assertEqual(1, status_result)
-        self.assertIn("release identity", status_text)
-        self.assertIn("skill_version or validator_sha256 changed", status_text)
-        self.assertNotIn("but validator_sha256 changed.", status_text)
-        self.assertNotIn("different validator implementation", status_text)
 
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
@@ -9336,7 +9387,7 @@ class FinalizationTests(unittest.TestCase):
         payload = json.loads(output.getvalue())
         self.assertEqual(0, status)
         self.assertEqual("revalidated", payload["status"])
-        self.assertEqual("0.9", payload["previous_skill_version"])
+        self.assertEqual(previous_version, payload["previous_skill_version"])
         self.assertEqual(
             proofcheck.protocol_identity(),
             read_json(manifest_path)["protocol"],
@@ -9348,64 +9399,18 @@ class FinalizationTests(unittest.TestCase):
             ],
         )
 
-        missing = object()
-        for label, field, value, expected_error in (
-            (
-                "wrong skill name",
-                "skill_name",
-                "another-skill",
-                "protocol.skill_name is not compatible",
-            ),
-            (
-                "wrong method schema",
-                "method_interface_schema_version",
-                99,
-                "protocol.method_interface_schema_version is not compatible",
-            ),
-            (
-                "missing skill version",
-                "skill_version",
-                missing,
-                "protocol.skill_version must be a nonempty string",
-            ),
-            (
-                "blank skill version",
-                "skill_version",
-                "",
-                "protocol.skill_version must be a nonempty string",
-            ),
-            (
-                "non-string skill version",
-                "skill_version",
-                12,
-                "protocol.skill_version must be a nonempty string",
-            ),
-            (
-                "missing validator digest",
-                "validator_sha256",
-                missing,
-                "protocol.validator_sha256 must be a SHA-256 digest",
-            ),
-            (
-                "malformed validator digest",
-                "validator_sha256",
-                "not-a-digest",
-                "protocol.validator_sha256 must be a SHA-256 digest",
-            ),
+        for field, value in (
+            ("skill_name", "another-skill"),
+            ("method_interface_schema_version", 99),
         ):
-            with self.subTest(case=label):
+            with self.subTest(field=field):
                 drifted = read_json(manifest_path)
-                if value is missing:
-                    drifted["protocol"].pop(field)
-                else:
-                    drifted["protocol"][field] = value
+                drifted["protocol"][field] = value
                 write_json(manifest_path, drifted)
-                drift_view = proofcheck.status_protocol_view(drifted, [])
                 self.assertEqual(
                     "mismatch",
-                    drift_view["status"],
+                    proofcheck.status_protocol_view(drifted, [])["status"],
                 )
-                self.assertNotIn("revalidate-protocol", drift_view["next_action"])
                 rejection = io.StringIO()
                 with contextlib.redirect_stdout(
                     rejection
@@ -9415,7 +9420,7 @@ class FinalizationTests(unittest.TestCase):
                     )
                 self.assertEqual(1, rejected)
                 self.assertIn(
-                    expected_error,
+                    f"protocol.{field} is not compatible",
                     "".join(json.loads(rejection.getvalue())["errors"]),
                 )
                 restored = read_json(manifest_path)
@@ -9899,6 +9904,13 @@ class FinalizationTests(unittest.TestCase):
         self.make_complete_audit()
         manifest_path = self.audit / "AUDIT_MANIFEST.json"
         progress_path = self.audit / "PROGRESS.json"
+        ledger_path = (
+            self.audit
+            / "audit"
+            / "04_local_checks"
+            / "lem-main.ledger.json"
+        )
+        complete_ledger = ledger_path.read_bytes()
 
         def checkpoint(next_action: str) -> tuple[int, str]:
             with contextlib.redirect_stdout(io.StringIO()):
@@ -9920,12 +9932,32 @@ class FinalizationTests(unittest.TestCase):
 
         manifest = read_json(manifest_path)
         manifest["completion"]["dependency_registry_reviewed"] = True
-        manifest["audit_scope"]["critical_units"] = []
         write_json(manifest_path, manifest)
-        pass_six = checkpoint("Complete the independent critical-path challenge.")
+        ledger = read_json(ledger_path)
+        ledger["independent_check"].update(
+            {
+                "required": False,
+                "status": "not_required",
+                "independence_level": "none",
+                "challenger_verdict": "not_checked",
+                "reconciled_verdict": "verified",
+                "artifact": "",
+                "covered_issue_ids": [],
+                "source_snapshot_sha256": "",
+                "challenged_ledger_sha256": "",
+                "challenge_context_sha256": "",
+                "challenge_artifact_sha256": "",
+                "issue_assessments": [],
+                "generated_utc": "",
+                "disagreements": [],
+                "resolution": "",
+            }
+        )
+        write_json(ledger_path, ledger)
+        pass_six = checkpoint("Complete every in-scope independent check.")
 
+        ledger_path.write_bytes(complete_ledger)
         manifest = read_json(manifest_path)
-        manifest["audit_scope"]["critical_units"] = ["lem:main"]
         manifest["completion"]["final_report_ready"] = False
         write_json(manifest_path, manifest)
         pass_seven = checkpoint("Finish and reconcile the final report.")
@@ -10162,8 +10194,12 @@ class FinalizationTests(unittest.TestCase):
         self.audit = self.base / "inventory-warning-audit"
         with contextlib.redirect_stdout(io.StringIO()):
             proofcheck.cmd_scaffold(
-                argparse.Namespace(paper=self.paper, output=self.audit)
+                argparse.Namespace(paper=self.paper, output=self.audit, report_format="markdown")
             )
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["protocol"].pop("challenge_contract_version", None)
+        write_json(manifest_path, manifest)
         self.make_complete_audit()
         manifest_path = self.audit / "AUDIT_MANIFEST.json"
         manifest = read_json(manifest_path)
@@ -10198,11 +10234,13 @@ class FinalizationTests(unittest.TestCase):
         self.audit = self.base / "unreadable-style-audit"
         with contextlib.redirect_stdout(io.StringIO()):
             proofcheck.cmd_scaffold(
-                argparse.Namespace(paper=self.paper, output=self.audit)
+                argparse.Namespace(paper=self.paper, output=self.audit, report_format="markdown")
             )
 
         manifest_path = self.audit / "AUDIT_MANIFEST.json"
         manifest = read_json(manifest_path)
+        manifest["protocol"].pop("challenge_contract_version", None)
+        write_json(manifest_path, manifest)
         locked_files = {
             proofcheck.resolve_stored_path(row["file"], self.audit)
             for row in manifest["source_snapshot"]["files"]
@@ -11054,6 +11092,27 @@ class FinalizationTests(unittest.TestCase):
             errors,
         )
 
+    def test_final_report_keeps_answer_fields_inside_summary(self) -> None:
+        self.make_complete_audit()
+        report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
+        report = report_path.read_text(encoding="utf-8")
+        main_reason = next(
+            line for line in report.splitlines() if line.startswith("- Main reason:")
+        )
+        report = report.replace(main_reason + "\n", "", 1).replace(
+            "## Scope and assurance\n",
+            "## Scope and assurance\n\n" + main_reason + "\n",
+            1,
+        )
+        report_path.write_text(report, encoding="utf-8", newline="\n")
+
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+
+        self.assertIn(
+            "Final report Main reason must appear exactly once within ## Summary",
+            errors,
+        )
+
     def test_hidden_report_contract_cannot_satisfy_required_content(self) -> None:
         self.make_complete_audit()
         report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
@@ -11091,7 +11150,10 @@ class FinalizationTests(unittest.TestCase):
                     errors,
                 )
                 self.assertTrue(
-                    any("missing required heading" in error for error in errors),
+                    any(
+                        "must contain exactly these four H2 sections" in error
+                        for error in errors
+                    ),
                     errors,
                 )
         report_path.write_text(baseline, encoding="utf-8", newline="\n")
@@ -11102,6 +11164,14 @@ class FinalizationTests(unittest.TestCase):
         self.make_complete_audit()
         report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
         baseline = report_path.read_text(encoding="utf-8")
+
+        def add_scope_text(addition: str) -> str:
+            return baseline.replace(
+                "\n### Independent verification\n",
+                addition + "\n### Independent verification\n",
+                1,
+            )
+
         safe_literals = {
             "fenced-unmatched-comment": "\n```markdown\n<!--\n```\n",
             "inline-details": "\nThe literal `<details>` tag is discussed.\n",
@@ -11111,7 +11181,7 @@ class FinalizationTests(unittest.TestCase):
         for case, addition in safe_literals.items():
             with self.subTest(case=case):
                 report_path.write_text(
-                    baseline + addition,
+                    add_scope_text(addition),
                     encoding="utf-8",
                     newline="\n",
                 )
@@ -11136,7 +11206,7 @@ class FinalizationTests(unittest.TestCase):
         for case, addition in active_raw_blocks.items():
             with self.subTest(case=case):
                 report_path.write_text(
-                    baseline + addition,
+                    add_scope_text(addition),
                     encoding="utf-8",
                     newline="\n",
                 )
@@ -11168,7 +11238,11 @@ class FinalizationTests(unittest.TestCase):
         errors, _ = proofcheck.check_audit_finalization(self.audit)
 
         self.assertTrue(
-            any("invalid table header" in error for error in errors),
+            any(
+                "Results and impact disagrees" in error
+                or "Independent verification disagrees" in error
+                for error in errors
+            ),
             errors,
         )
 
@@ -11179,11 +11253,11 @@ class FinalizationTests(unittest.TestCase):
         hidden_duplicates = (
             "\n<!--\n"
             "- Overall assessment code: defects_found\n"
-            "## Main theorem chain\n"
+            "## Results and impact\n"
             "-->\n"
             "```markdown\n"
             "- Overall assessment code: inconclusive\n"
-            "## Main theorem chain\n"
+            "## Results and impact\n"
             "```\n"
         )
         report_path.write_text(
@@ -11200,7 +11274,7 @@ class FinalizationTests(unittest.TestCase):
         self.make_complete_audit()
         report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
         report = report_path.read_text(encoding="utf-8").replace(
-            "No defect found under the stated non-formal protocol.",
+            "No load-bearing defect found under the stated non-formal protocol.",
             "Every theorem and proof in the paper is mathematically correct.",
         )
         report_path.write_text(report, encoding="utf-8", newline="\n")
@@ -11215,9 +11289,14 @@ class FinalizationTests(unittest.TestCase):
     def test_final_report_rejects_active_correctness_overclaim(self) -> None:
         self.make_complete_audit()
         report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
+        report = report_path.read_text(encoding="utf-8").replace(
+            "\n### Independent verification\n",
+            "\nThe theorem and its proof are correct.\n\n"
+            "### Independent verification\n",
+            1,
+        )
         report_path.write_text(
-            report_path.read_text(encoding="utf-8")
-            + "\nThe theorem and its proof are correct.\n",
+            report,
             encoding="utf-8",
             newline="\n",
         )
@@ -11265,7 +11344,11 @@ class FinalizationTests(unittest.TestCase):
         for case, addition in additions.items():
             with self.subTest(case=case):
                 report_path.write_text(
-                    baseline + addition,
+                    baseline.replace(
+                        "\n### Independent verification\n",
+                        addition + "\n### Independent verification\n",
+                        1,
+                    ),
                     encoding="utf-8",
                     newline="\n",
                 )
@@ -11292,7 +11375,11 @@ class FinalizationTests(unittest.TestCase):
         for case, claim in claims.items():
             with self.subTest(case=case):
                 report_path.write_text(
-                    baseline + f"\n{claim}\n",
+                    baseline.replace(
+                        "\n### Independent verification\n",
+                        f"\n{claim}\n\n### Independent verification\n",
+                        1,
+                    ),
                     encoding="utf-8",
                     newline="\n",
                 )
@@ -11324,7 +11411,31 @@ class FinalizationTests(unittest.TestCase):
             errors,
         )
 
-    def test_final_report_independence_must_match_critical_ledger(self) -> None:
+    def test_final_report_summary_is_first_and_substantive(self) -> None:
+        self.make_complete_audit()
+        report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
+        report = report_path.read_text(encoding="utf-8")
+        self.assertEqual(
+            "## Summary",
+            re.search(r"^## .*", report, re.MULTILINE).group(0),
+        )
+        main_reason = next(
+            line
+            for line in report.splitlines()
+            if line.startswith("- Main reason:")
+        )
+        report_path.write_text(
+            report.replace(main_reason, "- Main reason: none", 1),
+            encoding="utf-8",
+            newline="\n",
+        )
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+        self.assertTrue(
+            any("Main reason must be substantive" in error for error in errors),
+            errors,
+        )
+
+    def test_final_report_independence_must_match_in_scope_ledger(self) -> None:
         self.make_complete_audit()
         report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
         report = report_path.read_text(encoding="utf-8").replace(
@@ -11336,7 +11447,7 @@ class FinalizationTests(unittest.TestCase):
         errors, _ = proofcheck.check_audit_finalization(self.audit)
 
         self.assertTrue(
-            any("Independence level" in error for error in errors),
+            any("Independent check levels" in error for error in errors),
             errors,
         )
 
@@ -11344,13 +11455,16 @@ class FinalizationTests(unittest.TestCase):
         self.make_complete_audit()
         report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
         report = report_path.read_text(encoding="utf-8")
-        heading = "## Independent critical-path challenges"
+        heading = "### Independent verification"
+        scope = proofcheck.report_section(
+            report, "## Scope and assurance"
+        ) or ""
         rows = proofcheck.markdown_table_rows(
-            proofcheck.report_section(report, heading) or ""
+            proofcheck.report_nested_section(scope, heading) or ""
         )
         changed_row = list(rows[2])
         changed_row[5] = "incorrect"
-        report = proofcheck.replace_report_section_text(
+        report = proofcheck.replace_report_nested_section_text(
             report,
             heading,
             proofcheck.render_markdown_table(rows[0], [changed_row]),
@@ -11361,7 +11475,7 @@ class FinalizationTests(unittest.TestCase):
 
         self.assertTrue(
             any(
-                "challenge" in error.lower()
+                "verification" in error.lower()
                 and ("row" in error.lower() or "ledger" in error.lower())
                 for error in errors
             ),
@@ -11372,20 +11486,23 @@ class FinalizationTests(unittest.TestCase):
         self.make_complete_audit()
         report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
         report = report_path.read_text(encoding="utf-8")
-        heading = "## Independent critical-path challenges"
-        section = proofcheck.report_section(report, heading) or ""
+        heading = "### Independent verification"
+        scope = proofcheck.report_section(
+            report, "## Scope and assurance"
+        ) or ""
+        section = proofcheck.report_nested_section(scope, heading) or ""
         lines = section.splitlines()
         header_index = next(
             index
             for index, line in enumerate(lines)
-            if line.strip().startswith("| Result | Challenge status |")
+            if line.strip().startswith("| Result | Check status |")
         )
         width = lines[header_index].count("|") - 1
         lines[header_index + 1] = (
             "| " + " | ".join(["fabricated data"] * width) + " |"
         )
         report_path.write_text(
-            proofcheck.replace_report_section_text(
+            proofcheck.replace_report_nested_section_text(
                 report,
                 heading,
                 "\n".join(lines),
@@ -11398,62 +11515,131 @@ class FinalizationTests(unittest.TestCase):
 
         self.assertTrue(
             any(
-                "Independent critical-path challenges" in error
+                "Independent verification" in error
                 for error in errors
             ),
             errors,
         )
 
-    def test_independent_challenge_report_reconciles_disagreements_and_artifact(
+    def test_independent_verification_report_is_concise_and_reconciled(
         self,
     ) -> None:
-        ledger_path = self.make_complete_audit()
-        ledger = read_json(ledger_path)
+        self.make_complete_audit()
         report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
         original_report = report_path.read_text(encoding="utf-8")
+        scope = proofcheck.report_section(
+            original_report, "## Scope and assurance"
+        ) or ""
         section_rows = proofcheck.markdown_table_rows(
-            proofcheck.report_section(
-                original_report,
-                "## Independent critical-path challenges",
+            proofcheck.report_nested_section(
+                scope,
+                "### Independent verification",
             )
             or ""
         )
-        self.assertEqual("[]", section_rows[2][7])
-        self.assertEqual(
-            ledger["independent_check"]["artifact"],
-            section_rows[2][8],
+        self.assertEqual(6, len(section_rows[0]))
+        self.assertNotIn("Artifact", section_rows[0])
+        self.assertNotIn("SHA256", " ".join(section_rows[0]))
+        self.assertEqual("agreed", section_rows[2][5])
+
+        changed_row = list(section_rows[2])
+        changed_row[5] = "fabricated reconciliation"
+        report_path.write_text(
+            proofcheck.replace_report_nested_section_text(
+                original_report,
+                "### Independent verification",
+                proofcheck.render_markdown_table(
+                    section_rows[0],
+                    [changed_row],
+                ),
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+        self.assertTrue(
+            any("Independent verification disagrees" in error for error in errors),
+            errors,
         )
 
-        for field, column, changed_value in (
-            ("disagreements", 7, "[\"fabricated disagreement\"]"),
-            ("artifact", 8, "audit/05_adversarial/wrong-artifact.md"),
+    def test_preliminary_dependency_steps_are_packet_only(self) -> None:
+        ledger_path = self.make_complete_audit()
+        self.install_internal_dependency(ledger_path)
+        saved_ledger = read_json(ledger_path)
+        registry_path = (
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        registry = read_json(registry_path)
+        use = registry["internal_uses"][0]
+        use["status"] = "unchecked"
+        use["step_ids"] = []
+        write_json(registry_path, registry)
+        ledger_path.unlink()
+
+        packet = proofcheck.build_context_packet(
+            self.audit, "lem:main", "primary"
+        )
+
+        direct_use = packet["dependencies"]["direct_internal_uses"][0]
+        self.assertEqual("unchecked", direct_use["status"])
+        self.assertEqual([], direct_use["step_ids"])
+
+        registry = read_json(registry_path)
+        registry["internal_uses"][0]["status"] = "verified"
+        write_json(registry_path, registry)
+        with self.assertRaisesRegex(ValueError, "step_ids must not be empty"):
+            proofcheck.build_context_packet(self.audit, "lem:main", "primary")
+
+        registry["internal_uses"][0]["status"] = "unchecked"
+        write_json(registry_path, registry)
+        write_json(ledger_path, saved_ledger)
+        with self.assertRaisesRegex(ValueError, "step_ids must not be empty"):
+            proofcheck.build_context_packet(self.audit, "lem:main", "primary")
+
+    def test_dependency_work_context_omits_only_output_mirrors(self) -> None:
+        projected = proofcheck.packet_semantic_dependencies(
+            {
+                "direct_internal_uses": [
+                    {
+                        "use_id": "D001",
+                        "step_ids": ["S002"],
+                        "status": "verified",
+                        "needed_form": "The exact prerequisite conclusion.",
+                    }
+                ],
+                "downstream_internal_uses": [
+                    {
+                        "use_id": "D002",
+                        "step_ids": ["S003"],
+                        "status": "incorrect",
+                        "issue_ids": ["I-001"],
+                        "compatibility_check": "The use was checked.",
+                        "compatibility_checks": [{"aspect": "domain"}],
+                        "needed_form": "The exact downstream form.",
+                    }
+                ],
+            }
+        )
+
+        direct = projected["direct_internal_uses"][0]
+        downstream = projected["downstream_internal_uses"][0]
+        self.assertNotIn("step_ids", direct)
+        self.assertEqual("verified", direct["status"])
+        self.assertEqual(
+            "The exact prerequisite conclusion.", direct["needed_form"]
+        )
+        for field in (
+            "step_ids",
+            "status",
+            "issue_ids",
+            "compatibility_check",
+            "compatibility_checks",
         ):
-            with self.subTest(field=field):
-                changed_row = list(section_rows[2])
-                changed_row[column] = changed_value
-                report_path.write_text(
-                    proofcheck.replace_report_section_text(
-                        original_report,
-                        "## Independent critical-path challenges",
-                        proofcheck.render_markdown_table(
-                            section_rows[0],
-                            [changed_row],
-                        ),
-                    ),
-                    encoding="utf-8",
-                    newline="\n",
-                )
-
-                errors, _ = proofcheck.check_audit_finalization(self.audit)
-
-                self.assertTrue(
-                    any(
-                        "Independent critical-path challenges rows disagree"
-                        in error
-                        for error in errors
-                    ),
-                    errors,
-                )
+            self.assertNotIn(field, downstream)
+        self.assertEqual("The exact downstream form.", downstream["needed_form"])
 
     def test_final_report_declared_deliverables_scalar_must_match_manifest(
         self,
@@ -11484,15 +11670,16 @@ class FinalizationTests(unittest.TestCase):
         self.make_complete_audit()
         report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
         report = report_path.read_text(encoding="utf-8").replace(
-            "| lem:main | verified | verified | valid | established | verified |",
-            "| lem:main | gap | verified | valid | established | verified |",
+            "| lem:main | C001: x equals x | verified | valid | established |",
+            "| lem:main | C001: x equals x | verified | invalid | established |",
+            1,
         )
         report_path.write_text(report, encoding="utf-8", newline="\n")
 
         errors, _ = proofcheck.check_audit_finalization(self.audit)
 
         self.assertTrue(
-            any("main-chain" in error.lower() or "Main theorem chain" in error for error in errors),
+            any("Results and impact disagrees" in error for error in errors),
             errors,
         )
 
@@ -11767,7 +11954,10 @@ class FinalizationTests(unittest.TestCase):
             )
         self.assertEqual(0, status)
         ledger_path = self.make_complete_audit()
-        self.install_external_dependency(ledger_path)
+        self.install_external_dependency(
+            ledger_path,
+            reconcile_report_views=False,
+        )
 
         errors, _ = proofcheck.check_audit_finalization(self.audit)
 
@@ -13401,7 +13591,11 @@ class FinalizationTests(unittest.TestCase):
             "source_snapshot_sha256": manifest["source_snapshot"]["sha256"],
             "rechecked_units": ["lem:main"],
         }
-        self.install_canonical_issue(issue, ledger_path=ledger_path)
+        self.install_canonical_issue(
+            issue,
+            ledger_path=ledger_path,
+            reconcile_report_views=False,
+        )
 
         errors, _ = proofcheck.check_audit_finalization(self.audit)
 
@@ -13432,7 +13626,11 @@ class FinalizationTests(unittest.TestCase):
             "downstream_consequences": ["The recorded scope is unreliable."],
             "possible_repair": "Link the issue to the affected proof unit.",
         }
-        self.install_canonical_issue(issue, ledger_path=ledger_path)
+        self.install_canonical_issue(
+            issue,
+            ledger_path=ledger_path,
+            reconcile_report_views=False,
+        )
 
         errors, _ = proofcheck.check_audit_finalization(self.audit)
 
@@ -13461,8 +13659,6 @@ class FinalizationTests(unittest.TestCase):
                 "One canonical prerequisite issue is propagated to its dependent."
             ),
         }
-        self.install_canonical_issue(issue, ledger_path=prior_path)
-
         prior = read_json(prior_path)
         prior["steps"][0]["status"] = "conditionally_verified"
         prior["review"]["unit_status"] = "conditionally_verified"
@@ -13496,6 +13692,12 @@ class FinalizationTests(unittest.TestCase):
         registry["internal_uses"][0]["status"] = "conditional"
         registry["internal_uses"][0]["issue_ids"] = ["I-001"]
         write_json(registry_path, registry)
+
+        self.install_canonical_issue(
+            issue,
+            ledger_path=prior_path,
+            reconcile_report_views=False,
+        )
 
         errors, _ = proofcheck.check_audit_finalization(self.audit)
 
@@ -13655,6 +13857,15 @@ class FinalizationTests(unittest.TestCase):
         report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
         clean_manifest = read_json(manifest_path)
         clean_report = report_path.read_text(encoding="utf-8")
+        registry_path = (
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        registry = read_json(registry_path)
+        registry["internal_uses"][0]["issue_ids"] = ["I-001"]
+        write_json(registry_path, registry)
         cases = {
             "inconclusive": "inconclusive",
             "defect": "defects_found",
@@ -13670,7 +13881,10 @@ class FinalizationTests(unittest.TestCase):
                     affected_result="lem:prior",
                     affected_results=["lem:main", "lem:prior"],
                 )
-                self.install_canonical_issue(issue)
+                self.install_canonical_issue(
+                    issue,
+                    reconcile_report_views=False,
+                )
 
                 errors, result = proofcheck.check_audit_finalization(self.audit)
 
@@ -13741,7 +13955,10 @@ class FinalizationTests(unittest.TestCase):
                     finding_status=finding_status,
                     load_bearing=True,
                 )
-                self.install_canonical_issue(issue)
+                self.install_canonical_issue(
+                    issue,
+                    reconcile_report_views=False,
+                )
 
                 errors, result = proofcheck.check_audit_finalization(self.audit)
 
@@ -13766,7 +13983,10 @@ class FinalizationTests(unittest.TestCase):
                 report_path.write_text(clean_report, encoding="utf-8", newline="\n")
                 issue = self.make_global_issue(load_bearing=False, severity="S3")
                 issue["affected_results"] = value
-                self.install_canonical_issue(issue)
+                self.install_canonical_issue(
+                    issue,
+                    reconcile_report_views=False,
+                )
                 try:
                     errors, _ = proofcheck.check_audit_finalization(self.audit)
                 except (TypeError, ValueError) as exc:
@@ -13881,9 +14101,20 @@ class FinalizationTests(unittest.TestCase):
             )
         ledger_path = self.make_complete_audit()
         ledger = read_json(ledger_path)
+        inventory = read_json(
+            self.audit / "audit" / "01_index" / "theorem_inventory.json"
+        )
+        occurrence = next(
+            row
+            for row in inventory["units"][0]["reference_occurrences"]
+            if row["target"] == "lem:missing"
+        )
         ledger["review"]["source_reference_dispositions"].append(
             {
+                "occurrence_id": occurrence["occurrence_id"],
                 "id": "lem:missing",
+                "target": occurrence["target"],
+                "command": occurrence["command"],
                 "disposition": "non_load_bearing",
                 "evidence": (
                     "The broken display reference supplies no premise to the proof."
@@ -13975,7 +14206,10 @@ class FinalizationTests(unittest.TestCase):
             severity="S3",
             summary="The first line\nand the second | clause form one summary.",
         )
-        self.install_canonical_issue(issue)
+        self.install_canonical_issue(
+            issue,
+            reconcile_report_views=False,
+        )
 
         errors, _ = proofcheck.check_audit_finalization(self.audit)
         self.assertTrue(
@@ -14094,7 +14328,7 @@ class FinalizationTests(unittest.TestCase):
             errors,
         )
 
-    def test_issue_report_views_order_by_severity_then_issue_id(self) -> None:
+    def test_findings_and_repairs_order_by_severity_then_issue_id(self) -> None:
         issues = [
             {
                 "id": "I-001",
@@ -14119,7 +14353,7 @@ class FinalizationTests(unittest.TestCase):
             },
         ]
 
-        _, details = proofcheck.render_issue_report_views(
+        details = proofcheck.render_findings_and_repairs(
             issues,
             {},
             [],
@@ -14193,10 +14427,10 @@ class FinalizationTests(unittest.TestCase):
         report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
         report = report_path.read_text(encoding="utf-8")
         report = proofcheck.replace_report_section_text(
-            report, "## Issue index", "stale issue index"
+            report, "## Results and impact", "stale results"
         )
         report = proofcheck.replace_report_section_text(
-            report, "## Detailed findings", "stale detailed findings"
+            report, "## Findings and repairs", "stale findings"
         )
         report_path.write_text(report, encoding="utf-8", newline="\n")
         summary_path.write_text(
@@ -14293,17 +14527,17 @@ class FinalizationTests(unittest.TestCase):
         self.assertEqual(b"old second\n", second.read_bytes())
         self.assertEqual([], list(self.base.glob(".*.proofcheck.tmp")))
 
-    def test_issue_report_views_generate_exact_empty_sections_only(
+    def test_report_views_generate_exact_empty_sections_only(
         self,
     ) -> None:
         self.make_complete_audit()
         report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
         before = report_path.read_text(encoding="utf-8")
         before = proofcheck.replace_report_section_text(
-            before, "## Issue index", "stale issue index"
+            before, "## Results and impact", "stale results"
         )
         before = proofcheck.replace_report_section_text(
-            before, "## Detailed findings", "stale detailed findings"
+            before, "## Findings and repairs", "stale findings"
         )
         report_path.write_text(before, encoding="utf-8", newline="\n")
         output = io.StringIO()
@@ -14322,17 +14556,24 @@ class FinalizationTests(unittest.TestCase):
 
         self.assertEqual(0, status)
         self.assertTrue(payload["report_views_written"])
+        _, summaries, _ = proofcheck.audit_ledgers(self.audit, True)
+        expected_results = proofcheck.render_results_and_impact(
+            {summary["unit_id"]: summary for summary in summaries},
+            ["lem:main"],
+        )
         self.assertEqual(
-            "No issues.",
-            (proofcheck.report_section(after, "## Issue index") or "").strip(),
+            expected_results,
+            (
+                proofcheck.report_section(after, "## Results and impact") or ""
+            ).strip(),
         )
         self.assertEqual(
             "No issues.",
             (
-                proofcheck.report_section(after, "## Detailed findings") or ""
+                proofcheck.report_section(after, "## Findings and repairs") or ""
             ).strip(),
         )
-        for heading in ("## Issue index", "## Detailed findings"):
+        for heading in ("## Results and impact", "## Findings and repairs"):
             before = proofcheck.replace_report_section_text(
                 before, heading, "<generated>"
             )
@@ -14341,7 +14582,7 @@ class FinalizationTests(unittest.TestCase):
             )
         self.assertEqual(before, after)
 
-    def test_issue_report_views_generate_schema5_tables_accepted_by_finalization(
+    def test_report_views_generate_schema5_sections_accepted_by_finalization(
         self,
     ) -> None:
         self.make_complete_audit()
@@ -14354,10 +14595,10 @@ class FinalizationTests(unittest.TestCase):
         report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
         before = report_path.read_text(encoding="utf-8")
         before = proofcheck.replace_report_section_text(
-            before, "## Issue index", "stale issue index"
+            before, "## Results and impact", "stale results"
         )
         before = proofcheck.replace_report_section_text(
-            before, "## Detailed findings", "stale detailed findings"
+            before, "## Findings and repairs", "stale findings"
         )
         report_path.write_text(before, encoding="utf-8", newline="\n")
         output = io.StringIO()
@@ -14378,33 +14619,37 @@ class FinalizationTests(unittest.TestCase):
             summary["unit_id"]: summary for summary in summaries
         }
         manifest = read_json(self.audit / "AUDIT_MANIFEST.json")
-        critical, _ = proofcheck.effective_critical_requirements(
+        required_challenges, _ = proofcheck.required_challenge_requirements(
             manifest, [issue]
         )
-        expected_index, expected_details = (
-            proofcheck.render_issue_report_views(
-                [issue],
-                summaries_by_id,
-                [],
-                critical,
-                manifest.get("report_deliverables", []),
-                manifest["audit_scope"]["overall_assessment"],
-            )
+        expected_results = proofcheck.render_results_and_impact(
+            summaries_by_id,
+            manifest["audit_scope"]["in_scope_units"],
+        )
+        expected_findings = proofcheck.render_findings_and_repairs(
+            [issue],
+            summaries_by_id,
+            [],
+            required_challenges,
+            manifest.get("report_deliverables", []),
+            manifest["audit_scope"]["overall_assessment"],
         )
 
         self.assertEqual(0, status)
         self.assertTrue(payload["report_views_written"])
         self.assertEqual(
-            expected_index,
-            (proofcheck.report_section(after, "## Issue index") or "").strip(),
-        )
-        self.assertEqual(
-            expected_details,
+            expected_results,
             (
-                proofcheck.report_section(after, "## Detailed findings") or ""
+                proofcheck.report_section(after, "## Results and impact") or ""
             ).strip(),
         )
-        for heading in ("## Issue index", "## Detailed findings"):
+        self.assertEqual(
+            expected_findings,
+            (
+                proofcheck.report_section(after, "## Findings and repairs") or ""
+            ).strip(),
+        )
+        for heading in ("## Results and impact", "## Findings and repairs"):
             before = proofcheck.replace_report_section_text(
                 before, heading, "<generated>"
             )
@@ -14415,7 +14660,7 @@ class FinalizationTests(unittest.TestCase):
         final_errors, _ = proofcheck.check_audit_finalization(self.audit)
         self.assertEqual([], final_errors)
 
-    def test_ledger_move_report_preserves_exact_premises_and_failure_evidence(
+    def test_ledger_move_report_preserves_exact_quote_and_failure_evidence(
         self,
     ) -> None:
         _, _, failure_evidence = self.make_ledger_move_defect_audit()
@@ -14424,54 +14669,37 @@ class FinalizationTests(unittest.TestCase):
         report = (
             self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
         ).read_text(encoding="utf-8")
-        details = proofcheck.report_section(report, "## Detailed findings") or ""
+        details = proofcheck.report_section(report, "## Findings and repairs") or ""
         failure_table = proofcheck.markdown_tables(details)[0]
         failure_row = failure_table[2]
-        expected_premises = json.dumps(
-            {
-                "premises": [
-                    {
-                        "id": "P001",
-                        "claim": "For every real x.",
-                        "origin": {
-                            "kind": "obligation",
-                            "reference": "/quantifier_scope",
-                            "anchor": {
-                                "kind": "statement_span",
-                                "index": 1,
-                            },
-                        },
-                    }
-                ],
-                "prior_moves": [],
-            },
-            ensure_ascii=False,
+        self.assertEqual(
+            ["Location", "Step or move", "Exact locked quote"],
+            failure_table[0],
         )
+        self.assertEqual("S003/M001", failure_row[1])
+        self.assertTrue(failure_row[2])
+        self.assertIn(failure_evidence, details)
+        self.assertIn("Rule checked: Reflexivity of equality", details)
+        self.assertNotIn('"premises"', details)
 
-        self.assertEqual("Premises", failure_table[0][7])
-        self.assertEqual("Failure evidence", failure_table[0][8])
-        self.assertEqual(expected_premises, failure_row[7])
-        self.assertEqual(failure_evidence, failure_row[8])
-        self.assertEqual("invalid_rule", failure_row[9])
-
-    def test_ledger_move_report_rejects_stale_premises_or_failure_evidence(
+    def test_ledger_move_report_rejects_stale_visible_evidence(
         self,
     ) -> None:
         self.make_ledger_move_defect_audit()
         report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
         baseline = report_path.read_text(encoding="utf-8")
         details = proofcheck.report_section(
-            baseline, "## Detailed findings"
+            baseline, "## Findings and repairs"
         ) or ""
         failure_row = proofcheck.markdown_tables(details)[0][2]
         self.assertEqual([], proofcheck.check_audit_finalization(self.audit)[0])
 
         for field, value, stale in (
-            ("Premises", failure_row[7], "stale premise projection"),
+            ("Exact locked quote", failure_row[2], "stale locked quote"),
             (
                 "Failure evidence",
-                failure_row[8],
-                "stale failure evidence",
+                "Rule checked: Reflexivity of equality",
+                "Rule checked: invalid rule",
             ),
         ):
             with self.subTest(field=field):
@@ -14484,9 +14712,8 @@ class FinalizationTests(unittest.TestCase):
                 errors, _ = proofcheck.check_audit_finalization(self.audit)
                 self.assertTrue(
                     any(
-                        "I-001" in error
-                        and "Exact failure site and contract" in error
-                        and "disagrees with canonical evidence" in error
+                        "Findings and repairs disagrees with canonical issues"
+                        in error
                         for error in errors
                     ),
                     errors,
@@ -14515,7 +14742,7 @@ class FinalizationTests(unittest.TestCase):
         target = trigger["target_contract"]
         current = target["current_target"]
         self.assertEqual("I-001", trigger["id"])
-        self.assertEqual("S1", trigger["severity"])
+        self.assertNotIn("severity", trigger)
         self.assertEqual(
             trigger["target_contract_sha256"],
             proofcheck.canonical_sha256(target),
@@ -14590,7 +14817,8 @@ class FinalizationTests(unittest.TestCase):
         self.seal_schema5_challenge(
             ledger_path, read_json(ledger_path), covered_issue_ids=["I-001"]
         )
-        self.assertNotEqual(
+        # Authored severity is not a blinded mathematical target input.
+        self.assertEqual(
             reordered_context,
             proofcheck.build_context_packet(
                 self.audit, "lem:main", "challenge"
@@ -14634,6 +14862,232 @@ class FinalizationTests(unittest.TestCase):
         self.assertEqual("D001", projected["use_id"])
         self.assertEqual("lem:prior", projected["dependency_id"])
         self.assertEqual("C001", projected["dependency_conclusion_id"])
+
+    def test_primary_issue_propagation_defers_only_current_unit_anchor(
+        self,
+    ) -> None:
+        issue = {
+            "affected_result": "lem:root",
+            "affected_results": ["lem:root", "lem:target"],
+        }
+        edge = {
+            "use_id": "D001",
+            "dependency_id": "lem:root",
+            "dependency_conclusion_id": "C001",
+            "dependent_unit": "lem:target",
+            "needed_form": "The root conclusion in the exact needed form.",
+            "dependency_conclusion": "The root conclusion.",
+            "dependency_contract_sha256": "a" * 64,
+            "step_ids": ["S002"],
+        }
+        registry = {"internal_uses": [edge], "external_results": []}
+        with mock.patch.object(
+            proofcheck,
+            "packet_issue_ledger",
+            side_effect=AssertionError("current ledger must not be read"),
+        ) as ledger_reader:
+            propagation = proofcheck.packet_issue_propagation(
+                self.audit,
+                issue,
+                registry,
+                [],
+                "lem:target",
+                pending_step_anchor_unit="lem:target",
+            )
+        ledger_reader.assert_not_called()
+        self.assertEqual([], propagation["uses"][0]["source_anchors"])
+
+        with mock.patch.object(
+            proofcheck,
+            "packet_issue_ledger",
+            side_effect=ValueError("missing current ledger"),
+        ):
+            with self.assertRaisesRegex(ValueError, "missing current ledger"):
+                proofcheck.packet_issue_propagation(
+                    self.audit, issue, registry, [], "lem:target"
+                )
+
+        issue["affected_results"].insert(1, "lem:middle")
+        registry["internal_uses"] = [
+            {**edge, "dependent_unit": "lem:middle"},
+            {
+                **edge,
+                "use_id": "D002",
+                "dependency_id": "lem:middle",
+            },
+        ]
+        with mock.patch.object(
+            proofcheck,
+            "packet_issue_ledger",
+            side_effect=ValueError("missing intermediate ledger"),
+        ):
+            with self.assertRaisesRegex(ValueError, "missing intermediate ledger"):
+                proofcheck.packet_issue_propagation(
+                    self.audit,
+                    issue,
+                    registry,
+                    [],
+                    "lem:target",
+                    pending_step_anchor_unit="lem:target",
+                )
+
+    def test_primary_packet_defers_current_unit_issue_contract(self) -> None:
+        ledger_path = self.make_complete_audit()
+        prior_path, _ = self.install_internal_dependency(ledger_path)
+        ledger_path.unlink()
+        issue = self.make_global_issue(
+            finding_status="defect",
+            load_bearing=True,
+            severity="S1",
+            summary=(
+                "The upstream result is defective at the exact inference "
+                "used by the downstream unit."
+            ),
+        )
+        issue.update(
+            {
+                "origin_ref": {
+                    "kind": "ledger_move",
+                    "unit_id": "lem:prior",
+                    "step_id": "S001",
+                    "move_id": "M001",
+                },
+                "contract_refs": [
+                    {
+                        "kind": "conclusion",
+                        "unit_id": "lem:prior",
+                        "conclusion_id": "C001",
+                    },
+                    {
+                        "kind": "dependency_use",
+                        "unit_id": "lem:main",
+                        "use_id": "D001",
+                    },
+                ],
+                "affected_result": "lem:prior",
+                "affected_results": ["lem:prior", "lem:main"],
+                "invalidation_kind": "proof_invalid",
+            }
+        )
+        issue_path = self.audit / "audit" / "06_reports" / "ISSUE_LOG.json"
+        write_json(
+            issue_path,
+            {"schema_version": proofcheck.SCHEMA_VERSION, "issues": [issue]},
+        )
+
+        packet = proofcheck.build_context_packet(
+            self.audit, "lem:main", "primary"
+        )
+
+        self.assertTrue(prior_path.is_file())
+        trigger = packet["issue_triggers"][0]
+        contracts = trigger["target_contract"]["contracts"]
+        pending = next(
+            row
+            for row in contracts
+            if row["reference"].get("unit_id") == "lem:main"
+        )
+        self.assertEqual("pending_current_unit", pending["status"])
+        self.assertEqual("dependency_use", pending["reference"]["kind"])
+        self.assertEqual(
+            [], trigger["target_contract"]["propagation"]["uses"][0]["source_anchors"]
+        )
+
+    def test_current_unit_issue_output_does_not_stale_work_context(self) -> None:
+        ledger_path, _, _ = self.make_ledger_move_defect_audit()
+        baseline = read_json(ledger_path)["work_context_sha256"]
+        issue_path = self.audit / "audit" / "06_reports" / "ISSUE_LOG.json"
+        before = proofcheck.build_context_packet(
+            self.audit, "lem:main", "primary"
+        )
+        issue_log = read_json(issue_path)
+        issue_log["issues"][0]["summary"] = (
+            "The same recorded inference defect, stated more concisely."
+        )
+        issue_log["issues"][0]["severity"] = "S1"
+        issue_log["issues"][0]["repair_search"] = make_repair_search("S1")
+        write_json(issue_path, issue_log)
+
+        primary = proofcheck.build_context_packet(
+            self.audit, "lem:main", "primary"
+        )
+        challenge = proofcheck.build_context_packet(
+            self.audit, "lem:main", "challenge"
+        )
+
+        self.assertEqual(baseline, primary["work_context_sha256"])
+        self.assertNotEqual(
+            before["context_binding_sha256"],
+            primary["context_binding_sha256"],
+        )
+        self.assertEqual("I-001", primary["issue_triggers"][0]["id"])
+        self.assertEqual("S1", primary["issue_triggers"][0]["severity"])
+        self.assertEqual(
+            issue_log["issues"][0]["summary"],
+            primary["issue_triggers"][0]["summary"],
+        )
+        self.assertEqual("I-001", challenge["issue_triggers"][0]["id"])
+
+    def test_work_context_keeps_global_and_interface_issue_inputs(self) -> None:
+        common = {
+            "severity": "S2",
+            "status": "open",
+            "load_bearing": True,
+            "affected_result": "lem:main",
+            "affected_results": ["lem:main"],
+            "contract_refs": [],
+        }
+        issues = [
+            {
+                **common,
+                "id": "I-001",
+                "origin_ref": {
+                    "kind": "ledger_move",
+                    "unit_id": "lem:main",
+                },
+            },
+            {
+                **common,
+                "id": "I-002",
+                "origin_ref": {"kind": "global_check", "aspect": "scope"},
+            },
+            {
+                **common,
+                "id": "I-003",
+                "origin_ref": {
+                    "kind": "interface_record",
+                    "interface_id": "IF-001",
+                },
+            },
+        ]
+        with (
+            mock.patch.object(
+                proofcheck,
+                "load_issue_log",
+                return_value=(None, issues, proofcheck.SCHEMA_VERSION, []),
+            ),
+            mock.patch.object(
+                proofcheck,
+                "packet_issue_origin_target",
+                return_value={"kind": "resolved"},
+            ),
+            mock.patch.object(
+                proofcheck,
+                "packet_issue_propagation",
+                return_value={"uses": []},
+            ),
+        ):
+            projected = proofcheck.packet_issue_triggers(
+                self.audit,
+                {},
+                "lem:main",
+                "primary",
+                records={"dependency_registry": {}},
+                members=[],
+                work_context_inputs_only=True,
+            )
+
+        self.assertEqual(["I-002", "I-003"], [row["id"] for row in projected])
 
     def test_historical_challenges_receive_only_their_exact_retired_path_cut(
         self,
@@ -14854,16 +15308,18 @@ class FinalizationTests(unittest.TestCase):
         summaries_by_id = {row["unit_id"]: row for row in summaries}
         current_issues = read_json(issue_path)["issues"]
         self.assertTrue(
-            proofcheck.critical_challenges_complete(
+            proofcheck.independent_checks_complete(
                 self.audit, manifest, summaries_by_id, current_issues
             )
         )
 
         issue_log = read_json(issue_path)
-        issue_log["issues"][0]["severity"] = "S0"
+        issue_log["issues"][0]["contract_refs"].append({
+            "kind": "obligation_pointer", "unit_id": "lem:main", "pointer": "/quantifier_scope"
+        })
         write_json(issue_path, issue_log)
         self.assertFalse(
-            proofcheck.critical_challenges_complete(
+            proofcheck.independent_checks_complete(
                 self.audit,
                 manifest,
                 summaries_by_id,
@@ -15008,10 +15464,59 @@ class FinalizationTests(unittest.TestCase):
             errors,
         )
 
-    def test_bind_challenge_writes_exact_artifact_binding(self) -> None:
+    def test_finalization_rejects_challenge_judgment_tampering(self) -> None:
+        ledger_path = self.make_complete_audit()
+        original = read_json(ledger_path)
+        cases = {
+            "independence_level": "different_model",
+            "reconciled_verdict": "invalid",
+            "disagreements": ["The challenger now disputes the final verdict."],
+            "resolution": "The primary verdict was retained after reconciliation.",
+            "artifact": "audit/05_adversarial/copied-challenge.md",
+            "generated_utc": "2099-01-01T00:00:00Z",
+        }
+        for field, value in cases.items():
+            with self.subTest(field=field):
+                ledger = json.loads(json.dumps(original))
+                ledger["independent_check"][field] = value
+                if field == "artifact":
+                    original_artifact = (
+                        self.audit
+                        / original["independent_check"]["artifact"]
+                    )
+                    copied_artifact = self.audit / str(value)
+                    shutil.copyfile(original_artifact, copied_artifact)
+                write_json(ledger_path, ledger)
+
+                errors, _ = proofcheck.check_audit_finalization(self.audit)
+
+                self.assertTrue(
+                    any(
+                        "challenge binding block disagrees" in error
+                        for error in errors
+                    ),
+                    errors,
+                )
+
+    def test_bind_challenge_derives_bookkeeping_and_writes_exact_binding(self) -> None:
         ledger_path = self.make_complete_audit()
         ledger = read_json(ledger_path)
-        artifact = self.audit / ledger["independent_check"]["artifact"]
+        challenge = ledger["independent_check"]
+        artifact = self.audit / challenge["artifact"]
+        challenge.update(
+            {
+                "required": False,
+                "status": "not_required",
+                "reconciled_verdict": "verified",
+                "covered_issue_ids": [],
+                "source_snapshot_sha256": "",
+                "challenged_ledger_sha256": "",
+                "challenge_context_sha256": "",
+                "challenge_artifact_sha256": "",
+                "generated_utc": "",
+            }
+        )
+        write_json(ledger_path, ledger)
         artifact.write_text(
             "# Independent challenge\n\nThe exact packet was checked.\n",
             encoding="utf-8",
@@ -15026,6 +15531,23 @@ class FinalizationTests(unittest.TestCase):
         self.assertEqual(0, status)
         ledger = read_json(ledger_path)
         challenge = ledger["independent_check"]
+        manifest = read_json(self.audit / "AUDIT_MANIFEST.json")
+        packet = proofcheck.build_context_packet(
+            self.audit, "lem:main", "challenge"
+        )
+        self.assertTrue(challenge["required"])
+        self.assertEqual("agreed", challenge["status"])
+        self.assertEqual("verified", challenge["reconciled_verdict"])
+        self.assertEqual([], challenge["covered_issue_ids"])
+        self.assertEqual(
+            manifest["source_snapshot"]["sha256"],
+            challenge["source_snapshot_sha256"],
+        )
+        self.assertEqual(
+            packet["context_binding_sha256"],
+            challenge["challenge_context_sha256"],
+        )
+        self.assertTrue(proofcheck.is_utc_timestamp(challenge["generated_utc"]))
         self.assertEqual(
             proofcheck.sha256_file(artifact),
             challenge["challenge_artifact_sha256"],
@@ -15047,6 +15569,12 @@ class FinalizationTests(unittest.TestCase):
         valid_block = proofcheck.render_challenge_artifact_binding(
             "lem:main", ledger["independent_check"]
         )
+        challenge_template = (
+            SCRIPT.parents[1]
+            / "assets"
+            / "templates"
+            / "CHALLENGE_ARTIFACT.md"
+        ).read_text(encoding="utf-8")
         cases = (
             (
                 "unterminated",
@@ -15057,6 +15585,37 @@ class FinalizationTests(unittest.TestCase):
                 "duplicate",
                 f"# Challenge\n\n{valid_block}\n\n{valid_block}\n",
                 "duplicate",
+            ),
+            (
+                "binding_only",
+                f"{valid_block}\n",
+                "substantive checking narrative",
+            ),
+            (
+                "heading_only",
+                f"# Challenge\n\n{valid_block}\n",
+                "substantive checking narrative",
+            ),
+            (
+                "untouched_scaffold",
+                challenge_template,
+                "NONFINAL challenge scaffold",
+            ),
+            (
+                "scaffold_marker_deleted",
+                challenge_template.replace(
+                    proofcheck.CHALLENGE_ARTIFACT_SCAFFOLD_MARKER,
+                    "",
+                ),
+                "substantive checking narrative",
+            ),
+            (
+                "scaffold_marker_case_changed",
+                challenge_template.replace(
+                    proofcheck.CHALLENGE_ARTIFACT_SCAFFOLD_MARKER,
+                    proofcheck.CHALLENGE_ARTIFACT_SCAFFOLD_MARKER.lower(),
+                ),
+                "substantive checking narrative",
             ),
         )
         for name, artifact_text, message in cases:
@@ -15075,6 +15634,189 @@ class FinalizationTests(unittest.TestCase):
 
                 self.assertEqual(baseline_artifact, artifact.read_bytes())
                 self.assertEqual(baseline_ledger, ledger_path.read_bytes())
+
+    def test_bind_challenge_rejects_interleaved_edits(self) -> None:
+        ledger_path = self.make_complete_audit()
+        ledger = read_json(ledger_path)
+        artifact = self.audit / ledger["independent_check"]["artifact"]
+        ledger_baseline = ledger_path.read_bytes()
+        artifact_baseline = artifact.read_bytes()
+        for selected in ("ledger", "artifact"):
+            with self.subTest(selected=selected):
+                ledger_path.write_bytes(ledger_baseline)
+                artifact.write_bytes(artifact_baseline)
+                ledger_bytes = ledger_path.read_bytes()
+                artifact_bytes = artifact.read_bytes()
+                selected_path = (
+                    ledger_path if selected == "ledger" else artifact
+                )
+                interleaved_bytes = selected_path.read_bytes() + b" "
+                original_transaction = proofcheck.transactional_write_texts
+
+                def edit_before_commit(
+                    writes: list, **kwargs: object
+                ) -> None:
+                    self.assertTrue(
+                        proofcheck.migration_update_lock_path(
+                            self.audit
+                        ).is_file()
+                    )
+                    selected_path.write_bytes(interleaved_bytes)
+                    original_transaction(writes, **kwargs)
+
+                with mock.patch.object(
+                    proofcheck,
+                    "transactional_write_texts",
+                    side_effect=edit_before_commit,
+                ):
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "Transactional baseline changed before commit",
+                    ):
+                        proofcheck.cmd_bind_challenge(
+                            argparse.Namespace(
+                                root=self.audit, unit_id="lem:main"
+                            )
+                        )
+
+                self.assertEqual(
+                    interleaved_bytes, selected_path.read_bytes()
+                )
+                other_path = artifact if selected == "ledger" else ledger_path
+                other_bytes = (
+                    artifact_bytes if selected == "ledger" else ledger_bytes
+                )
+                self.assertEqual(other_bytes, other_path.read_bytes())
+                self.assertFalse(
+                    proofcheck.migration_update_lock_path(
+                        self.audit
+                    ).exists()
+                )
+
+    def test_bind_challenge_rejects_a_concurrent_proofcheck_update(
+        self,
+    ) -> None:
+        ledger_path = self.make_complete_audit()
+        ledger_bytes = ledger_path.read_bytes()
+        ledger = read_json(ledger_path)
+        artifact = self.audit / ledger["independent_check"]["artifact"]
+        artifact_bytes = artifact.read_bytes()
+        lock, lock_payload = proofcheck.acquire_migration_update_lock(
+            self.audit, "concurrent-proofcheck-update"
+        )
+        try:
+            with self.assertRaisesRegex(
+                ValueError, "audit migration is in progress"
+            ):
+                proofcheck.cmd_bind_challenge(
+                    argparse.Namespace(
+                        root=self.audit, unit_id="lem:main"
+                    )
+                )
+            self.assertEqual(ledger_bytes, ledger_path.read_bytes())
+            self.assertEqual(artifact_bytes, artifact.read_bytes())
+        finally:
+            proofcheck.release_migration_update_lock(lock, lock_payload)
+
+    def test_simultaneous_bind_challenge_keeps_one_consistent_commit(
+        self,
+    ) -> None:
+        self.make_complete_audit()
+        barrier = threading.Barrier(2)
+        original_acquire = proofcheck.acquire_migration_update_lock
+
+        def synchronized_acquire(
+            root: Path, command: str
+        ) -> tuple[Path, bytes]:
+            barrier.wait(timeout=10)
+            return original_acquire(root, command)
+
+        def run_bind() -> tuple[str, str]:
+            try:
+                status = proofcheck.cmd_bind_challenge(
+                    argparse.Namespace(
+                        root=self.audit, unit_id="lem:main"
+                    )
+                )
+                return "written", str(status)
+            except ValueError as exc:
+                return "rejected", str(exc)
+
+        with mock.patch.object(
+            proofcheck,
+            "acquire_migration_update_lock",
+            side_effect=synchronized_acquire,
+        ), mock.patch("builtins.print"):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                results = list(executor.map(lambda _: run_bind(), range(2)))
+
+        self.assertEqual(
+            ["rejected", "written"],
+            sorted(status for status, _ in results),
+        )
+        self.assertFalse(
+            proofcheck.migration_update_lock_path(self.audit).exists()
+        )
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+        self.assertEqual([], errors)
+
+    def test_challenge_narrative_requires_a_concise_rationale(self) -> None:
+        for text in (
+            "Checked",
+            "Verified",
+            "Challenge\n=========",
+            "<br>",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(
+                    proofcheck.has_substantive_challenge_narrative(text)
+                )
+        self.assertTrue(
+            proofcheck.has_substantive_challenge_narrative(
+                "Every inferential step was independently checked."
+            )
+        )
+
+    def test_finalization_gives_rebind_action_for_v1_challenge_binding(
+        self,
+    ) -> None:
+        ledger_path = self.make_complete_audit()
+        ledger = read_json(ledger_path)
+        challenge = ledger["independent_check"]
+        artifact = self.audit / challenge["artifact"]
+        old_payload = {
+            "schema_version": 1,
+            "unit_id": "lem:main",
+            "challenge_context_sha256": challenge[
+                "challenge_context_sha256"
+            ],
+            "challenger_verdict": challenge["challenger_verdict"],
+            "issue_assessments": [],
+        }
+        artifact.write_text(
+            "# Independent challenge\n\n"
+            "The exact packet was checked independently.\n\n"
+            f"{proofcheck.LEGACY_CHALLENGE_BINDING_BEGIN}\n"
+            f"{json.dumps(old_payload, indent=2)}\n"
+            f"{proofcheck.CHALLENGE_BINDING_END}\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        challenge["challenge_artifact_sha256"] = proofcheck.sha256_file(
+            artifact
+        )
+        write_json(ledger_path, ledger)
+
+        errors, _ = proofcheck.check_audit_finalization(self.audit)
+
+        self.assertTrue(
+            any(
+                "obsolete v1 challenge binding" in error
+                and "bind-challenge" in error
+                for error in errors
+            ),
+            errors,
+        )
 
     def test_bind_challenge_escapes_comment_delimiter_in_assessment(
         self,
@@ -15152,7 +15894,37 @@ class FinalizationTests(unittest.TestCase):
         )["issues"]
 
         self.assertFalse(
-            proofcheck.critical_challenges_complete(
+            proofcheck.independent_checks_complete(
+                self.audit, manifest, summaries_by_id, issues
+            )
+        )
+
+    def test_progress_gate_rejects_binding_only_challenge_artifact(self) -> None:
+        ledger_path = self.make_complete_audit()
+        ledger = read_json(ledger_path)
+        challenge = ledger["independent_check"]
+        artifact = self.audit / challenge["artifact"]
+        artifact.write_text(
+            proofcheck.render_challenge_artifact_binding(
+                "lem:main", challenge
+            )
+            + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        challenge["challenge_artifact_sha256"] = proofcheck.sha256_file(
+            artifact
+        )
+        write_json(ledger_path, ledger)
+        manifest = read_json(self.audit / "AUDIT_MANIFEST.json")
+        _, summaries, _ = proofcheck.audit_ledgers(self.audit, True)
+        summaries_by_id = {row["unit_id"]: row for row in summaries}
+        issues = read_json(
+            self.audit / "audit" / "06_reports" / "ISSUE_LOG.json"
+        )["issues"]
+
+        self.assertFalse(
+            proofcheck.independent_checks_complete(
                 self.audit, manifest, summaries_by_id, issues
             )
         )
@@ -15186,7 +15958,7 @@ class FinalizationTests(unittest.TestCase):
         self.assertIn('"source_status"', primary_dependencies)
         self.assertIn('"compatibility_checks"', primary_dependencies)
 
-    def test_dependency_issue_report_views_use_derived_final_closure(
+    def test_dependency_finding_uses_plain_derived_final_closure(
         self,
     ) -> None:
         self.make_dependency_mismatch_audit()
@@ -15210,47 +15982,20 @@ class FinalizationTests(unittest.TestCase):
         report = (
             self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
         ).read_text(encoding="utf-8")
-        details = proofcheck.report_section(report, "## Detailed findings") or ""
-        tables = proofcheck.markdown_tables(details)
-        failure_row = tables[0][2]
-        self.assertEqual(
-            json.dumps(
-                {
-                    "source_status": "verified",
-                    "applicability_status": "incorrect",
-                    "effective_status": "incorrect",
-                    "issue_ids": ["I-001"],
-                    "nonpassing_compatibility_checks": [
-                        {
-                            "aspect": "quantifiers_and_domains",
-                            "status": "incorrect",
-                            "evidence": (
-                                "The dependency conclusion has the wrong "
-                                "quantified domain at this use site."
-                            ),
-                            "issue_ids": ["I-001"],
-                        }
-                    ],
-                    "nonpassing_prerequisites": [],
-                    "source_evidence": [],
-                },
-                ensure_ascii=False,
-            ),
-            failure_row[8],
+        details = proofcheck.report_section(
+            report, "## Findings and repairs"
+        ) or ""
+        self.assertIn("dependency use D001", details)
+        self.assertIn("dependency source status is verified", details)
+        self.assertIn("use-site applicability is incorrect", details)
+        self.assertIn("effective dependency status is incorrect", details)
+        self.assertIn(
+            "quantifiers_and_domains is incorrect: The dependency conclusion "
+            "has the wrong quantified domain at this use site.",
+            details,
         )
-        propagation = next(
-            row for row in tables[2][2:] if row[2] == "D001"
-        )
-        self.assertEqual("lem:main", propagation[0])
-        self.assertEqual("uses lem:prior", propagation[1])
-        self.assertEqual("C001", propagation[3])
-        self.assertNotEqual("none", propagation[4])
-        self.assertNotEqual("none", propagation[5])
-        self.assertNotEqual("none", propagation[6])
-        closure = tables[-1][2]
-        self.assertEqual("D001", closure[2])
-        self.assertEqual("none", closure[3])
-        self.assertEqual("open", closure[-1])
+        self.assertNotIn('"source_status"', details)
+        self.assertNotIn('"nonpassing_compatibility_checks"', details)
 
         final_errors, _ = proofcheck.check_audit_finalization(self.audit)
         self.assertEqual([], final_errors)
@@ -15385,7 +16130,7 @@ class FinalizationTests(unittest.TestCase):
             projection["failure"][0][8],
         )
 
-    def test_detailed_finding_heading_preserves_vertical_bar(self) -> None:
+    def test_finding_heading_preserves_vertical_bar(self) -> None:
         self.make_complete_audit()
         summary = "The first and second | clauses form one summary."
         issue = self.make_global_issue(
@@ -15399,7 +16144,7 @@ class FinalizationTests(unittest.TestCase):
         report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
         section = proofcheck.report_section(
             report_path.read_text(encoding="utf-8"),
-            "## Detailed findings",
+            "## Findings and repairs",
         )
 
         self.assertEqual([], errors)
@@ -15442,8 +16187,8 @@ class FinalizationTests(unittest.TestCase):
             ],
         }
 
-        _, details = proofcheck.render_issue_report_views(
-            [issue],
+        projection = proofcheck.canonical_issue_detail_projection(
+            issue,
             summaries_by_id,
             [],
             ["lem:main"],
@@ -15451,7 +16196,7 @@ class FinalizationTests(unittest.TestCase):
             "defects_found",
             global_checks={aspect: check},
         )
-        failure_row = proofcheck.markdown_tables(details)[0][2]
+        failure_row = projection["failure"][0]
 
         self.assertEqual(
             {
@@ -15506,8 +16251,8 @@ class FinalizationTests(unittest.TestCase):
             }
         )
 
-        _, details = proofcheck.render_issue_report_views(
-            [issue],
+        projection = proofcheck.canonical_issue_detail_projection(
+            issue,
             summaries_by_id,
             [],
             ["lem:main"],
@@ -15515,7 +16260,7 @@ class FinalizationTests(unittest.TestCase):
             "defects_found",
             interfaces={interface["id"]: interface},
         )
-        failure_row = proofcheck.markdown_tables(details)[0][2]
+        failure_row = projection["failure"][0]
         evidence = json.loads(failure_row[8])
 
         self.assertEqual(
@@ -15580,8 +16325,12 @@ class FinalizationTests(unittest.TestCase):
     def test_final_report_rejects_certification_overclaim(self) -> None:
         self.make_complete_audit()
         report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
-        report = report_path.read_text(encoding="utf-8")
-        report += "\nThis certifies the proof as correct.\n"
+        report = report_path.read_text(encoding="utf-8").replace(
+            "\n### Independent verification\n",
+            "\nThis certifies the proof as correct.\n\n"
+            "### Independent verification\n",
+            1,
+        )
         report_path.write_text(report, encoding="utf-8", newline="\n")
         errors, _ = proofcheck.check_audit_finalization(self.audit)
         self.assertTrue(
@@ -15592,8 +16341,12 @@ class FinalizationTests(unittest.TestCase):
     def test_final_report_rejects_formal_verification_overclaim(self) -> None:
         self.make_complete_audit()
         report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
-        report = report_path.read_text(encoding="utf-8")
-        report += "\nThis is a formally verified proof.\n"
+        report = report_path.read_text(encoding="utf-8").replace(
+            "\n### Independent verification\n",
+            "\nThis is a formally verified proof.\n\n"
+            "### Independent verification\n",
+            1,
+        )
         report_path.write_text(report, encoding="utf-8", newline="\n")
         errors, _ = proofcheck.check_audit_finalization(self.audit)
         self.assertTrue(
@@ -15847,7 +16600,7 @@ class FinalizationTests(unittest.TestCase):
         ledger_path = self.make_complete_audit()
         ledger = read_json(ledger_path)
         prior = ledger["steps"][0]
-        prior["kind"] = "setup"
+        self.record_domain_introduction(ledger, prior)
         dependency = {
             "id": "S001",
             "kind": "step",
@@ -16897,7 +17650,10 @@ class FinalizationTests(unittest.TestCase):
             narrative = (
                 artifact.read_text(encoding="utf-8")
                 if artifact.is_file()
-                else "# Independent challenge"
+                else (
+                    "# Independent challenge\n\n"
+                    "Every inferential step was independently checked."
+                )
             )
             artifact.write_text(
                 proofcheck.upsert_challenge_artifact_binding(
@@ -16930,7 +17686,10 @@ class FinalizationTests(unittest.TestCase):
         narrative = (
             artifact.read_text(encoding="utf-8")
             if artifact.is_file()
-            else "# Independent challenge"
+            else (
+                "# Independent challenge\n\n"
+                "Every inferential step was independently checked."
+            )
         )
         artifact.write_text(
             proofcheck.upsert_challenge_artifact_binding(
@@ -16946,28 +17705,19 @@ class FinalizationTests(unittest.TestCase):
         report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
         if report_path.is_file():
             report = report_path.read_text(encoding="utf-8")
-            heading = "## Independent critical-path challenges"
+            heading = "### Independent verification"
             section_start = report.find(heading)
             if section_start >= 0:
-                next_heading = report.find("\n## ", section_start + len(heading))
+                next_heading = report.find("\n### ", section_start + len(heading))
                 section_end = len(report) if next_heading < 0 else next_heading
                 section = report[section_start:section_end]
                 unit_id = ledger["unit_id"]
                 row = (
                     f"| {unit_id} | {independent['status']} | "
                     f"{independent['independence_level']} | "
-                    f"{proofcheck.canonical_id_field(independent['covered_issue_ids'])} | "
-                    f"{proofcheck.escape_markdown(json.dumps(proofcheck.canonical_challenge_issue_assessments(independent.get('issue_assessments', [])), ensure_ascii=False, separators=(',', ':')))} | "
                     f"{independent['challenger_verdict']} | "
                     f"{independent['reconciled_verdict']} | "
-                    f"{proofcheck.escape_markdown(json.dumps(independent.get('disagreements', []), ensure_ascii=False, separators=(',', ':')))} | "
-                    f"{independent['artifact']} | "
-                    f"{independent['source_snapshot_sha256']} | "
-                    f"{independent['challenged_ledger_sha256']} | "
-                    f"{independent['challenge_context_sha256']} | "
-                    f"{independent['challenge_artifact_sha256']} | "
-                    f"{independent['generated_utc']} | "
-                    f"{independent.get('resolution') or 'none'} |"
+                    f"{independent.get('resolution') if independent['status'] == 'resolved' else 'agreed'} |"
                 )
                 section = re.sub(
                     rf"^\| {re.escape(unit_id)} \|.*$",
@@ -19593,11 +20343,34 @@ class FinalizationTests(unittest.TestCase):
         )
         user_report = self.audit / "audit" / "06_reports" / "USER_REPORT.md"
         canonical_text = canonical_report.read_text(encoding="utf-8")
-        user_text = canonical_text.replace(
+        deliverable_table = proofcheck.render_markdown_table(
+            [
+                "Deliverable ID",
+                "Role",
+                "Path",
+                "Issue IDs",
+                "Overall verdict",
+            ],
+            [
+                [
+                    "R001",
+                    "user_facing_report",
+                    "audit/06_reports/USER_REPORT.md",
+                    "none",
+                    "no_defect_found",
+                ]
+            ],
+        )
+        canonical_text = canonical_text.replace(
             "- Declared external deliverables: none",
             "- Declared external deliverables: R001",
             1,
         ).replace(
+            "### Declared external deliverables\n\nNone.",
+            "### Declared external deliverables\n\n" + deliverable_table,
+            1,
+        )
+        user_text = canonical_text.replace(
             "# Final Proof-Check Report",
             f"# Reader-Facing Proof Audit\n\n{orientation}",
             1,
@@ -19620,26 +20393,8 @@ class FinalizationTests(unittest.TestCase):
             }
         ]
         write_json(manifest_path, manifest)
-        digest = manifest["report_deliverables"][0]["sha256"]
         canonical_report.write_text(
-            canonical_text.replace(
-                "- Declared external deliverables: none",
-                "- Declared external deliverables: R001",
-                1,
-            ).replace(
-                "## Computational evidence",
-                (
-                    "## Declared external deliverables\n\n"
-                    "| Deliverable ID | Role | Path | SHA256 | Issue IDs | "
-                    "Overall verdict |\n"
-                    "|---|---|---|---|---|---|\n"
-                    "| R001 | user_facing_report | "
-                    "audit/06_reports/USER_REPORT.md | "
-                    f"{digest} | none | no_defect_found |\n\n"
-                    "## Computational evidence"
-                ),
-                1,
-            ),
+            canonical_text,
             encoding="utf-8",
             newline="\n",
         )
@@ -19666,14 +20421,13 @@ class FinalizationTests(unittest.TestCase):
     def test_declared_user_report_rejects_nonfinal_scaffold_marker(
         self,
     ) -> None:
-        canonical_report, user_report = (
+        _, user_report = (
             self.install_declared_user_report_with_orientation(
                 "This orientation paragraph is reader-facing only."
             )
         )
         manifest_path = self.audit / "AUDIT_MANIFEST.json"
         manifest = read_json(manifest_path)
-        old_digest = manifest["report_deliverables"][0]["sha256"]
         user_report.write_text(
             f"> **{proofcheck.REPORT_SCAFFOLD_MARKER}:** Working report.\n\n"
             + user_report.read_text(encoding="utf-8"),
@@ -19683,15 +20437,6 @@ class FinalizationTests(unittest.TestCase):
         new_digest = proofcheck.sha256_file(user_report)
         manifest["report_deliverables"][0]["sha256"] = new_digest
         write_json(manifest_path, manifest)
-        canonical_report.write_text(
-            canonical_report.read_text(encoding="utf-8").replace(
-                old_digest,
-                new_digest,
-                1,
-            ),
-            encoding="utf-8",
-            newline="\n",
-        )
 
         errors, _ = proofcheck.check_audit_finalization(self.audit)
 
@@ -19713,11 +20458,16 @@ class FinalizationTests(unittest.TestCase):
         baseline_canonical = canonical_report.read_text(encoding="utf-8")
         baseline_user = user_report.read_text(encoding="utf-8")
         baseline_manifest = read_json(manifest_path)
-        baseline_digest = baseline_manifest["report_deliverables"][0][
-            "sha256"
-        ]
         source_snapshot = baseline_manifest["source_snapshot"]["sha256"]
         cases = {
+            "not-answer-first": (
+                baseline_user.replace(
+                    "## Summary",
+                    "## Orientation\n\nReader context only.\n\n## Summary",
+                    1,
+                ),
+                "must begin its substantive content with ## Summary",
+            ),
             "changed-skill-version": (
                 baseline_user.replace(
                     f"- Skill version: {proofcheck.SKILL_VERSION}",
@@ -19744,14 +20494,14 @@ class FinalizationTests(unittest.TestCase):
                 ),
                 "rendered report needs exactly one canonical overall verdict",
             ),
-            "missing-computational-evidence": (
+            "missing-results-and-impact": (
                 re.sub(
-                    r"(?ms)^## Computational evidence\s*$.*?(?=^## |\Z)",
+                    r"(?ms)^## Results and impact\s*$.*?(?=^## |\Z)",
                     "",
                     baseline_user,
                     count=1,
                 ),
-                "user-facing Computational evidence section is missing",
+                "user-facing Results and impact section is missing or duplicated",
             ),
         }
         for case, (mutated_user, expected) in cases.items():
@@ -19767,15 +20517,6 @@ class FinalizationTests(unittest.TestCase):
                     changed_digest
                 )
                 write_json(manifest_path, changed_manifest)
-                canonical_report.write_text(
-                    baseline_canonical.replace(
-                        baseline_digest,
-                        changed_digest,
-                        1,
-                    ),
-                    encoding="utf-8",
-                    newline="\n",
-                )
 
                 errors, _ = proofcheck.check_audit_finalization(self.audit)
 
@@ -19800,59 +20541,11 @@ class FinalizationTests(unittest.TestCase):
         )
 
     def test_declared_user_report_rejects_issue_and_verdict_drift(self) -> None:
-        self.make_complete_audit()
-        self.upgrade_complete_audit_to_schema5()
-        canonical_report = (
-            self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
-        )
-        user_report = self.audit / "audit" / "06_reports" / "USER_REPORT.md"
-        user_report.write_text(
-            canonical_report.read_text(encoding="utf-8").replace(
-                "- Declared external deliverables: none",
-                "- Declared external deliverables: R001",
-                1,
-            ),
-            encoding="utf-8",
-            newline="\n",
+        self.install_declared_user_report_with_orientation(
+            "This orientation paragraph is reader-facing only."
         )
         manifest_path = self.audit / "AUDIT_MANIFEST.json"
         manifest = read_json(manifest_path)
-        manifest["report_deliverables"] = [
-            {
-                "id": "R001",
-                "role": "user_facing_report",
-                "path": "audit/06_reports/USER_REPORT.md",
-                "sha256": proofcheck.sha256_file(user_report),
-                "issue_ids": [],
-                "overall_verdict": "no_defect_found",
-            }
-        ]
-        write_json(manifest_path, manifest)
-        deliverable_hash = manifest["report_deliverables"][0]["sha256"]
-        canonical_with_deliverable = canonical_report.read_text(
-            encoding="utf-8"
-        ).replace(
-            "- Declared external deliverables: none",
-            "- Declared external deliverables: R001",
-            1,
-        ).replace(
-            "## Computational evidence",
-            (
-                "## Declared external deliverables\n\n"
-                "| Deliverable ID | Role | Path | SHA256 | Issue IDs | Overall verdict |\n"
-                "|---|---|---|---|---|---|\n"
-                "| R001 | user_facing_report | "
-                "audit/06_reports/USER_REPORT.md | "
-                f"{deliverable_hash} | none | no_defect_found |\n\n"
-                "## Computational evidence"
-            ),
-            1,
-        )
-        canonical_report.write_text(
-            canonical_with_deliverable,
-            encoding="utf-8",
-            newline="\n",
-        )
 
         errors, _ = proofcheck.check_audit_finalization(self.audit)
         self.assertFalse(
@@ -19887,68 +20580,10 @@ class FinalizationTests(unittest.TestCase):
     def test_declared_user_report_requires_canonical_semantic_sections(
         self,
     ) -> None:
-        self.make_complete_audit()
-        self.upgrade_complete_audit_to_schema5()
-        canonical_report = (
-            self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
-        )
-        user_report = self.audit / "audit" / "06_reports" / "USER_REPORT.md"
-        canonical_text = canonical_report.read_text(encoding="utf-8").replace(
-            "- Declared external deliverables: none",
-            "- Declared external deliverables: R001",
-            1,
-        )
-        user_text = canonical_text.replace(
-            "# Final Proof-Check Report",
-            (
-                "# Reader-Facing Proof Audit\n\n"
-                "This extra orientation paragraph is permitted user-facing prose."
-            ),
-            1,
-        )
-        user_report.write_text(
-            user_text,
-            encoding="utf-8",
-            newline="\n",
+        _, user_report = self.install_declared_user_report_with_orientation(
+            "This extra orientation paragraph is permitted user-facing prose."
         )
         manifest_path = self.audit / "AUDIT_MANIFEST.json"
-        manifest = read_json(manifest_path)
-        manifest["report_deliverables"] = [
-            {
-                "id": "R001",
-                "role": "user_facing_report",
-                "path": "audit/06_reports/USER_REPORT.md",
-                "sha256": proofcheck.sha256_file(user_report),
-                "issue_ids": [],
-                "overall_verdict": "no_defect_found",
-            }
-        ]
-        write_json(manifest_path, manifest)
-        deliverable_hash = manifest["report_deliverables"][0]["sha256"]
-        canonical_with_deliverable = canonical_report.read_text(
-            encoding="utf-8"
-        ).replace(
-            "- Declared external deliverables: none",
-            "- Declared external deliverables: R001",
-            1,
-        ).replace(
-            "## Computational evidence",
-            (
-                "## Declared external deliverables\n\n"
-                "| Deliverable ID | Role | Path | SHA256 | Issue IDs | Overall verdict |\n"
-                "|---|---|---|---|---|---|\n"
-                "| R001 | user_facing_report | "
-                "audit/06_reports/USER_REPORT.md | "
-                f"{deliverable_hash} | none | no_defect_found |\n\n"
-                "## Computational evidence"
-            ),
-            1,
-        )
-        canonical_report.write_text(
-            canonical_with_deliverable,
-            encoding="utf-8",
-            newline="\n",
-        )
 
         errors, _ = proofcheck.check_audit_finalization(self.audit)
         self.assertFalse(
@@ -19956,10 +20591,18 @@ class FinalizationTests(unittest.TestCase):
             errors,
         )
 
-        drifted = user_text.replace(
-            "Exact source ledger and direct reconstruction.",
-            "A generic summary without the canonical evidence.",
-            1,
+        user_text = user_report.read_text(encoding="utf-8")
+        results = proofcheck.report_section(
+            user_text, "## Results and impact"
+        ) or ""
+        drifted_results = results.replace(
+            "| established |", "| not_established |", 1
+        )
+        self.assertNotEqual(results, drifted_results)
+        drifted = proofcheck.replace_report_section_text(
+            user_text,
+            "## Results and impact",
+            drifted_results,
         )
         user_report.write_text(
             drifted,
@@ -19971,21 +20614,12 @@ class FinalizationTests(unittest.TestCase):
             proofcheck.sha256_file(user_report)
         )
         write_json(manifest_path, manifest)
-        canonical_report.write_text(
-            canonical_report.read_text(encoding="utf-8").replace(
-                deliverable_hash,
-                manifest["report_deliverables"][0]["sha256"],
-                1,
-            ),
-            encoding="utf-8",
-            newline="\n",
-        )
 
         errors, _ = proofcheck.check_audit_finalization(self.audit)
         self.assertTrue(
             any(
                 "report_deliverables[1]" in error
-                and "Main theorem chain" in error
+                and "Results and impact" in error
                 and (
                     "canonical" in error.lower()
                     or "disagree" in error.lower()
@@ -19995,7 +20629,7 @@ class FinalizationTests(unittest.TestCase):
             errors,
         )
 
-    def prepare_effective_critical_audit(self) -> tuple[Path, Path]:
+    def prepare_two_unit_challenge_audit(self) -> tuple[Path, Path]:
         main_path = self.make_complete_audit()
         prior_path, _ = self.install_internal_dependency(main_path)
 
@@ -20013,6 +20647,13 @@ class FinalizationTests(unittest.TestCase):
             "challenger_verdict": "not_checked",
             "reconciled_verdict": "not_checked",
             "artifact": "",
+            "covered_issue_ids": [],
+            "source_snapshot_sha256": "",
+            "challenged_ledger_sha256": "",
+            "challenge_context_sha256": "",
+            "challenge_artifact_sha256": "",
+            "issue_assessments": [],
+            "generated_utc": "",
             "disagreements": [],
             "resolution": "",
         }
@@ -20025,7 +20666,9 @@ class FinalizationTests(unittest.TestCase):
         write_json(prior_path, prior)
         prior_artifact = self.audit / prior["independent_check"]["artifact"]
         prior_artifact.write_text(
-            "# Fresh-context challenge for lem:prior\n\nVerdict: verified.\n",
+            "# Fresh-context challenge for lem:prior\n\n"
+            "The blinded reconstruction was checked line by line; "
+            "its verdict is verified.\n",
             encoding="utf-8",
             newline="\n",
         )
@@ -20058,12 +20701,6 @@ class FinalizationTests(unittest.TestCase):
             "| lem:main | D001 | lem:prior | C001 | internal_result | verified | "
             "passed | verified | none |",
             "None.",
-        )
-        report = report.replace(
-            "| lem:main | agreed | fresh_context_same_model | verified | verified | "
-            "none | none | audit/05_adversarial/lem-main-challenge.md |",
-            "| lem:prior | agreed | fresh_context_same_model | verified | verified | "
-            "none | none | audit/05_adversarial/lem-prior-challenge.md |",
         )
         report_path.write_text(report, encoding="utf-8", newline="\n")
 
@@ -20145,7 +20782,13 @@ class FinalizationTests(unittest.TestCase):
             )
         return issue
 
-    def install_schema5_issue(self, ledger_path: Path, issue: dict) -> None:
+    def install_schema5_issue(
+        self,
+        ledger_path: Path,
+        issue: dict,
+        *,
+        reconcile_report_views: bool = True,
+    ) -> None:
         ledger = read_json(ledger_path)
         step = next(
             step for step in ledger["steps"] if step["id"] == "S003"
@@ -20218,7 +20861,11 @@ class FinalizationTests(unittest.TestCase):
         )
         report_path.write_text(report, encoding="utf-8", newline="\n")
 
-        self.install_canonical_issue(issue, migrate=False)
+        self.install_canonical_issue(
+            issue,
+            migrate=False,
+            reconcile_report_views=reconcile_report_views,
+        )
         issue_path = self.audit / "audit" / "06_reports" / "ISSUE_LOG.json"
         issue_log = read_json(issue_path)
         issue_log["schema_version"] = 5
@@ -20390,7 +21037,7 @@ class FinalizationTests(unittest.TestCase):
         archive_path, archived_issue = self.finalize_and_archive_current_issue()
         return archive_path, archived_issue, check
 
-    def rebind_tampered_archived_failure_and_report(
+    def rebind_tampered_archived_failure(
         self,
         archive: dict,
         replacement_evidence: str,
@@ -20398,43 +21045,6 @@ class FinalizationTests(unittest.TestCase):
         old_row = list(archive["projection"]["failure"][0])
         new_row = list(old_row)
         new_row[8] = replacement_evidence
-        render_row = lambda row: "| " + " | ".join(
-            proofcheck.escape_markdown(str(value)) for value in row
-        ) + " |"
-
-        report_record = archive["prior_artifacts"]["final_report"]
-        report_text = base64.b64decode(
-            report_record["content_base64"]
-        ).decode("utf-8")
-        old_report_row = render_row(old_row)
-        new_report_row = render_row(new_row)
-        self.assertEqual(1, report_text.count(old_report_row))
-        report_text = report_text.replace(
-            old_report_row,
-            new_report_row,
-            1,
-        )
-        report_record["content_base64"] = base64.b64encode(
-            report_text.encode("utf-8")
-        ).decode("ascii")
-        report_record["sha256"] = proofcheck.sha256_text(report_text)
-
-        prior_record = archive["prior_finalization_record"]
-        final_report_row = next(
-            row
-            for row in prior_record["artifact_manifest"]
-            if row["file"] == "audit/06_reports/FINAL_REPORT.md"
-        )
-        final_report_row["sha256"] = report_record["sha256"]
-        prior_record["audit_state_sha256"] = proofcheck.canonical_sha256(
-            prior_record["artifact_manifest"]
-        )
-        prior_record["record_payload_sha256"] = (
-            proofcheck.finalization_payload_sha256(prior_record)
-        )
-        archive["prior_finalization_record_sha256"] = (
-            proofcheck.canonical_sha256(prior_record)
-        )
         archive["projection"]["failure"] = [new_row]
         archive["projection_sha256"] = proofcheck.canonical_sha256(
             archive["projection"]
@@ -20785,6 +21395,149 @@ class FinalizationTests(unittest.TestCase):
             )["status"],
         )
 
+    def test_prior_version_internal_archive_survives_revalidation(self) -> None:
+        prior_version = "1.2"
+        manifest_path = self.audit / "AUDIT_MANIFEST.json"
+        with mock.patch.object(proofcheck, "SKILL_VERSION", prior_version):
+            manifest = read_json(manifest_path)
+            manifest["protocol"] = proofcheck.protocol_identity()
+            write_json(manifest_path, manifest)
+            _, archive_path, issue = self.make_resolved_s1_lifecycle_audit()
+            archive = read_json(archive_path)
+
+            registry_record = archive["prior_artifacts"]["dependency_registry"]
+            prior_registry = json.loads(
+                base64.b64decode(registry_record["content_base64"]).decode("utf-8")
+            )
+            use = prior_registry["internal_uses"][0]
+            legacy_edge = {
+                "dependent_unit": use["dependent_unit"],
+                "use_id": use["use_id"],
+                "dependency_id": use["dependency_id"],
+                "dependency_conclusion_id": use["dependency_conclusion_id"],
+                "kind": "internal_result",
+                "source_status": "verified",
+                "applicability_status": "passed",
+                "effective_status": use["status"],
+                "step_ids": use["step_ids"],
+                "issue_ids": use["issue_ids"],
+                "compatibility_checks": use["compatibility_checks"],
+                "prerequisite_map": [],
+                "source_evidence": [],
+            }
+            archive["required_closure"]["dependency_uses"][0][
+                "edge_sha256"
+            ] = proofcheck.canonical_sha256(legacy_edge)
+
+            report_record = archive["prior_artifacts"]["final_report"]
+            report_text = base64.b64decode(
+                report_record["content_base64"]
+            ).decode("utf-8")
+            columns = [
+                "Dependent",
+                "Use ID",
+                "Dependency",
+                "Dependency conclusion",
+                "Kind",
+                "Source status",
+                "Applicability status",
+                "Effective status",
+                "Issue IDs",
+            ]
+            report_row = [
+                use["dependent_unit"],
+                use["use_id"],
+                use["dependency_id"],
+                use["dependency_conclusion_id"],
+                "internal_result",
+                "verified",
+                "passed",
+                use["status"],
+                proofcheck.canonical_id_field(use["issue_ids"]),
+            ]
+            legacy_table = "\n".join(
+                [
+                    "| " + " | ".join(columns) + " |",
+                    "| " + " | ".join("---" for _ in columns) + " |",
+                    "| " + " | ".join(report_row) + " |",
+                ]
+            )
+            report_text = (
+                report_text.rstrip()
+                + "\n\n## Dependency closure\n\n"
+                + legacy_table
+                + "\n"
+            )
+            report_record["content_base64"] = base64.b64encode(
+                report_text.encode("utf-8")
+            ).decode("ascii")
+            report_record["sha256"] = proofcheck.sha256_text(report_text)
+
+            required_units = set(archive["required_closure"]["units"])
+            archive["prior_artifacts"]["ledgers"] = [
+                record
+                for record in archive["prior_artifacts"]["ledgers"]
+                if json.loads(
+                    base64.b64decode(record["content_base64"]).decode("utf-8")
+                )["unit_id"]
+                in required_units
+            ]
+            archive["ledger_sha256s"] = {
+                unit_id: digest
+                for unit_id, digest in archive["ledger_sha256s"].items()
+                if unit_id in required_units
+            }
+
+            prior_record = archive["prior_finalization_record"]
+            report_row_record = next(
+                row
+                for row in prior_record["artifact_manifest"]
+                if row["file"] == report_record["file"]
+            )
+            report_row_record["sha256"] = report_record["sha256"]
+            prior_record["audit_state_sha256"] = proofcheck.canonical_sha256(
+                prior_record["artifact_manifest"]
+            )
+            prior_record["record_payload_sha256"] = (
+                proofcheck.finalization_payload_sha256(prior_record)
+            )
+            archive["prior_finalization_record_sha256"] = (
+                proofcheck.canonical_sha256(prior_record)
+            )
+            archive["archive_payload_sha256"] = (
+                proofcheck.resolution_archive_payload_sha256(archive)
+            )
+            write_json(archive_path, archive)
+            issue["historical_origin"]["sha256"] = proofcheck.sha256_file(
+                archive_path
+            )
+            issue_path = self.audit / "audit" / "06_reports" / "ISSUE_LOG.json"
+            issue_log = read_json(issue_path)
+            issue_log["issues"] = [issue]
+            write_json(issue_path, issue_log)
+
+        sealed_bytes = archive_path.read_bytes()
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            status = proofcheck.cmd_revalidate_protocol(
+                argparse.Namespace(root=self.audit)
+            )
+        payload = json.loads(output.getvalue())
+
+        self.assertEqual(0, status)
+        self.assertEqual("revalidated", payload["status"])
+        self.assertEqual(prior_version, payload["previous_skill_version"])
+        self.assertEqual(proofcheck.SKILL_VERSION, payload["current_skill_version"])
+        self.assertEqual(sealed_bytes, archive_path.read_bytes())
+        self.assertEqual(
+            prior_version,
+            read_json(archive_path)["protocol"]["skill_version"],
+        )
+        errors: list[str] = []
+        loaded = proofcheck.load_resolution_archive(issue, self.audit, errors)
+        self.assertIsNotNone(loaded)
+        self.assertEqual([], errors)
+
     def test_archive_issue_seals_prior_method_interface_registry(self) -> None:
         archive_path, _, record = self.make_archivable_interface_origin_audit()
         archive = read_json(archive_path)
@@ -20829,7 +21582,7 @@ class FinalizationTests(unittest.TestCase):
         self.assertEqual([], baseline_errors)
 
         archive = read_json(archive_path)
-        self.rebind_tampered_archived_failure_and_report(
+        self.rebind_tampered_archived_failure(
             archive,
             json.dumps(
                 {
@@ -20877,7 +21630,7 @@ class FinalizationTests(unittest.TestCase):
         self.assertEqual([], baseline_errors)
 
         archive = read_json(archive_path)
-        self.rebind_tampered_archived_failure_and_report(
+        self.rebind_tampered_archived_failure(
             archive,
             json.dumps(
                 {
@@ -21207,7 +21960,11 @@ class FinalizationTests(unittest.TestCase):
         issue["historical_origin"]["sha256"] = proofcheck.sha256_file(
             archive_path
         )
-        self.install_canonical_issue(issue, migrate=False)
+        self.install_canonical_issue(
+            issue,
+            migrate=False,
+            reconcile_report_views=False,
+        )
 
     def test_resolved_s1_rejects_tampered_historical_archive(self) -> None:
         _, archive_path, _ = self.make_resolved_s1_lifecycle_audit()
@@ -21280,6 +22037,81 @@ class FinalizationTests(unittest.TestCase):
                 for error in errors
             ),
             errors,
+        )
+
+    def test_archived_dependency_origin_ignores_non_substantive_step(
+        self,
+    ) -> None:
+        ledger = {
+            "source": {"file": "paper.tex"},
+            "source_lines": [
+                {"line": 1, "text": "Scratch reference."},
+                {"line": 2, "text": "The substantive dependency use."},
+            ],
+            "source_units": [
+                {"id": "U001", "lines": [1, 1]},
+                {"id": "U002", "lines": [2, 2]},
+            ],
+            "steps": [
+                {
+                    "id": "S001",
+                    "source_unit_id": "U001",
+                    "status": "non_substantive",
+                    "dependencies": [{"use_id": "D001"}],
+                },
+                {
+                    "id": "S002",
+                    "source_unit_id": "U002",
+                    "status": "gap",
+                    "dependencies": [{"use_id": "D001"}],
+                },
+            ],
+            "review": {
+                "direct_dependencies": [
+                    {
+                        "id": "lem:source",
+                        "use_id": "D001",
+                        "conclusion_id": "C001",
+                        "status": "gap",
+                        "needed_form": "The needed conclusion.",
+                        "compatibility_check": "The forms match.",
+                    }
+                ]
+            },
+        }
+        issue = {
+            "affected_result": "thm:main",
+            "invalidation_kind": "dependency_gap",
+            "origin_ref": {
+                "kind": "dependency_use",
+                "unit_id": "thm:main",
+                "use_id": "D001",
+            },
+        }
+        rows = proofcheck.archived_structured_failure_rows(
+            issue,
+            {"thm:main": ledger},
+            {},
+            {
+                "D001": {
+                    "source_status": "gap",
+                    "applicability_status": "passed",
+                    "effective_status": "gap",
+                    "issue_ids": ["I-001"],
+                    "compatibility_checks": [],
+                    "prerequisite_map": [],
+                    "source_evidence": [],
+                }
+            },
+            {},
+            self.audit,
+        )
+
+        self.assertIsNotNone(rows)
+        self.assertEqual("paper.tex:2-2", rows[0][0])
+        self.assertEqual(
+            json.dumps("The substantive dependency use."),
+            rows[0][2],
         )
 
     def test_resolved_s1_rejects_tampered_sealed_ledger_bytes(
@@ -21390,7 +22222,11 @@ class FinalizationTests(unittest.TestCase):
         issue["historical_origin"]["sha256"] = proofcheck.sha256_file(
             archive_path
         )
-        self.install_canonical_issue(issue, migrate=False)
+        self.install_canonical_issue(
+            issue,
+            migrate=False,
+            reconcile_report_views=False,
+        )
 
         errors, _ = proofcheck.check_audit_finalization(self.audit)
 
@@ -21411,7 +22247,11 @@ class FinalizationTests(unittest.TestCase):
             "step_id": "S003",
             "move_id": "M999",
         }
-        self.install_canonical_issue(issue, migrate=False)
+        self.install_canonical_issue(
+            issue,
+            migrate=False,
+            reconcile_report_views=False,
+        )
 
         errors, _ = proofcheck.check_audit_finalization(self.audit)
 
@@ -21442,7 +22282,11 @@ class FinalizationTests(unittest.TestCase):
                 ),
             }
         )
-        self.install_canonical_issue(issue, migrate=False)
+        self.install_canonical_issue(
+            issue,
+            migrate=False,
+            reconcile_report_views=False,
+        )
 
         errors, _ = proofcheck.check_audit_finalization(self.audit)
 
@@ -21511,7 +22355,11 @@ class FinalizationTests(unittest.TestCase):
 
         issue["rechecked_dependency_uses"] = []
         issue["current_resolution"]["retired_dependency_uses"] = []
-        self.install_canonical_issue(issue, migrate=False)
+        self.install_canonical_issue(
+            issue,
+            migrate=False,
+            reconcile_report_views=False,
+        )
 
         errors, _ = proofcheck.check_audit_finalization(self.audit)
 
@@ -21540,10 +22388,10 @@ class FinalizationTests(unittest.TestCase):
             errors,
         )
 
-    def test_open_or_deferred_s0_s1_units_become_effectively_critical(
+    def test_open_or_deferred_s0_s1_units_require_exact_issue_assessment(
         self,
     ) -> None:
-        main_path, _ = self.prepare_effective_critical_audit()
+        main_path, _ = self.prepare_two_unit_challenge_audit()
         manifest_path = self.audit / "AUDIT_MANIFEST.json"
         report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
         summary_path = self.audit / "audit" / "06_reports" / "ISSUE_SUMMARY.md"
@@ -21575,27 +22423,28 @@ class FinalizationTests(unittest.TestCase):
                     severity=severity, status=status
                 )
                 self.install_schema5_issue(main_path, issue)
+                manifest = read_json(manifest_path)
+                required, triggers = proofcheck.required_challenge_requirements(
+                    manifest, [issue]
+                )
+                self.assertIn("lem:main", required)
+                self.assertEqual({"I-001"}, triggers["lem:main"])
 
                 errors, _ = proofcheck.check_audit_finalization(self.audit)
 
                 self.assertTrue(
                     any(
-                        "lem:main" in error
-                        and "challenge" in error.lower()
-                        and (
-                            "effective" in error.lower()
-                            or "s0" in error.lower()
-                            or "s1" in error.lower()
-                        )
+                        "In-scope unit lem:main requires an independent"
+                        in error
                         for error in errors
                     ),
                     errors,
                 )
 
-    def test_s2_does_not_expand_the_effective_critical_set(
+    def test_s2_does_not_add_a_severe_issue_trigger(
         self,
     ) -> None:
-        main_path, _ = self.prepare_effective_critical_audit()
+        main_path, _ = self.prepare_two_unit_challenge_audit()
         manifest_path = self.audit / "AUDIT_MANIFEST.json"
         report_path = self.audit / "audit" / "06_reports" / "FINAL_REPORT.md"
         summary_path = self.audit / "audit" / "06_reports" / "ISSUE_SUMMARY.md"
@@ -21625,6 +22474,33 @@ class FinalizationTests(unittest.TestCase):
                     severity=severity, status=status
                 )
                 self.install_schema5_issue(main_path, issue)
+                manifest = read_json(manifest_path)
+                required, triggers = proofcheck.required_challenge_requirements(
+                    manifest, [issue]
+                )
+                self.assertIn("lem:main", required)
+                self.assertNotIn("lem:main", triggers)
+                ledger = read_json(main_path)
+                ledger["independent_check"].update(
+                    {
+                        "independence_level": "fresh_context_same_model",
+                        "challenger_verdict": ledger["review"]["unit_status"],
+                        "artifact": "audit/05_adversarial/lem-main-s2.md",
+                        "disagreements": [],
+                        "resolution": "",
+                    }
+                )
+                write_json(main_path, ledger)
+                artifact = self.audit / ledger["independent_check"]["artifact"]
+                artifact.write_text(
+                    "# Independent check\n\nThe unit was checked from the blinded packet.\n",
+                    encoding="utf-8",
+                    newline="\n",
+                )
+                with contextlib.redirect_stdout(io.StringIO()):
+                    proofcheck.cmd_bind_challenge(
+                        argparse.Namespace(root=self.audit, unit_id="lem:main")
+                    )
 
                 errors, _ = proofcheck.check_audit_finalization(self.audit)
                 main_challenge_errors = [
@@ -21635,28 +22511,32 @@ class FinalizationTests(unittest.TestCase):
 
                 self.assertEqual([], main_challenge_errors, errors)
 
-    def test_resolved_s1_retains_issue_promoted_challenge_closure(
+    def test_resolved_s1_retains_issue_triggered_challenge_closure(
         self,
     ) -> None:
-        main_path, _ = self.prepare_effective_critical_audit()
+        main_path, _ = self.prepare_two_unit_challenge_audit()
         issue = self.make_schema5_issue(
             severity="S1",
             status="resolved",
         )
-        self.install_schema5_issue(main_path, issue)
+        self.install_schema5_issue(
+            main_path,
+            issue,
+            reconcile_report_views=False,
+        )
         manifest = read_json(self.audit / "AUDIT_MANIFEST.json")
 
         self.assertNotIn(
             "lem:main",
             manifest["audit_scope"]["critical_units"],
         )
-        critical, severe_by_unit = (
-            proofcheck.effective_critical_requirements(
+        required_challenges, severe_by_unit = (
+            proofcheck.required_challenge_requirements(
                 manifest,
                 [issue],
             )
         )
-        self.assertIn("lem:main", critical)
+        self.assertIn("lem:main", required_challenges)
         self.assertEqual({"I-001"}, severe_by_unit["lem:main"])
 
         _, summaries, _ = proofcheck.audit_ledgers(self.audit, True)
@@ -21668,7 +22548,7 @@ class FinalizationTests(unittest.TestCase):
             issue,
             summaries_by_id,
             [],
-            critical,
+            required_challenges,
             [],
             manifest["audit_scope"]["overall_assessment"],
             evidence_base=self.audit,
@@ -21689,10 +22569,10 @@ class FinalizationTests(unittest.TestCase):
             errors,
         )
 
-    def test_effective_critical_challenge_must_be_fresh_and_issue_aware(
+    def test_in_scope_challenge_must_be_fresh_and_issue_aware(
         self,
     ) -> None:
-        main_path, _ = self.prepare_effective_critical_audit()
+        main_path, _ = self.prepare_two_unit_challenge_audit()
         self.set_expected_assessment("inconclusive")
         issue = self.make_schema5_issue(severity="S1", status="open")
         self.install_schema5_issue(main_path, issue)
@@ -21746,7 +22626,7 @@ class FinalizationTests(unittest.TestCase):
             )
 
     def test_schema5_issue_rejects_legacy_free_text_evidence_fields(self) -> None:
-        main_path, _ = self.prepare_effective_critical_audit()
+        main_path, _ = self.prepare_two_unit_challenge_audit()
         self.set_expected_assessment("inconclusive")
         issue = self.make_schema5_issue(severity="S2", status="open")
         issue.update(
@@ -21757,7 +22637,11 @@ class FinalizationTests(unittest.TestCase):
                 "possible_repair": "Legacy unstructured repair.",
             }
         )
-        self.install_schema5_issue(main_path, issue)
+        self.install_schema5_issue(
+            main_path,
+            issue,
+            reconcile_report_views=False,
+        )
 
         errors, _ = proofcheck.check_audit_finalization(self.audit)
 
@@ -21835,7 +22719,7 @@ class FinalizationTests(unittest.TestCase):
                 / "06_reports"
                 / "FINAL_REPORT.md"
             ).read_text(encoding="utf-8"),
-            "## Detailed findings",
+            "## Findings and repairs",
         )
         failure_row = proofcheck.markdown_tables(
             detail_section or ""
@@ -21848,6 +22732,7 @@ class FinalizationTests(unittest.TestCase):
         self.install_canonical_issue(
             issue_without_evidence,
             migrate=False,
+            reconcile_report_views=False,
         )
         errors, _ = proofcheck.check_audit_finalization(self.audit)
 
@@ -22209,67 +23094,79 @@ class FinalizationTests(unittest.TestCase):
             downstream_propagation["effect"],
         )
         self.assertNotIn("refuted", downstream_propagation["effect"].lower())
-        promoted_resolution = example["promoted_challenge_example"]["resolution"]
+        promoted_challenge = example["promoted_challenge_example"]
+        self.assertEqual("", promoted_challenge["resolution"])
+        downstream_assessment = promoted_challenge[
+            "issue_assessments"
+        ][0]["downstream_assessment"]
         self.assertIn(
             "the recorded downstream proof remains invalid",
-            promoted_resolution,
+            downstream_assessment,
         )
         self.assertIn(
             "does not by itself refute the downstream conclusion",
-            promoted_resolution,
+            downstream_assessment,
         )
 
     def test_public_templates_expose_exact_reporting_contracts(self) -> None:
         template_root = SCRIPT.parents[1] / "assets" / "templates"
         report = (template_root / "FINAL_REPORT.md").read_text(encoding="utf-8")
+        challenge_template = (
+            template_root / "CHALLENGE_ARTIFACT.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            proofcheck.CHALLENGE_ARTIFACT_SCAFFOLD_MARKER,
+            challenge_template,
+        )
+        self.assertEqual(
+            list(proofcheck.REPORT_REQUIRED_SECTIONS),
+            re.findall(r"^## (.+)$", report, re.MULTILINE),
+        )
+        result_rows = proofcheck.markdown_table_rows(
+            proofcheck.report_section(report, "## Results and impact") or ""
+        )
+        self.assertEqual(
+            [
+                "Result",
+                "Conclusion",
+                "Contract",
+                "Argument",
+                "Statement",
+                "Dependencies",
+                "Later use",
+                "Evidence",
+                "Issues",
+            ],
+            result_rows[0],
+        )
+        scope = proofcheck.report_section(report, "## Scope and assurance") or ""
         challenge_rows = proofcheck.markdown_table_rows(
-            proofcheck.report_section(
-                report,
-                "## Independent critical-path challenges",
+            proofcheck.report_nested_section(
+                scope,
+                "### Independent verification",
             )
             or ""
         )
         self.assertEqual(
             [
                 "Result",
-                "Challenge status",
+                "Check status",
                 "Independence",
-                "Covered issue IDs",
-                "Issue assessments",
                 "Challenger verdict",
-                "Reconciled verdict",
-                "Disagreements",
-                "Artifact",
-                "Source snapshot SHA256",
-                "Challenged ledger SHA256",
-                "Challenge context SHA256",
-                "Artifact SHA256",
-                "Generated UTC",
-                "Resolution",
+                "Final verdict",
+                "Reconciliation",
             ],
             challenge_rows[0],
         )
-        method_rows = proofcheck.markdown_table_rows(
-            proofcheck.report_section(
-                report,
-                "## Method-interface findings",
-            )
-            or ""
-        )
         self.assertEqual(
-            [
-                "Issue",
-                "Finding class",
-                "Interface ID",
-                "Estimator-target status",
-                "Implementation inspection",
-                "Inspection mode",
-                "Code to documented estimator",
-                "Code to required target",
-                "Execution provenance",
-                "Affected layer",
-            ],
-            method_rows[0],
+            "None.",
+            (
+                proofcheck.report_nested_section(
+                    scope,
+                    "### Declared external deliverables",
+                )
+                or ""
+            ).strip(),
         )
         self.assertEqual(
             1,
@@ -22988,6 +23885,117 @@ class PortabilityContractTests(unittest.TestCase):
         self.assertEqual(0, status)
         self.assertEqual("healthy_wip", result["workflow_state"])
         self.assertEqual([], result["progress"]["drift"])
+
+    def test_incomplete_pdf_audit_stays_nonfinal_with_visible_limits(
+        self,
+    ) -> None:
+        transcription = self.source_dir / "incomplete transcription.txt"
+        transcription.write_text(
+            "[Page 1]\nLemma 1. For every x, x=x.\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        publisher_pdf = self.source_dir / "incomplete publisher.pdf"
+        publisher_pdf.write_bytes(b"%PDF-1.4\nfixture\n%%EOF\n")
+        audit = self.base / "incomplete PDF audit"
+        with contextlib.redirect_stdout(io.StringIO()):
+            scaffold_status = proofcheck.cmd_scaffold(
+                self.scaffold_args(
+                    audit,
+                    paper=transcription,
+                    input_kind="pdf_transcription",
+                    publisher_pdf=publisher_pdf,
+                    portable_sources=True,
+                    visual_review_status="partial",
+                    visual_review_notes=(
+                        "Page 1 was compared, but the theorem/proof inventory "
+                        "remains incomplete."
+                    ),
+                )
+            )
+        self.assertEqual(0, scaffold_status)
+
+        unchecked_result = "thm:untranscribed"
+        limitation = (
+            "The publisher PDF was only partially reviewed; the theorem/proof "
+            "inventory is unavailable."
+        )
+        manifest_path = audit / "AUDIT_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        manifest["report_context"] = {
+            "notes": [f"Result not checked: {unchecked_result}"],
+            "limitations": [limitation],
+        }
+        write_json(manifest_path, manifest)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(0, proofcheck.cmd_report(argparse.Namespace(root=audit)))
+        report_path = audit / proofcheck.preferred_report_path(read_json(manifest_path))
+
+        missing_evidence = [
+            "pdf_transcription requires visual_review.status complete before "
+            "finalization",
+            "pdf_transcription visual_review.reviewed_pages must be a nonempty "
+            "string list",
+            "pdf_transcription visual_review.completed_utc must be a UTC "
+            "timestamp",
+            "pdf_transcription requires a nonempty manually reviewed "
+            "theorem/proof inventory",
+            "completion.inventory_reviewed must be true",
+        ]
+        status_code, status_result = self.parse_and_run(
+            ["status", "--root", str(audit), "--verbose"]
+        )
+        self.assertEqual(0, status_code)
+        self.assertEqual("healthy_wip", status_result["workflow_state"])
+        self.assertEqual("NONFINAL", status_result["delivery_status"])
+        self.assertFalse(status_result["audit_complete"])
+        self.assertFalse(
+            status_result["finalization"]["usable_finalization"]
+        )
+        for reason in missing_evidence:
+            self.assertIn(
+                reason,
+                status_result["finalization"]["current_gate_errors"],
+            )
+
+        finalize_output = io.StringIO()
+        with contextlib.redirect_stdout(finalize_output):
+            with contextlib.redirect_stderr(io.StringIO()):
+                finalize_status = proofcheck.cmd_finalize(
+                    argparse.Namespace(root=audit)
+                )
+        self.assertEqual(1, finalize_status)
+        self.assertGreater(json.loads(finalize_output.getvalue())["errors"], 0)
+        self.assertFalse((audit / "audit/06_reports/FINALIZATION.json").exists())
+
+        delivery_code, delivery_result = self.parse_and_run(
+            ["delivery-check", "--root", str(audit)]
+        )
+        self.assertEqual(1, delivery_code)
+        self.assertEqual("NONFINAL", delivery_result["delivery_status"])
+        self.assertFalse(delivery_result["usable_finalization"])
+        self.assertEqual("missing", delivery_result["record_status"])
+        self.assertIsNone(delivery_result["report"])
+        for reason in missing_evidence:
+            self.assertIn(reason, delivery_result["reasons"])
+
+        final_report = report_path.read_text(encoding="utf-8")
+        lower_report = final_report.lower()
+        self.assertIn("NONFINAL", final_report)
+        self.assertIn("Working report. No overall judgment has been released.", final_report)
+        self.assertIn(f"Result not checked: {unchecked_result}", final_report)
+        self.assertIn(limitation, final_report)
+        embedded = re.search(r'<script type="application/json" id="report-data">(.*?)</script>', final_report, re.S)
+        self.assertIsNotNone(embedded)
+        projection = json.loads(embedded.group(1))
+        self.assertEqual("NONFINAL", projection["release"]["status"])
+        self.assertIn("audit scope is unresolved", projection["summary"]["overall_judgment"])
+        self.assertIsNone(projection["coverage"]["expected_units"])
+        self.assertEqual(0, projection["coverage"]["checked_units"])
+        self.assertNotIn("no_defect_found", lower_report)
+        self.assertNotIn("no defect found", lower_report)
+        self.assertNotIn("checked conclusions are established", lower_report)
+        self.assertNotIn("mathematically correct", lower_report)
 
     def test_pdf_complete_label_cannot_bypass_page_and_inventory_evidence(
         self,

@@ -244,6 +244,7 @@ class CalibrationRecordTests(unittest.TestCase):
         session_id: str,
         rows: list[dict],
         checker_context_id: str | None = None,
+        checker_configuration_id: str = "proofcheck-test-config",
     ) -> int:
         paths = [
             self.write_response(f"{session_id}-{index}.json", row)
@@ -256,7 +257,7 @@ class CalibrationRecordTests(unittest.TestCase):
                     session_id=session_id,
                     root=self.root,
                     checker_profile_id="gpt-test-profile",
-                    checker_configuration_id="proofcheck-test-config",
+                    checker_configuration_id=checker_configuration_id,
                     checker_context_id=(
                         checker_context_id or f"fresh-context-{session_id}"
                     ),
@@ -550,7 +551,32 @@ class CalibrationRecordTests(unittest.TestCase):
         errors = proofcheck.checker_calibration_errors(self.root)
         self.assertTrue(any("duplicated" in error for error in errors), errors)
 
-    def test_bundle_identity_and_posthoc_recheck_are_enforced(self) -> None:
+    def test_calibration_currency_is_profile_and_configuration(self) -> None:
+        passing = [
+            response("bounded-drift", "invalid", "refuted", [15]),
+            response("finite-max", "valid", "established", []),
+        ]
+        self.assertEqual(0, self.grade_session("cal-context-1", passing))
+        first = proofcheck.current_calibration_receipt(self.root)
+
+        self.assertEqual(0, self.grade_session("cal-context-2", passing))
+        second = proofcheck.current_calibration_receipt(self.root)
+        self.assertEqual(first, second)
+
+        self.assertEqual(
+            0,
+            self.grade_session(
+                "cal-configuration-2",
+                passing,
+                checker_configuration_id="proofcheck-test-config-2",
+            ),
+        )
+        third = proofcheck.current_calibration_receipt(self.root)
+        self.assertNotEqual(second["sha256"], third["sha256"])
+
+    def test_bundle_identity_and_preexisting_artifacts_are_provenance(
+        self,
+    ) -> None:
         ledger = (
             self.root
             / "audit"
@@ -569,15 +595,25 @@ class CalibrationRecordTests(unittest.TestCase):
                 ],
             ),
         )
-        errors = proofcheck.checker_calibration_errors(self.root)
-        self.assertTrue(any("post-hoc recheck required" in e for e in errors), errors)
-        ledger.write_text('{"state":"recompiled"}', encoding="utf-8", newline="\n")
         self.assertEqual([], proofcheck.checker_calibration_errors(self.root))
-
         calibration_path = (
             self.root / "audit" / "07_runtime" / "CALIBRATION.json"
         )
         calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            [
+                {
+                    "file": "audit/04_local_checks/lem-existing.ledger.json",
+                    "sha256": proofcheck.sha256_file(ledger),
+                }
+            ],
+            calibration["sessions"][-1]["audit_binding"][
+                "preexisting_proof_artifacts"
+            ],
+        )
+        ledger.write_text('{"state":"recompiled"}', encoding="utf-8", newline="\n")
+        self.assertEqual([], proofcheck.checker_calibration_errors(self.root))
+
         calibration["canary_bundle"]["sha256"] = "0" * 64
         calibration_path.write_text(
             json.dumps(calibration), encoding="utf-8", newline="\n"

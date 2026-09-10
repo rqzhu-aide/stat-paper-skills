@@ -10,14 +10,16 @@
 - Audit depth:
 - Target results:
 - In-scope units:
-- Critical units:
+- Declared priority units:
+- Issue-promoted priority units:
+- Combined priority units:
 - Explicit exclusions:
 - Source or parser limitations:
 - Overall assessment:
 
 ## Proof-unit inventory
 
-| Unit | Statement | Proof | Dependencies | Use sites | Critical | Status |
+| Unit | Statement | Proof | Dependencies | Use sites | Priority basis | Status |
 |---|---|---|---|---|---|---|
 
 ## Reviewed exceptions

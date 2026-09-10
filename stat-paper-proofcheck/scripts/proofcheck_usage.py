@@ -9,11 +9,15 @@ it is never evidence for a mathematical verdict or an audit completion gate.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import tempfile
+import time
+import uuid
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -431,6 +435,119 @@ def cmd_summary(args: argparse.Namespace) -> int:
     return 0
 
 
+def write_new_json(path: Path, value: Any) -> None:
+    """Create a durable receipt without replacing an earlier observation."""
+    with path.open("x", encoding="utf-8", newline="\n") as stream:
+        json.dump(value, stream, ensure_ascii=False, indent=2)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def command_output_summary(path: Path) -> dict[str, Any]:
+    """Expose small reported fields; the complete output remains on disk."""
+    try:
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, ValueError):
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    fields = (
+        "status", "workflow_state", "errors", "error_count", "warnings",
+        "readiness", "primary_work_packet_ready", "delivery_status",
+        "usable_finalization",
+    )
+    return {
+        field: value[field]
+        for field in fields
+        if field in value
+        and (value[field] is None or type(value[field]) in (bool, int, float)
+             or isinstance(value[field], str) and len(value[field]) <= 160)
+    }
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    """Run the existing CLI once, retaining output outside the audited tree."""
+    configure_console_errors()
+    root = resolve_audit_root(args.root)
+    records = args.records.resolve()
+    if records.is_relative_to(root):
+        raise ValueError("Command records must be outside the audit root")
+    stage = require_text(args.stage, "stage")
+    command_args = list(args.proofcheck_args)
+    if command_args[:1] == ["--"]:
+        command_args.pop(0)
+    if not command_args:
+        raise ValueError("Supply a proofcheck command after --")
+    for index, value in enumerate(command_args):
+        if value == "--root":
+            if index + 1 >= len(command_args):
+                raise ValueError("The child --root requires an audit path")
+            child_root = command_args[index + 1]
+        elif value.startswith("--root="):
+            child_root = value.partition("=")[2]
+        else:
+            continue
+        if not child_root or Path(child_root).resolve() != root:
+            raise ValueError("The child --root must match the recorded audit root")
+    script = Path(__file__).resolve().with_name("proofcheck.py")
+    command = [
+        sys.executable, "-X", "utf8", "-B",
+        str(script),
+        *command_args,
+    ]
+    records.mkdir(parents=True, exist_ok=True)
+    run_id = uuid.uuid4().hex
+    run_directory = records / run_id
+    run_directory.mkdir()
+    stdout_path = run_directory / "stdout.txt"
+    stderr_path = run_directory / "stderr.txt"
+    start = {
+        "kind": "stat-paper-proofcheck-command", "schema_version": 1,
+        "observational_only": True, "run_id": run_id, "stage": stage,
+        "audit_root": str(root), "cwd": str(Path.cwd()),
+        "core_script_sha256": hashlib.sha256(script.read_bytes()).hexdigest(),
+        "started_utc": utc_now(), "command": command,
+        "stdout_path": str(stdout_path), "stderr_path": str(stderr_path),
+    }
+    write_new_json(run_directory / "start.json", start)
+    began = time.perf_counter()
+    exit_code = None
+    failure = None
+    try:
+        with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
+            try:
+                exit_code = subprocess.run(
+                    command, stdout=stdout, stderr=stderr, check=False,
+                ).returncode
+            finally:
+                stdout.flush()
+                stderr.flush()
+                os.fsync(stdout.fileno())
+                os.fsync(stderr.fileno())
+    except OSError as exc:
+        failure = f"Could not execute or retain command output: {exc}"
+    except KeyboardInterrupt:
+        failure = "Command interrupted; exit code unavailable"
+    end = {
+        **start, "ended_utc": utc_now(),
+        "elapsed_seconds": time.perf_counter() - began, "exit_code": exit_code,
+        "reported_summary": command_output_summary(stdout_path),
+        "failure": failure,
+    }
+    write_new_json(run_directory / "end.json", end)
+    print(json.dumps({
+        "command": "run", "observational_only": True, "run_id": run_id,
+        "stage": stage, "exit_code": exit_code,
+        "elapsed_seconds": end["elapsed_seconds"],
+        "reported_summary": end["reported_summary"],
+        "record_directory": str(run_directory),
+        "stdout_path": str(stdout_path), "stderr_path": str(stderr_path),
+        "failure": failure,
+    }, ensure_ascii=True, indent=2))
+    return exit_code if failure is None and exit_code is not None else 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -462,6 +579,18 @@ def build_parser() -> argparse.ArgumentParser:
     summary.add_argument("--root", type=Path, required=True)
     summary.add_argument("--format", choices=("json", "markdown"), default="json")
     summary.set_defaults(func=cmd_summary)
+
+    run = subparsers.add_parser(
+        "run", help="Run proofcheck once with durable receipts and compact output"
+    )
+    run.add_argument("--root", type=Path, required=True)
+    run.add_argument(
+        "--records", type=Path, required=True,
+        help="Receipt directory outside the audit root; each run gets a new folder",
+    )
+    run.add_argument("--stage", required=True)
+    run.add_argument("proofcheck_args", nargs=argparse.REMAINDER)
+    run.set_defaults(func=cmd_run)
     return parser
 
 

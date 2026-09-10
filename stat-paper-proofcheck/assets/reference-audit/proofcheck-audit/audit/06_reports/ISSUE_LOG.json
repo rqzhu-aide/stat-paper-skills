@@ -22,6 +22,11 @@
           "conclusion_id": "C001"
         },
         {
+          "kind": "conclusion",
+          "unit_id": "thm:main",
+          "conclusion_id": "C001"
+        },
+        {
           "kind": "obligation_pointer",
           "unit_id": "lem:growing-max",
           "pointer": "/hypotheses/0"
@@ -43,7 +48,7 @@
         "lem:growing-max",
         "thm:main"
       ],
-      "summary": "The proof promotes per-fixed-j convergence in probability to a maximum over the growing range 1..m_n without uniform tail control, and the stated conclusion is refuted by an independent Bernoulli(1/n) array with m_n = n^2.",
+      "summary": "The proof promotes fixed-index convergence to a maximum over a growing range without valid uniform tail control. The lemma is refuted by the recorded Bernoulli array; an independently found deterministic moving-coordinate array also directly refutes the exact estimator theorem.",
       "repair_search": {
         "strategies": [
           {

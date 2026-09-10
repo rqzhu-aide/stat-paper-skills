@@ -175,12 +175,24 @@ For every external prerequisite, add one `prerequisite_map` row with:
 - `manuscript_evidence`: the exact manuscript fact claimed to satisfy it;
 - `status`: `satisfied`, `not_satisfied`, `partial`, or `unclear`;
 - `evidence_spans`: source-locked manuscript spans supporting the mapping;
+- `source_evidence_spans`: locked spans of the actual external hypothesis,
+  resolving into that result's current `source_evidence` files;
 - `issue_ids`: every canonical issue raised by the mapping.
 
 Do not use an empty map. If the theorem has no substantive prerequisites,
 include an explicit domain and no-prerequisites row. A `satisfied` row requires
 current evidence spans. Link every `not_satisfied`, `partial`, or `unclear` row
 to the issues required by its effect.
+
+For new challenge-contract-3 audits with text theorem evidence, a satisfied
+mapping requires `source_evidence_spans`. Keep the external hypothesis and the
+manuscript evidence distinct. Source-bound text is an authenticity check, not
+a completeness check: inspect the actual theorem and its inherited conditions
+before deciding the map covers everything. The challenge packet exposes the
+actual text alongside the authored transcription. PDF evidence continues to
+use its locked file hash and exact locator; inspect that document directly
+instead of inventing textual line numbers. If essential theorem text is
+unavailable, keep the source unchecked and its applications unresolved.
 
 Within a batched check, share only the locked external contract and common
 definitions. Test every manuscript use against its own source spans, needed

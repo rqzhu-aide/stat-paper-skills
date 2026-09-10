@@ -3,12 +3,15 @@ from __future__ import annotations
 import argparse
 import contextlib
 import importlib.util
+import html
 import io
 import json
+import re
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "proofcheck.py"
 SPEC = importlib.util.spec_from_file_location("proofcheck_reference", SCRIPT)
@@ -37,16 +40,17 @@ class ReferenceAuditTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / "proofcheck-audit"
         shutil.copytree(REFERENCE / "proofcheck-audit", self.root)
-        manifest = read_json(self.root / "AUDIT_MANIFEST.json")
-        current = proofcheck.protocol_identity()["validator_sha256"]
-        if manifest["protocol"]["validator_sha256"] != current:
-            # A validator change stales the challenge bindings by design; the
-            # bundled refresh helper performs the mechanical rebind on this
-            # temporary copy without touching any recorded judgment.
-            reference_refresh.refresh(self.root)
+        self.report_path = self.root / proofcheck.preferred_report_path(
+            read_json(self.root / "AUDIT_MANIFEST.json"))
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def test_shipped_manifest_records_current_contracts(self) -> None:
+        shipped = read_json(REFERENCE / "proofcheck-audit" / "AUDIT_MANIFEST.json")
+        self.assertTrue(proofcheck.protocol_matches_current(shipped["protocol"]))
+        self.assertEqual(3, proofcheck.challenge_contract_version(shipped))
+        self.assertTrue(proofcheck.uses_html_report(shipped))
 
     def test_shipped_audit_passes_the_full_finalization_gate(self) -> None:
         errors, result = proofcheck.check_audit_finalization(self.root)
@@ -66,6 +70,10 @@ class ReferenceAuditTests(unittest.TestCase):
         result = json.loads(stdout.getvalue())
         self.assertEqual("FINAL", result["delivery_status"])
         self.assertTrue(result["usable_finalization"])
+        self.assertEqual(
+            self.report_path.resolve().as_posix(),
+            result["report"],
+        )
 
     def test_shipped_audit_exercises_the_new_evidence_gates(self) -> None:
         lem = read_json(
@@ -120,13 +128,27 @@ class ReferenceAuditTests(unittest.TestCase):
         )
         self.assertEqual("refuted", lem["review"]["statement_status"])
         self.assertEqual(
-            "not_established", thm["review"]["statement_status"]
+            "refuted", thm["review"]["statement_status"]
         )
-        report = (
-            self.root / "audit" / "06_reports" / "FINAL_REPORT.md"
-        ).read_text(encoding="utf-8")
-        self.assertIn("Repair search conclusion: `candidate_repair_exists`", report)
-        self.assertIn("| Strategy | Attempt | Outcome | Evidence |", report)
+        historical = read_json(self.root / "audit/04_local_checks/history/protocol-1.3/thm-main.ledger.json")
+        self.assertEqual("not_established", historical["review"]["statement_status"])
+        # The upgrade is supported by a witness for the theorem itself, not
+        # merely by changing a downstream label after its prerequisite failed.
+        theorem_failures = [move.get("failure", {}) for step in thm["steps"]
+                            for move in (step.get("inference") or {}).get("moves", [])]
+        witness = next(row for row in theorem_failures if row.get("kind") == "counterexample")
+        self.assertEqual(thm["obligation"]["conclusions"][0]["claim"], witness["target"])
+        self.assertIn("hat{theta}_n-theta_0", witness["evidence"])
+        self.assertIn({"kind": "conclusion", "unit_id": "thm:main", "conclusion_id": "C001"},
+                      issue["contract_refs"])
+        report = self.report_path.read_text(encoding="utf-8")
+        readable = html.unescape(re.sub(r"<[^>]+>", " ", report))
+        self.assertIn("Finding technical records", readable)
+        self.assertIn(issue["id"], readable)
+        self.assertIn("Failed inference · paper.tex, line 16", readable)
+        self.assertIn("Findings and repairs", readable)
+        self.assertIn("scientific cost", readable.lower())
+        self.assertIn("recheck", readable.lower())
 
         changes = issue["suggested_changes"]
         by_action = {change["action"]: change for change in changes}
@@ -139,11 +161,122 @@ class ReferenceAuditTests(unittest.TestCase):
         weaken = by_action["weaken_claim"]
         self.assertEqual("none", weaken["assumption_cost"])
         self.assertEqual("restricts_scope", weaken["claim_cost"])
-        self.assertIn(
-            "| Target | Action | Repair scope | Assumption cost | Claim cost "
-            "| Proposal | Verification status | Required rechecks |",
-            report,
+        for change in changes:
+            self.assertIn(change["proposal"], readable)
+            self.assertIn(
+                proofcheck.repair_cost_language(change),
+                readable,
+            )
+
+    def test_shipped_audit_has_answer_first_summary_and_full_verification(
+        self,
+    ) -> None:
+        report = self.report_path.read_text(encoding="utf-8")
+        manifest = read_json(self.root / "AUDIT_MANIFEST.json")
+        renderer = proofcheck.report_renderer()
+        projection = renderer.build_report_projection(
+            proofcheck.report_api(), self.root, final=True,
+            finalized_at=manifest["report_release"]["finalized_at"],
+            report_context=manifest.get("report_context", {}),
         )
+        self.assertEqual([], renderer.validate_html(report, projection))
+        self.assertEqual("FINAL", projection["release"]["status"])
+        self.assertTrue(all(projection["summary"].values()))
+        self.assertEqual(2, len(projection["results"]))
+        self.assertIn(renderer.ASSURANCE, html.unescape(report))
+        errors, summaries, _ = proofcheck.audit_ledgers(self.root, True)
+        self.assertEqual([], errors)
+        checked = {
+            summary["unit_id"]
+            for summary in summaries
+            if summary.get("independent_check", {}).get("required") is True
+        }
+        self.assertEqual(set(manifest["audit_scope"]["in_scope_units"]), checked)
+
+    def test_initial_challenges_preserve_exact_fresh_inputs_and_reasons(self) -> None:
+        records = list((self.root / "audit/05_adversarial").glob("initial-*.json"))
+        self.assertGreaterEqual(len(records), 4)
+        for unit_id, stem in reference_refresh.UNITS.items():
+            ledger = read_json(self.root / "audit/04_local_checks" / f"{stem}.ledger.json")
+            packet = proofcheck.build_context_packet(self.root, unit_id, "challenge")
+            initial, reference, errors = proofcheck.load_initial_challenge(
+                self.root, unit_id, packet, ledger["independent_check"])
+            self.assertEqual([], errors)
+            self.assertEqual(reference, ledger["independent_check"]["initial_response"])
+            self.assertTrue(initial["response"]["conclusions"][0]["decisive_reason"])
+            self.assertEqual(2, initial["response"]["response_schema_version"])
+            conclusion = initial["response"]["conclusions"][0]
+            self.assertEqual("refuted", conclusion["statement_status"])
+            self.assertEqual("invalid", conclusion["argument_status"])
+            self.assertEqual("invalid", initial["primary_snapshot"]["conclusions"][0]["argument_status"])
+            for field in ("initial_response", "reconciliation_artifact"):
+                prior = initial["superseded_review"][field]
+                self.assertEqual(prior["sha256"], proofcheck.sha256_file(self.root / prior["artifact"]))
+            self.assertNotIn("normalization_checks", initial["packet"]["obligation"])
+            if unit_id == "thm:main":
+                self.assertEqual("agreed", ledger["independent_check"]["status"])
+                self.assertEqual([], ledger["independent_check"]["disagreements"])
+                # The new reviewer assessed the whole argument and agreed.
+                # Renewal must still retain the actual earlier disagreement.
+                historical, seen, found_disagreement = initial, set(), False
+                while (historical.get("superseded_review") or {}).get("initial_response"):
+                    superseded = historical["superseded_review"]
+                    prior = superseded["initial_response"]
+                    self.assertNotIn(prior["artifact"], seen)
+                    seen.add(prior["artifact"])
+                    prior_path = self.root / prior["artifact"]
+                    self.assertEqual(prior["sha256"], proofcheck.sha256_file(prior_path))
+                    historical = read_json(prior_path)
+                    if historical["response"]["conclusions"][0].get("argument_status") == "conditional":
+                        self.assertEqual("invalid", historical["primary_snapshot"]["conclusions"][0]["argument_status"])
+                        artifact = self.root / superseded["reconciliation_artifact"]["artifact"]
+                        self.assertIn("full-argument convention", artifact.read_text(encoding="utf-8"))
+                        found_disagreement = True
+                self.assertTrue(found_disagreement, "The original assessment-scope disagreement was lost")
+                # This review must see the actual prerequisite applicability,
+                # not merely a digest or a primary verdict.
+                self.assertIn("applicability", json.dumps(initial["packet"]["dependencies"]))
+
+    def test_packet_preparation_is_read_only_and_refuses_overwrite(self) -> None:
+        before = proofcheck.audit_state_manifest(self.root)
+        output = Path(self.temp.name) / "packets"
+        assignment = reference_refresh.prepare(self.root, output)
+        self.assertEqual(2, len(assignment["packets"]))
+        self.assertEqual(before, proofcheck.audit_state_manifest(self.root))
+        self.assertEqual(5, len(list(output.iterdir())))
+        with self.assertRaises(FileExistsError):
+            reference_refresh.prepare(self.root, output)
+        with self.assertRaises(ValueError):
+            reference_refresh.prepare(self.root, self.root / "packets")
+
+    def test_publish_never_restamps_stale_primary_or_missing_initial_evidence(self) -> None:
+        ledger_path = self.root / "audit/04_local_checks/lem-growing-max.ledger.json"
+        original = ledger_path.read_bytes()
+        for mutation in ("work_context_sha256", "initial_response"):
+            ledger = json.loads(original)
+            if mutation == "work_context_sha256":
+                ledger[mutation] = "0" * 64
+            else:
+                ledger["independent_check"].pop(mutation)
+            ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+            before = proofcheck.audit_state_manifest(self.root)
+            with self.assertRaisesRegex(ValueError, "needs actual review"):
+                reference_refresh.refresh(self.root)
+            self.assertEqual(before, proofcheck.audit_state_manifest(self.root))
+
+    def test_publish_requires_explicit_historical_contract_opt_in(self) -> None:
+        manifest = read_json(self.root / "AUDIT_MANIFEST.json")
+        manifest["protocol"].pop("challenge_contract_version", None)
+        with mock.patch.object(reference_refresh, "_manifest", return_value=manifest):
+            with self.assertRaisesRegex(ValueError, "Historical challenge contract"):
+                reference_refresh.refresh(self.root)
+
+    def test_presentation_refresh_preserves_all_mathematical_evidence(self) -> None:
+        paths = [path for branch in ("04_local_checks", "05_adversarial", "07_runtime")
+                 for path in (self.root / "audit" / branch).rglob("*") if path.is_file()]
+        before = {path: path.read_bytes() for path in paths}
+        reference_refresh.refresh(self.root)
+        self.assertEqual(before, {path: path.read_bytes() for path in paths})
 
     def test_workbench_examples_carry_the_current_annotation_schema(self) -> None:
         receipt = proofcheck.current_calibration_receipt(self.root)["sha256"]

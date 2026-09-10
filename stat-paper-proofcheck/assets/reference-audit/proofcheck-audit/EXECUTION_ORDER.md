@@ -18,7 +18,7 @@ separate packet, separate annotations, and a separate compiled ledger.
 
 ## Unit order
 
-| Priority | Unit | Dependencies | Critical | Status | Next action |
+| Order | Unit | Dependencies | Priority label | Status | Next action |
 |---|---|---|---|---|---|
 | 1 | lem:growing-max | none | issue_promoted | completed | none |
 | 2 | thm:main | lem:growing-max | declared | completed | none |

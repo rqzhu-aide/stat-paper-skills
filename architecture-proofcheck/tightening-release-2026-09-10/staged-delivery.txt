@@ -1,0 +1,12 @@
+{
+  "command": "delivery-check",
+  "audit_root": "C:/Users/zrq/projects/skills/stat-paper-skills/archived/proofcheck/release-2026-09-10/stat-paper-proofcheck/assets/reference-audit/proofcheck-audit",
+  "delivery_status": "FINAL",
+  "usable_finalization": true,
+  "record_status": "passed",
+  "freshness": "current",
+  "reasons": [],
+  "report": "C:/Users/zrq/projects/skills/stat-paper-skills/archived/proofcheck/release-2026-09-10/stat-paper-proofcheck/assets/reference-audit/proofcheck-audit/proofcheck-report.html"
+}
+
+STDERR

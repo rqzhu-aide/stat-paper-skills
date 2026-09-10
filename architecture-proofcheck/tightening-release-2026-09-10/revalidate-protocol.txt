@@ -1,0 +1,15 @@
+{
+  "command": "revalidate-protocol",
+  "audit_root": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\archived\\proofcheck\\tightening-release-2026-09-10\\working-reference",
+  "status": "revalidated",
+  "updated": true,
+  "previous_skill_version": "1.5",
+  "current_skill_version": "1.5",
+  "previous_validator_sha256": "54c645324d0e5aee071742c318532b51cb74386f14a2ec58be74eaf3d35cc73e",
+  "current_validator_sha256": "a963acf763aec5367c4ef8ed39c1527532737bbc1d1bec0b7f9d243cf59efc96",
+  "finalization_invalidated": true,
+  "context_protocol_retained": true,
+  "next_action": "Run status, resolve every current gate error, and rerun finalize."
+}
+
+STDERR

@@ -1,0 +1,55 @@
+{
+  "started_utc": "2026-09-10T21:45:09.641259+00:00",
+  "finished_utc": "2026-09-10T22:04:10.432013+00:00",
+  "command": [
+    "C:\\Users\\zrq\\AppData\\Local\\Python\\pythoncore-3.14-64\\python.exe",
+    "-B",
+    "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\run_frozen_suite.py",
+    "--child",
+    "--skill-root",
+    "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\archived\\proofcheck\\release-2026-09-10\\stat-paper-proofcheck",
+    "--pattern",
+    "test_*.py",
+    "--result-json",
+    "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\tightening-release-2026-09-10\\full-suite\\20260910T214509Z-3a79d9b5\\outcomes.json"
+  ],
+  "cwd": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\archived\\proofcheck\\release-2026-09-10",
+  "skill_root": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\archived\\proofcheck\\release-2026-09-10\\stat-paper-proofcheck",
+  "selector": {
+    "discover_pattern": "test_*.py"
+  },
+  "runtime": {
+    "executable": "C:\\Users\\zrq\\AppData\\Local\\Python\\pythoncore-3.14-64\\python.exe",
+    "version": "3.14.7 (tags/v3.14.7:823f032, Aug  5 2026, 10:51:32) [MSC v.1944 64 bit (AMD64)]"
+  },
+  "exit_code": 0,
+  "test_exit_code": 0,
+  "elapsed_seconds": 1140.7270018999989,
+  "outcomes": {
+    "tests": 1072,
+    "passed": 1071,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 1,
+    "expected_failures": 0,
+    "unexpected_successes": 0,
+    "unittest_seconds": 1080.7739954999997,
+    "skip_reasons": [
+      {
+        "test": "test_proofcheck.FinalizationTests.test_finalization_rejects_redirected_challenge_artifact",
+        "reason": "Symlink creation is unavailable: [WinError 1314] A required privilege is not held by the client: 'C:\\\\Users\\\\zrq\\\\AppData\\\\Local\\\\Temp\\\\tmpy7tsk3kp\\\\redirected challenge.md' -> 'C:\\\\Users\\\\zrq\\\\AppData\\\\Local\\\\Temp\\\\tmpy7tsk3kp\\\\audit-root\\\\audit\\\\05_adversarial\\\\redirected-challenge.md'"
+      }
+    ],
+    "expected_failure_tests": [],
+    "unexpected_success_tests": []
+  },
+  "clean_outcomes": true,
+  "skill_tree_unchanged": true,
+  "runner_unchanged": true,
+  "runner_sha256": "acc48730ef005d047a32e7f8836c5a6dab2b53253bd09a64f4838a8b4dd4368b",
+  "runner_after_sha256": "acc48730ef005d047a32e7f8836c5a6dab2b53253bd09a64f4838a8b4dd4368b",
+  "snapshot_before_sha256": "2ed64dcca4e599b0c21ba4c0a66e97fc3edbd78f0c5462d7945bcff22bdc683b",
+  "snapshot_after_sha256": "2ed64dcca4e599b0c21ba4c0a66e97fc3edbd78f0c5462d7945bcff22bdc683b",
+  "outcomes_sha256": "a977d0fc40e9bca29a8234cfddf3f133484a2f87741ddd6d1ae7dd2ddd74c179",
+  "log_sha256": "f2894f7bcdd416a8158aaf1f96bacd0327dee5d5fb6d90c9c7d10efa18d50d7c"
+}

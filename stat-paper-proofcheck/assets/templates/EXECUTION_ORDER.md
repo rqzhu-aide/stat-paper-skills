@@ -15,13 +15,18 @@ separate packet, separate annotations, and a separate compiled ledger.
 
 ## Unit order
 
-| Priority | Unit | Dependencies | Critical | Status | Next action |
+| Order | Unit | Dependencies | Priority label | Status | Next action |
 |---|---|---|---|---|---|
 
 ## Blocked work
 
 | Unit | Blocker | Required evidence | Downstream effect |
 |---|---|---|---|
+
+## Dependency mapping gate
+
+- Status:
+- Diagnostics:
 
 The canonical dependency uses, statuses, issue propagation, and progress state
 remain in `DEPENDENCY_REGISTRY.json`, the unit ledgers, `ISSUE_LOG.json`, and

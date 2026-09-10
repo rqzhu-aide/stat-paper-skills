@@ -1,0 +1,18 @@
+test_concurrent_install_is_not_replaced (test_install_proofcheck.InstallerTests.test_concurrent_install_is_not_replaced) ... ok
+test_copy_excludes_caches_and_preserves_required_bytes (test_install_proofcheck.InstallerTests.test_copy_excludes_caches_and_preserves_required_bytes) ... ok
+test_development_roots_are_excluded_but_runtime_resources_remain (test_install_proofcheck.InstallerTests.test_development_roots_are_excluded_but_runtime_resources_remain) ... ok
+test_existing_install_requires_explicit_upgrade (test_install_proofcheck.InstallerTests.test_existing_install_requires_explicit_upgrade) ... ok
+test_failed_backup_move_preserves_original_error_and_installation (test_install_proofcheck.InstallerTests.test_failed_backup_move_preserves_original_error_and_installation) ... ok
+test_installed_delivery_failure_restores_previous_package (test_install_proofcheck.InstallerTests.test_installed_delivery_failure_restores_previous_package) ... ok
+test_invalid_source_is_rejected_before_mutation (test_install_proofcheck.InstallerTests.test_invalid_source_is_rejected_before_mutation) ... ok
+test_other_discoverable_copies_reject_without_install (test_install_proofcheck.InstallerTests.test_other_discoverable_copies_reject_without_install) ... ok
+test_previous_development_file_mutation_blocks_upgrade (test_install_proofcheck.InstallerTests.test_previous_development_file_mutation_blocks_upgrade) ... ok
+test_source_mutation_during_validation_rejects_even_for_excluded_files (test_install_proofcheck.InstallerTests.test_source_mutation_during_validation_rejects_even_for_excluded_files) ... ok
+test_stage_rejects_unexpected_development_files (test_install_proofcheck.InstallerTests.test_stage_rejects_unexpected_development_files) ... ok
+test_upgrade_preserves_old_tree_outside_discovery (test_install_proofcheck.InstallerTests.test_upgrade_preserves_old_tree_outside_discovery) ... ok
+test_user_root_inside_source_rejects_before_writes (test_install_proofcheck.InstallerTests.test_user_root_inside_source_rejects_before_writes) ... ok
+
+----------------------------------------------------------------------
+Ran 13 tests in 0.533s
+
+OK

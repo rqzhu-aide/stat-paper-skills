@@ -1,0 +1,24 @@
+{
+  "audit_root": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\archived\\proofcheck\\tightening-release-2026-09-10\\working-reference",
+  "schema_version": 5,
+  "assessment": "defects_found",
+  "derived_assessment": "defects_found",
+  "source_files": 1,
+  "parser_warnings": 0,
+  "inventory_units": 2,
+  "target_units": 1,
+  "in_scope_units": 2,
+  "ledgers": 2,
+  "external_results": 0,
+  "method_interfaces": 0,
+  "issue_log": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\archived\\proofcheck\\tightening-release-2026-09-10\\working-reference\\audit\\06_reports\\ISSUE_LOG.json",
+  "issues": 1,
+  "errors": 0,
+  "assurance_boundary": "Non-formal audit only. Success means the required evidence and closure gates passed; it is not a kernel-checked proof certificate.",
+  "delivery_status": "FINAL",
+  "usable_finalization": true,
+  "finalization_record": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\archived\\proofcheck\\tightening-release-2026-09-10\\working-reference\\audit\\06_reports\\FINALIZATION.json",
+  "report": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\archived\\proofcheck\\tightening-release-2026-09-10\\working-reference\\proofcheck-report.html"
+}
+
+STDERR

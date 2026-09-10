@@ -34,6 +34,33 @@ Define each issue once in `audit/06_reports/ISSUE_LOG.json` with:
 - scope set to `unit` or `global`;
 - whether the issue is load-bearing.
 
+Reserve a new `ledger_move` issue's stable `I-xxx` ID in annotations and the
+compiled failure. Publish it, or any `obligation_pointer` or `dependency_use`
+issue, only after its origin ledger exists. A downstream primary
+packet carries the upstream issue contract before its own ledger exists, with
+only its current-unit contract reference and route anchor pending. Challenge
+packets and finalization require both to resolve exactly.
+
+## Primary readiness before independent dispatch
+
+After completing all primary units, exact dependency uses, global/adversarial
+checks and issue records, run:
+
+    python "<skill-root>/scripts/proofcheck.py" issues --root "<audit-root>" --before-challenge
+
+This read-only checkpoint applies strict primary and issue-ancestry validation,
+including canonical reference roles and exact candidate-to-dependency use
+mapping shared with finalization. It does not require completed independent
+reviews. A pass is NONFINAL readiness
+for reviewer dispatch; it neither publishes a report nor replaces independent
+checking. Fix primary or issue errors and recheck affected judgments before
+generating challenge packets. Preserve any pending or superseded review
+evidence while doing so. Draft `issues` is insufficient at this boundary;
+`issues --final` belongs after reconciliation because it requires independent
+completion. The two strict modes are mutually exclusive.
+
+## Classify and preserve the finding
+
 The repair search grounds the S0/S1 boundary in attempted repairs rather than
 taste: S0 requires `no_local_repair_found` with every strategy `failed`; S1
 requires `candidate_repair_exists` with at least one strategy that
@@ -53,7 +80,9 @@ measures consequence, while invalidation records what the finding does to the
 argument, statement, or dependency.
 
 Reconcile `invalidation_kind` with the component judgments. A `proof_gap`
-requires a gap and leaves the statement not established. A `proof_invalid`
+requires a gap in the written argument. Separate
+[checked supplemental evidence](statement-support.md) may establish its
+statement while the written gap stays open. A `proof_invalid`
 requires an invalid argument but does not refute the statement.
 `statement_refuted` requires the exact counterexample or contradiction
 standard above. A `dependency_mismatch` must appear in the named use status
@@ -140,7 +169,9 @@ inconclusive finding status.
 ## Resolved-issue lifecycle
 
 Preserve the unresolved evidence before modifying anything that could erase or
-move the failure. Complete and finalize the unresolved audit, then run:
+move the failure. Complete and finalize the unresolved audit. Keep the delivered
+bundle and its source as the original, make a working copy with independent
+copies of sources to be edited, and verify its current delivery. In that copy, run:
 
 ```bash
 python "<skill-root>/scripts/proofcheck.py" archive-issue --root "<audit-root>" --issue-id I-001
@@ -157,17 +188,34 @@ and source files to the prior finalization and source snapshot. It preserves
 the old issue record, exact failure projection, prior contracts, and prior
 dependency closure.
 
+Archiving does not resolve the finding. It changes the issue log, so rerun
+finalization before another archive; the resulting FINAL audit may still report
+the same defect. Then repair the source and perform the affected rechecks below.
+Prior manifest and finalization protocol fields are compared by role: omitted
+challenge-contract metadata is recovered from the bound prior manifest, while
+explicit incompatible versions and altered prior bytes are rejected.
+
+If archive publication is interrupted, retain the working copy and rerun the
+same `archive-issue` command before editing its evidence. The existing recovery
+path checks the sealed origin against its prior records before attaching it.
+For a copy affected by the former protocol comparison bug, install the corrected
+skill, run `revalidate-protocol` and address its actual renewal requirements,
+then validate and finalize the copy. Do not hand-edit archive hashes or restore
+unchecked bytes over the original deliverable.
+
 Every sealed member has exact `file`, `sha256`, and
 `content_base64` fields. The mandatory `prior_artifacts` object
 contains `manifest`, `issue_log`, `final_report`,
-`inventory`, `dependency_registry`, `method_interface_registry`, and the exact required
-`ledgers` list. Each decoded byte sequence must hash to its own digest and
+`inventory`, `dependency_registry`, `method_interface_registry`, and the exact
+`ledgers` list: the repair-unit ledgers plus any internal dependency-source
+ledgers needed to reconstruct the required closure edges. Each decoded byte
+sequence must hash to its own digest and
 to the same file row in the prior finalization artifact manifest. The archived
 issue must be the exact member of the sealed issue log. The archived failure
-row must equal both the sealed prior final report row and the recomputation from
-the sealed ledger when the origin is a ledger move, the sealed
+must be reconstructed from the sealed ledger when the origin is a ledger move, the sealed
 method-interface registry when it is an interface record, or the sealed
-manifest global-consistency check when it is a global check.
+manifest global-consistency check when it is a global check. The final report
+remains sealed as the prior user-facing deliverable, not as audit evidence.
 
 The `prior_sources` list uses the same sealed-member shape. Its decoded
 file set and hashes must equal the prior manifest's
@@ -228,11 +276,11 @@ the fresh post-repair challenge required by
 [challenge-protocol.md](challenge-protocol.md). Do not reuse the archived
 challenge.
 
-In the generated report, preserve the archived failure location, quote,
-premises, rule, and failure evidence exactly. Resolve the mathematical
-contract, downstream propagation, relation statuses, severity effect, and
-recheck closure from current canonical records. The report must not rewrite the
-historical failure or present an old downstream edge as current.
+In the generated report, preserve each archived failure location and locked
+quote. Resolve the failed move and reason, affected result statuses, repair
+options and scientific cost, verification status, and required rechecks from
+current canonical records. The report must not rewrite the historical failure
+or present an old downstream edge as current.
 
 For an open or deferred load-bearing issue, start at `affected_result` and
 follow the reverse internal dependency graph. Set `affected_results` to the root
@@ -270,10 +318,11 @@ class, affected layer, affected result set, relation statuses, confidence, and
 inspection scope. Strengthen the claim only after new evidence is entered into
 the canonical records and revalidated.
 
-A suggested change remains `candidate` unless its target is source locked and
-the revised source, root finding, and full historical-current closure have been
-rechecked. Use `verified_sufficient` only with the resolved-issue evidence
-above and completion of the full union recheck. Set
+A suggested change remains `candidate` unless its sufficiency has been
+checked. `verified_sufficient` requires either the resolved-issue evidence
+above with the full union recheck, or the optional
+[accepted exact-proposal review](statement-support.md#checked-proposal-versus-applied-repair).
+The latter leaves the manuscript issue open or deferred. Set
 `required_rechecks` to the exact sorted historical-current affected-unit
 union. A suggestion cannot lower severity, resolve an issue, or strengthen the
 verdict by itself.
@@ -292,14 +341,12 @@ Dependency and external-use records reference the same canonical IDs. Generate
 states, finding states, and affected results come from the canonical log.
 
 Generate each final-report finding from the same record. The generated finding
-must show the exact failure location and locked quotation; the normalized
-statement, applicable assumptions, and scope; the failed move or other
-canonical origin, including its exact premises and recorded failure evidence;
-severity and current invalidation effect; one exact
-downstream location and source quotation for every propagation edge; and the
-structured suggested changes. If any reference or quotation cannot be resolved
-against the current snapshot, finalization must fail rather than substitute a
-paraphrase.
+must show each exact failure location and locked quotation, the failed move and
+reason, affected result statuses, repair options and scientific cost,
+verification status, and required rechecks. Detailed premises, dependency
+edges, and other machine records remain in the sealed canonical artifacts. If
+any required reference or quotation cannot be resolved against the current
+snapshot, finalization must fail rather than substitute a paraphrase.
 
 For a dependency-use origin, always include the originating `Dxxx` row in the
 propagation table and resolved-issue recheck closure, even when the dependency
@@ -309,4 +356,7 @@ through the affected-result closure.
 
 When archiving more than one repair-affected issue, each archive changes the issue log and makes the prior finalization stale. Rerun finalization before the next archive. Never construct an origin archive after the repair.
 
-When a dependency or source is missing, mark the affected unit conditional or blocked, record the exact needed evidence, and continue only with independent units. Do not fill missing material from memory.
+When a dependency or source is missing, record the exact needed evidence and
+propagate the missing input into every affected verdict. Still inspect every
+in-scope dependent line by line, but do not mark it verified or fill missing
+material from memory.

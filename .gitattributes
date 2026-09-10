@@ -1,1 +1,14 @@
 * text=auto eol=lf
+
+# Preserve exact bytes of sealed evidence, review responses, and copied references.
+stat-paper-proofcheck/assets/reference-audit/proofcheck-audit/** -text
+stat-paper-proofcheck/assets/reference-audit/workbench/** -text
+architecture-proofcheck/reference/** -text
+architecture-proofcheck/proof-graph/** -text
+architecture-proofcheck/implementation-preview/** -text
+architecture-proofcheck/implementation-evaluation/** -text
+architecture-proofcheck/bookkeeping-revision-2026-09-09/** -text
+architecture-proofcheck/maintenance-revision-2026-09-09/** -text
+architecture-proofcheck/graph-overview-revision-2026-09-09/** -text
+architecture-proofcheck/tightening-release-2026-09-10/** -text
+architecture-proofcheck/run_frozen_suite.py -text

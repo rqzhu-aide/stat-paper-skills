@@ -1,20 +1,26 @@
-# Independent challenge for `<unit-id>`
+# Independent challenge for <unit-id>
 
-State the blinded reconstruction, exact target assessment, downstream
-assessment, adversarial checks, verdict, and any disagreement with source
-anchors. Do not include the primary verdict or proposed repair.
+<!--
+NONFINAL CHALLENGE SCAFFOLD
 
-The block below is a placeholder. After the blinded output and ledger fields
-are fixed, run `proofcheck.py bind-challenge --root <audit-root> --unit-id
-<unit-id>` to replace it with exact canonical values and update the ledger
-hash. Do not edit the generated block by hand.
+Before reconciliation, preserve the independent per-conclusion verdicts,
+argument status, and statement status,
+decisive mathematical reasons, and exact packet source references with
+record-challenge. Follow references/challenge-protocol.md for the response
+shape. A generic assertion that everything was checked is insufficient.
 
-<!-- proofcheck-challenge-binding-v1
-{
-  "schema_version": 1,
-  "unit_id": "<unit-id>",
-  "challenge_context_sha256": "<copy-from-challenge-packet>",
-  "challenger_verdict": "<verified-conditionally_verified-gap-incorrect-or-unclear>",
-  "issue_assessments": []
-}
+Replace this entire comment with a concise checking and reconciliation
+account. Explain actual disagreements and their source-anchored resolution.
+The immutable initial response retains the original independent judgment.
+Its primary snapshot retains the position before reconciliation, and renewed
+responses link superseded reviews and their prior reconciliation artifacts.
+
+In the ledger, author the artifact path, disagreements, resolution, explicit
+reconciled verdict, and final issue assessments. The initial response supplies
+the independence level and challenger verdict. If reconciliation changes the
+primary judgment, revise and recheck the primary ledger first. Then run
+proofcheck.py bind-challenge --root <audit-root> --unit-id <unit-id>. The
+command validates the preserved response and reconciliation, derives coverage,
+hashes, and time, inserts the binding block, and updates the ledger. Do not copy
+hashes, edit the generated block, or rewrite an initial response.
 -->

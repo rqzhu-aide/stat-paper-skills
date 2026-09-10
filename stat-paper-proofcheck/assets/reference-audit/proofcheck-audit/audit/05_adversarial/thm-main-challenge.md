@@ -2,12 +2,18 @@
 
 Working only from the blinded packet, I checked lines 26-30 against the normalized obligation. Lines 27-28 name Lemma 1's conclusion in exactly the registered form; line 29 consumes it through use D001, substitutes hat-theta_n - theta_0 = max_{1<=j<=m_n} |X_{n,j}| exactly from the stated definition, and folds the convergence-in-probability definition. The algebra is exact, so the only mathematical input is the refuted growing-maximum claim; nothing in this proof supplies independent control of the maximum. The written proof therefore leaves the conclusion not established. Verdict: gap.
 
-<!-- proofcheck-challenge-binding-v1
+<!-- proofcheck-challenge-binding-v2
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "unit_id": "thm:main",
-  "challenge_context_sha256": "f7c2f6125c838ad36a6cdfa4863db16802c368e7143522b046145715868f04bc",
+  "challenge_context_sha256": "fd5e4c7fded0b23f29eb6f61823ccbb2d721a9a87b2381e7fd511937f9e0e505",
+  "independence_level": "fresh_context_same_model",
   "challenger_verdict": "gap",
+  "reconciled_verdict": "gap",
+  "artifact": "audit/05_adversarial/thm-main-challenge.md",
+  "disagreements": [],
+  "resolution": "",
+  "generated_utc": "2026-09-02T19:35:20.600284Z",
   "issue_assessments": [
     {
       "issue_id": "I-001",

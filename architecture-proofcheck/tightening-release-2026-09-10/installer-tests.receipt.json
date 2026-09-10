@@ -1,0 +1,33 @@
+{
+  "command": [
+    "C:\\Users\\zrq\\AppData\\Local\\Python\\pythoncore-3.14-64\\python.exe",
+    "-X",
+    "utf8",
+    "-B",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\archived\\proofcheck\\release-2026-09-10\\tools",
+    "-p",
+    "test_install_proofcheck.py",
+    "-v"
+  ],
+  "cwd": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\archived\\proofcheck\\release-2026-09-10",
+  "started_utc": "2026-09-10T21:47:00.774833+00:00",
+  "elapsed_seconds": 0.7940752000140492,
+  "exit_code": 0,
+  "tests_run": 13,
+  "unittest_seconds": 0.533,
+  "passed": 13,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "source_hashes": {
+    "tools/test_install_proofcheck.py": "d70215fe67c875bed3f72972ad06bee0aa7590d126c7598c38678500dab86266",
+    "tools/install_proofcheck.py": "8782a5dccc4e8280b15e1b694d251a43d2b689415c8995e956cc7568431f1518"
+  },
+  "source_hashes_unchanged": true,
+  "stdout": "installer-tests.stdout.txt",
+  "stderr": "installer-tests.stderr.txt"
+}

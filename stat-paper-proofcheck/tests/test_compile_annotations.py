@@ -402,7 +402,6 @@ class CompileAnnotationsTests(unittest.TestCase):
                     "support_step": "conclusion",
                     "contract_fidelity": "verified",
                     "statement_status": "established",
-                    "use_site_sufficiency": "not_applicable",
                     "issue_ids": [],
                 }
             ],
@@ -493,6 +492,105 @@ class CompileAnnotationsTests(unittest.TestCase):
             list(proofcheck.RISK_ASPECTS),
             [row["aspect"] for row in conclusion["risk_checks"]],
         )
+
+    def test_not_applicable_risk_shorthand_expands_to_canonical_rows(self) -> None:
+        annotations = self.annotations()
+        for step in annotations["steps"]:
+            step["not_applicable_basis"] = (
+                f"{step['key']} uses only real-number equality and has no "
+                "dimension, sign, constant, rate, probability, or limit operation."
+            )
+            for aspect, record in list(step["risks"].items()):
+                if record["status"] == "not_applicable":
+                    step["risks"][aspect] = "not_applicable"
+
+        self.compile(annotations, self.output)
+
+        compiled = read_json(self.output)
+        for step in compiled["steps"]:
+            if step["status"] == "non_substantive":
+                continue
+            checks = step["risk_checks"]
+            self.assertEqual(
+                list(proofcheck.RISK_ASPECTS),
+                [row["aspect"] for row in checks],
+            )
+            by_aspect = {row["aspect"]: row for row in checks}
+            self.assertEqual("passed", by_aspect["domain"]["status"])
+            self.assertEqual("passed", by_aspect["quantifier"]["status"])
+            for aspect in (
+                "dimension",
+                "sign",
+                "constant",
+                "rate",
+                "probability",
+                "limit",
+            ):
+                self.assertEqual("not_applicable", by_aspect[aspect]["status"])
+                self.assertTrue(
+                    by_aspect[aspect]["evidence"].startswith(
+                        f"{aspect} is not applicable to this step: "
+                    )
+                )
+
+    def test_not_applicable_risk_shorthand_has_precise_diagnostics(self) -> None:
+        cases = []
+        missing_basis = self.annotations()
+        missing_basis["steps"][0]["risks"]["dimension"] = "not_applicable"
+        cases.append(
+            (
+                "missing-basis",
+                missing_basis,
+                "/steps/0/not_applicable_basis",
+                "missing_field",
+            )
+        )
+        invalid_literal = self.annotations()
+        invalid_literal["steps"][0]["risks"]["dimension"] = "n/a"
+        cases.append(
+            (
+                "invalid-literal",
+                invalid_literal,
+                "/steps/0/risks/dimension",
+                "invalid_enum",
+            )
+        )
+        unused_basis = self.annotations()
+        unused_basis["steps"][0]["not_applicable_basis"] = (
+            "No shorthand is actually used in this deliberately invalid case."
+        )
+        cases.append(
+            (
+                "unused-basis",
+                unused_basis,
+                "/steps/0/not_applicable_basis",
+                "unused_field",
+            )
+        )
+
+        for name, annotations, pointer, code in cases:
+            with self.subTest(case=name):
+                annotation_path = self.base / f"{name}.annotations.json"
+                write_json(annotation_path, annotations)
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    status = proofcheck.cmd_annotation_check(
+                        argparse.Namespace(
+                            ledger=self.ledger,
+                            annotations=annotation_path,
+                            packet=self.packet,
+                            json=True,
+                        )
+                    )
+                result = json.loads(stdout.getvalue())
+                self.assertEqual(1, status)
+                self.assertTrue(
+                    any(
+                        row["pointer"] == pointer and row["code"] == code
+                        for row in result["diagnostics"]
+                    ),
+                    result["diagnostics"],
+                )
 
     def test_cli_is_registered_and_output_is_deterministic(self) -> None:
         annotations = self.annotations()
@@ -751,6 +849,36 @@ class CompileAnnotationsTests(unittest.TestCase):
             )
         )
 
+    def test_reused_not_applicable_basis_gets_an_advisory_warning(self) -> None:
+        annotations = self.annotations()
+        repeated = (
+            "This exact generic basis is deliberately reused across two steps."
+        )
+        for step in annotations["steps"]:
+            step["risks"]["dimension"] = "not_applicable"
+            step["not_applicable_basis"] = repeated
+        annotation_path = self.base / "reused-basis.annotations.json"
+        write_json(annotation_path, annotations)
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            status = proofcheck.cmd_annotation_check(
+                argparse.Namespace(
+                    ledger=self.ledger,
+                    annotations=annotation_path,
+                    packet=self.packet,
+                    json=True,
+                )
+            )
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(0, status)
+        self.assertTrue(
+            any(
+                "identical not_applicable_basis" in warning
+                for warning in result["warnings"]
+            ),
+            result["warnings"],
+        )
+
     def test_rebind_annotations_restores_current_binding_hashes(self) -> None:
         annotation_path = self.base / "rebind.annotations.json"
         with contextlib.redirect_stdout(io.StringIO()):
@@ -824,7 +952,7 @@ class CompileAnnotationsTests(unittest.TestCase):
         self.assertIs(args.func, proofcheck.cmd_rebind_annotations)
         self.assertIsNone(args.skeleton)
 
-    def test_new_calibration_invalidates_packets_and_external_annotations(
+    def test_new_checker_configuration_invalidates_packets_and_annotations(
         self,
     ) -> None:
         annotations = self.annotations()
@@ -845,6 +973,9 @@ class CompileAnnotationsTests(unittest.TestCase):
         latest["graded_utc"] = "2026-08-09T00:00:00.000002+00:00"
         latest["checker_binding"]["checker_context_id"] = (
             "fresh-compiler-context-002"
+        )
+        latest["checker_binding"]["checker_configuration_id"] = (
+            "proofcheck-test-config-002"
         )
         calibration["sessions"].append(latest)
         write_json(calibration_path, calibration)
@@ -911,7 +1042,9 @@ class CompileAnnotationsTests(unittest.TestCase):
         )
         self.compile(self.annotations(), self.output)
 
-    def test_other_preexisting_ledger_does_not_block_recompile(self) -> None:
+    def test_preexisting_ledger_is_provenance_and_does_not_block_recompile(
+        self,
+    ) -> None:
         unrelated = (
             self.audit
             / "audit"
@@ -938,12 +1071,7 @@ class CompileAnnotationsTests(unittest.TestCase):
         )
         calibration["sessions"].append(latest)
         write_json(calibration_path, calibration)
-        self.assertTrue(
-            any(
-                "unrelated.ledger.json is unchanged" in error
-                for error in proofcheck.checker_calibration_errors(self.audit)
-            )
-        )
+        self.assertEqual([], proofcheck.checker_calibration_errors(self.audit))
 
         self.regenerate_packet()
         summary = self.compile(self.annotations(), self.output)
@@ -1015,6 +1143,9 @@ class CompileAnnotationsTests(unittest.TestCase):
         latest["graded_utc"] = "2026-08-09T00:00:00.000005+00:00"
         latest["checker_binding"]["checker_context_id"] = (
             "fresh-compiler-after-challenge-context"
+        )
+        latest["checker_binding"]["checker_configuration_id"] = (
+            "proofcheck-test-config-after-challenge"
         )
         latest["audit_binding"] = proofcheck.calibration_audit_binding(
             self.audit
@@ -1544,6 +1675,15 @@ class CompileAnnotationsTests(unittest.TestCase):
         unknown_field = self.annotations()
         unknown_field["steps"][1]["verdict_note"] = "A misspelled field."
         cases.append(("unknown-field", unknown_field, "unknown fields: verdict_note"))
+        derived_field = self.annotations()
+        derived_field["conclusions"][0]["use_site_sufficiency"] = "sufficient"
+        cases.append(
+            (
+                "derived-field",
+                derived_field,
+                "unknown fields: use_site_sufficiency",
+            )
+        )
 
         for name, annotations, message in cases:
             with self.subTest(case=name):
@@ -1631,6 +1771,72 @@ class CompileAnnotationsTests(unittest.TestCase):
             )
 
         self.assertFalse(output.exists())
+
+    def test_obligation_anchor_errors_name_authored_annotation_pointer(self) -> None:
+        annotation_path = self.base / "invalid-anchor.annotations.json"
+        original_skeleton = self.ledger.read_bytes()
+        cases = [("kind", "statement"), ("kind", "context"),
+                 ("index", 0), ("index", -1), ("index", True),
+                 ("index", False), ("index", 1.5), ("index", "1")]
+        for field, value in cases:
+            with self.subTest(field=field, value=value):
+                annotations = self.annotations()
+                annotations["steps"][1]["inputs"][0]["anchor"][field] = value
+                write_json(annotation_path, annotations)
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    status = proofcheck.cmd_annotation_check(argparse.Namespace(
+                        ledger=self.ledger, annotations=annotation_path,
+                        packet=self.packet, json=True,
+                    ))
+                result = json.loads(stdout.getvalue())
+                self.assertEqual(1, status)
+                self.assertFalse(result["compile_ready"])
+                matching = [row for row in result["diagnostics"]
+                            if row["pointer"] == f"/steps/1/inputs/0/anchor/{field}"]
+                self.assertTrue(matching, result["diagnostics"])
+                expected = "statement_span" if field == "kind" else "positive one-based integer"
+                self.assertTrue(any(expected in row["message"] for row in matching))
+                with self.assertRaises(ValueError):
+                    proofcheck.cmd_compile_annotations(argparse.Namespace(
+                        ledger=self.ledger, annotations=annotation_path,
+                        packet=self.packet, output=self.output, force=False,
+                    ))
+                self.assertFalse(self.output.exists())
+                self.assertEqual(original_skeleton, self.ledger.read_bytes())
+
+    def test_wrong_compiled_output_names_exact_canonical_sibling_without_writing(self) -> None:
+        annotation_path = self.base / "valid-path.annotations.json"
+        write_json(annotation_path, self.annotations())
+        before = {path.relative_to(self.base): path.read_bytes()
+                  for path in self.base.rglob("*") if path.is_file()}
+        for output in (self.output.with_suffix(".txt"),
+                       self.output.with_name("different.ledger.json"),
+                       self.base / self.output.name):
+            with self.subTest(output=output):
+                with self.assertRaises(ValueError) as caught:
+                    proofcheck.cmd_compile_annotations(argparse.Namespace(
+                        ledger=self.ledger, annotations=annotation_path,
+                        packet=self.packet, output=output, force=False,
+                    ))
+                self.assertIn(str(self.output.resolve()), str(caught.exception))
+                self.assertFalse(output.exists())
+        after = {path.relative_to(self.base): path.read_bytes()
+                 for path in self.base.rglob("*") if path.is_file()}
+        self.assertEqual(before, after)
+
+    def test_normalization_enum_diagnostics_show_supported_spellings(self) -> None:
+        ledger = read_json(self.ledger)
+        ledger["obligation"]["uniformity"] = "point-wise"
+        ledger["obligation"]["regime"] = "finite-sample"
+        write_json(self.ledger, ledger)
+        errors, _ = proofcheck.check_ledger_data(self.ledger, True, primary_only=True)
+        uniformity = next(error for error in errors if "obligation.uniformity has" in error)
+        regime = next(error for error in errors if "obligation.regime has" in error)
+        for value in ("pointwise", "uniform", "mixed", "not_applicable", "unclear"):
+            self.assertIn(value, uniformity)
+        for value in ("finite_sample", "asymptotic", "both", "not_applicable", "unclear"):
+            self.assertIn(value, regime)
 
     def test_compiler_summary_is_ascii_console_safe(self) -> None:
         annotation_path = self.base / "semantic.annotations.json"
@@ -1853,6 +2059,77 @@ class CompileAnnotationsTests(unittest.TestCase):
         ]
         return annotations
 
+    def test_preliminary_dependency_can_scaffold_but_not_compile(self) -> None:
+        self.install_external_dependency("unchecked")
+        registry_path = (
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        registry = read_json(registry_path)
+        registry["external_results"][0]["uses"][0]["step_ids"] = []
+        write_json(registry_path, registry)
+        self.regenerate_packet()
+        scaffold_path = self.base / "preliminary.annotations.json"
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            status = proofcheck.cmd_annotation_scaffold(
+                argparse.Namespace(
+                    ledger=self.ledger,
+                    packet=self.packet,
+                    output=scaffold_path,
+                )
+            )
+
+        self.assertEqual(0, status)
+        self.assertTrue(scaffold_path.is_file())
+        with self.assertRaisesRegex(
+            ValueError,
+            "requires every direct dependency row to bind exact step_ids",
+        ):
+            proofcheck.cmd_compile_annotations(
+                argparse.Namespace(
+                    ledger=self.ledger,
+                    annotations=scaffold_path,
+                    packet=self.packet,
+                    output=self.output,
+                    force=False,
+                )
+            )
+        self.assertFalse(self.output.exists())
+
+    def test_compile_rejects_wrong_canonical_dependency_step(self) -> None:
+        annotations = self.dependency_annotations()
+        annotation_path = self.base / "wrong-step.annotations.json"
+        write_json(annotation_path, annotations)
+        registry_path = (
+            self.audit
+            / "audit"
+            / "03_dependencies"
+            / "DEPENDENCY_REGISTRY.json"
+        )
+        registry = read_json(registry_path)
+        registry["external_results"][0]["uses"][0]["step_ids"] = ["S999"]
+        write_json(registry_path, registry)
+        self.regenerate_packet()
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "step_ids disagrees with the invoking ledger",
+        ):
+            proofcheck.cmd_compile_annotations(
+                argparse.Namespace(
+                    ledger=self.ledger,
+                    annotations=annotation_path,
+                    packet=self.packet,
+                    output=self.output,
+                    force=False,
+                )
+            )
+
+        self.assertFalse(self.output.exists())
+
     def test_same_source_unit_steps_get_stable_ids_and_exact_dependency_closure(
         self,
     ) -> None:
@@ -1883,6 +2160,34 @@ class CompileAnnotationsTests(unittest.TestCase):
         self.assertEqual({"step_id": "S003.1", "move_id": "M001"}, result["support"])
         self.assertEqual(["D001"], result["dependency_use_ids"])
         self.assertEqual("verified", result["dependency_closure"])
+
+    def test_preflight_and_compiler_reject_noninferential_premise_roots(self) -> None:
+        baseline = self.dependency_annotations()
+        for kind in ("setup", "definition"):
+            with self.subTest(kind=kind):
+                annotations = json.loads(json.dumps(baseline))
+                domain = annotations["steps"][1]
+                domain["kind"] = kind
+                domain["mode"] = "noninferential"
+                domain["inputs"] = []
+                domain.pop("rule")
+                domain.pop("justification")
+                diagnostics = proofcheck.annotation_preflight_diagnostics(
+                    read_json(self.ledger), self.ledger, annotations,
+                    read_json(self.packet), deep_validation=False,
+                )
+                self.assertTrue(
+                    any(
+                        row["code"] == "unsupported_premise_root"
+                        and row["pointer"] == "/steps/2/inputs/0/reference"
+                        and "step domain is noninferential" in row["message"]
+                        for row in diagnostics
+                    ),
+                    diagnostics,
+                )
+                with self.assertRaisesRegex(ValueError, "step domain is noninferential"):
+                    self.compile(annotations, self.output)
+                self.assertFalse(self.output.exists())
 
     def test_conditional_causes_are_derived_without_reauthoring_mirrors(self) -> None:
         annotations = self.dependency_annotations("conditional")

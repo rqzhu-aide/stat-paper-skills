@@ -1,6 +1,6 @@
 interface:
   display_name: "Statistical Paper Proofcheck"
   short_description: "Rigorous non-formal statistical proof audits"
-  default_prompt: "Use $stat-paper-proofcheck to audit this paper's proofs line by line, close every dependency and assumption, trace any triggered load-bearing estimator interface, run a blinded fresh-context challenge on the critical path, and report only evidence-backed conclusions within the stated non-formal scope."
+  default_prompt: "Use $stat-paper-proofcheck to inventory this paper's proof system, check prerequisites before dependents line by line, close every dependency and assumption, independently verify every in-scope unit from a fresh context, and give a concise evidence-backed summary within the stated non-formal scope."
 policy:
   allow_implicit_invocation: false

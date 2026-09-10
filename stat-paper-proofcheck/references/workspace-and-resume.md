@@ -1,6 +1,6 @@
 # Workspace and Resume
 
-This file is the canonical contract for portable setup, source state, checkpoints, resumption, and blocked work. Issue repair belongs to [issues-and-repairs.md](issues-and-repairs.md); release belongs to [reporting-and-release.md](reporting-and-release.md).
+Canonical rules for portable setup, source state, checkpoints, resumption, and blocked work. See [issues-and-repairs.md](issues-and-repairs.md) for repair and [reporting-and-release.md](reporting-and-release.md) for release.
 
 ## Audit workspace
 
@@ -9,6 +9,7 @@ Use `proofcheck.py scaffold` to create a project outside the skill directory:
 ```text
 proofcheck-audit/
   AUDIT_MANIFEST.json
+  proofcheck-report.html        default reader-facing report
   CHECK_PLAN.md                 generated projection
   EXECUTION_ORDER.md            generated projection
   PROGRESS.json
@@ -25,33 +26,57 @@ proofcheck-audit/
     06_reports/
       ISSUE_LOG.json
       ISSUE_SUMMARY.md
-      FINAL_REPORT.md
       FINALIZATION.json
     07_runtime/
       CALIBRATION.json          canonical checker-calibration evidence
       calibration-history/     byte-exact hash-addressed superseded records
 ```
 
+The report belongs beside the audit manifest, not beside the manuscript.
+Existing audits retain their declared report path until explicit
+`migrate-report --top-level`; see [reporting-and-release.md](reporting-and-release.md).
 Do not store paper-specific work inside the installed skill.
 
-`AUDIT_MANIFEST.json`, `PROGRESS.json`, ledgers, registries,
-`ISSUE_LOG.json`, and `CALIBRATION.json` are canonical. Superseded calibration
-records remain immutable historical evidence. `CHECK_PLAN.md`, `EXECUTION_ORDER.md`, and
-`audit/03_dependencies/dependency_graph.md` are concise deterministic views.
-Generate or refresh them instead of editing them:
+`AUDIT_MANIFEST.json`, `PROGRESS.json`, ledgers, registries, `ISSUE_LOG.json`, and
+`CALIBRATION.json` are canonical; superseded calibration records are immutable
+history. Regenerate the deterministic views `CHECK_PLAN.md`, `EXECUTION_ORDER.md`,
+and `audit/03_dependencies/dependency_graph.md` rather than editing them:
 
 ```bash
 python "<skill-root>/scripts/proofcheck.py" sync-views --root "<audit-root>"
 ```
 
-The generated views must be current for finalization. The `finalize` command
-refreshes and seals them; run `sync-views` earlier when the projections are
-useful during work. They never supply a missing scope, dependency, status, or
-judgment. Keep temporary primary or challenge packets and compact annotation
-inputs outside the audit root. They are context-transfer aids, not canonical
-evidence or final deliverables. A primary packet is nevertheless a mandatory
-binding input to `compile-annotations`; the source-locked skeleton and compiled
-ledger remain inside `audit/04_local_checks`.
+`finalize` refreshes and seals the required current views; use `sync-views`
+earlier as needed. Views cannot supply missing scope, dependencies, statuses,
+or judgments. Keep packets and compact annotations outside the audit root as
+context, not final deliverables. Submission requires the exact primary packet;
+skeletons and ledgers belong in `audit/04_local_checks`. Author through files
+and stop dependent commands on unexpected nonzero exits. The
+[authoring example](../assets/templates/AUTHORING_AND_RENEWAL.md) covers
+argument-array execution and supported renewal. After delivery-check returns
+FINAL, keep the sealed audit immutable. External temporary files are ordinary
+workspace material outside finalization. Never delete or move nearby directories
+as a release step.
+
+For a long audit, the existing usage helper can retain each command's full
+output while returning a compact result:
+
+```text
+python "<skill-root>/scripts/proofcheck_usage.py" run --root "<audit-root>" --records "<workbench>/commands" --stage primary -- issues --root "<audit-root>" --before-challenge
+```
+
+Each invocation creates a new receipt folder containing start/end times, exit
+status, arguments, and full stdout/stderr. Keep it outside the canonical audit.
+The child exit status is preserved; inspect saved diagnostics and stop dependent
+commands on failure. Both root arguments identify the same audit. Receipts measure
+work; they supply neither a proof judgment nor a completion gate.
+Token usage remains unknown unless supplied by actual model usage records;
+cached input is part of input and reasoning output is part of output.
+
+Keep complete packets and evidence on disk; return bounded diagnostics and read
+implicated sources or records as needed. Do not repeatedly load the full
+validator or unrelated ledgers for local authoring errors. Group routine
+deterministic work without truncating units or relevant prerequisite evidence.
 
 ## Portable setup and environment boundary
 
@@ -66,7 +91,10 @@ python "<skill-root>/scripts/proofcheck.py" doctor --mode new --paper "<source>"
 
 Use `--mode new` before scaffold and `--mode resume` for an existing audit.
 Pass identical quoted `--project-root`, `--additional-source`, and `--fls`
-values to doctor and scaffold; doctor checks that source closure read-only.
+values to doctor, the read-only `proofcheck_source_check.py`, and scaffold.
+Check new or changed LaTeX source before calibration or mathematical checking;
+resolve its `review_required` items through
+[source-layout-diagnostics.md](source-layout-diagnostics.md).
 New mode rejects any existing destination. Resume mode requires a readable
 audit manifest and a supplied paper whose hash matches the recorded
 authoritative paper. `doctor` leaves no probe residue. It checks that
@@ -106,7 +134,23 @@ file, later validation rejects it; keep the audit `NONFINAL` and report the
 exact malformed artifact. Recovery and issue archives are byte copies with
 hashes and never depend on shared inode identity.
 
-`AUDIT_MANIFEST.json` is the machine-readable scope and completion contract. Before finalization, set its reviewed depth, overall assessment, targets, in-scope and critical units, in-scope method interfaces, explicit exclusions with reasons, source or parser limits, inventory overrides, and completion evidence. Every target unit must be declared critical, and the optional `audit_scope.verified_challenge_sample_rate` (a number in (0, 1]; recommended for Full audits) adds the deterministic challenge sample defined in [challenge-protocol.md](challenge-protocol.md). For Focused depth, `target_units` must be nonempty and `in_scope_units` must equal the targets plus their exact transitive internal dependency closure. An inventory override may add a parser-missed manual unit, correct or reject a proof location, confirm, replace, or reject a proof association, or designate an exact external restatement only when it records the required source-bound evidence. A manual unit binds `reviewed_unit_sha256`. An explicit rejection uses a null reviewed proof and a reviewed association with status `rejected`, method `reviewed_rejection`, the same target, and no evidence occurrences. An external restatement override uses `kind: external_restatement`, exact `unit_id`, `external_dependency_use_id`, `statement_sha256` equal to the hash of the exact reviewed formal statement span, substantive `reason`, and substantive `evidence`. Keep the unit proof-required and its proof null. Its ledger uses `coverage_mode: external_restatement`, repeats the designated use ID, and covers exactly the statement. That ID must name one external direct dependency of the unit and exactly one matching registry use. Citation keys equal the statement citations mapped to it, or the empty set when no citation command exists. Source-lock and rescan every changed proof span or statement-only restatement, then reconcile its exact reference occurrences, dependencies, and citations. Do not edit the source snapshot to make drift disappear. Re-scaffold or deliberately update and recheck affected work after a source change.
+`AUDIT_MANIFEST.json` is the machine-readable scope and completion contract. Before finalization, set its reviewed depth, overall assessment, targets, in-scope units, optional priority-only `critical_units`, in-scope method interfaces, explicit exclusions with reasons, source or parser limits, inventory overrides, and completion evidence. Every in-scope unit requires an independent check. The obsolete `verified_challenge_sample_rate` field is rejected. For Focused depth, `target_units` must be nonempty and `in_scope_units` must equal the targets plus their exact transitive internal dependency closure. An inventory override may add a parser-missed manual unit, correct or reject a proof location, confirm, replace, or reject a proof association, or designate an exact external restatement only when it records the required source-bound evidence. Follow the source-bound override contracts in [proof-system-audit.md](proof-system-audit.md#1-build-the-inventory). Source-lock and rescan every changed proof span or statement-only restatement, then reconcile its exact reference occurrences, dependencies, and citations. Do not edit the source snapshot to make drift disappear. Re-scaffold or deliberately update and recheck affected work after a source change.
+
+Literal `\newtheorem` roles persist: Assumption, Definition, and Remark are
+context; Theorem, Lemma, Proposition, and Corollary require proofs. For an
+ambiguous role, an `environment_classification` override records `unit_id`,
+exact `environment_declaration` and `statement_sha256`,
+`parser_proof_required`, `parser_semantic_kind`, `reviewed_proof_required`,
+`reviewed_semantic_kind`, and substantive `reason` and `evidence`. Update the
+inventory role and dependency review. Explicit theorems cannot be demoted;
+stale bindings fail.
+
+Literal `\newenvironment` aliases of `\begin{proof}` / `\end{proof}` require
+complete boundaries; optional titles work. Arbitrary wrappers are unsupported.
+Literal `restatable` preserves the original kind, title, and command. Command
+copies link to the original and its adjacent appendix proof, without duplicate
+obligations. Generic `Proofs` headings are not targeted proofs. Review remaining
+source-located parser limitations.
 
 The manifest records the skill version, artifact schemas, closure contract
 version, validator hash, and source snapshot identifier. When only the
@@ -118,34 +162,59 @@ reports `validator_revalidation_required`. Run:
 python "<skill-root>/scripts/proofcheck.py" revalidate-protocol --root "<audit-root>"
 ```
 
-The command checks source freshness and current record readability before it
-stamps the current protocol identity, and changes nothing else. It invalidates
-any prior finalization and does not transfer a mathematical judgment. Resolve every current gate error and
-finalize again. Validator hashing normalizes CRLF and CR text newlines to LF,
-so equivalent checkouts retain one validator identity across platforms. A
-schema or contract-version change still requires deliberate
-migration and rechecking. Keep proof, dependency-closure, and method-interface contracts distinct
-so a new registry or interface record does not silently reinterpret older proof
-ledgers.
+The command checks source freshness and record readability, stamps the current
+protocol, and invalidates prior finalization. It preserves the original manifest
+bytes in history and retains that compatible `context_protocol` for input binding,
+so code-only upgrades do not require rewriting unchanged reviews. Current validators
+still reconstruct every source and semantic input and run all gates; changed
+contracts, sources, or reviewed meaning require the normal migration or recheck.
+Resolve current gate errors and finalize again. Sealed resolution archives retain
+their historical identity bound to their original manifest and seal. Validator
+hashing normalizes CRLF and CR to LF across equivalent checkouts. Keep proof,
+dependency and method-interface contracts distinct.
 
 For an audit predating calibration schema 2, first finish reported contract
 migrations, or run `revalidate-protocol` when only the validator changed. Then
 run balanced `canary-grade` with reviewed checker-profile, configuration, and
 context IDs. It hash-archives prior bytes in
 `audit/07_runtime/calibration-history/` and records existing ledger hashes.
-Finalization requires each listed ledger to be rechecked and replaced or
-recompiled afterward, followed by affected dependency and challenge checks;
-byte-identical ledgers do not prove a post-calibration recheck. Regenerate
-calibration-bound packets only after moving old ledgers to
-`audit/04_local_checks/history/` under names not ending in `.ledger.json`.
-Create fresh annotation scaffolds and fully re-review before recompiling;
+Those hashes are historical provenance, not a requirement to change sound
+ledger bytes. Recheck existing work only when its checker profile or
+configuration differs from the calibrated binding, or when ordinary semantic
+freshness checks require it. A changed qualification receipt still requires
+fresh annotation scaffolds and full review through the
+[supported renewal sequence](../assets/templates/AUTHORING_AND_RENEWAL.md#renew-an-existing-ledger).
+Keep the old ledger until its replacement compiles;
 rebind cannot cross a calibration receipt.
 
-Skill 1.2 finalizes `5/5/4`. Evidence contract 5 adds anchored step
+The current release finalizes `5/5/4`. Evidence contract 5 adds anchored step
 evidence, failure computations, and severe-issue repair searches; contract-4
 ledgers remain inspection-only. A reviewed closure-4 registry binds the exact
 source snapshot, inventory hash, ordered scope, and substantive evidence;
 rebind it after any source, inventory, or scope change.
+
+Reusable unit work is bound to its locked statement and proof, normalized
+obligation, actual prerequisite contracts and evidence, calibration receipt,
+and protocol. Whole-file hashes and the full source snapshot remain provenance
+and release checks. Shared prose outside freshly indexed statement/proof
+regions, local configuration files, and TeX commands with uncertain effects
+also enter a conservative shared-context identity. Only demonstrably plain
+unrelated regions can be omitted; indirect and unknown macros retain their
+whole region, including multi-line arguments. Thus changing an unrelated plain
+proof can preserve an unaffected unit's complete or partial judgments after an
+explicit source rescan and dependency-review reconciliation. Changing a shared
+assumption, mathematical macro, required conclusion, or locked unit span
+invalidates affected work. Unclassified context and moved source lines can
+still require additional review; this is not a full TeX effect analysis.
+
+Source drift always blocks packet generation until that reconciliation is
+complete, and every source edit invalidates the old release. Never rewrite
+snapshot hashes alone to claim currency. A still-equivalent primary packet
+may compile with its original annotation binding while current operational
+provenance is recorded. The preserved initial challenge can be reused when
+its mathematical inputs are unchanged, but the final challenge still binds
+the global snapshot and must be explicitly rebound before resealing. Reuse
+does not by itself claim a current FINAL result.
 
 For schema-5/evidence-4 state, run `migrate-evidence --root "<audit-root>"`.
 It validates source, closure, versions, and only direct live ledgers and
@@ -227,11 +296,18 @@ Use these exact `current_pass` milestones:
 | 3 | Proof-system mapping is reviewed, but at least one scoped obligation is not fully source-locked and normalized. |
 | 4 | All scoped obligations are normalized; local atomic checking is incomplete. |
 | 5 | All local ledgers are complete; dependency, method-interface, global, or adversarial checks are incomplete. |
-| 6 | Dependency, method-interface, global, and adversarial checks are complete; effective-critical challenges are incomplete. |
-| 7 | Effective-critical challenges are complete; the final report is not declared ready. |
+| 6 | Dependency, method-interface, global, and adversarial checks are complete; at least one in-scope independent check is incomplete. |
+| 7 | Every in-scope independent check is reconciled; the final report is not declared ready. |
 | 8 | The final report is declared ready; the strict candidate finalization gate alone controls `complete` versus `in_progress`. |
 
-The checkpoint refuses source-snapshot or include-closure drift rather than
+On a current finalized audit, `report`, `checkpoint`, and repeated `finalize`
+return the current deliverable or state without rewriting durable files.
+Checkpoint arguments do not reopen that delivered snapshot. Use a working copy
+for deliberate repairs, including the portable source bundle or independent
+copies of every external source that will be edited. Verify the copy with
+`delivery-check` before changing it; retain the original delivered audit.
+
+For ongoing work, checkpoint refuses source-snapshot or include-closure drift rather than
 rewriting progress against stale source. On a successful checkpoint, it
 migrates a legacy progress record that lacks `in_progress_units` by writing the
 derived field. It rejects an active unit already present in the derived
@@ -249,8 +325,9 @@ object, `in_progress_units` and `not_started_units` to be empty, and
 S1 issue IDs. Reject duplicates, unknown IDs, missing IDs, and stale snapshot
 bindings.
 
-Challenge completion and pass-7 readiness use the effective-critical set from
-[challenge-protocol.md](challenge-protocol.md), not the manifest list alone.
+Pass-7 readiness requires a current reconciled independent check for every ID
+in `audit_scope.in_scope_units`, as defined in
+[challenge-protocol.md](challenge-protocol.md).
 
 ## Resume contract
 
@@ -277,18 +354,26 @@ On resumption:
    trusting its prior semantic judgments. Do not reuse a verdict across a
    changed binding merely because the unit ID or prose appears unchanged.
 
-`status` is work-in-progress aware and concise by default. It distinguishes a
-healthy incomplete audit from stale or malformed state and from an audit that
-is finalizable now. Use `status --verbose` to show the full gate errors. Both
-modes apply the same strict validation and finalization gates.
+`status` distinguishes incomplete, stale, malformed, and finalizable work. Use
+`status --verbose` for all errors; both modes apply the same gates.
 
-The packet is an optional minimal context projection for manual ledger work,
-but it is mandatory for compile-annotations. It is not a substitute for
-status. The compiler rebuilds current canonical state, verifies both packet
-binding hashes, and requires exact equality of the dependency-closed semantic
-projection. Compile only against a fresh .skeleton.json whose normalized
-obligation the annotations address. Keep packet and annotations outside the
-audit root and bind annotations to context_binding_sha256.
+If only the cross-reference records are stale, regenerate their canonical JSON
+and Markdown view together from the unchanged locked source closure:
+
+```bash
+python "<skill-root>/scripts/proofcheck.py" crossref --root "<audit-root>"
+```
+
+This supports portable audits and supplemental sources. It preserves source
+locks and reviewed inventory/dependency decisions. Source drift requires the
+normal source repair below; regeneration cannot approve changed manuscripts.
+Recheck final delivery after changing a finalized audit.
+
+Packets are optional for manual ledgers and mandatory for compile-annotations;
+they do not replace status. The compiler rebuilds canonical state, verifies both
+bindings, and requires an identical dependency-closed semantic projection.
+Use a fresh .skeleton.json with the intended obligation; keep packet and
+annotations outside the audit root, bound by context_binding_sha256.
 
 The semantic binding covers protocol, source snapshot, exact unit source,
 normalized obligation, unit inventory and candidate paths, direct dependency
@@ -298,22 +383,17 @@ inventory, registry, issue-log, progress, and semantic-artifact file hashes plus
 readiness and resume state. Operational drift remains traceable but does not
 by itself invalidate a mathematical judgment.
 
-To make a partial canonical ledger resumable, copy work_context_sha256 from the
-primary packet to the ledger. A regenerated packet includes partial work only
-when the ledger passes nonfinal local validation and the dependency-closed work
-context still matches. Then resume.wip includes the exact partial-ledger hash
-and full reusable source_units, steps, and review. Recheck after relevant
-source, obligation, dependency, external-evidence, issue-trigger, risk, or
-protocol drift. Do not discard sound WIP merely because progress, next action,
-or unrelated metadata changed.
+For resumable partial ledgers, copy work_context_sha256 from the primary packet.
+A new packet includes WIP only if nonfinal local validation passes and its
+dependency-closed context matches. resume.wip carries the ledger hash and full
+reusable source_units, steps, and review. Relevant semantic drift requires
+rechecking; progress, next action, or unrelated metadata changes do not.
 
-A zero exit from bare `status` means that the audit is coherent enough to
-resume. It does not mean that the audit is complete. Read the top-level
-`audit_complete`, `delivery_status`, and `finalization_gate_error_count`
-fields. The nested progress candidate gate count is evaluated only when a
-pass-8 completion candidate exists and is not the full gate count. Use
-`status --require-finalized` when an orchestration step must fail unless a
-current usable passed finalization exists. Use `delivery-check` for release.
+A zero exit from bare `status` means coherent resumable state, not completion.
+Read `audit_complete`, `delivery_status`, and `finalization_gate_error_count`.
+The nested progress gate count covers only a pass-8 completion candidate.
+`status --require-finalized` requires current usable finalization;
+use `delivery-check` for release.
 
 If source drift affects a checked unit, mark that unit stale and re-extract it. Preserve unaffected audit records. If the paper's theorem statement changes, re-evaluate downstream dependencies even when proof text is unchanged.
 
@@ -359,6 +439,9 @@ command. Absence of telemetry neither weakens nor strengthens the audit.
 
 ## Blocked and conditional work
 
-When a dependency or source is missing, mark the affected unit conditional or blocked, record what is needed, and continue only with independent units. Do not fill missing material from memory.
+When a dependency or source is missing, record what is needed and propagate the
+missing input into every affected verdict. Still inspect every in-scope
+dependent line by line, but do not mark it verified or fill missing material
+from memory.
 
 When user judgment is needed, isolate the smallest concrete choice and explain how each option changes the audit. Keep already established facts stable.

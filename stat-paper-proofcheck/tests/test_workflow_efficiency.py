@@ -274,7 +274,6 @@ class WorkflowEfficiencyTests(unittest.TestCase):
                     "support_step": "conclusion",
                     "contract_fidelity": "verified",
                     "statement_status": "established",
-                    "use_site_sufficiency": "not_applicable",
                     "issue_ids": [],
                 }
             ],
@@ -459,7 +458,8 @@ class WorkflowEfficiencyTests(unittest.TestCase):
         ][0]
         self.assertEqual("/source/statement", conclusion_span["source_span_ref"])
         self.assertNotIn("lines", conclusion_span)
-        self.assertTrue(challenge["obligation"]["normalization_checks"])
+        self.assertNotIn("normalization_checks", challenge["obligation"])
+        self.assertNotIn("normalization", challenge["obligation"]["conclusions"][0])
         self.assertEqual(list(proofcheck.RISK_ASPECTS), challenge["risk_aspects"])
         self.assertEqual([], challenge["issue_triggers"])
 

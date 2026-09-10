@@ -7,7 +7,8 @@ proofs resembling common flaws, so it measures misses and false alarms.
 ## When and how
 
 Run a session before local checking in every Focused or Full audit, and again
-after any checker profile, configuration, or context change.
+after any checker profile or configuration change. A change of context or
+worker alone reuses the current passing session.
 
 1. List ids and titles:
 
@@ -32,38 +33,45 @@ The record stores each complete response and canonical hash. Finalization
 re-grades it against the sealed key and verifies the complete canary-bundle
 digest, unique chronological sessions and canary ids, and consistent result
 and session pass fields. Missing, stale, malformed, unbalanced, or failing
-latest evidence blocks finalization. The recorded source snapshot and
-validator hashes are provenance, not currency requirements: calibration
-attests the checker, so a paper edit or validator release does not stale a
-session; a changed canary bundle, a re-grade disagreement, or a changed
-checker binding does.
+latest evidence blocks finalization. The recorded source snapshot and validator
+hashes are provenance, not currency requirements: calibration attests the
+declared checker profile and configuration, so a paper edit, validator release,
+or context-only handoff does not stale a session. A changed canary bundle, a
+re-grade disagreement, or a changed profile or configuration does.
 
 The checker identifiers are reviewed coordinator declarations. The tool cannot
 verify runtime checker identity; this exact limitation is stored in the
-session. A changed profile, configuration, or context requires a new session.
+session. `checker_context_id` identifies the context that performed the canary
+run for provenance. It is not part of calibration currency. Do not start a new
+session merely because work moves to another context or worker under the same
+profile and configuration. A changed profile or configuration requires a new
+session.
 
 ## Existing proof work
 
 Calibration is prospective. If live `audit/04_local_checks/*.ledger.json`
-files exist, `canary-grade` records their hashes. Each must then be fully
-rechecked under the declared binding and replaced or recompiled so its hash
-changes. Re-run affected dependency and challenge checks. Removing an obsolete
-ledger is acceptable only when ordinary scope gates agree. Do not grade again
-to clear the hashes: another latest session snapshots the current ledgers and
-starts a new boundary. Stale or malformed records are hash-archived byte-for-byte
-under `audit/07_runtime/calibration-history/`; redirected or non-regular paths
-are refused. Intact schema-2 archives reserve declared context IDs; unparseable
-bytes cannot supply one. `canary-grade` holds an exclusive update lock across archival and
-commit; packets and finalization fail closed while it exists. After a crash,
-confirm no grading process is running, inspect the lock and record, remove the
-lock manually, and rerun. Every packet and primary work context binds the latest passing session
-receipt. A new session invalidates old packets, annotations, ledgers, and
-challenges. First move each old live ledger into `audit/04_local_checks/history/`
-with a name that does not end in `.ledger.json`, such as
-`unit.ledger.pre-calibration.json`. Then regenerate the packet from the direct
-live skeleton, create a fresh annotation scaffold, fully re-review, and
-recompile the canonical ledger. `rebind-annotations` refuses a calibration
-receipt change.
+files exist, `canary-grade` records their hashes as historical provenance.
+Those hashes are not a finalization gate and the files need not change after a
+context-only handoff.
+
+Stale or malformed calibration records are hash-archived byte-for-byte under
+`audit/07_runtime/calibration-history/`; redirected or non-regular paths are
+refused. Intact schema-2 archives reserve declared context IDs; unparseable
+bytes cannot supply one. `canary-grade` holds an exclusive update lock across
+archival and commit; packets and finalization fail closed while it exists.
+After a crash, confirm no grading process is running, inspect the lock and
+record, remove the lock manually, and rerun.
+
+Every packet and primary work context binds the current passing qualification
+receipt. Continuing from another context or worker under the same profile and
+configuration preserves that receipt and completed work. A profile or
+configuration change requires a new session, changes the receipt, and
+invalidates old packets, annotations, ledgers, and challenges. Follow the
+[supported renewal sequence](../assets/templates/AUTHORING_AND_RENEWAL.md#renew-an-existing-ledger):
+retain the old ledger for issue origins, extract a fresh skeleton, and generate
+its primary packet with `--for-recompile`. Create a fresh annotation scaffold,
+fully re-review, and compile before archiving the old live ledger.
+`rebind-annotations` refuses a calibration receipt change.
 
 ## Blinding and boundary
 

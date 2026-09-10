@@ -46,7 +46,7 @@ replace shared boilerplate before compilation.
 
 ## Assurance boundary
 
-This protocol is non-formal. It can provide high assurance through exact source coverage, independent reconstruction, dependency closure, adversarial search, and a fresh critical-path challenge. It cannot provide the soundness guarantee of a small proof-assistant kernel.
+This protocol is non-formal. It can provide high assurance through exact source coverage, independent reconstruction, dependency closure, adversarial search, and a fresh independent check of every in-scope unit. It cannot provide the soundness guarantee of a small proof-assistant kernel.
 
 Mechanical validation establishes that source hashes, normalized-field
 dispositions, premise origins and active reference anchors, exact
@@ -106,33 +106,36 @@ Keep these judgments separate:
 - `argument_status`: valid, conditional, gap, invalid, unclear, or not checked;
 - `statement_status`: established, conditional, refuted, not established, unclear, or not assessed;
 - `dependency_closure`: whether every load-bearing dependency resolves with compatible assumptions and conclusions;
-- `use_site_sufficiency`: whether the established result is sufficient where later used.
+- `use_site_sufficiency`: the audit-wide projection of whether the established
+  result is sufficient where later used. It is derived from outgoing internal
+  dependency edges after closure and is never checker-authored.
 
-Derive dependency availability from the named conclusion's own contract
-fidelity, argument status, statement status, and dependency closure. Do not use
-another conclusion or the unit-level weakest summary to cap an independent
-conclusion. An established conclusion supplies `verified` only when its
+Derive dependency availability from the named conclusion's contract,
+argument, statement and closure; other conclusions and unit summaries cannot
+cap it. An established conclusion normally supplies `verified` when its
 contract, argument, and closure are verified; any conditional component
 supplies at most `conditional`. A refuted conclusion supplies `incorrect`. A
-`not_established` conclusion supplies `gap`, even when the proof failure is an
-invalid argument. An unclear or unassessed conclusion supplies `unclear` or
-`unchecked`. This distinction prevents an invalid proof from being propagated
-as conclusion falsity.
+`not_established` conclusion supplies `gap` even after an invalid argument.
+Unclear or unassessed conclusions supply `unclear` or `unchecked`; an invalid
+proof alone does not refute its statement. The optional
+[checked supplement](statement-support.md) preserves written defects and
+supports a statement or restricted use only with current immutable reviewer
+acceptance. Primary readiness is provisional.
 
 Each `Cxxx` conclusion has one `review.conclusion_results` row supported by an
 exact checked move. Its component judgments, obligation-pointer use,
 dependency-use closure, and issues are conclusion-specific. For `established`
 or `conditional`, that move must reach the exact conclusion claim. For
 `refuted`, `not_established`, or `unclear`, it must preserve the actual failure
-or mismatch. Its step status must agree with the conclusion judgment. Use
+or mismatch. Without a separate supplement, its step status must agree with
+the conclusion judgment. Use
 `review.conclusion_step_id` only as the single-conclusion support-step alias;
 leave it empty for a multi-conclusion result. The unit-level `statement_status`
 is the weakest conclusion judgment.
 
 An `established` or `refuted` statement requires `contract_fidelity: verified`.
 A `conditional` statement requires `contract_fidelity: verified` or
-`conditionally_verified`. This prevents a strong statement judgment about an
-uncertain normalized target.
+`conditionally_verified`. Strong judgments require a faithful normalized target.
 
 An invalid argument establishes a defect in the proof, not the falsity of the
 theorem. Use `refuted` only when an exact counterexample or contradiction
@@ -180,9 +183,9 @@ survives local inspection.
 
 S0 and S1 issues are load-bearing by definition. Any open or deferred S0 or S1 issue, and any lower-severity issue explicitly marked load-bearing, prevents a `no_defect_found` assessment.
 
-Challenge promotion and coverage follow the exact effective-critical rule in
-[challenge-protocol.md](challenge-protocol.md). Severity here determines the
-issue classification used by that rule; it does not redefine the rule.
+Independent-check coverage is exactly the in-scope unit set defined in
+[challenge-protocol.md](challenge-protocol.md). Severity determines which
+neutral issue targets a checker must assess; it never changes unit coverage.
 
 ## Confidence
 

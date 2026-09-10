@@ -10,16 +10,16 @@
 - Audit depth: full
 - Target results: thm:main
 - In-scope units: lem:growing-max, thm:main
-- Declared critical units: thm:main
-- Issue-promoted critical units: lem:growing-max
-- Effective critical units: lem:growing-max, thm:main
+- Declared priority units: thm:main
+- Issue-promoted priority units: lem:growing-max
+- Combined priority units: lem:growing-max, thm:main
 - Explicit exclusions: none
 - Source or parser limitations: none
 - Overall assessment: defects_found
 
 ## Proof-unit inventory
 
-| Unit | Statement | Proof | Dependencies | Use sites | Critical basis | Status |
+| Unit | Statement | Proof | Dependencies | Use sites | Priority basis | Status |
 |---|---|---|---|---|---|---|
 | lem:growing-max | paper.tex:6-11 | paper.tex:13-18 | none | thm:main | issue_promoted | completed |
 | thm:main | paper.tex:20-24 | paper.tex:26-30 | lem:growing-max | none | declared | completed |
@@ -43,7 +43,7 @@
 - Conditional units: none
 - Not-started units: none
 - Open high-priority issues: I-001
-- Next action: Run final issue reconciliation and finalization.
+- Next action: Audit finalized. Deliver proofcheck-report.html after delivery-check confirms FINAL.
 
 All detailed obligations, dependency uses, compatibility matrices, global
 checks, issue definitions, challenges, and completion gates remain canonical in

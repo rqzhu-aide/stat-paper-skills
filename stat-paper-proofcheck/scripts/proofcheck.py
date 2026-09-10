@@ -12,11 +12,11 @@ from __future__ import annotations
 import argparse
 import base64
 import difflib
-import math
 import binascii
 import copy
 import functools
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -25,10 +25,12 @@ import sys
 import tempfile
 import unicodedata
 from collections import Counter, defaultdict
-from fractions import Fraction
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
+from types import SimpleNamespace
 
 
 SCHEMA_VERSION = 5
@@ -49,7 +51,7 @@ WORKFLOW_VIEW_PATHS = (
     "audit/03_dependencies/dependency_graph.md",
 )
 SKILL_NAME = "stat-paper-proofcheck"
-SKILL_VERSION = "1.2"
+SKILL_VERSION = "1.5"
 MAX_UNIT_LINES = 100_000
 FORMAL_ENVIRONMENTS = {
     "theorem",
@@ -159,6 +161,7 @@ TEX_VERBATIM_BEGIN_RE = re.compile(
     r"verbatim\*?|Verbatim\*?|BVerbatim|LVerbatim|SaveVerbatim|"
     r"lstlisting\*?|minted\*?|comment)\}"
 )
+TEX_MASK_TRIGGER_RE = re.compile(r"[%\\]")
 TEX_DEFINITION_COMMAND_RE = re.compile(
     r"\\(?P<command>"
     r"newif|let|"
@@ -607,6 +610,7 @@ INDEPENDENCE_LEVELS = {
 }
 PASS_STATUSES = {"not_checked", "completed", "completed_with_findings", "not_applicable"}
 NON_PROOF_ENVIRONMENTS = {"definition", "assumption", "remark"}
+OBLIGATION_CONTEXT_ENVIRONMENTS = {"definition", "assumption"}
 COMPATIBILITY_STATUSES = {
     "passed",
     "not_applicable",
@@ -720,8 +724,192 @@ def protocol_identity() -> dict[str, Any]:
         "artifact_schema_version": SCHEMA_VERSION,
         "method_interface_schema_version": METHOD_INTERFACE_SCHEMA_VERSION,
         "closure_contract_version": CLOSURE_CONTRACT_VERSION,
-        "validator_sha256": sha256_portable_text_file(Path(__file__).resolve()),
+        "validator_sha256": canonical_sha256({name: sha256_portable_text_file(Path(__file__).resolve().with_name(name))
+            for name in ("proofcheck.py", "proofcheck_sources.py", "proofcheck_authoring.py", "proofcheck_reconcile.py")}),
     }
+
+
+def context_protocol_identity(root: Path, manifest: dict[str, Any]) -> dict[str, Any]:
+    """Retain an authenticated historical packet salt, never validation results."""
+    current = protocol_identity()
+    if "context_protocol" not in manifest:
+        return current
+    anchor = manifest["context_protocol"]
+    if not isinstance(anchor, dict) or set(anchor) != {
+        "protocol", "original_manifest_file", "original_manifest_sha256"
+    }:
+        raise ValueError("context_protocol requires protocol and its exact original manifest file/hash")
+    identity = anchor.get("protocol")
+    if not isinstance(identity, dict) or set(identity) != set(current):
+        raise ValueError("context_protocol.protocol has missing or unknown identity fields")
+    for field, expected in current.items():
+        if field in {"skill_version", "validator_sha256"}:
+            continue
+        if type(identity.get(field)) is not type(expected) or identity.get(field) != expected:
+            raise ValueError(f"context_protocol.protocol.{field} is incompatible with current contracts")
+    if not is_nonempty_string(identity.get("skill_version")) or not isinstance(identity.get("validator_sha256"), str) or not SHA256_RE.fullmatch(identity["validator_sha256"]):
+        raise ValueError("context_protocol needs a recorded skill version and validator SHA-256")
+    digest = anchor.get("original_manifest_sha256")
+    if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest):
+        raise ValueError("context_protocol original manifest SHA-256 is invalid")
+    relative = f"audit/06_reports/history/context-protocol-{digest}.json"
+    if anchor.get("original_manifest_file") != relative:
+        raise ValueError("context_protocol original manifest must use its exact history path")
+    errors: list[str] = []
+    path, valid = canonical_artifact_path(root, relative, "Context protocol origin", errors)
+    if not valid or path is None or not path.is_file() or sha256_file(path) != digest:
+        raise ValueError("context_protocol original manifest is missing, redirected, or changed: " + "; ".join(errors))
+    original, errors = load_json_object(path, "context protocol original manifest")
+    if errors or original.get("schema_version") != SCHEMA_VERSION or "context_protocol" in original or not isinstance(original.get("protocol"), dict):
+        raise ValueError("context_protocol original manifest must contain its unmodified first protocol")
+    recorded = dict(original["protocol"])
+    recorded.pop("challenge_contract_version", None)
+    if recorded != identity:
+        raise ValueError("context_protocol identity differs from its preserved original manifest")
+    return dict(identity)
+
+
+def report_module(name: str) -> Any:
+    """Load a local component without adding a runtime dependency."""
+    path = Path(__file__).resolve().with_name(name + ".py")
+    key = "_stat_paper_" + name
+    digest = sha256_portable_text_file(path)
+    module = sys.modules.get(key)
+    if module is None or getattr(module, "_loaded_digest", None) != digest:
+        spec = importlib.util.spec_from_file_location(key, path)
+        if spec is None or spec.loader is None:
+            raise ValueError(f"Cannot load local component: {path}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[key] = module
+        spec.loader.exec_module(module)
+        module._loaded_digest = digest
+    return module
+
+
+def report_renderer() -> Any:
+    return report_module("proofcheck_report")
+
+
+def source_fragment_support() -> Any:
+    return report_module("proofcheck_sources")
+
+
+def source_coverage_bounds(ledger: dict[str, Any]) -> tuple[Any, Any]:
+    return source_fragment_support().bounds(ledger)
+
+
+def source_unit_location(ledger: dict[str, Any], unit: dict[str, Any]) -> dict[str, Any]:
+    """Map coverage positions to one exact, original manuscript source span."""
+    return source_fragment_support().location(ledger, unit)
+
+
+def locked_line_is_non_substantive(row: dict[str, Any]) -> bool:
+    return isinstance(row, dict) and (row.get("include_directive") is True or row.get("proof_wrapper") is True or is_non_substantive(row.get("text", "")))
+
+
+def report_api() -> Any:
+    return SimpleNamespace(**globals())
+
+
+def cmd_submit_unit(args: argparse.Namespace) -> int:
+    result = report_module("proofcheck_authoring").submit_unit(
+        report_api(), ledger_path=args.ledger, annotations_path=args.annotations,
+        packet_path=args.packet)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_source_lookup(args: argparse.Namespace) -> int:
+    result = report_module("proofcheck_authoring").source_lookup(
+        report_api(), ledger_path=args.ledger, part=args.part, lines=args.lines,
+        annotations_path=args.annotations, step_key=args.step_key,
+        packet_path=args.packet, reference=args.reference)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_submit_reconciliation(args: argparse.Namespace) -> int:
+    return report_module("proofcheck_reconcile").cmd_submit_reconciliation(args, globals())
+
+
+def uses_html_report(manifest: dict[str, Any]) -> bool:
+    value = manifest.get("report_contract")
+    return isinstance(value, dict) and value.get("version") == 2
+
+
+def preferred_report_path(manifest: dict[str, Any]) -> str:
+    if uses_html_report(manifest):
+        return report_module("proofcheck_release").primary_report(manifest)
+    return "audit/06_reports/FINAL_REPORT.md"
+
+
+def unchanged_final_delivery(root: Path) -> dict[str, Any] | None:
+    """Return a current delivery without rewriting its historical bytes."""
+    if not (root / "audit/06_reports/FINALIZATION.json").is_file():
+        return None
+    freshness = check_finalization_freshness(root)
+    if not freshness.get("usable_finalization"):
+        return None
+    _, manifest, errors = load_audit_manifest(root)
+    if errors:
+        return None
+    return {
+        "audit_root": str(root), "delivery_status": "FINAL",
+        "usable_finalization": True, "unchanged": True,
+        "report": str(root / preferred_report_path(manifest)),
+        "finalization_record": freshness["record"], "errors": 0,
+    }
+
+
+def cmd_report(args: argparse.Namespace) -> int:
+    root = args.root.resolve()
+    lock_error = migration_update_lock_error(root)
+    if lock_error:
+        raise ValueError(lock_error)
+    result = unchanged_final_delivery(root)
+    if result is None:
+        result = report_module("proofcheck_release").render_working(report_api(), root)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_migrate_report(args: argparse.Namespace) -> int:
+    root = args.root.resolve()
+    lock_error = migration_update_lock_error(root)
+    if lock_error:
+        raise ValueError(lock_error)
+    result = report_module("proofcheck_release").migrate(
+        report_api(), root, markdown=bool(getattr(args, "markdown", False)),
+        top_level=bool(getattr(args, "top_level", False)))
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def challenge_contract_version(manifest: dict[str, Any]) -> int:
+    protocol = manifest.get("protocol")
+    value = protocol.get("challenge_contract_version", 1) if isinstance(protocol, dict) else 1
+    if type(value) is not int or value not in {1, 2, 3}:
+        raise ValueError("protocol.challenge_contract_version must be 1, 2, or 3")
+    return value
+
+
+def protocol_matches_current(value: Any) -> bool:
+    """Allow only the declared optional challenge contract beside core identity."""
+    if not isinstance(value, dict):
+        return False
+    core = dict(value)
+    version = core.pop("challenge_contract_version", 1)
+    return type(version) is int and version in {1, 2, 3} and core == protocol_identity()
+
+
+def retain_challenge_contract(
+    protocol: dict[str, Any], manifest: dict[str, Any]
+) -> dict[str, Any]:
+    result = dict(protocol)
+    recorded = manifest.get("protocol")
+    if isinstance(recorded, dict) and "challenge_contract_version" in recorded:
+        result["challenge_contract_version"] = challenge_contract_version(manifest)
+    return result
 
 
 
@@ -729,18 +917,116 @@ def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+_FILE_DIGEST_SNAPSHOT: ContextVar[
+    dict[tuple[str, Path], str] | None
+] = ContextVar("proofcheck_file_digest_snapshot", default=None)
+
+
+@contextmanager
+def gate_digest_snapshot():
+    """Hash each file once within one read-only gate invocation."""
+    existing = _FILE_DIGEST_SNAPSHOT.get()
+    if existing is not None:
+        yield
+        return
+    token = _FILE_DIGEST_SNAPSHOT.set({})
+    try:
+        yield
+    finally:
+        _FILE_DIGEST_SNAPSHOT.reset(token)
+
+
+_GATE_CONTEXT_CACHE: ContextVar[dict[Any, Any] | None] = ContextVar(
+    "proofcheck_gate_context_cache", default=None)
+
+
+def _gate_argument_key(value: Any) -> Any:
+    """Keep argument types distinct; unfamiliar iterable inputs bypass reuse."""
+    if isinstance(value, Path):
+        return ("path", str(value))
+    if type(value) in (str, int, float, bool, type(None)):
+        return (type(value).__name__, value)
+    if isinstance(value, dict):
+        return ("dict", tuple(sorted((key, _gate_argument_key(item)) for key, item in value.items())))
+    if isinstance(value, (list, tuple)):
+        return (type(value).__name__, tuple(_gate_argument_key(item) for item in value))
+    raise TypeError("Unmemoized gate argument")
+
+
+def gate_context_reader(function):
+    """Reuse an immutable reader result only within the guarded full-gate call."""
+    @functools.wraps(function)
+    def read(*args, **kwargs):
+        cache = _GATE_CONTEXT_CACHE.get()
+        if cache is None or kwargs.get("dependency_registry_override") is not None:
+            return function(*args, **kwargs)
+        try:
+            key = (function.__name__, _gate_argument_key(args), _gate_argument_key(kwargs))
+        except (TypeError, ValueError):
+            return function(*args, **kwargs)
+        if key not in cache:
+            cache[key] = function(*args, **kwargs)
+        # Callers may add local diagnostics or narrow projections. Neither can
+        # change the shared result seen by another consumer in this gate.
+        return copy.deepcopy(cache[key])
+    return read
+
+
+@contextmanager
+def gate_context_snapshot(root: Path):
+    """Discard reuse before checking every captured input again from its bytes."""
+    # A separately requested full gate never inherits an older digest snapshot.
+    outer_digest = _FILE_DIGEST_SNAPSHOT.set(None)
+    try:
+        baseline = audit_state_manifest(root)
+        token = _GATE_CONTEXT_CACHE.set({})
+        observed: dict[tuple[str, Path], str] = {}
+        try:
+            with gate_digest_snapshot():
+                try:
+                    yield
+                finally:
+                    observed = dict(_FILE_DIGEST_SNAPSHOT.get() or {})
+        finally:
+            _GATE_CONTEXT_CACHE.reset(token)
+            if audit_state_manifest(root) != baseline:
+                raise ValueError("Audit inputs changed during finalization checking; rerun the check on a stable audit")
+            # This also covers hashed sources and tool code outside the audit.
+            # The per-gate digest cache has already ended, so these are new reads.
+            for (kind, path), expected in observed.items():
+                actual = sha256_file(path) if kind == "bytes" else sha256_portable_text_file(path)
+                if actual != expected:
+                    raise ValueError(f"Input changed during finalization checking: {path}; rerun the check")
+    finally:
+        _FILE_DIGEST_SNAPSHOT.reset(outer_digest)
+
+
 def sha256_file(path: Path) -> str:
+    snapshot = _FILE_DIGEST_SNAPSHOT.get()
+    key = ("bytes", path.resolve())
+    if snapshot is not None and key in snapshot:
+        return snapshot[key]
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
-    return digest.hexdigest()
+    value = digest.hexdigest()
+    if snapshot is not None:
+        snapshot[key] = value
+    return value
 
 
 def sha256_portable_text_file(path: Path) -> str:
     """Hash text bytes after normalizing platform newline conventions."""
+    snapshot = _FILE_DIGEST_SNAPSHOT.get()
+    key = ("portable_text", path.resolve())
+    if snapshot is not None and key in snapshot:
+        return snapshot[key]
     payload = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
-    return hashlib.sha256(payload).hexdigest()
+    value = hashlib.sha256(payload).hexdigest()
+    if snapshot is not None:
+        snapshot[key] = value
+    return value
 
 
 def canonical_sha256(value: Any) -> str:
@@ -749,18 +1035,6 @@ def canonical_sha256(value: Any) -> str:
 
 
 SHA256_RE = re.compile(r"[0-9a-f]{64}$")
-JSON_NUMBER_RE = re.compile(
-    r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$"
-)
-
-
-class _ExactJSONFloat(float):
-    """A float-compatible JSON value that retains its source number token."""
-
-    def __new__(cls, json_token: str) -> "_ExactJSONFloat":
-        value = super().__new__(cls, json_token)
-        value.json_token = json_token
-        return value
 
 
 def canonical_primary_ledger_sha256(ledger: dict[str, Any]) -> str:
@@ -1025,14 +1299,18 @@ def audit_migration_locked(command: Any) -> Any:
 
 
 def transactional_write_texts(
-    writes: list[tuple[Path, str]],
+    writes: list[tuple[Path, str | bytes]],
     *,
     expected_sha256: dict[Path, str] | None = None,
+    deletes: list[Path] | None = None,
+    expected_absent: list[Path] | None = None,
 ) -> None:
-    """Replace a group of text files, restoring prior bytes on commit failure."""
+    """Publish a group of files, restoring prior bytes on commit failure."""
     entries: list[dict[str, Any]] = []
     identities: set[str] = set()
     expected_records: dict[str, tuple[Path, str]] = {}
+    absent_records = {os.path.normcase(os.path.abspath(p)): Path(p)
+                      for p in (expected_absent or [])}
     for raw_path, digest in (expected_sha256 or {}).items():
         path = Path(raw_path)
         identity = os.path.normcase(os.path.abspath(path))
@@ -1043,8 +1321,17 @@ def transactional_write_texts(
         if identity in expected_records:
             raise ValueError(f"Duplicate transactional baseline path: {path}")
         expected_records[identity] = (path, digest)
+    if set(absent_records) & set(expected_records):
+        raise ValueError("Transactional path cannot be both present and absent")
+    write_identities = {os.path.normcase(os.path.abspath(p)) for p, _ in writes}
+    if not set(absent_records) <= write_identities:
+        raise ValueError("Expected-absent paths must be new write destinations")
 
     def validate_expected_baselines(selected: set[str] | None = None) -> None:
+        for identity, path in absent_records.items():
+            if selected is None or identity in selected:
+                if path.exists() or path.is_symlink():
+                    raise FileExistsError(f"Transactional new destination already exists: {path}")
         for identity, (path, digest) in expected_records.items():
             if selected is not None and identity not in selected:
                 continue
@@ -1061,7 +1348,7 @@ def transactional_write_texts(
     commit_succeeded = False
     try:
         validate_expected_baselines()
-        for raw_path, text in writes:
+        for raw_path, text in [*writes, *((p, None) for p in (deletes or []))]:
             path = Path(raw_path)
             identity = os.path.normcase(os.path.abspath(path))
             if identity in identities:
@@ -1069,6 +1356,8 @@ def transactional_write_texts(
                     f"Transactional text destinations must be distinct: {path}"
                 )
             identities.add(identity)
+            if text is None and identity not in expected_records:
+                raise ValueError(f"Transactional deletion requires an expected digest: {path}")
             if path.is_symlink():
                 raise ValueError(
                     f"Refusing a symlinked transactional destination: {path}"
@@ -1078,16 +1367,21 @@ def transactional_write_texts(
                     f"Transactional text destination is not a file: {path}"
                 )
 
-            staged = _unique_sibling_temp_path(path)
+            staged = _unique_sibling_temp_path(path) if text is not None else None
             entry: dict[str, Any] = {
                 "path": path,
                 "staged": staged,
                 "backup": None,
                 "existed": path.exists(),
                 "identity": identity,
+                "delete": text is None,
             }
             entries.append(entry)
-            with staged.open("w", encoding="utf-8", newline="\n") as stream:
+            if staged is None:
+                continue
+            mode = "wb" if isinstance(text, bytes) else "w"
+            options = {} if isinstance(text, bytes) else {"encoding": "utf-8", "newline": "\n"}
+            with staged.open(mode, **options) as stream:
                 stream.write(text)
                 stream.flush()
                 os.fsync(stream.fileno())
@@ -1112,8 +1406,15 @@ def transactional_write_texts(
                 validate_expected_baselines(
                     guard_identities | {entry["identity"]}
                 )
-                committed.append(entry)
-                os.replace(entry["staged"], entry["path"])
+                if entry["identity"] in absent_records:
+                    publish_no_overwrite(entry["staged"], entry["path"], "Transactional new file")
+                    committed.append(entry)
+                else:
+                    committed.append(entry)
+                    if entry["delete"]:
+                        entry["path"].unlink()
+                    else:
+                        os.replace(entry["staged"], entry["path"])
             validate_expected_baselines(guard_identities)
             commit_succeeded = True
         except BaseException as exc:
@@ -1199,8 +1500,19 @@ class TextArtifactReadError(UnicodeError):
     """A text artifact could not be decoded or read exactly."""
 
 
+@gate_context_reader
 def read_text(path: Path) -> str:
     try:
+        if _GATE_CONTEXT_CACHE.get() is not None:
+            payload = path.read_bytes()
+            observed = hashlib.sha256(payload).hexdigest()
+            snapshot = _FILE_DIGEST_SNAPSHOT.get()
+            key = ("bytes", path.resolve())
+            if snapshot is not None:
+                if snapshot.setdefault(key, observed) != observed:
+                    raise ValueError(f"Input changed during finalization checking: {path}")
+            # Match read_text(encoding='utf-8-sig') and universal newline handling.
+            return payload.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
         return path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeError) as exc:
         raise TextArtifactReadError(
@@ -1224,9 +1536,11 @@ def is_unescaped_tex_percent(text: str, index: int) -> bool:
 
 
 def strip_latex_comment(line: str) -> str:
-    for index, char in enumerate(line):
-        if char == "%" and is_unescaped_tex_percent(line, index):
+    index = line.find("%")
+    while index != -1:
+        if is_unescaped_tex_percent(line, index):
             return line[:index]
+        index = line.find("%", index + 1)
     return line
 
 
@@ -1265,11 +1579,22 @@ def consume_tex_control_sequence(text: str, start: int) -> int | None:
     return cursor + 1
 
 
+_TEX_GROUP_TRIGGER_RES = {
+    ("{", "}"): re.compile(r"[%\\{}]"),
+    ("[", "]"): re.compile(r"[%\\\[\]]"),
+}
+
+
 def consume_balanced_tex_group(
     text: str, start: int, opening: str, closing: str
 ) -> int | None:
     if start >= len(text) or text[start] != opening:
         return None
+    trigger_re = _TEX_GROUP_TRIGGER_RES.get((opening, closing))
+    if trigger_re is None:
+        trigger_re = re.compile(
+            f"[%\\\\{re.escape(opening)}{re.escape(closing)}]"
+        )
     depth = 0
     cursor = start
     while cursor < len(text):
@@ -1295,7 +1620,10 @@ def consume_balanced_tex_group(
             depth -= 1
             if depth == 0:
                 return cursor + 1
-        cursor += 1
+        # State can only change at "%", a backslash, or a delimiter, so
+        # jump straight to the next such character.
+        trigger = trigger_re.search(text, cursor + 1)
+        cursor = trigger.start() if trigger is not None else len(text)
     return None
 
 
@@ -1490,6 +1818,65 @@ def tex_definition_end(text: str, match: re.Match[str]) -> int | None:
     return None
 
 
+_TEX_MASK_CACHE: dict[
+    tuple[str, str, bool, str], tuple[str, tuple[str, ...]]
+] = {}
+_TEX_MASK_CACHE_LIMIT = 512
+
+
+def _cached_tex_mask(
+    kind: str,
+    text: str,
+    preserve_theorem_declarations: bool,
+    source_name: str,
+    warnings: list[str] | None,
+    compute,
+) -> str:
+    """Memoize a deterministic text mask, replaying its recorded warnings.
+
+    The mask functions are pure given (text, flags, source_name): the masked
+    output and the warning texts are fully determined by the inputs, so a
+    bounded cache changes no observable behavior. Warnings are replayed with
+    the same not-already-present check an uncached run performs.
+    """
+    key = (kind, text, preserve_theorem_declarations, source_name)
+    cached = _TEX_MASK_CACHE.get(key)
+    if cached is None:
+        collected: list[str] = []
+        masked = compute(collected)
+        if len(_TEX_MASK_CACHE) >= _TEX_MASK_CACHE_LIMIT:
+            _TEX_MASK_CACHE.clear()
+        cached = (masked, tuple(collected))
+        _TEX_MASK_CACHE[key] = cached
+    masked, collected_warnings = cached
+    if warnings is not None:
+        for warning in collected_warnings:
+            if warning not in warnings:
+                warnings.append(warning)
+    return masked
+
+
+_TEXT_MEMO: dict[tuple[str, str], Any] = {}
+_TEXT_MEMO_LIMIT = 512
+
+
+def _memoize_text(kind: str, text: str, compute):
+    """Memoize a pure function of one text; mutable results are deep-copied.
+
+    Keys are the text itself, so equal content anywhere yields the same
+    result and there is no file state to invalidate.
+    """
+    key = (kind, text)
+    if key in _TEXT_MEMO:
+        value = _TEXT_MEMO[key]
+    else:
+        value = compute()
+        if len(_TEXT_MEMO) >= _TEXT_MEMO_LIMIT:
+            _TEXT_MEMO.clear()
+        _TEXT_MEMO[key] = value
+    return value if isinstance(value, str) else copy.deepcopy(value)
+
+
 def mask_nonexecuting_tex(
     text: str,
     *,
@@ -1498,6 +1885,28 @@ def mask_nonexecuting_tex(
     source_name: str = "<source>",
 ) -> str:
     """Mask comments, definitions, and verbatim material in one lexical pass."""
+    return _cached_tex_mask(
+        "nonexecuting",
+        text,
+        preserve_theorem_declarations,
+        source_name,
+        warnings,
+        lambda collected: _mask_nonexecuting_tex_impl(
+            text,
+            preserve_theorem_declarations=preserve_theorem_declarations,
+            warnings=collected,
+            source_name=source_name,
+        ),
+    )
+
+
+def _mask_nonexecuting_tex_impl(
+    text: str,
+    *,
+    preserve_theorem_declarations: bool = False,
+    warnings: list[str] | None = None,
+    source_name: str = "<source>",
+) -> str:
     characters = list(text)
     cursor = 0
     while cursor < len(text):
@@ -1563,7 +1972,11 @@ def mask_nonexecuting_tex(
             mask_tex_range(characters, verbatim.start(), end)
             cursor = max(end, verbatim.end())
             continue
-        cursor += 1
+        # Every handler above can only fire at an unescaped "%" or a
+        # backslash-led construct, so jumping to the next such character
+        # skips ordinary text without changing which spans get masked.
+        trigger = TEX_MASK_TRIGGER_RE.search(text, cursor + 1)
+        cursor = trigger.start() if trigger is not None else len(text)
     return "".join(characters)
 
 
@@ -1721,21 +2134,84 @@ def mask_structural_tex(
     source_name: str = "<source>",
 ) -> str:
     """Mask nonexecuting structural TeX without changing source positions."""
-    nonexecuting = mask_nonexecuting_tex(
+
+    def compute(collected: list[str]) -> str:
+        nonexecuting = mask_nonexecuting_tex(
+            text,
+            preserve_theorem_declarations=preserve_theorem_declarations,
+            warnings=collected,
+            source_name=source_name,
+        )
+        structural = mask_inactive_tex_branches(
+            nonexecuting,
+            warnings=collected,
+            source_name=source_name,
+        )
+        if not preserve_theorem_declarations:
+            warn_tex_source_selection(structural, source_name, collected)
+        return structural
+
+    return _cached_tex_mask(
+        "structural",
         text,
-        preserve_theorem_declarations=preserve_theorem_declarations,
-        warnings=warnings,
-        source_name=source_name,
+        preserve_theorem_declarations,
+        source_name,
+        warnings,
+        compute,
     )
-    return mask_inactive_tex_branches(
-        nonexecuting,
-        warnings=warnings,
-        source_name=source_name,
-    )
+
+
+def warn_tex_source_selection(
+    structural: str, source_name: str, warnings: list[str]
+) -> None:
+    """Flag literal build controls without choosing the reviewed audit scope."""
+    cursor = 0
+    while (cursor := structural.find("\\", cursor)) >= 0:
+        end = consume_tex_control_sequence(structural, cursor)
+        if end is None:
+            break
+        command = structural[cursor + 1:end]
+        start = skip_tex_whitespace(structural, end)
+        group_end = (consume_balanced_tex_group(structural, start, "{", "}")
+                     if command in {"end", "includeonly"} else None)
+        value = structural[start + 1:group_end - 1].strip() if group_end else None
+        warning = None
+        if command == "includeonly":
+            line, column = source_line_column(structural, cursor)
+            selection = "{" + value + "}" if value is not None else " (nonliteral selection)"
+            warning = (
+                f"TeX source selection requires manual review: {source_name}:{line}:{column}: "
+                f"\\includeonly{selection}. Candidate source discovery retains all includes; "
+                "confirm whether the audit covers the selected build or the full manuscript, "
+                "and record any excluded results with their source-selection evidence before proof review."
+            )
+        elif command == "end" and value == "document":
+            if structural[group_end:].strip():
+                line, column = source_line_column(structural, cursor)
+                warning = (
+                    f"TeX source selection requires manual review: {source_name}:{line}:{column}: "
+                    "content follows \\end{document} and may be inactive in the manuscript build. "
+                    "The parser retains this candidate content; inspect the following source, "
+                    "record explicit scope exclusions for abandoned material, or supply the intended manuscript source."
+                )
+            if warning is not None and warning not in warnings:
+                warnings.append(warning)
+            break
+        if warning is not None and warning not in warnings:
+            warnings.append(warning)
+        cursor = end
 
 
 def mask_tex_literals_for_definition_scan(text: str) -> str:
     """Mask comments and verbatim material without masking definitions."""
+    return _memoize_text(
+        "definition_scan_literals",
+        text,
+        lambda: _mask_tex_literals_for_definition_scan_uncached(text),
+    )
+
+
+def _mask_tex_literals_for_definition_scan_uncached(text: str) -> str:
     masked = mask_latex_comments(text)
     characters = list(masked)
     cursor = 0
@@ -1756,7 +2232,9 @@ def mask_tex_literals_for_definition_scan(text: str) -> str:
             mask_tex_range(characters, cursor, end)
             cursor = max(end, cursor + 1)
             continue
-        cursor += 1
+        # Both handlers above fire only at backslash-led commands.
+        backslash = masked.find("\\", cursor + 1)
+        cursor = backslash if backslash >= 0 else len(masked)
     return "".join(characters)
 
 
@@ -1800,6 +2278,27 @@ def tex_definition_body_spans(
 
 
 def warn_definition_body_inclusions(
+    text: str,
+    *,
+    source_name: str,
+    warnings: list[str],
+) -> None:
+    _cached_tex_mask(
+        "definition_body_inclusions",
+        text,
+        False,
+        source_name,
+        warnings,
+        lambda collected: (
+            _warn_definition_body_inclusions_uncached(
+                text, source_name=source_name, warnings=collected
+            )
+            or ""
+        ),
+    )
+
+
+def _warn_definition_body_inclusions_uncached(
     text: str,
     *,
     source_name: str,
@@ -2047,10 +2546,13 @@ def load_audit_manifest(
     )
     if not valid:
         return path, {}, errors
-    manifest, read_errors = load_json_object(
-        path, "audit manifest", preserve_verified_challenge_rate=True
-    )
+    manifest, read_errors = load_json_object(path, "audit manifest")
     errors.extend(read_errors)
+    if not read_errors and "context_protocol" in manifest:
+        try:
+            context_protocol_identity(root, manifest)
+        except (OSError, ValueError, UnicodeError) as exc:
+            errors.append(str(exc))
     return path, manifest, errors
 
 
@@ -2118,6 +2620,7 @@ def is_enum_value(value: Any, allowed: Iterable[str]) -> bool:
     return isinstance(value, str) and value in allowed
 
 
+@functools.lru_cache(maxsize=4096)
 def is_ignorable_marker_character(value: str) -> bool:
     codepoint = ord(value)
     return (
@@ -2136,9 +2639,13 @@ def normalized_marker(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
     text = unicodedata.normalize("NFKC", value)
-    text = "".join(
-        char for char in text if not is_ignorable_marker_character(char)
-    )
+    if not text.isascii():
+        # No ASCII character is ignorable (format-class and the listed
+        # codepoints all sit above U+007F), so pure-ASCII text skips the
+        # per-character filter unchanged.
+        text = "".join(
+            char for char in text if not is_ignorable_marker_character(char)
+        )
     text = text.strip().lower()
     previous: str | None = None
     while text != previous:
@@ -2420,8 +2927,8 @@ def extract_step_math_tokens(text: str, *, whole_math: bool) -> set[str]:
 
     Tokens are subscripted identifiers such as ``X_{n,j}`` or ``m_n`` and plain
     identifiers inside math segments. TeX control-sequence names are excluded.
-    A unit without any math segment yields no token and is exempt from
-    evidence anchoring.
+    ``whole_math`` also covers an interior fragment whose enclosing display is
+    known from the locked source. A unit with no math yields no token.
     """
     if whole_math:
         segments = [text]
@@ -2429,6 +2936,7 @@ def extract_step_math_tokens(text: str, *, whole_math: bool) -> set[str]:
         segments = [match.group(0) for match in MATH_SEGMENT_RE.finditer(text)]
     tokens: set[str] = set()
     for segment in segments:
+        segment = TOKEN_RE.sub(lambda match: " " * len(match.group(0)), segment)
         masked = re.sub(
             r"\\[A-Za-z]+", lambda match: " " * len(match.group(0)), segment
         )
@@ -2648,6 +3156,7 @@ def near_duplicate_evidence_warnings(
         candidates: list[tuple[str, Any]] = [
             ("atomicity_evidence", step.get("atomicity_evidence")),
             ("justification", step.get("justification")),
+            ("not_applicable_basis", step.get("not_applicable_basis")),
         ]
         adversarial = step.get("adversarial")
         if isinstance(adversarial, list):
@@ -2671,7 +3180,20 @@ def near_duplicate_evidence_warnings(
         left_key, left_field, left_template, _ = records[left_index]
         for right_index in range(left_index + 1, len(records)):
             right_key, right_field, right_template, _ = records[right_index]
-            if left_key == right_key or left_template == right_template:
+            if left_key == right_key:
+                continue
+            if left_template == right_template:
+                if (
+                    left_field == "not_applicable_basis"
+                    and right_field == "not_applicable_basis"
+                ):
+                    warnings.append(
+                        "near_duplicate_evidence: identical not_applicable_basis "
+                        f"is reused by {left_key} and {right_key}; make the basis "
+                        "specific to each step"
+                    )
+                    if len(warnings) >= limit:
+                        break
                 continue
             pair = (left_template, right_template)
             if pair in seen_pairs:
@@ -2696,83 +3218,14 @@ def near_duplicate_evidence_warnings(
     return warnings
 
 
-def load_json_object(
-    path: Path,
-    description: str,
-    *,
-    preserve_verified_challenge_rate: bool = False,
-) -> tuple[dict[str, Any], list[str]]:
+def load_json_object(path: Path, description: str) -> tuple[dict[str, Any], list[str]]:
     try:
-        text = read_text(path)
-        data = json.loads(text)
+        data = json.loads(read_text(path))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         return {}, [f"Cannot read {description} {path}: {exc}"]
     if not isinstance(data, dict):
         return {}, [f"{description} must be a JSON object: {path}"]
-    scope = data.get("audit_scope")
-    if (
-        preserve_verified_challenge_rate
-        and isinstance(scope, dict)
-        and "verified_challenge_sample_rate" in scope
-    ):
-        exact_data = json.loads(text, parse_float=_ExactJSONFloat)
-        exact_scope = exact_data.get("audit_scope")
-        if isinstance(exact_scope, dict):
-            exact_rate = exact_scope.get("verified_challenge_sample_rate")
-            if isinstance(exact_rate, _ExactJSONFloat):
-                scope["verified_challenge_sample_rate"] = exact_rate
     return data, []
-
-
-def verified_challenge_sample_fraction(value: Any) -> Fraction | None:
-    """Return an exact valid challenge-sampling rate, or None if invalid."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    try:
-        if isinstance(value, _ExactJSONFloat):
-            fraction = Fraction(value.json_token)
-        elif isinstance(value, int):
-            fraction = Fraction(value)
-        else:
-            if not math.isfinite(value):
-                return None
-            fraction = Fraction(repr(float(value)))
-    except (OverflowError, ValueError, ZeroDivisionError):
-        return None
-    return fraction if 0 < fraction <= 1 else None
-
-
-def render_audit_manifest_json(manifest: dict[str, Any]) -> str:
-    """Serialize a manifest without normalizing its exact sampling-rate token."""
-    scope = manifest.get("audit_scope")
-    rate = (
-        scope.get("verified_challenge_sample_rate")
-        if isinstance(scope, dict)
-        else None
-    )
-    if not isinstance(rate, _ExactJSONFloat):
-        return json.dumps(manifest, ensure_ascii=False, indent=2)
-    token = rate.json_token
-    if not isinstance(token, str) or not JSON_NUMBER_RE.fullmatch(token):
-        raise ValueError(
-            "Cannot serialize an invalid challenge sampling-rate token"
-        )
-
-    baseline = json.dumps(manifest, ensure_ascii=False, indent=2)
-    marker = f"__proofcheck_exact_json_number_{sha256_text(token)}__"
-    encoded_marker = json.dumps(marker, ensure_ascii=False)
-    while encoded_marker in baseline:
-        marker += "_"
-        encoded_marker = json.dumps(marker, ensure_ascii=False)
-
-    serialized_manifest = dict(manifest)
-    serialized_scope = dict(scope)
-    serialized_scope["verified_challenge_sample_rate"] = marker
-    serialized_manifest["audit_scope"] = serialized_scope
-    rendered = json.dumps(serialized_manifest, ensure_ascii=False, indent=2)
-    if rendered.count(encoded_marker) != 1:
-        raise ValueError("Cannot locate the challenge sampling-rate placeholder")
-    return rendered.replace(encoded_marker, token, 1)
 
 
 def locked_span(
@@ -2939,6 +3392,12 @@ def split_reference_keys(raw: str) -> list[str]:
 
 def mask_latex_comments(text: str) -> str:
     """Mask comments while preserving offsets and line endings."""
+    return _memoize_text(
+        "latex_comments", text, lambda: _mask_latex_comments_uncached(text)
+    )
+
+
+def _mask_latex_comments_uncached(text: str) -> str:
     characters = list(text)
     offset = 0
     for line in text.splitlines(keepends=True):
@@ -2967,6 +3426,12 @@ SECTION_LEVELS = {
 
 def scan_section_headings(text: str) -> list[dict[str, Any]]:
     """Parse static LaTeX section titles with balanced nested braces."""
+    return _memoize_text(
+        "section_headings", text, lambda: _scan_section_headings_uncached(text)
+    )
+
+
+def _scan_section_headings_uncached(text: str) -> list[dict[str, Any]]:
     masked = mask_structural_tex(text)
     headings: list[dict[str, Any]] = []
     for match in SECTION_COMMAND_START_RE.finditer(masked):
@@ -3163,7 +3628,8 @@ def proof_optional_title_span(
 ) -> dict[str, Any] | None:
     text = "\n".join(block)
     masked = mask_structural_tex(text)
-    begin = re.search(r"\\begin\s*\{proof\}", masked)
+    # The caller supplies an already recognized complete proof environment.
+    begin = re.search(r"\\begin\s*\{[^}]+\}", masked)
     if begin is None:
         return None
     cursor = skip_tex_whitespace(masked, begin.end())
@@ -3212,10 +3678,33 @@ def scan_span_evidence(
     base: Path,
     *,
     structural_context: str = "proof_body",
+    expand_inclusions: bool = True,
 ) -> dict[str, Any]:
     lines = read_lines(path)
     if not (1 <= start_line <= end_line <= len(lines)):
         raise ValueError(f"Invalid source span {path}:{start_line}-{end_line}")
+    if expand_inclusions:
+        try:
+            expanded = source_fragment_support().expand(
+                report_api(), path, start_line, end_line, base
+            )
+        except (OSError, ValueError) as exc:
+            return {"reference_occurrences": [], "dependencies": [], "citations": [], "warnings": [str(exc)]}
+        if expanded["has_inclusion"]:
+            results = [scan_span_evidence(
+                resolve_stored_path(fragment["file"], base), fragment["start_line"],
+                fragment["end_line"], base, structural_context=structural_context,
+                expand_inclusions=False,
+            ) for fragment in expanded["fragments"]]
+            for fragment, result in zip(expanded["fragments"], results):
+                for occurrence in result["reference_occurrences"]:
+                    occurrence["source_position"] = fragment["sequence_start"] + occurrence["line"] - fragment["start_line"]
+            return {
+                "reference_occurrences": [row for result in results for row in result["reference_occurrences"]],
+                "dependencies": sorted({row for result in results for row in result["dependencies"]}),
+                "citations": sorted({row for result in results for row in result["citations"]}),
+                "warnings": sorted({row for result in results for row in result["warnings"]}),
+            }
     selected = lines[start_line - 1 : end_line]
     text = "\n".join(selected)
     occurrences, warnings = scan_reference_occurrences(
@@ -3267,6 +3756,36 @@ def scan_unit_statement_evidence(
     )
 
 
+def reviewed_unit_reference_occurrences(
+    unit: dict[str, Any],
+    base: Path,
+    label_owners: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return one owner-decorated occurrence list for statement and proof."""
+    statement_rows = scan_unit_statement_evidence(unit, base).get(
+        "reference_occurrences", []
+    )
+    proof_rows = unit.get("reference_occurrences", [])
+    by_id: dict[str, dict[str, Any]] = {}
+    for row in [*statement_rows, *proof_rows]:
+        if not isinstance(row, dict) or not is_nonempty_string(
+            row.get("occurrence_id")
+        ):
+            continue
+        occurrence = dict(row)
+        owner = label_owners.get(str(occurrence.get("target")))
+        if isinstance(owner, dict):
+            occurrence["resolution_status"] = owner.get("status")
+            occurrence["owner_unit_id"] = owner.get("owner_unit_id")
+            occurrence["owner_region"] = owner.get("owner_region")
+        else:
+            occurrence["resolution_status"] = "missing"
+            occurrence.pop("owner_unit_id", None)
+            occurrence.pop("owner_region", None)
+        by_id[str(occurrence["occurrence_id"])] = occurrence
+    return list(by_id.values())
+
+
 def display_math_spans(lines: list[str]) -> list[dict[str, Any]]:
     text = "\n".join(lines)
     masked = mask_structural_tex(text)
@@ -3303,7 +3822,83 @@ def display_math_spans(lines: list[str]) -> list[dict[str, Any]]:
                 "length": token.end() - opened["offset"],
             }
         )
+    # Keep ordinary display delimiters local to this helper: the shared
+    # environment scanner also discovers theorem and proof structure.
+    opened_delimiter: dict[str, Any] | None = None
+    inline_dollar = False
+    consumed_end = 0
+    for token in re.finditer(r"(?=(\\[\[\]]|\$\$?))", masked):
+        if token.start() < consumed_end:
+            continue
+        backslashes = 0
+        cursor = token.start() - 1
+        while cursor >= 0 and masked[cursor] == "\\":
+            backslashes += 1
+            cursor -= 1
+        if backslashes % 2:
+            continue
+        delimiter = token.group(1)
+        token_end = token.start() + len(delimiter)
+        if inline_dollar and delimiter.startswith("$"):
+            # The closing inline dollar cannot also open a display. Leave any
+            # adjacent dollar for the next token, as in $x$$y$ or $x$$$y$$.
+            inline_dollar = False
+            consumed_end = token.start() + 1
+            continue
+        consumed_end = token_end
+        if delimiter == "$":
+            inline_dollar = True
+            continue
+        if inline_dollar:
+            continue
+        if opened_delimiter is None:
+            if delimiter != r"\]":
+                opened_delimiter = {
+                    "delimiter": delimiter, "offset": token.start(), "valid": True
+                }
+            continue
+        closing = r"\]" if opened_delimiter["delimiter"] == r"\[" else "$$"
+        if delimiter != closing:
+            # Nested or mixed delimiters are malformed. Do not manufacture a
+            # complete span from a partial match within that display.
+            opened_delimiter["valid"] = False
+            continue
+        if opened_delimiter["valid"]:
+            start_line, start_column = source_line_column(text, opened_delimiter["offset"])
+            end_line, end_column = source_line_column(text, token_end - 1)
+            spans.append({
+                "environment": opened_delimiter["delimiter"],
+                "start_line": start_line,
+                "start_column": start_column,
+                "end_line": end_line,
+                "end_column": end_column,
+                "length": token_end - opened_delimiter["offset"],
+            })
+        opened_delimiter = None
     return spans
+
+
+def display_math_contains_lines(
+    spans: list[dict[str, Any]], masked_lines: list[str], start: int, end: int
+) -> bool:
+    """Whether all active content in a physical line range lies in one display."""
+    content_lines = [
+        (number, masked_lines[number - 1])
+        for number in range(start, end + 1)
+        if 1 <= number <= len(masked_lines) and masked_lines[number - 1].strip()
+    ]
+    if not content_lines:
+        return False
+    first, first_text = content_lines[0]
+    last, last_text = content_lines[-1]
+    first_position = (first, len(first_text) - len(first_text.lstrip()) + 1)
+    last_position = (last, len(last_text.rstrip()))
+    return any(
+        span["start_line"] <= start <= end <= span["end_line"]
+        and (span["start_line"], span["start_column"]) <= first_position
+        and last_position <= (span["end_line"], span["end_column"])
+        for span in spans
+    )
 
 
 def proof_heading_gaps(
@@ -3684,6 +4279,7 @@ def analyze_proof_region(
     *,
     target_unit_id: str | None = None,
     max_heading_distance: int = 4,
+    source_files: Iterable[Path] | None = None,
 ) -> dict[str, Any]:
     """Return one canonical proof region or a structured rejection reason."""
     lines = read_lines(path)
@@ -3698,7 +4294,7 @@ def analyze_proof_region(
 
     exact_environments = sorted(
         (start, end)
-        for start, end in proof_environment_spans(path)
+        for start, end in proof_environment_spans(path, source_files=source_files)
         if start == anchor_line
     )
     if len(exact_environments) == 1:
@@ -3854,12 +4450,14 @@ def bounded_proof_region(
     *,
     target_unit_id: str | None = None,
     max_heading_distance: int = 4,
+    source_files: Iterable[Path] | None = None,
 ) -> dict[str, Any] | None:
     region = analyze_proof_region(
         path,
         anchor_line,
         target_unit_id=target_unit_id,
         max_heading_distance=max_heading_distance,
+        source_files=source_files,
     )
     return region if region.get("status") == "accepted" else None
 
@@ -3883,20 +4481,101 @@ def source_span_sha256(path: Path, start_line: int, end_line: int) -> str:
     return sha256_text("\n".join(lines[start_line - 1 : end_line]))
 
 
-def proof_environment_spans(path: Path) -> set[tuple[int, int]]:
+def proof_alias_names(source_files: Iterable[Path]) -> set[str]:
+    """Recognize literal wrappers whose bodies only open and close proof."""
+    names = {"proof"}
+    for path in source_files:
+        try:
+            text = mask_tex_literals_for_definition_scan("\n".join(read_lines(path)))
+        except TextArtifactReadError:
+            # The snapshot and parser-warning review retain unreadable context;
+            # it cannot supply an automatically recognized proof alias.
+            continue
+        declarations = []
+        conditional_skeleton = list(text)
+        cursor = 0
+        for declaration in TEX_DEFINITION_COMMAND_RE.finditer(text):
+            if declaration.start() < cursor:
+                continue
+            end = tex_definition_end(text, declaration)
+            cursor = end if end is not None else len(text)
+            declarations.append(declaration)
+            # Keep a marker at the declaration, masking its body so a literal
+            # conditional inside a macro does not change its enclosing branch.
+            mask_tex_range(conditional_skeleton, declaration.start() + 1, cursor)
+        active_declarations = mask_inactive_tex_branches("".join(conditional_skeleton))
+        for declaration in declarations:
+            if active_declarations[declaration.start()] != "\\":
+                continue
+            if declaration.group("command") not in TEX_NEW_ENVIRONMENT_DEFINITIONS:
+                continue
+            bodies = tex_definition_body_spans(text, declaration)
+            target = re.match(r"\s*\{([^}]+)\}", text[declaration.end():])
+            if target is None or len(bodies) != 2:
+                continue
+            if target.group(1) != "proof":
+                names.discard(target.group(1))
+            begin, close = (text[start:stop].strip() for start, stop in bodies)
+            if re.fullmatch(r"\\begin\s*\{proof\}(?:\s*\[[^]]*\])?", begin) and re.fullmatch(r"\\end\s*\{proof\}", close):
+                names.add(target.group(1))
+    return names
+
+
+def theorem_environment_catalog(source_lines: dict[Path, list[str]], base: Path) -> dict[str, dict[str, Any]]:
+    """Preserve a literal declaration's role without interpreting arbitrary TeX."""
+    catalog = {name: {"kind": name} for name in FORMAL_ENVIRONMENTS}
+    for path, lines in source_lines.items():
+        text = mask_structural_tex("\n".join(lines), preserve_theorem_declarations=True)
+        for declaration in TEX_DEFINITION_COMMAND_RE.finditer(text):
+            command = declaration.group("command")
+            if command not in TEX_THEOREM_DEFINITIONS | TEX_OPTION_FIRST_THEOREM_DEFINITIONS:
+                continue
+            cursor = skip_tex_whitespace(text, declaration.end())
+            options_start = cursor
+            if command in TEX_OPTION_FIRST_THEOREM_DEFINITIONS:
+                cursor = consume_tex_optional_arguments(text, cursor)
+            if cursor is None:
+                continue
+            target_end = consume_balanced_tex_group(text, cursor, "{", "}")
+            if target_end is None:
+                continue
+            environment = text[cursor + 1:target_end - 1].strip()
+            if command in TEX_OPTION_FIRST_THEOREM_DEFINITIONS:
+                title_match = re.search(r"(?:^|[\[,])\s*name\s*=\s*(?:\{([^}]+)\}|([^,\]]+))", text[options_start:cursor])
+                title = (title_match.group(1) or title_match.group(2)).strip() if title_match else environment
+                end = target_end
+            else:
+                title_start = consume_tex_optional_arguments(text, target_end)
+                end = consume_balanced_tex_group(text, title_start, "{", "}") if title_start is not None else None
+                if end is None:
+                    continue
+                title = text[title_start + 1:end - 1].strip()
+            role = title.casefold().rstrip("s")
+            kind = role if role in FORMAL_ENVIRONMENTS else None
+            start_line, _ = source_line_column(text, declaration.start())
+            end_line, _ = source_line_column(text, end - 1)
+            catalog[environment] = {"kind": kind, "title": title, "declaration": {
+                "file": relative_or_absolute(path, base), "start_line": start_line,
+                "end_line": end_line, "sha256": source_span_sha256(path, start_line, end_line),
+            }}
+    return catalog
+
+
+def proof_environment_spans(path: Path, *, source_files: Iterable[Path] | None = None) -> set[tuple[int, int]]:
     spans: set[tuple[int, int]] = set()
-    stack: list[int] = []
+    stack: list[tuple[str, int]] = []
+    environments = proof_alias_names(source_files if source_files is not None else [path])
     text = "\n".join(read_lines(path))
     masked = mask_structural_tex(text)
     for token in TOKEN_RE.finditer(masked):
         action, environment = token.group(1), token.group(2)
-        if environment != "proof":
+        if environment not in environments:
             continue
         line_number, _ = source_line_column(text, token.start())
         if action == "begin":
-            stack.append(line_number)
-        elif stack:
-            spans.add((stack.pop(), line_number))
+            stack.append((environment, line_number))
+        elif stack and stack[-1][0] == environment:
+            spans.add((stack.pop()[1], line_number))
     return spans
 
 
@@ -3906,9 +4585,10 @@ def proof_span_has_safe_boundary(
     end_line: int,
     *,
     target_unit_id: str | None = None,
+    source_files: Iterable[Path] | None = None,
 ) -> bool:
     region = bounded_proof_region(
-        path, start_line, target_unit_id=target_unit_id
+        path, start_line, target_unit_id=target_unit_id, source_files=source_files
     )
     return bool(
         isinstance(region, dict)
@@ -3936,7 +4616,7 @@ def span_contains_location(
             resolve_stored_path(span["file"], base)
             == resolve_stored_path(file_value, base)
         )
-    return bool(
+    contained = bool(
         isinstance(span, dict)
         and same_file
         and is_int(span.get("start_line"))
@@ -3944,6 +4624,19 @@ def span_contains_location(
         and is_int(line_value)
         and span["start_line"] <= line_value <= span["end_line"]
     )
+    if not contained and base is not None and isinstance(span, dict) and is_int(line_value):
+        try:
+            path = resolve_stored_path(span["file"], base)
+            first, last = span["start_line"], span["end_line"]
+            selected = "\n".join(read_lines(path)[first - 1:last])
+            if INCLUSION_COMMAND_RE.search(selected):
+                expanded = source_fragment_support().expand(report_api(), path, first, last, base)
+                return any(fragment["file"] == relative_or_absolute(resolve_stored_path(file_value, base), base)
+                           and fragment["start_line"] <= line_value <= fragment["end_line"]
+                           for fragment in expanded["fragments"])
+        except (KeyError, OSError, TypeError, ValueError):
+            return False
+    return contained
 
 
 def reviewed_label_owners(
@@ -4005,6 +4698,7 @@ def reviewed_span_evidence(
     support_index: dict[str, dict[str, Any]] | None = None,
     *,
     statement_as_primary: bool = False,
+    source_files: Iterable[Path] | None = None,
 ) -> dict[str, Any]:
     statement_evidence = scan_unit_statement_evidence(unit, base)
     proof = unit.get("proof")
@@ -4036,7 +4730,8 @@ def reviewed_span_evidence(
             raise ValueError(f"Invalid reviewed proof range for {unit_id}")
         evidence = scan_span_evidence(path, start_line, end_line, base)
         lines = read_lines(path)[start_line - 1 : end_line]
-        if (start_line, end_line) in proof_environment_spans(path):
+        proof_sources = list(source_files) if source_files is not None else collect_tex_files(path)[0]
+        if (start_line, end_line) in proof_environment_spans(path, source_files=proof_sources):
             title_span = proof_optional_title_span(lines, start_line)
         else:
             analyzed = analyze_proof_region(
@@ -4099,6 +4794,11 @@ def last_substantive_line(path: Path, start_line: int, end_line: int) -> int:
         if clean and not re.fullmatch(r"\\end\s*\{proof\}", clean):
             return line_number
     return start_line
+
+
+def expanded_last_substantive_position(expanded: dict[str, Any]) -> int:
+    substantive = [row["line"] for row in expanded["lines"] if not locked_line_is_non_substantive(row)]
+    return substantive[-1] if substantive else expanded["lines"][0]["line"]
 
 
 def discover_source_closure(
@@ -4467,6 +5167,21 @@ def readable_source_lines(
     return result
 
 
+def inventory_identity_errors(units: list[dict[str, Any]]) -> list[str]:
+    """Give source locations for identities that cannot support an audit."""
+    by_id: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for unit in units:
+        by_id[unit["id"]].append(unit)
+    return [
+        f"Duplicate proof-unit identity {unit_id!r}: "
+        + ", ".join(f"{unit['statement']['file']}:{unit['statement']['start_line']}"
+                    for unit in matches)
+        + ". Give these results distinct manuscript labels before creating an audit."
+        for unit_id, matches in by_id.items() if len(matches) > 1
+    ]
+
+
+@gate_context_reader
 def scan_formal_units(
     root: Path,
     *,
@@ -4488,16 +5203,13 @@ def scan_formal_units(
     def shown(path: Path) -> str:
         return source_path_identity(path, path_identity_base)
 
-    environments = set(FORMAL_ENVIRONMENTS)
     source_lines = readable_source_lines(files, warnings, path_identity_base)
+    environment_catalog = theorem_environment_catalog(source_lines, base)
+    environments = set(environment_catalog)
+    proof_environments = proof_alias_names(source_lines)
     masked_source_lines: dict[Path, list[str]] = {}
     for path, lines in source_lines.items():
         text = "\n".join(lines)
-        declaration_text = mask_structural_tex(
-            text, preserve_theorem_declarations=True
-        )
-        environments.update(NEW_THEOREM_RE.findall(declaration_text))
-        environments.update(DECLARE_THEOREM_RE.findall(declaration_text))
         masked_text = mask_structural_tex(
             text,
             warnings=warnings,
@@ -4515,16 +5227,37 @@ def scan_formal_units(
 
     for path, lines in source_lines.items():
         formal_stack: list[dict[str, Any]] = []
-        proof_stack: list[int] = []
+        proof_stack: list[tuple[str, int]] = []
         masked_lines = masked_source_lines[path]
+        masked_text = "\n".join(masked_lines)
+        line_offsets = [0]
+        for line in masked_lines:
+            line_offsets.append(line_offsets[-1] + len(line) + 1)
 
         for line_number, clean in enumerate(masked_lines, 1):
             for token in TOKEN_RE.finditer(clean):
                 action, environment = token.group(1), token.group(2)
-                if environment in environments:
+                if environment in environments or environment in {"restatable", "restatable*"}:
                     if action == "begin":
+                        cursor = skip_tex_whitespace(masked_text, line_offsets[line_number - 1] + token.end())
+                        title_end = consume_balanced_tex_group(masked_text, cursor, "[", "]")
+                        title = masked_text[cursor + 1:title_end - 1] if title_end is not None else None
+                        cursor = skip_tex_whitespace(masked_text, title_end) if title_end is not None else cursor
+                        formal_environment = environment
+                        restatement_command = None
+                        if environment in {"restatable", "restatable*"}:
+                            type_end = consume_balanced_tex_group(masked_text, cursor, "{", "}")
+                            if type_end is not None:
+                                formal_environment = masked_text[cursor + 1:type_end - 1].strip()
+                                cursor = skip_tex_whitespace(masked_text, type_end)
+                            command_end = consume_balanced_tex_group(masked_text, cursor, "{", "}")
+                            restatement_command = masked_text[cursor + 1:command_end - 1].strip() if command_end is not None else None
+                            if formal_environment not in environments or not isinstance(restatement_command, str) or not re.fullmatch(r"[A-Za-z@]+", restatement_command):
+                                warnings.append(f"Unsupported restatable declaration at {shown(path)}:{line_number}; use a literal declared theorem type and command, or reconcile the omitted result with a source-bound manual_unit override")
+                                continue
                         formal_stack.append(
-                            {"environment": environment, "start": line_number}
+                            {"environment": environment, "formal_environment": formal_environment,
+                             "start": line_number, "title": title, "restatement_command": restatement_command}
                         )
                     else:
                         match_index = next(
@@ -4552,13 +5285,19 @@ def scan_formal_units(
                             for key in LABEL_RE.findall(block_line)
                         ]
                         label = labels[0] if labels else None
+                        formal_environment = opened["formal_environment"]
+                        declaration = environment_catalog[formal_environment]
+                        semantic_kind = declaration.get("kind")
                         units.append(
                             {
                                 "id": label
-                                or f"{environment}:{path.name}:{opened['start']}",
-                                "environment": environment,
-                                "proof_required": environment
-                                not in NON_PROOF_ENVIRONMENTS,
+                                or f"{formal_environment}:{path.name}:{opened['start']}",
+                                "environment": formal_environment,
+                                "semantic_kind": semantic_kind,
+                                "statement_title": opened["title"],
+                                **({"environment_declaration": declaration["declaration"]} if "declaration" in declaration else {}),
+                                **({"restatable": {"command": opened["restatement_command"], "wrapper": opened["environment"]}, "restatements": []} if opened["restatement_command"] else {}),
+                                "proof_required": semantic_kind not in NON_PROOF_ENVIRONMENTS,
                                 "label": label,
                                 "statement": {
                                     "file": relative_or_absolute(path, base),
@@ -4581,11 +5320,11 @@ def scan_formal_units(
                             }
                         )
 
-                if environment == "proof":
+                if environment in proof_environments:
                     if action == "begin":
-                        proof_stack.append(line_number)
-                    elif proof_stack:
-                        proof_start = proof_stack.pop()
+                        proof_stack.append((environment, line_number))
+                    elif proof_stack and proof_stack[-1][0] == environment:
+                        proof_start = proof_stack.pop()[1]
                         block = lines[proof_start - 1 : line_number]
                         title_span = proof_optional_title_span(
                             block, proof_start
@@ -4639,7 +5378,7 @@ def scan_formal_units(
                         )
                     else:
                         warnings.append(
-                            f"Unmatched \\end{{proof}}: {shown(path)}:{line_number}"
+                            f"Unmatched \\end{{{environment}}}: {shown(path)}:{line_number}"
                         )
 
         for opened in formal_stack:
@@ -4648,9 +5387,9 @@ def scan_formal_units(
                 f"\\begin{{{opened['environment']}}}: "
                 f"{shown(path)}:{opened['start']}"
             )
-        for proof_start in proof_stack:
+        for environment, proof_start in proof_stack:
             warnings.append(
-                f"Unclosed \\begin{{proof}}: {shown(path)}:{proof_start}"
+                f"Unclosed \\begin{{{environment}}}: {shown(path)}:{proof_start}; restore the complete proof boundary before assigning its source range"
             )
 
     units.sort(
@@ -4660,7 +5399,27 @@ def scan_formal_units(
         )
     )
 
+    # Preserve existing generated identities unless there is an actual collision.
+    # Relative source paths remain identical when a portable audit is relocated.
+    identity_counts = Counter(unit["id"] for unit in units)
+    for unit in units:
+        if unit["label"] is None and identity_counts[unit["id"]] > 1:
+            statement = unit["statement"]
+            unit["id"] = f"{unit['environment']}:{statement['file']}:{statement['start_line']}"
+    warnings.extend(inventory_identity_errors(units))
     units_by_id = {unit["id"]: unit for unit in units}
+    restatement_owners: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for unit in units:
+        if isinstance(unit.get("restatable"), dict):
+            restatement_owners[unit["restatable"]["command"]].append(unit)
+    for command, owners in restatement_owners.items():
+        if len(owners) != 1:
+            warnings.append(f"Restatement command \\{command} names multiple original results; reconcile the source inventory")
+            continue
+        for path, masked_lines in masked_source_lines.items():
+            for line_number, clean in enumerate(masked_lines, 1):
+                if re.fullmatch(rf"\s*\\{re.escape(command)}\*?\s*", clean):
+                    owners[0]["restatements"].append({"file": relative_or_absolute(path, base), "start_line": line_number, "end_line": line_number, "sha256": source_span_sha256(path, line_number, line_number)})
 
     def proof_location(proof: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -4731,6 +5490,8 @@ def scan_formal_units(
         for heading in headings:
             if not re.search(r"\bproofs?\b", heading["title"], re.IGNORECASE):
                 continue
+            if re.fullmatch(r"\s*Proofs\s*", heading["title"], re.IGNORECASE):
+                continue
             targets = [
                 target
                 for target in heading["target_labels"]
@@ -4795,6 +5556,7 @@ def scan_formal_units(
                 path,
                 heading["start_line"],
                 target_unit_id=target,
+                source_files=source_lines,
             )
             if region.get("status") != "accepted":
                 warnings.append(
@@ -4876,6 +5638,18 @@ def scan_formal_units(
             method=proof.get("association_method", "named_environment"),
             evidence_occurrence_ids=evidence_ids,
         )
+
+    # A generated restatement is an alias of the original result, not a new
+    # obligation. Its immediately following proof can supply the original.
+    for proof in ordered_proofs:
+        if proof.get("assigned") or proof.get("title") is not None:
+            continue
+        proof_file = relative_or_absolute(proof["file_path"], base)
+        candidates = [unit for unit in units for restatement in unit.get("restatements", [])
+                      if restatement["file"] == proof_file and restatement["end_line"] < proof["start_line"]
+                      and not any(line.strip() for line in masked_source_lines[proof["file_path"]][restatement["end_line"]:proof["start_line"] - 1])]
+        if len(candidates) == 1 and candidates[0].get("proof") is None:
+            attach_proof(candidates[0], proof, method="restatement_adjacency")
 
     # Recognize only strict navigation-only forwarding proofs.
     for proof in ordered_proofs:
@@ -5020,13 +5794,7 @@ def scan_formal_units(
         for unit in units:
             for region_name in ("statement", "proof"):
                 span = unit.get(region_name)
-                if (
-                    isinstance(span, dict)
-                    and span.get("file") == row["file"]
-                    and is_int(span.get("start_line"))
-                    and is_int(span.get("end_line"))
-                    and span["start_line"] <= row["line"] <= span["end_line"]
-                ):
+                if span_contains_location(span, row["file"], row["line"], base):
                     owners.append((unit["id"], region_name))
         unique_owners = sorted(set(owners))
         if len(unique_owners) == 1:
@@ -5622,7 +6390,7 @@ def load_workflow_records(root: Path) -> dict[str, Any]:
     return records
 
 
-def workflow_critical_sets(
+def workflow_priority_sets(
     records: dict[str, Any]
 ) -> tuple[set[str], set[str], set[str]]:
     manifest = records["manifest"]
@@ -5633,11 +6401,11 @@ def workflow_critical_sets(
         for value in scope.get("critical_units", [])
         if is_nonempty_string(value)
     }
-    effective, _ = effective_critical_requirements(
+    _, severe_by_unit = required_challenge_requirements(
         manifest, records.get("issues", [])
     )
-    effective_set = set(effective)
-    return declared, effective_set - declared, effective_set
+    issue_promoted = set(severe_by_unit)
+    return declared, issue_promoted - declared, declared | issue_promoted
 
 
 def workflow_dependency_mapping_readiness(
@@ -5712,16 +6480,42 @@ def workflow_dependency_mapping_readiness(
     return not errors, errors
 
 
+@gate_context_reader
 def packet_dependency_structure_errors(
     registry: dict[str, Any], root: Path
 ) -> list[str]:
     errors: list[str] = []
+    final_primary_by_unit: dict[str, bool] = {}
+
+    def allow_preliminary_step_ids(row: Any) -> bool:
+        if not isinstance(row, dict) or not is_nonempty_string(
+            row.get("dependent_unit")
+        ):
+            return False
+        unit_id = str(row["dependent_unit"])
+        if unit_id not in final_primary_by_unit:
+            ledger_path, _ = packet_ledger(root, unit_id)
+            if ledger_path is None:
+                final_primary_by_unit[unit_id] = False
+            else:
+                ledger_errors, _ = check_ledger_data(
+                    ledger_path, True, primary_only=True
+                )
+                final_primary_by_unit[unit_id] = not ledger_errors
+        return not final_primary_by_unit[unit_id]
+
     internal_rows = registry.get("internal_uses")
     if not isinstance(internal_rows, list):
         return ["Dependency registry internal_uses must be a list"]
     for index, row in enumerate(internal_rows, 1):
         prefix = f"internal_uses[{index}]"
-        validated = validate_dependency_use_identity(row, prefix, None, errors)
+        validated = validate_dependency_use_identity(
+            row,
+            prefix,
+            None,
+            errors,
+            allow_preliminary_step_ids=allow_preliminary_step_ids(row),
+        )
         validate_compatibility_matrix(
             validated.get("compatibility_checks"),
             f"{prefix}.compatibility_checks",
@@ -5745,7 +6539,13 @@ def packet_dependency_structure_errors(
             continue
         for index, row in enumerate(uses, 1):
             prefix = f"{result_id}.uses[{index}]"
-            validated = validate_dependency_use_identity(row, prefix, None, errors)
+            validated = validate_dependency_use_identity(
+                row,
+                prefix,
+                None,
+                errors,
+                allow_preliminary_step_ids=allow_preliminary_step_ids(row),
+            )
             if validated.get("dependency_id") != result_id:
                 errors.append(f"{prefix}.dependency_id must equal {result_id}")
             if validated.get("dependency_conclusion") != result.get("exact_statement"):
@@ -5802,7 +6602,9 @@ def render_check_plan(records: dict[str, Any]) -> str:
         if is_nonempty_string(dependent) and is_nonempty_string(prerequisite):
             direct_dependencies[str(dependent)].add(str(prerequisite))
             use_sites[str(prerequisite)].add(str(dependent))
-    declared_critical, promoted_critical, critical = workflow_critical_sets(records)
+    declared_priority, promoted_priority, priority_units = workflow_priority_sets(
+        records
+    )
     exclusions = [
         row.get("id")
         for row in scope.get("excluded_units", [])
@@ -5823,16 +6625,16 @@ def render_check_plan(records: dict[str, Any]) -> str:
         f"- Audit depth: {scope.get('depth', 'not_set')}",
         f"- Target results: {workflow_id_list(scope.get('target_units'))}",
         f"- In-scope units: {workflow_id_list(scope.get('in_scope_units'))}",
-        f"- Declared critical units: {workflow_id_list(sorted(declared_critical))}",
-        f"- Issue-promoted critical units: {workflow_id_list(sorted(promoted_critical))}",
-        f"- Effective critical units: {workflow_id_list(sorted(critical))}",
+        f"- Declared priority units: {workflow_id_list(sorted(declared_priority))}",
+        f"- Issue-promoted priority units: {workflow_id_list(sorted(promoted_priority))}",
+        f"- Combined priority units: {workflow_id_list(sorted(priority_units))}",
         f"- Explicit exclusions: {workflow_id_list(exclusions)}",
         f"- Source or parser limitations: {workflow_id_list(scope.get('source_or_parser_limits'))}",
         f"- Overall assessment: {scope.get('overall_assessment', 'not_set')}",
         "",
         "## Proof-unit inventory",
         "",
-        "| Unit | Statement | Proof | Dependencies | Use sites | Critical basis | Status |",
+        "| Unit | Statement | Proof | Dependencies | Use sites | Priority basis | Status |",
         "|---|---|---|---|---|---|---|",
     ]
     for unit in sorted(
@@ -5848,9 +6650,9 @@ def render_check_plan(records: dict[str, Any]) -> str:
             workflow_id_list(sorted(use_sites.get(unit_id, set()))),
             (
                 "declared"
-                if unit_id in declared_critical
+                if unit_id in declared_priority
                 else "issue_promoted"
-                if unit_id in promoted_critical
+                if unit_id in promoted_priority
                 else "no"
             ),
             workflow_unit_status(unit_id, progress),
@@ -6032,11 +6834,11 @@ def render_execution_order(records: dict[str, Any]) -> str:
             "",
             "## Unit order",
             "",
-            "| Priority | Unit | Dependencies | Critical | Status | Next action |",
+            "| Order | Unit | Dependencies | Priority label | Status | Next action |",
             "|---|---|---|---|---|---|",
         ]
     )
-    declared_critical, promoted_critical, critical = workflow_critical_sets(records)
+    declared_priority, promoted_priority, _ = workflow_priority_sets(records)
     priority = 0
     for layer in layers:
         for unit_id in layer:
@@ -6071,9 +6873,9 @@ def render_execution_order(records: dict[str, Any]) -> str:
                 workflow_id_list(sorted(direct.get(unit_id, set()))),
                 (
                     "declared"
-                    if unit_id in declared_critical
+                    if unit_id in declared_priority
                     else "issue_promoted"
-                    if unit_id in promoted_critical
+                    if unit_id in promoted_priority
                     else "no"
                 ),
                 status,
@@ -6363,10 +7165,7 @@ def packet_semantic_readiness(
             ):
                 raise ValueError("invalid source range")
             source_path = resolve_stored_path(str(file_value), path.parent)
-            current = read_lines(source_path)
-            if end > len(current):
-                raise ValueError("source range exceeds current file")
-            selected = current[start - 1 : end]
+            selected = source_fragment_support().current(report_api(), ledger, path.parent)
             if source.get("unit_sha256") != sha256_text("\n".join(selected)):
                 raise ValueError("source unit hash is stale")
             locked = ledger.get("source_lines")
@@ -6380,10 +7179,10 @@ def packet_semantic_readiness(
                     or record.get("sha256") != sha256_text(text)
                 ):
                     raise ValueError("locked source lines are stale")
-        except (KeyError, OSError, TypeError, ValueError):
-            source_errors.append("source lock is incomplete or stale")
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            source_errors.append(str(exc))
     if source_errors:
-        reasons.append("The proof-unit source lock is incomplete or stale.")
+        reasons.append("The proof-unit source lock is incomplete or stale: " + "; ".join(source_errors))
 
     obligation_errors: list[str] = []
     validate_obligation(ledger.get("obligation"), path, True, obligation_errors)
@@ -6485,6 +7284,8 @@ def packet_inventory_binding_errors(
         errors.append(
             "normalized obligation statement span disagrees with the inventory statement"
         )
+    errors.extend(source_fragment_support().statement_binding_errors(
+        report_api(), statement, paper_base, statement_spans, artifact_path.parent))
     return errors
 
 
@@ -6604,6 +7405,8 @@ def packet_obligation(
     source_base: Path,
     source_locations: dict[str, Any] | None = None,
     source_location_base: Path | None = None,
+    *,
+    mode: str = "primary",
 ) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
@@ -6678,6 +7481,10 @@ def packet_obligation(
                     }
                 )
     projected["conclusions"] = conclusions
+    if mode == "challenge":
+        projected.pop("normalization_checks", None)
+        for conclusion in conclusions:
+            conclusion.pop("normalization", None)
     return projected
 
 
@@ -6703,6 +7510,7 @@ def packet_span(
     members: list[tuple[Path, dict[str, Any]]],
     *,
     allow_locked_external: bool = False,
+    expand_inclusions: bool = True,
 ) -> dict[str, Any] | None:
     if location is None:
         return None
@@ -6746,7 +7554,7 @@ def packet_span(
             "audit_relative_file": audit_relative,
             "file_sha256": member.get("sha256"),
         }
-    return {
+    result = {
         "source_member": source_member,
         "start_line": start,
         "end_line": end,
@@ -6756,6 +7564,16 @@ def packet_span(
             for number, text in enumerate(selected, start)
         ],
     }
+    if expand_inclusions:
+        expanded = source_fragment_support().expand(report_api(), source, start, end, source_base)
+        if expanded["has_inclusion"]:
+            result["source_fragments_version"] = expanded["version"]
+            result["last_substantive_position"] = expanded_last_substantive_position(expanded)
+            result["fragments"] = [packet_span(
+                root, source_base, fragment, members,
+                allow_locked_external=allow_locked_external, expand_inclusions=False,
+            ) for fragment in expanded["fragments"]]
+    return result
 
 
 def packet_candidate_dependency_paths(
@@ -6764,6 +7582,7 @@ def packet_candidate_dependency_paths(
     source_base: Path,
     root: Path,
     members: list[tuple[Path, dict[str, Any]]],
+    reference_occurrences: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Reconstruct portable source paths for parser-promoted dependency candidates."""
     label_owners = inventory.get("label_owners")
@@ -6786,20 +7605,22 @@ def packet_candidate_dependency_paths(
     units = inventory.get("units")
     if not isinstance(units, list):
         raise ValueError("Cannot generate packet: inventory units are malformed")
+    units_by_id = {
+        str(record.get("id")): record
+        for record in units
+        if isinstance(record, dict) and is_nonempty_string(record.get("id"))
+    }
     support_index = build_unowned_label_support_index(
         source_lines, units, label_owners, source_base
     )
-    statement_evidence = scan_unit_statement_evidence(unit, source_base)
+    reviewed_occurrences = (
+        reference_occurrences
+        if reference_occurrences is not None
+        else reviewed_unit_reference_occurrences(unit, source_base, label_owners)
+    )
     raw_paths = resolve_candidate_internal_dependency_paths(
         str(unit.get("id")),
-        [
-            *statement_evidence["reference_occurrences"],
-            *(
-                row
-                for row in unit.get("reference_occurrences", [])
-                if isinstance(row, dict)
-            ),
-        ],
+        reviewed_occurrences,
         label_owners,
         support_index,
     )
@@ -6848,6 +7669,7 @@ def packet_candidate_dependency_paths(
                 audit_relative = None
             owner = label_owners.get(str(occurrence.get("target")))
             owner = owner if isinstance(owner, dict) else {}
+            owner_unit = units_by_id.get(str(owner.get("owner_unit_id")), {})
             text = lines[line_number - 1]
             chain_projection.append(
                 {
@@ -6857,6 +7679,9 @@ def packet_candidate_dependency_paths(
                     "structural_context": occurrence.get("structural_context"),
                     "resolution_status": owner.get("status"),
                     "owner_unit_id": owner.get("owner_unit_id"),
+                    "owner_region": owner.get("owner_region"),
+                    "owner_proof_required": owner_unit.get("proof_required"),
+                    "owner_environment": owner_unit.get("semantic_kind") or owner_unit.get("environment"),
                     "source_member": {
                         "index": member_index,
                         "name": source.name,
@@ -7016,6 +7841,7 @@ def packet_inventory_projection(
     unit: dict[str, Any],
     candidate_paths: list[dict[str, Any]] | None = None,
     downstream_use_sites: list[dict[str, Any]] | None = None,
+    reference_occurrences: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     association = unit.get("proof_association")
     association_projection = None
@@ -7025,7 +7851,11 @@ def packet_inventory_projection(
             for field in ("status", "method", "target", "evidence_occurrence_ids")
         }
     occurrences: list[dict[str, Any]] = []
-    for row in unit.get("reference_occurrences", []):
+    for row in (
+        reference_occurrences
+        if reference_occurrences is not None
+        else unit.get("reference_occurrences", [])
+    ):
         if isinstance(row, dict):
             occurrences.append(
                 {
@@ -7035,6 +7865,7 @@ def packet_inventory_projection(
                         "command",
                         "target",
                         "line",
+                        "source_position",
                         "start_column",
                         "end_column",
                         "structural_context",
@@ -7123,7 +7954,11 @@ def packet_candidate_reconciliation(
                 str(path_id)
             )
     explicit_non_dependencies: set[str] = set()
-    nondependency_roles = {"navigation", "non_load_bearing"}
+    nondependency_roles = {
+        "navigation",
+        "non_load_bearing",
+        "obligation_context",
+    }
     for candidate_id in candidate_ids - registry_mapped_ids:
         disposition = candidate_dispositions.get(candidate_id)
         expected_path_ids = sorted(path_ids_by_candidate.get(candidate_id, []))
@@ -7204,6 +8039,8 @@ def compact_dependencies_from_packet(
                 compact["conclusion_id"] = row.get(
                     "dependency_conclusion_id"
                 )
+                if "statement_support_sha256" in row:
+                    compact["statement_support_sha256"] = row["statement_support_sha256"]
             output.append(compact)
     return sorted(output, key=lambda row: str(row.get("use_id", "")))
 
@@ -7248,6 +8085,8 @@ def packet_dependency_alignment(
             }
             if row.get("kind") == "internal_result":
                 compact["conclusion_id"] = row.get("conclusion_id")
+                if "statement_support_sha256" in row:
+                    compact["statement_support_sha256"] = row["statement_support_sha256"]
             actual.append(compact)
     actual = sorted(actual, key=lambda row: str(row.get("use_id", "")))
     mismatches: list[str] = []
@@ -7295,12 +8134,19 @@ def packet_dependency_use(
         "dependency_conclusion_id",
         "dependency_conclusion",
         "dependency_contract_sha256",
+        "statement_support_sha256",
         "needed_form",
         "step_ids",
     )
     projected = {field: row.get(field) for field in common_fields if field in row}
     if external:
         projected["citation_keys"] = row.get("citation_keys")
+    if "statement_support_sha256" in row:
+        projected["statement_support_conditions"] = [
+            {**{key: value for key, value in condition.items() if key != "status"},
+             **({"status": condition.get("status")} if mode == "primary" else {})}
+            for condition in row.get("statement_support_conditions", []) if isinstance(condition, dict)
+        ]
     use_site = packet_locked_span(row.get("use_site"), root, root)
     if use_site is not None:
         projected["use_site"] = use_site
@@ -7314,33 +8160,80 @@ def packet_dependency_use(
             "issue_ids",
         ):
             projected[field] = row.get(field)
-        if external:
-            prerequisite_rows: list[dict[str, Any]] = []
-            raw_prerequisites = row.get("prerequisite_map")
-            if isinstance(raw_prerequisites, list):
-                for prerequisite in raw_prerequisites:
-                    if not isinstance(prerequisite, dict):
-                        continue
-                    item = {
-                        field: prerequisite.get(field)
-                        for field in (
-                            "prerequisite",
-                            "manuscript_evidence",
-                            "status",
-                            "issue_ids",
-                        )
-                    }
-                    item["evidence_spans"] = [
-                        span
-                        for source_row in prerequisite.get("evidence_spans", [])
-                        if (
-                            span := packet_locked_span(source_row, root, root)
-                        )
-                        is not None
-                    ]
-                    prerequisite_rows.append(item)
-            projected["prerequisite_map"] = prerequisite_rows
+    if external:
+        prerequisite_rows: list[dict[str, Any]] = []
+        raw_prerequisites = row.get("prerequisite_map")
+        if isinstance(raw_prerequisites, list):
+            for prerequisite in raw_prerequisites:
+                if not isinstance(prerequisite, dict):
+                    continue
+                fields = ("prerequisite", "manuscript_evidence", "status", "issue_ids") if mode == "primary" else ("prerequisite", "manuscript_evidence")
+                item = {field: prerequisite.get(field) for field in fields}
+                for span_field in ("evidence_spans", "source_evidence_spans"):
+                    item[span_field] = [span for source_row in prerequisite.get(span_field, [])
+                                       if (span := packet_locked_span(source_row, root, root)) is not None]
+                prerequisite_rows.append(item)
+        projected["prerequisite_map"] = prerequisite_rows
     return projected
+
+
+def packet_prerequisite_contract(
+    root: Path,
+    ledger_path: Path,
+    ledger: dict[str, Any],
+    conclusion_id: str,
+) -> dict[str, Any]:
+    """Expose the inspected conditions and source behind an internal contract."""
+    obligation = ledger.get("obligation")
+    contract = (
+        conclusion_contract_payload(obligation, conclusion_id)
+        if isinstance(obligation, dict)
+        else None
+    )
+    if not isinstance(contract, dict):
+        raise ValueError("Cannot generate packet: prerequisite conclusion is missing")
+    _, manifest, errors = load_audit_manifest(root)
+    if errors:
+        raise ValueError("Cannot generate prerequisite context: " + "; ".join(errors))
+    members = packet_source_members(root, manifest)
+
+    def spans(value: Any, label: str, *, required: bool = False) -> list[dict[str, Any]]:
+        if not isinstance(value, list) or (required and not value):
+            raise ValueError(f"Cannot generate packet: prerequisite {label} is missing")
+        projected: list[dict[str, Any]] = []
+        for row in value:
+            span_errors: list[str] = []
+            validate_locked_span(row, ledger_path.parent, label, span_errors)
+            if span_errors:
+                raise ValueError(
+                    "Cannot generate packet: prerequisite context is missing or stale: "
+                    + "; ".join(span_errors)
+                )
+            source = packet_span(root, ledger_path.parent, row, members)
+            if source is None:
+                raise ValueError(f"Cannot generate packet: prerequisite {label} is missing")
+            if isinstance(row, dict) and "role" in row:
+                source["role"] = row["role"]
+            projected.append(source)
+        return projected
+
+    applicability = contract.get("applicability")
+    if not isinstance(applicability, list) or any(
+        not isinstance(row, dict) or row.get("resolved") is None
+        for row in applicability
+    ):
+        raise ValueError("Cannot generate packet: prerequisite applicability is unresolved")
+    return {
+        "contract_ref": f"{ledger.get('unit_id')}/{conclusion_id}",
+        "dependency_id": ledger.get("unit_id"),
+        "conclusion_id": conclusion_id,
+        "contract_sha256": canonical_sha256(contract),
+        "claim": contract["claim"],
+        "applicability": applicability,
+        "statement_spans": spans(obligation.get("statement_spans"), "statement", required=True),
+        "conclusion_spans": spans(contract.get("source_spans"), "conclusion source", required=True),
+        "context_spans": spans(obligation.get("context_spans"), "context"),
+    }
 
 
 def packet_dependency_projection(
@@ -7351,6 +8244,7 @@ def packet_dependency_projection(
     current_artifact: dict[str, Any] | None,
 ) -> dict[str, Any]:
     direct_internal: list[dict[str, Any]] = []
+    internal_contracts: dict[tuple[str, str], dict[str, Any]] = {}
     downstream_internal: list[dict[str, Any]] = []
     internal_rows = registry.get("internal_uses")
     internal_rows = internal_rows if isinstance(internal_rows, list) else []
@@ -7358,7 +8252,7 @@ def packet_dependency_projection(
         if not isinstance(row, dict):
             continue
         if row.get("dependent_unit") == unit_id:
-            dependency_path, _ = packet_ledger(
+            dependency_path, dependency_ledger = packet_ledger(
                 root, str(row.get("dependency_id", ""))
             )
             if dependency_path is None:
@@ -7367,7 +8261,7 @@ def packet_dependency_projection(
                     "canonical ledger"
                 )
             dependency_errors, dependency_summary = check_ledger_data(
-                dependency_path, True
+                dependency_path, True, primary_only=True
             )
             if dependency_errors:
                 raise ValueError(
@@ -7406,6 +8300,23 @@ def packet_dependency_projection(
                     conclusion_id,
                 ),
             )
+            if "statement_support_sha256" in row:
+                support_errors: list[str] = []
+                support_status, selected_support = statement_support_use_status(dependency_summary, conclusion_id, row, root, support_errors)
+                if support_errors:
+                    raise ValueError("Cannot generate packet: " + "; ".join(support_errors))
+                if mode == "primary":
+                    projected["source_status"] = support_status
+                projected["statement_support_contract"] = {
+                    "claim": selected_support["claim"], "extra_conditions": selected_support["extra_conditions"],
+                    "statement_support_sha256": selected_support["sha256"],
+                }
+            key = (str(row.get("dependency_id")), conclusion_id)
+            if key not in internal_contracts:
+                internal_contracts[key] = packet_prerequisite_contract(
+                    root, dependency_path, dependency_ledger, conclusion_id
+                )
+            projected["contract_ref"] = internal_contracts[key]["contract_ref"]
             direct_internal.append(projected)
         if row.get("dependency_id") == unit_id:
             obligation = (
@@ -7502,8 +8413,7 @@ def packet_dependency_projection(
                     audit_relative = evidence_path.relative_to(root).as_posix()
                 except ValueError:
                     audit_relative = None
-            evidence_rows.append(
-                {
+            evidence_projection = {
                     "evidence_id": f"{result.get('id')}:E{index:03d}",
                     "name": file_name,
                     "audit_relative_file": audit_relative,
@@ -7511,7 +8421,13 @@ def packet_dependency_projection(
                     "locator": evidence.get("locator"),
                     "role": evidence.get("role"),
                 }
-            )
+            if file_name is not None and evidence_path.suffix.lower() in {".txt", ".tex", ".md"}:
+                evidence_lines = read_lines(evidence_path)
+                if evidence_lines:
+                    evidence_projection["source_span"] = packet_span(
+                        root, root, {"file": str(evidence_path), "start_line": 1, "end_line": len(evidence_lines)},
+                        [], allow_locked_external=True)
+            evidence_rows.append(evidence_projection)
         result_projection = {
             field: result.get(field)
             for field in (
@@ -7530,6 +8446,7 @@ def packet_dependency_projection(
         "registry_binding": {
             "closure_contract_version": registry.get("closure_contract_version"),
         },
+        "internal_contracts": [internal_contracts[key] for key in sorted(internal_contracts)],
         "direct_internal_uses": sorted(
             direct_internal, key=lambda row: str(row.get("use_id", ""))
         ),
@@ -7619,11 +8536,7 @@ def packet_issue_step_anchor(
         raise ValueError(
             "Cannot generate packet: issue target step lacks an exact source unit"
         )
-    location = {
-        "file": source["file"],
-        "start_line": line_range[0],
-        "end_line": line_range[1],
-    }
+    location = source_unit_location(ledger, source_unit)
     projection = packet_span(root, ledger_path.parent, location, members)
     if projection is None:
         raise ValueError("Cannot generate packet: issue target step is unanchored")
@@ -8115,6 +9028,8 @@ def packet_issue_propagation(
     registry: dict[str, Any],
     members: list[tuple[Path, dict[str, Any]]],
     challenged_unit: str,
+    *,
+    pending_step_anchor_unit: str | None = None,
 ) -> dict[str, Any]:
     affected = {
         str(value)
@@ -8364,28 +9279,29 @@ def packet_issue_propagation(
         if challenged_unit in current_forward:
             for row in current_selected:
                 dependent_unit = str(row.get("dependent_unit"))
-                ledger_path, ledger = packet_issue_ledger(root, dependent_unit)
                 source_anchors: list[dict[str, Any]] = []
-                for step_id in row.get("step_ids", []):
-                    step = next(
-                        (
-                            value
-                            for value in ledger.get("steps", [])
-                            if isinstance(value, dict)
-                            and value.get("id") == step_id
-                        ),
-                        None,
-                    )
-                    if not isinstance(step, dict):
-                        raise ValueError(
-                            "Cannot generate packet: current historical "
-                            "challenge route step is unresolved"
+                if dependent_unit != pending_step_anchor_unit:
+                    ledger_path, ledger = packet_issue_ledger(root, dependent_unit)
+                    for step_id in row.get("step_ids", []):
+                        step = next(
+                            (
+                                value
+                                for value in ledger.get("steps", [])
+                                if isinstance(value, dict)
+                                and value.get("id") == step_id
+                            ),
+                            None,
                         )
-                    source_anchors.append(
-                        packet_issue_step_anchor(
-                            root, ledger_path, ledger, step, members
+                        if not isinstance(step, dict):
+                            raise ValueError(
+                                "Cannot generate packet: current historical "
+                                "challenge route step is unresolved"
+                            )
+                        source_anchors.append(
+                            packet_issue_step_anchor(
+                                root, ledger_path, ledger, step, members
+                            )
                         )
-                    )
                 current_route_uses.append(
                     {
                         "kind": "internal_result",
@@ -8489,26 +9405,27 @@ def packet_issue_propagation(
     for row in selected_rows:
         dependency_id = row.get("dependency_id")
         dependent_unit = row.get("dependent_unit")
-        ledger_path, ledger = packet_issue_ledger(root, dependent_unit)
         source_anchors: list[dict[str, Any]] = []
-        for step_id in row.get("step_ids", []):
-            step = next(
-                (
-                    value
-                    for value in ledger.get("steps", [])
-                    if isinstance(value, dict) and value.get("id") == step_id
-                ),
-                None,
-            )
-            if not isinstance(step, dict):
-                raise ValueError(
-                    "Cannot generate packet: issue propagation step is unresolved"
+        if dependent_unit != pending_step_anchor_unit:
+            ledger_path, ledger = packet_issue_ledger(root, dependent_unit)
+            for step_id in row.get("step_ids", []):
+                step = next(
+                    (
+                        value
+                        for value in ledger.get("steps", [])
+                        if isinstance(value, dict) and value.get("id") == step_id
+                    ),
+                    None,
                 )
-            source_anchors.append(
-                packet_issue_step_anchor(
-                    root, ledger_path, ledger, step, members
+                if not isinstance(step, dict):
+                    raise ValueError(
+                        "Cannot generate packet: issue propagation step is unresolved"
+                    )
+                source_anchors.append(
+                    packet_issue_step_anchor(
+                        root, ledger_path, ledger, step, members
+                    )
                 )
-            )
         projected.append(
             {
                 "kind": "internal_result",
@@ -8547,6 +9464,7 @@ def packet_issue_triggers(
     *,
     records: dict[str, Any],
     members: list[tuple[Path, dict[str, Any]]],
+    work_context_inputs_only: bool = False,
 ) -> list[dict[str, Any]]:
     _, issues, schema_version, errors = load_issue_log(root)
     if errors:
@@ -8596,7 +9514,7 @@ def packet_issue_triggers(
     selected: list[dict[str, Any]] = []
     required_challenge_issues: set[str] = set()
     if mode == "challenge":
-        _, severe_by_unit = effective_critical_requirements(manifest, issues)
+        _, severe_by_unit = required_challenge_requirements(manifest, issues)
         required_challenge_issues = severe_by_unit.get(unit_id, set())
     for issue in issues:
         if not isinstance(issue, dict):
@@ -8609,6 +9527,14 @@ def packet_issue_triggers(
             if not isinstance(affected, list) or unit_id not in affected:
                 continue
         origin_ref = issue.get("origin_ref")
+        if (
+            work_context_inputs_only
+            and isinstance(origin_ref, dict)
+            and origin_ref.get("kind")
+            in {"ledger_move", "obligation_pointer", "dependency_use"}
+            and origin_ref.get("unit_id") == unit_id
+        ):
+            continue
         contract_refs = issue.get("contract_refs")
         affected_results = issue.get("affected_results")
         if (
@@ -8626,7 +9552,13 @@ def packet_issue_triggers(
             )
         contracts: list[dict[str, Any]] = []
         for row in contract_refs:
-            contract = packet_issue_contract_target(root, row, members)
+            if mode == "primary" and row.get("unit_id") == unit_id:
+                contract = {
+                    "reference": canonical_issue_ref_identity(row),
+                    "status": "pending_current_unit",
+                }
+            else:
+                contract = packet_issue_contract_target(root, row, members)
             contract["contract_sha256"] = canonical_sha256(contract)
             contracts.append(contract)
         contracts.sort(
@@ -8638,6 +9570,7 @@ def packet_issue_triggers(
             records["dependency_registry"],
             members,
             unit_id,
+            pending_step_anchor_unit=(unit_id if mode == "primary" else None),
         )
         target_contract = {
             "current_target": packet_issue_origin_target(
@@ -8648,13 +9581,13 @@ def packet_issue_triggers(
         }
         projected_issue = {
             "id": issue.get("id"),
-            "severity": issue.get("severity"),
             "target_contract": target_contract,
             "target_contract_sha256": canonical_sha256(target_contract),
         }
         if mode == "primary":
             projected_issue.update(
                 {
+                    "severity": issue.get("severity"),
                     "status": issue.get("status"),
                     "finding_status": issue.get("finding_status"),
                     "invalidation_kind": issue.get("invalidation_kind"),
@@ -8685,10 +9618,156 @@ def packet_wip_resume(
 
 
 def packet_semantic_dependencies(value: Any) -> Any:
-    """Keep every model-visible dependency binding in the semantic projection."""
+    """Keep dependency inputs while omitting deterministic or future mirrors."""
     if not isinstance(value, dict):
         return value
-    return dict(value)
+    projected = json.loads(json.dumps(value, ensure_ascii=False))
+    for rows in projected.values():
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if isinstance(row, dict):
+                row.pop("step_ids", None)
+    for row in projected.get("downstream_internal_uses", []):
+        if not isinstance(row, dict):
+            continue
+        for field in (
+            "compatibility_check",
+            "compatibility_checks",
+            "status",
+            "issue_ids",
+            "statement_support_sha256",
+            "statement_support_conditions",
+            "statement_support_contract",
+        ):
+            row.pop(field, None)
+    for result in projected.get("external_results", []):
+        if not isinstance(result, dict):
+            continue
+        for row in result.get("uses", []):
+            if isinstance(row, dict):
+                row.pop("step_ids", None)
+    return projected
+
+
+def packet_relevant_source_projection(value: Any) -> Any:
+    """Keep locked excerpts while separating whole-file provenance metadata."""
+    if isinstance(value, list):
+        return [packet_relevant_source_projection(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    projected = {
+        key: packet_relevant_source_projection(item) for key, item in value.items()
+    }
+    member = projected.get("source_member")
+    if isinstance(member, dict):
+        member.pop("file_sha256", None)
+        member.pop("index", None)
+    return projected
+
+
+@gate_context_reader
+def packet_shared_source_context_sha256(
+    root: Path, paper: Path, members: list[tuple[Path, dict[str, Any]]]
+) -> str:
+    """Conservatively retain global prose, declarations, and local configuration.
+
+    Fresh source indexing prevents an outdated inventory from hiding shared
+    context. Only plain unrelated regions with ordinary structural delimiters
+    are omitted. Any other command, including an indirect or unknown macro,
+    retains the entire region so changed multi-line arguments also invalidate.
+    Category changes, structural overrides, and unknown package/class effects
+    disable exclusions throughout the closure, including apparently plain text.
+    This is a conservative source closure, not a full TeX interpreter.
+    """
+    source_lines: dict[Path, list[str] | None] = {}
+    configuration_uncertain = False
+    structural_names = {"begin", "end", "label", "theorem", "lemma", "proposition",
+                        "corollary", "claim", "fact", "proof"}
+    structural_names.update("end" + name for name in tuple(structural_names))
+    category_or_hook = re.compile(
+        r"\\(?:catcode|mathcode|lccode|uccode|delcode|csname|scantokens|"
+        r"every[A-Za-z]*|AtBegin[A-Za-z]*|AtEnd[A-Za-z]*|AddToHook|"
+        r"BeforeBeginEnvironment|AfterEndEnvironment|pretocmd|apptocmd|patchcmd|"
+        r"ExplSyntaxOn|usepackage|RequirePackage|documentclass|LoadClass|InputIfFileExists)\b")
+    for path, _ in members:
+        try:
+            source_lines[path] = read_lines(path)
+        except TextArtifactReadError:
+            source_lines[path] = None
+            configuration_uncertain = True
+            continue
+        text = "\n".join(source_lines[path])
+        if path.suffix.lower() != ".tex" or "^^" in text or category_or_hook.search(text):
+            configuration_uncertain = True
+        for match in TEX_DEFINITION_COMMAND_RE.finditer(mask_tex_literals_for_definition_scan(text)):
+            target = re.match(r"\s*\{?\s*\\([A-Za-z@]+)", text[match.end():])
+            if (match.group("command") not in TEX_NEW_COMMAND_DEFINITIONS
+                    or target is None or target.group(1) in structural_names):
+                configuration_uncertain = True
+    fresh_inventory = scan_formal_units(
+        paper,
+        source_files=[path for path, _ in members],
+        path_identity_base=paper.parent,
+    )
+    owned: dict[Path, set[int]] = defaultdict(set)
+    regions: dict[Path, list[tuple[int, int]]] = defaultdict(list)
+    for unit in fresh_inventory.get("units", []):
+        if (
+            not isinstance(unit, dict)
+            or str(unit.get("environment", "")).rstrip("*") in NON_PROOF_ENVIRONMENTS
+            or not isinstance(unit.get("proof"), dict)
+        ):
+            # Assumptions, definitions, remarks, and unassociated statements
+            # can govern other units even without an explicit result use.
+            continue
+        for field in ("statement", "proof"):
+            span = unit.get(field) if isinstance(unit, dict) else None
+            if not isinstance(span, dict) or not is_nonempty_string(span.get("file")):
+                continue
+            start, end = span.get("start_line"), span.get("end_line")
+            if is_int(start) and is_int(end) and 1 <= start <= end:
+                path = resolve_stored_path(span["file"], paper.parent)
+                owned[path].update(range(start, end + 1))
+                regions[path].append((start, end))
+    shared: list[dict[str, Any]] = []
+    for path, _ in members:
+        try:
+            relative = path.relative_to(root).as_posix()
+        except ValueError:
+            relative = path.relative_to(paper.parent).as_posix() if path.is_relative_to(paper.parent) else path.name
+        lines = source_lines[path]
+        if lines is None:
+            # Source discovery still requires review of its decoding warning.
+            # Retain every byte in work identity even when text is unavailable.
+            shared.append({"file": relative, "unreadable_text_sha256": sha256_file(path)})
+            continue
+        text = "\n".join(lines)
+        definition_lines: set[int] = set()
+        if path.suffix.lower() == ".tex":
+            for first, last in regions[path]:
+                region = "\n".join(lines[first - 1:last])
+                plain = re.sub(r"\\(?:begin|end)\{(?:theorem|lemma|proposition|corollary|claim|fact|proof)\*?\}|\\label\{[A-Za-z0-9:_./-]+\}", "", region)
+                if "\\" in plain or "^^" in plain or plain.count("{") != plain.count("}"):
+                    definition_lines.update(range(first, last + 1))
+            definition_scan = mask_tex_literals_for_definition_scan(text)
+            for match in TEX_DEFINITION_COMMAND_RE.finditer(definition_scan):
+                end = tex_definition_end(definition_scan, match)
+                # An unparsed declaration conservatively retains the rest of
+                # its file, rather than assuming its effects are local.
+                end = len(text) if end is None else end
+                first = text.count("\n", 0, match.start()) + 1
+                last = text.count("\n", 0, end) + 1
+                definition_lines.update(range(first, last + 1))
+        selected = [
+            line for number, line in enumerate(lines, 1)
+            if configuration_uncertain or path.suffix.lower() != ".tex"
+            or number not in owned[path]
+            or number in definition_lines
+        ]
+        if selected:
+            shared.append({"file": relative, "text": selected})
+    return canonical_sha256(shared)
 
 
 def context_packet_semantic_projection(packet: dict[str, Any]) -> dict[str, Any]:
@@ -8701,16 +9780,24 @@ def context_packet_semantic_projection(packet: dict[str, Any]) -> dict[str, Any]
             "resume",
             "operational_binding",
             "operational_binding_sha256",
+            "source_snapshot_sha256",
         }
     }
     projected["dependencies"] = packet_semantic_dependencies(
         packet.get("dependencies")
     )
+    projected = packet_relevant_source_projection(projected)
+    binding = projected.get("context_binding")
+    if isinstance(binding, dict):
+        binding.pop("source_snapshot_sha256", None)
+        projected["context_binding_sha256"] = canonical_sha256(binding)
     return projected
 
 
+@gate_context_reader
 def build_context_packet(
-    root: Path, unit_id: str, mode: str
+    root: Path, unit_id: str, mode: str, *, for_recompile: bool = False,
+    dependency_registry_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Derive one portable model packet from current canonical audit state."""
     root = root.resolve()
@@ -8719,13 +9806,19 @@ def build_context_packet(
         raise ValueError(lock_error)
     if mode not in {"primary", "challenge"}:
         raise ValueError("Packet mode must be primary or challenge")
+    if for_recompile and mode != "primary":
+        raise ValueError("packet --for-recompile requires --mode primary")
     records = load_workflow_records(root)
+    # Submission validates an unpublished registry projection through the same
+    # packet builder. No command-line input can select this internal override.
+    if dependency_registry_override is not None:
+        records["dependency_registry"] = dependency_registry_override
     manifest = records["manifest"]
     if manifest.get("schema_version") != SCHEMA_VERSION:
         raise ValueError(
             "Cannot generate packet: audit manifest schema is not current"
         )
-    if manifest.get("protocol") != protocol_identity():
+    if not protocol_matches_current(manifest.get("protocol")):
         raise ValueError(
             "Cannot generate packet: recorded proofcheck protocol is stale; "
             "run revalidate-protocol first"
@@ -8758,8 +9851,19 @@ def build_context_packet(
     members = packet_source_members(root, manifest)
     statement = packet_span(root, paper.parent, unit.get("statement"), members)
     proof = packet_span(root, paper.parent, unit.get("proof"), members)
+    label_owners = inventory.get("label_owners")
+    if not isinstance(label_owners, dict):
+        raise ValueError("Cannot generate packet: inventory label_owners is malformed")
+    reviewed_occurrences = reviewed_unit_reference_occurrences(
+        unit, paper.parent, label_owners
+    )
     candidate_paths = packet_candidate_dependency_paths(
-        inventory, unit, paper.parent, root, members
+        inventory,
+        unit,
+        paper.parent,
+        root,
+        members,
+        reviewed_occurrences,
     )
     packet_cross_references = scan_cross_references(
         paper,
@@ -8780,7 +9884,14 @@ def build_context_packet(
     semantic_path = ledger_path
     semantic_artifact = ledger
     semantic_kind = "canonical_ledger" if ledger is not None else None
-    if semantic_artifact is None and mode == "primary":
+    if for_recompile:
+        if skeleton_path is None or skeleton is None:
+            raise ValueError(
+                "packet --for-recompile requires exactly one current canonical "
+                "source-locked skeleton"
+            )
+        validate_compile_skeleton(skeleton, skeleton_path)
+    if mode == "primary" and (for_recompile or semantic_artifact is None):
         semantic_path = skeleton_path
         semantic_artifact = skeleton
         semantic_kind = "source_locked_skeleton" if skeleton is not None else None
@@ -8815,13 +9926,36 @@ def build_context_packet(
     wip_validation_errors: list[str] = []
     wip_local_record_ready = False
     if ledger_path is not None:
-        primary_record_errors, _ = check_ledger_data(
+        primary_record_errors, primary_summary = check_ledger_data(
             ledger_path, True, primary_only=True
         )
+        if primary_summary:
+            unit_inventory = {row["id"]: row for row in units
+                              if isinstance(row, dict) and is_nonempty_string(row.get("id"))}
+            validate_primary_reference_roles(
+                unit_id, unit, primary_summary, reviewed_occurrences,
+                unit_inventory, paper.parent, primary_record_errors,
+            )
+            validate_primary_candidate_references(
+                root, inventory, unit_id, unit, primary_summary, unit_inventory,
+                paper.parent, reviewed_occurrences, members,
+                records["dependency_registry"].get("internal_uses", []),
+                primary_record_errors, candidate_paths=candidate_paths,
+            )
         primary_record_ready = not primary_record_errors
         wip_validation_errors, _ = check_ledger_data(ledger_path, False)
         wip_local_record_ready = not wip_validation_errors
     source = {"statement": statement, "proof": proof}
+    if isinstance(semantic_artifact, dict) and isinstance(semantic_artifact.get("source_fragments"), dict):
+        source["coverage"] = {
+            "version": semantic_artifact["source_fragments"]["version"],
+            "indexing": "ordered_source_lines",
+            "instruction": "Annotation lines are coverage positions. Use the original source spans below for manuscript locations; check every included physical line.",
+            "fragments": [{
+                "positions": [fragment["sequence_start"], fragment["sequence_end"]],
+                "source": packet_span(root, semantic_path.parent, fragment, members, expand_inclusions=False),
+            } for fragment in semantic_artifact["source_fragments"]["fragments"]],
+        }
     snapshot = manifest.get("source_snapshot")
     source_snapshot_id = (
         snapshot.get("sha256") if isinstance(snapshot, dict) else None
@@ -8837,7 +9971,8 @@ def build_context_packet(
         if readiness["ready"] and isinstance(obligation_value, dict)
         else None
     )
-    source_binding_sha256 = canonical_sha256(source)
+    source_binding_sha256 = canonical_sha256(packet_relevant_source_projection(source))
+    source_context_sha256 = packet_shared_source_context_sha256(root, paper, members)
     dependency_projection = packet_dependency_projection(
         records["dependency_registry"],
         root,
@@ -8937,9 +10072,25 @@ def build_context_packet(
             "proof": unit.get("proof"),
         },
         paper.parent,
+        mode=mode,
+    )
+    work_obligation_projection = (
+        packet_obligation(
+            obligation_value,
+            root,
+            semantic_path.parent if semantic_path is not None else root,
+            {"statement": unit.get("statement"), "proof": unit.get("proof")},
+            paper.parent,
+            mode="primary",
+        )
+        if mode == "challenge"
+        else obligation_projection
     )
     inventory_projection = packet_inventory_projection(
-        unit, candidate_paths, downstream_use_sites
+        unit,
+        candidate_paths,
+        downstream_use_sites,
+        reviewed_occurrences,
     )
     candidate_projection = packet_candidate_reconciliation_projection(
         candidate_reconciliation, mode
@@ -8952,35 +10103,36 @@ def build_context_packet(
     work_context_sha256: str | None = None
     wip_record_ready = False
     wip_reuse_errors: list[str] = []
-    primary_issue_triggers = (
-        issue_triggers
-        if mode == "primary"
-        else packet_issue_triggers(
-            root,
-            manifest,
-            unit_id,
-            "primary",
-            records=records,
-            members=members,
-        )
+    primary_issue_inputs = packet_issue_triggers(
+        root,
+        manifest,
+        unit_id,
+        "primary",
+        records=records,
+        members=members,
+        work_context_inputs_only=True,
     )
     work_context = {
         "unit_id": unit_id,
-        "protocol": protocol_identity(),
-        "source_snapshot_sha256": source_snapshot_id,
+        "protocol": context_protocol_identity(root, manifest),
+        "source_context_sha256": source_context_sha256,
         "calibration_receipt_sha256": calibration_receipt["sha256"],
         "source_binding_sha256": source_binding_sha256,
         "obligation_sha256": obligation_digest,
         "obligation_projection_sha256": canonical_sha256(
-            obligation_projection
+            work_obligation_projection
         ),
         "inventory_projection_sha256": canonical_sha256(
-            inventory_projection
+            packet_relevant_source_projection(inventory_projection)
         ),
         "dependency_projection_sha256": canonical_sha256(
-            packet_semantic_dependencies(alignment_dependency_projection)
+            packet_relevant_source_projection(
+                packet_semantic_dependencies(alignment_dependency_projection)
+            )
         ),
-        "issue_triggers_sha256": canonical_sha256(primary_issue_triggers),
+        "issue_triggers_sha256": canonical_sha256(
+            packet_relevant_source_projection(primary_issue_inputs)
+        ),
         "risk_aspects_sha256": canonical_sha256(list(RISK_ASPECTS)),
     }
     expected_work_context_sha256 = canonical_sha256(work_context)
@@ -9059,8 +10211,9 @@ def build_context_packet(
     context_binding = {
         "unit_id": unit_id,
         "mode": mode,
-        "protocol_sha256": canonical_sha256(protocol_identity()),
+        "protocol_sha256": canonical_sha256(context_protocol_identity(root, manifest)),
         "source_snapshot_sha256": source_snapshot_id,
+        "source_context_sha256": source_context_sha256,
         "calibration_receipt_sha256": calibration_receipt["sha256"],
         "source_binding_sha256": source_binding_sha256,
         "obligation_sha256": obligation_digest,
@@ -9071,12 +10224,16 @@ def build_context_packet(
             obligation_projection
         ),
         "inventory_projection_sha256": canonical_sha256(
-            inventory_projection
+            packet_relevant_source_projection(inventory_projection)
         ),
         "dependency_projection_sha256": canonical_sha256(
-            packet_semantic_dependencies(dependency_projection)
+            packet_relevant_source_projection(
+                packet_semantic_dependencies(dependency_projection)
+            )
         ),
-        "issue_triggers_sha256": canonical_sha256(issue_triggers),
+        "issue_triggers_sha256": canonical_sha256(
+            packet_relevant_source_projection(issue_triggers)
+        ),
         "candidate_reconciliation_sha256": canonical_sha256(
             candidate_projection
         ),
@@ -9114,10 +10271,12 @@ def build_context_packet(
     }
     packet: dict[str, Any] = {
         "schema_version": CONTEXT_PACKET_SCHEMA_VERSION,
+        "challenge_contract_version": challenge_contract_version(manifest),
         "kind": "stat-paper-proofcheck-context-packet",
         "mode": mode,
         "unit_id": unit_id,
         "source_snapshot_sha256": source_snapshot_id,
+        "source_context_sha256": source_context_sha256,
         "source_binding_sha256": source_binding_sha256,
         "context_binding": context_binding,
         "context_binding_sha256": canonical_sha256(context_binding),
@@ -9152,7 +10311,15 @@ def cmd_packet(args: argparse.Namespace) -> int:
         raise ValueError("Packet output must be outside the canonical audit root")
     if output.exists() and not args.force:
         raise FileExistsError(f"Packet exists; use --force to replace it: {output}")
-    packet = build_context_packet(root, args.unit_id, args.mode)
+    if args.mode == "statement-support":
+        if getattr(args, "for_recompile", False):
+            raise ValueError("--for-recompile is available only for primary packets")
+        packet = build_statement_support_packet(root, args.unit_id)
+    else:
+        packet = build_context_packet(
+            root, args.unit_id, args.mode,
+            for_recompile=bool(getattr(args, "for_recompile", False)),
+        )
     _, manifest, manifest_errors = load_audit_manifest(root)
     if manifest_errors:
         raise ValueError("Cannot generate packet: " + "; ".join(manifest_errors))
@@ -9169,7 +10336,7 @@ def cmd_packet(args: argparse.Namespace) -> int:
                 "mode": args.mode,
                 "unit_id": args.unit_id,
                 "packet": str(output),
-                "source_binding_sha256": packet["source_binding_sha256"],
+                "source_binding_sha256": packet.get("source_binding_sha256"),
             },
             ensure_ascii=True,
             indent=2,
@@ -9178,35 +10345,672 @@ def cmd_packet(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_bind_challenge(args: argparse.Namespace) -> int:
-    """Bind one fixed challenger artifact to the exact current ledger fields."""
+def challenge_input_projection(packet: dict[str, Any]) -> dict[str, Any]:
+    """Blinded mathematical inputs, excluding reconciled primary output metadata."""
+    binding = packet.get("context_binding") or {}
+    return packet_relevant_source_projection({
+        "unit_id": packet.get("unit_id"),
+        "challenge_contract_version": packet.get("challenge_contract_version", 2),
+        "protocol_sha256": binding.get("protocol_sha256"),
+        "calibration_receipt_sha256": binding.get("calibration_receipt_sha256"),
+        "source_context_sha256": packet.get("source_context_sha256"),
+        **{
+            field: packet.get(field)
+            for field in (
+                "source", "obligation", "inventory",
+                "candidate_dependency_reconciliation", "issue_triggers", "risk_aspects",
+            )
+        },
+        "dependencies": packet_semantic_dependencies(packet.get("dependencies")),
+    })
+
+
+def initial_challenge_reference(unit_id: str, input_sha256: str) -> str:
+    return (
+        "audit/05_adversarial/initial-"
+        + canonical_sha256(unit_id)[:16] + "-" + input_sha256 + ".json"
+    )
+
+
+def challenge_source_spans(packet: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Index locked excerpts only in canonical mathematical packet sections."""
+    spans: dict[str, dict[str, Any]] = {}
+
+    def visit(value: Any, pointer: str) -> None:
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                visit(item, f"{pointer}/{index}")
+        elif isinstance(value, dict):
+            lines = value.get("lines")
+            identity = value.get("source_member", value.get("source"))
+            digest = value.get("span_sha256", value.get("sha256"))
+            start, end = value.get("start_line"), value.get("end_line")
+            if (
+                isinstance(identity, dict) and is_nonempty_string(identity.get("name"))
+                and is_int(start) and is_int(end) and start >= 1 and end >= start
+                and isinstance(lines, list) and len(lines) == end - start + 1
+                and all(isinstance(row, dict) and row.get("line") == start + index
+                        and isinstance(row.get("text"), str) for index, row in enumerate(lines))
+                and digest == sha256_text("\n".join(row["text"] for row in lines))
+            ):
+                spans[pointer] = value
+                if "fragments" not in value:
+                    return
+            for key, item in value.items():
+                escaped = str(key).replace("~", "~0").replace("/", "~1")
+                visit(item, f"{pointer}/{escaped}")
+
+    for field in ("source", "dependencies", "issue_triggers"):
+        visit(packet.get(field), f"/{field}")
+    return spans
+
+
+def primary_challenge_snapshot(ledger: dict[str, Any]) -> dict[str, Any]:
+    """Preserve the actual pre-reconciliation position without guessing history."""
+    review = ledger.get("review") or {}
+    obligation = ledger.get("obligation") or {}
+    claims = {row.get("id"): row.get("claim") for row in obligation.get("conclusions", [])
+              if isinstance(row, dict)}
+    steps = {row.get("id"): row for row in ledger.get("steps", []) if isinstance(row, dict)}
+    rows = []
+    for result in review.get("conclusion_results", []):
+        if not isinstance(result, dict):
+            continue
+        support = result.get("support") or {}
+        step = steps.get(support.get("step_id"), {})
+        rows.append({
+            "conclusion_id": result.get("conclusion_id"),
+            "claim": claims.get(result.get("conclusion_id")),
+            "argument_status": result.get("argument_status"),
+            "statement_status": result.get("statement_status"),
+            "verdict": step.get("status"),
+            "support": json.loads(json.dumps(support)),
+        })
+    return {"unit_status": review.get("unit_status"), "conclusions": rows}
+
+
+def initial_conclusion_reconciliation_errors(
+    initial: dict[str, Any], ledger: dict[str, Any], challenge: dict[str, Any]
+) -> list[str]:
+    response = initial.get("response") or {}
+    initial_rows = response.get("conclusions") or []
+    if not isinstance(initial_rows, list) or any(not isinstance(row, dict) or not is_nonempty_string(row.get("conclusion_id")) for row in initial_rows):
+        return ["Initial conclusions must be well-formed records with explicit IDs"]
+    final = primary_challenge_snapshot(ledger)
+    final_rows = final["conclusions"]
+    expected_ids = [row.get("id") for row in (ledger.get("obligation") or {}).get("conclusions", [])
+                    if isinstance(row, dict)]
+    initial_ids = [row.get("conclusion_id") for row in initial_rows if isinstance(row, dict)]
+    final_ids = [row.get("conclusion_id") for row in final_rows]
+    if (not expected_ids or not all(is_nonempty_string(value) for value in expected_ids)
+            or len(set(expected_ids)) != len(expected_ids)
+            or sorted(initial_ids) != sorted(expected_ids) or sorted(final_ids) != sorted(expected_ids)):
+        return ["Initial and final primary conclusions must contain the same IDs exactly once; renew changed obligations"]
+    final_by_id = {row["conclusion_id"]: row for row in final_rows}
+    fields = ("verdict", "argument_status", "statement_status") if response.get("response_schema_version") == 2 else ("verdict",)
+    changed = [f"{row['conclusion_id']}.{field}" for row in initial_rows for field in fields
+               if row.get(field) != final_by_id[row["conclusion_id"]].get(field)]
+    before = initial.get("primary_snapshot")
+    if isinstance(before, dict) and before != final:
+        changed.append("primary pre-reconciliation judgment/support")
+    if changed and (not challenge.get("disagreements") or not is_substantive_string(challenge.get("resolution"))):
+        return ["Changed conclusion judgments require explicit disagreement and resolution: " + ", ".join(changed)]
+    return []
+
+
+def validate_initial_challenge_response(
+    response: Any, packet: dict[str, Any]
+) -> list[str]:
+    """Require conclusion-specific judgments and exact packet source anchors."""
+    errors: list[str] = []
+    if not isinstance(response, dict):
+        return ["Initial challenge response must be an object"]
+    fields = {
+        "response_schema_version", "unit_id", "independence_level",
+        "challenger_verdict", "conclusions", "issue_assessments",
+    }
+    if set(response) != fields:
+        errors.append("Initial challenge response needs exactly: " + ", ".join(sorted(fields)))
+    required_version = 2 if packet.get("challenge_contract_version", 2) >= 3 else 1
+    if type(response.get("response_schema_version")) is not int or response.get("response_schema_version") != required_version:
+        errors.append(f"Initial challenge response_schema_version must be {required_version} for this challenge contract")
+    if response.get("unit_id") != packet.get("unit_id"):
+        errors.append("Initial challenge unit_id disagrees with its packet")
+    if not is_enum_value(response.get("independence_level"), INDEPENDENCE_LEVELS - {"none"}):
+        errors.append("Initial challenge needs a declared independence_level")
+    if not is_enum_value(response.get("challenger_verdict"), UNIT_STATUSES - {"not_checked"}):
+        errors.append("Initial challenge needs a checked challenger_verdict")
+    obligation = packet.get("obligation") or {}
+    expected_ids = [row.get("id") for row in obligation.get("conclusions", []) if isinstance(row, dict)]
+    conclusions = response.get("conclusions")
+    if not isinstance(conclusions, list):
+        conclusions = []
+        errors.append("Initial challenge conclusions must be a list")
+    actual_ids: list[str] = []
+    verdicts: list[str] = []
+    canonical_spans = challenge_source_spans(packet)
+    for index, row in enumerate(conclusions, 1):
+        prefix = f"Initial challenge conclusions[{index}]"
+        if not isinstance(row, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        conclusion_fields = {"conclusion_id", "verdict", "decisive_reason", "source_refs"}
+        if required_version == 2:
+            conclusion_fields.update({"argument_status", "statement_status"})
+            if not is_enum_value(row.get("argument_status"), ARGUMENT_STATUSES - {"not_checked"}):
+                errors.append(f"{prefix}.argument_status must be a checked argument judgment")
+            if not is_enum_value(row.get("statement_status"), STATEMENT_STATUSES - {"not_assessed"}):
+                errors.append(f"{prefix}.statement_status must be an assessed statement judgment")
+        if set(row) != conclusion_fields:
+            errors.append(f"{prefix} needs exactly: " + ", ".join(sorted(conclusion_fields)))
+        actual_ids.append(str(row.get("conclusion_id")))
+        if not is_enum_value(row.get("verdict"), UNIT_STATUSES - {"not_checked"}):
+            errors.append(f"{prefix}.verdict must be a checked judgment")
+        else:
+            verdicts.append(row["verdict"])
+        if not is_substantive_string(row.get("decisive_reason")):
+            errors.append(f"{prefix}.decisive_reason must explain the mathematical judgment")
+        refs = row.get("source_refs")
+        if not isinstance(refs, list) or not refs:
+            errors.append(f"{prefix}.source_refs must anchor its reason to exact packet source")
+            continue
+        for ref_index, ref in enumerate(refs, 1):
+            label = f"{prefix}.source_refs[{ref_index}]"
+            if not isinstance(ref, dict) or set(ref) != {"packet_pointer", "start_line", "end_line"}:
+                errors.append(f"{label} needs packet_pointer, start_line, and end_line")
+                continue
+            span = canonical_spans.get(str(ref.get("packet_pointer")))
+            if span is None:
+                errors.append(f"{label} must reference a canonical locked source span, not operational metadata")
+            source_lines = span.get("lines") if isinstance(span, dict) else None
+            start, end = ref.get("start_line"), ref.get("end_line")
+            line_numbers = {
+                item.get("line") for item in source_lines
+                if isinstance(item, dict) and is_int(item.get("line")) and isinstance(item.get("text"), str)
+            } if isinstance(source_lines, list) else set()
+            if (
+                not is_int(start) or not is_int(end) or start > end
+                or not line_numbers or start < min(line_numbers) or end > max(line_numbers)
+                or end - start + 1 > len(line_numbers)
+                or any(number not in line_numbers for number in range(start, end + 1))
+            ):
+                errors.append(f"{label} must select existing source lines in its packet span")
+    if (not expected_ids or not all(is_nonempty_string(value) for value in expected_ids)
+            or len(set(expected_ids)) != len(expected_ids) or sorted(actual_ids) != sorted(expected_ids)):
+        errors.append("Initial challenge must assess every packet conclusion exactly once")
+    if len(verdicts) == len(conclusions) and verdicts and expected_unit_status(verdicts) != response.get("challenger_verdict"):
+        errors.append("Initial challenger_verdict disagrees with its conclusion verdicts")
+    triggers = packet.get("issue_triggers") or []
+    expected_issue_ids = sorted(row.get("id") for row in triggers if isinstance(row, dict))
+    assessments = response.get("issue_assessments")
+    if not isinstance(assessments, list):
+        assessments = []
+        errors.append("Initial challenge issue_assessments must be a list")
+    actual_issue_ids: list[str] = []
+    for index, row in enumerate(assessments, 1):
+        prefix = f"Initial challenge issue_assessments[{index}]"
+        if not isinstance(row, dict) or set(row) != {
+            "issue_id", "assessment", "target_assessment", "downstream_assessment"
+        }:
+            errors.append(f"{prefix} needs the issue ID, assessment, target and downstream reasons")
+            continue
+        actual_issue_ids.append(str(row.get("issue_id")))
+        if row.get("assessment") not in {"confirmed", "not_confirmed", "unclear"}:
+            errors.append(f"{prefix}.assessment is invalid")
+        for field in ("target_assessment", "downstream_assessment"):
+            if not is_substantive_string(row.get(field)):
+                errors.append(f"{prefix}.{field} must explain the independent judgment")
+    if sorted(actual_issue_ids) != expected_issue_ids:
+        errors.append("Initial challenge must assess exactly the packet issue targets")
+    return errors
+
+
+def load_initial_challenge(
+    root: Path, unit_id: str, packet: dict[str, Any], challenge: dict[str, Any] | None = None
+) -> tuple[dict[str, Any], dict[str, str], list[str]]:
+    input_digest = canonical_sha256(challenge_input_projection(packet))
+    relative = initial_challenge_reference(unit_id, input_digest)
+    errors: list[str] = []
+    path, valid = canonical_challenge_artifact_path(root, relative, "Initial challenge", errors)
+    if not valid or path is None or not path.is_file():
+        return {}, {}, [*errors, f"{unit_id}: record-challenge must preserve the initial response for the current packet"]
+    record, read_errors = load_json_object(path, "initial challenge")
+    errors.extend(read_errors)
+    reference = {"artifact": relative, "sha256": sha256_file(path), "input_sha256": input_digest}
+    if challenge is None:
+        _, current_ledger = packet_ledger(root, unit_id)
+        challenge = current_ledger.get("independent_check") if isinstance(current_ledger, dict) else None
+    existing = challenge.get("initial_response") if isinstance(challenge, dict) else None
+    if not isinstance(existing, dict):
+        errors.append(f"{unit_id}: initial challenge reference is missing; preserve the record-challenge ledger binding")
+    if (
+        isinstance(existing, dict)
+        and existing.get("input_sha256") == input_digest
+        and existing != reference
+    ):
+        errors.append(f"{unit_id}: initial challenge binding changed; the original response cannot be rebound")
+    fields = {"initial_challenge_schema_version", "unit_id", "input_sha256", "packet_sha256", "packet", "response", "recorded_utc", "record_payload_sha256"}
+    record_version = record.get("initial_challenge_schema_version")
+    if record_version == 2:
+        fields.update({"primary_snapshot", "superseded_review"})
+    if set(record) != fields or type(record_version) is not int or record_version not in {1, 2}:
+        errors.append(f"{unit_id}: initial challenge record has an invalid schema")
+    if record_version == 2 and not isinstance(record.get("primary_snapshot"), dict):
+        errors.append(f"{unit_id}: initial challenge must retain its primary snapshot")
+    if packet.get("challenge_contract_version", 2) >= 3 and record_version != 2:
+        errors.append(f"{unit_id}: renew the initial challenge to preserve both judgment dimensions and the primary snapshot")
+    payload = {key: value for key, value in record.items() if key != "record_payload_sha256"}
+    if record.get("record_payload_sha256") != canonical_sha256(payload):
+        errors.append(f"{unit_id}: initial challenge payload hash does not match")
+    saved_packet = record.get("packet")
+    if not isinstance(saved_packet, dict) or saved_packet.get("mode") != "challenge":
+        errors.append(f"{unit_id}: initial challenge did not preserve a challenge packet")
+    else:
+        if record.get("packet_sha256") != canonical_sha256(saved_packet):
+            errors.append(f"{unit_id}: preserved challenge packet hash does not match")
+        if (
+            record.get("input_sha256") != input_digest
+            or canonical_sha256(challenge_input_projection(saved_packet)) != input_digest
+        ):
+            errors.append(f"{unit_id}: initial challenge source or semantic inputs are stale")
+        errors.extend(validate_initial_challenge_response(record.get("response"), saved_packet))
+    if record.get("unit_id") != unit_id or not is_utc_timestamp(record.get("recorded_utc")):
+        errors.append(f"{unit_id}: initial challenge identity or time is invalid")
+    previous = record.get("superseded_review")
+    visited = {relative}
+    while previous is not None:
+        if not isinstance(previous, dict) or not isinstance(previous.get("initial_response"), dict):
+            errors.append(f"{unit_id}: superseded initial review is malformed")
+            break
+        previous_ref = previous["initial_response"]
+        previous_path, valid = canonical_challenge_artifact_path(root, previous_ref.get("artifact"), "Superseded initial challenge", errors)
+        if (not valid or previous_path is None or not previous_path.is_file()
+                or previous_ref.get("sha256") != sha256_file(previous_path)
+                or previous_ref.get("artifact") in visited):
+            errors.append(f"{unit_id}: superseded initial response is missing, changed, or cyclic")
+            break
+        visited.add(previous_ref["artifact"])
+        reconciliation = previous.get("reconciliation_artifact")
+        if reconciliation is not None:
+            reconciliation_path, valid = canonical_challenge_artifact_path(root, reconciliation.get("artifact") if isinstance(reconciliation, dict) else None, "Superseded reconciliation", errors)
+            if not valid or reconciliation_path is None or not reconciliation_path.is_file() or reconciliation.get("sha256") != sha256_file(reconciliation_path):
+                errors.append(f"{unit_id}: superseded reconciliation is missing or changed")
+        previous_record, read_errors = load_json_object(previous_path, "superseded initial challenge")
+        errors.extend(read_errors)
+        if previous_record.get("unit_id") != unit_id or previous_record.get("input_sha256") != previous_ref.get("input_sha256"):
+            errors.append(f"{unit_id}: superseded response has the wrong unit or input identity")
+        previous = previous_record.get("superseded_review")
+    return record, reference, errors
+
+
+def cmd_record_challenge(args: argparse.Namespace) -> int:
+    """Preserve the exact blinded packet and first response without overwriting."""
+    root = args.root.resolve()
+    _, manifest, errors = load_audit_manifest(root)
+    errors.extend(audit_internal_redirect_errors(root))
+    if errors:
+        raise ValueError("Cannot record challenge: " + "; ".join(errors))
+    if challenge_contract_version(manifest) < 2:
+        raise ValueError("record-challenge requires protocol.challenge_contract_version 2 or 3; explicitly upgrade the audit")
+    baseline = audit_state_manifest(root)
+    packet, errors = load_json_object(args.packet.resolve(), "consumed challenge packet")
+    response, response_errors = load_json_object(args.response.resolve(), "initial challenge response")
+    errors.extend(response_errors)
+    if packet.get("mode") != "challenge" or packet.get("unit_id") != args.unit_id:
+        errors.append("record-challenge requires the exact assigned unit's challenge packet")
+    current_packet = build_context_packet(root, args.unit_id, "challenge")
+    if context_packet_semantic_projection(packet) != context_packet_semantic_projection(current_packet):
+        errors.append("Consumed challenge packet is stale or differs from current canonical context")
+    if packet.get("challenge_contract_version", 2) != challenge_contract_version(manifest):
+        errors.append("Consumed challenge packet has a different challenge contract")
+    if challenge_source_spans(packet) != challenge_source_spans(current_packet):
+        errors.append("Consumed challenge source identities or excerpts differ from canonical locked source")
+    for field in ("context_binding", "operational_binding"):
+        if packet.get(field + "_sha256") != canonical_sha256(packet.get(field)):
+            errors.append(f"Consumed challenge packet {field} hash does not match")
+    errors.extend(validate_initial_challenge_response(response, packet))
+    if errors:
+        raise ValueError("Cannot record challenge: " + "; ".join(errors))
+    input_digest = canonical_sha256(challenge_input_projection(packet))
+    relative = initial_challenge_reference(args.unit_id, input_digest)
+    path, valid = canonical_challenge_artifact_path(root, relative, "Initial challenge", errors)
+    if not valid or path is None:
+        raise ValueError("Cannot record challenge: " + "; ".join(errors))
+    record = {
+        "initial_challenge_schema_version": 2,
+        "unit_id": args.unit_id,
+        "input_sha256": input_digest,
+        "packet_sha256": canonical_sha256(packet),
+        "packet": packet,
+        "response": response,
+        "recorded_utc": utc_now(),
+    }
+    ledger_path, ledger = packet_ledger(root, args.unit_id)
+    if ledger_path is None or not isinstance(ledger, dict) or not isinstance(ledger.get("independent_check"), dict):
+        raise ValueError("Cannot record challenge without the current canonical ledger and independent_check")
+    record["primary_snapshot"] = primary_challenge_snapshot(ledger)
+    record["superseded_review"] = None
+    history_write: tuple[Path, str] | None = None
+    prior_check = ledger["independent_check"]
+    prior_ref = prior_check.get("initial_response")
+    if isinstance(prior_ref, dict) and prior_ref.get("artifact") != relative:
+        prior_path, valid = canonical_challenge_artifact_path(root, prior_ref.get("artifact"), "Prior initial challenge", errors)
+        if not valid or prior_path is None or not prior_path.is_file() or sha256_file(prior_path) != prior_ref.get("sha256"):
+            raise ValueError("Cannot supersede a missing or changed initial response; restore its recorded evidence")
+        historical = {"initial_response": json.loads(json.dumps(prior_ref)),
+                      "independent_check": json.loads(json.dumps(prior_check)),
+                      "reconciliation_artifact": None}
+        if prior_check.get("status") in {"agreed", "resolved"}:
+            prior_artifact, valid = canonical_challenge_artifact_path(root, prior_check.get("artifact"), "Prior reconciliation", errors)
+            if not valid or prior_artifact is None or not prior_artifact.is_file() or sha256_file(prior_artifact) != prior_check.get("challenge_artifact_sha256"):
+                raise ValueError("Cannot supersede missing or changed bound reconciliation evidence")
+            history_name = f"audit/05_adversarial/history-{sha256_file(prior_artifact)}.md"
+            historical["reconciliation_artifact"] = {"artifact": history_name, "sha256": sha256_file(prior_artifact)}
+            history_write = (root / history_name, prior_artifact.read_bytes().decode("utf-8"))
+        record["superseded_review"] = historical
+    record["record_payload_sha256"] = canonical_sha256(record)
+    original_ledger_bytes = ledger_path.read_bytes()
+    record_text = json.dumps(record, ensure_ascii=False, indent=2) + "\n"
+    reference = {"artifact": relative, "sha256": sha256_text(record_text), "input_sha256": input_digest}
+    ledger["independent_check"]["initial_response"] = reference
+    ledger_text = json.dumps(ledger, ensure_ascii=False, indent=2) + "\n"
+    lock, lock_payload = acquire_migration_update_lock(root, "cmd_record_challenge")
+    history_created = False
+    try:
+        if audit_state_manifest(root, lock) != baseline:
+            raise ValueError("Audit changed while preserving the initial challenge; regenerate its packet")
+        if path.exists():
+            raise FileExistsError(f"initial challenge response already exists: {path}")
+        if history_write is not None:
+            history_path, history_text = history_write
+            if history_path.exists():
+                if sha256_file(history_path) != sha256_text(history_text):
+                    raise ValueError("Superseded reconciliation history changed")
+            else:
+                atomic_create_text(history_path, history_text)
+                history_created = True
+        # Anchor the exact bytes before publishing them. An interruption leaves
+        # a missing evidence artifact, never an unanchored usable first record.
+        transactional_write_texts(
+            [(ledger_path, ledger_text)],
+            expected_sha256={ledger_path: hashlib.sha256(original_ledger_bytes).hexdigest()},
+        )
+        try:
+            atomic_create_json(path, record, "initial challenge response")
+        except BaseException:
+            transactional_write_texts(
+                [(ledger_path, original_ledger_bytes)],
+                expected_sha256={ledger_path: sha256_text(ledger_text)},
+            )
+            raise
+    except BaseException:
+        if history_created and history_write is not None:
+            history_write[0].unlink()
+        raise
+    finally:
+        release_migration_update_lock(lock, lock_payload)
+    print(json.dumps({"command": "record-challenge", "status": "written", "artifact": relative, "sha256": sha256_file(path)}, indent=2))
+    return 0
+
+
+def build_statement_support_packet(root: Path, unit_id: str) -> dict[str, Any]:
+    ordinary = build_context_packet(root, unit_id, "challenge")
+    path, ledger = packet_ledger(root, unit_id)
+    if path is None or not isinstance(ledger, dict):
+        raise ValueError("Statement-support packet requires a canonical primary ledger")
+    initial, reference, errors = load_initial_challenge(root, unit_id, ordinary, ledger.get("independent_check") or {})
+    if errors or not initial or not reference:
+        raise ValueError("Preserve the initial blind written-proof response before exposing the supplement: " + "; ".join(errors))
+    proposals = statement_support_proposals(ledger)
+    if not proposals:
+        raise ValueError("This unit has no checked statement supplement to review")
+    packet = {
+        "schema_version": 1, "kind": "stat-paper-proofcheck-statement-support-packet",
+        "mode": "statement-support", "unit_id": unit_id,
+        "source_binding_sha256": ordinary.get("source_binding_sha256"),
+        "initial_response": reference,
+        "source": ordinary["source"], "obligation": ordinary["obligation"],
+        "dependencies": ordinary["dependencies"],
+        "statement_supports": proposals,
+        "review_instruction": (
+            "Independently check each proposed derivation against the exact original target, "
+            "stated assumptions, complete premises, and explicit extra conditions. Accept only "
+            "the claim under those conditions. Preserve the separate initial written-proof "
+            "assessment. A checked supplement does not apply a manuscript repair."
+        ),
+    }
+    changes = statement_support_changes(root, ledger)
+    if changes:
+        packet["suggested_changes"] = changes
+    return packet
+
+
+def cmd_record_statement_support(args: argparse.Namespace) -> int:
     root = args.root.resolve()
     redirect_errors = audit_internal_redirect_errors(root)
     if redirect_errors:
+        raise ValueError("Cannot record statement support: " + "; ".join(redirect_errors))
+    expected = build_statement_support_packet(root, args.unit_id)
+    packet, packet_errors = load_json_object(args.packet, "statement-support packet")
+    response, response_errors = load_json_object(args.response, "statement-support response")
+    errors = [*packet_errors, *response_errors]
+    if packet != expected:
+        errors.append("Statement-support packet is not the exact current generated packet")
+    errors.extend(statement_support_response_errors(response, packet))
+    if errors:
+        raise ValueError("Cannot record statement support: " + "; ".join(errors))
+    path, ledger = packet_ledger(root, args.unit_id)
+    if path is None:
+        raise ValueError("Statement-support review has no unique ledger")
+    original_ledger_bytes = path.read_bytes()
+    baseline = hashlib.sha256(original_ledger_bytes).hexdigest()
+    challenge = ledger.get("independent_check") or {}
+    old = challenge.get("statement_support_review")
+    if old is not None:
+        old_errors: list[str] = []
+        old_path, old_valid = canonical_challenge_artifact_path(root, old.get("artifact") if isinstance(old, dict) else None, "Prior statement-support review", old_errors)
+        if not old_valid or old_path is None or not old_path.is_file() or sha256_file(old_path) != old.get("sha256"):
+            raise ValueError("Cannot supersede missing or altered statement-support review evidence; restore its recorded bytes")
+        _, old_errors = load_statement_support_review(root, ledger)
+        if not old_errors:
+            raise ValueError("A current immutable statement-support review already exists; retain it")
+        history = challenge.setdefault("statement_support_review_history", [])
+        if not isinstance(history, list):
+            raise ValueError("statement_support_review_history must be a list")
+        if old not in history:
+            history.append(old)
+    relative = "audit/05_adversarial/statement-support-" + canonical_sha256(args.unit_id)[:16] + "-" + canonical_sha256(packet) + ".json"
+    destination = root / relative
+    if destination.exists():
+        raise FileExistsError("Refusing to overwrite preserved statement-support review: " + str(destination))
+    record = {"schema_version": 1, "unit_id": args.unit_id, "packet": packet, "response": response,
+              "recorded_utc": datetime.now(timezone.utc).isoformat()}
+    record_text = json.dumps(record, ensure_ascii=False, indent=2) + "\n"
+    challenge["statement_support_review"] = {"artifact": relative, "sha256": sha256_text(record_text)}
+    ledger["independent_check"] = challenge
+    ledger_text = json.dumps(ledger, ensure_ascii=False, indent=2) + "\n"
+    lock, payload = acquire_migration_update_lock(root, "cmd_record_statement_support")
+    try:
+        if destination.exists():
+            raise FileExistsError("Statement-support response already exists")
+        transactional_write_texts(
+            [(path, ledger_text)], expected_sha256={path: baseline},
+        )
+        try:
+            atomic_create_json(destination, record, "statement-support response")
+        except BaseException:
+            transactional_write_texts([(path, original_ledger_bytes)], expected_sha256={path: sha256_text(ledger_text)})
+            raise
+    finally:
+        release_migration_update_lock(lock, payload)
+    print(json.dumps({"command": "record-statement-support", "status": "written", "artifact": relative,
+                      "sha256": challenge["statement_support_review"]["sha256"]}, indent=2))
+    return 0
+
+
+def prepare_challenge_binding(
+    root: Path,
+    unit_id: str,
+    *,
+    ledger_override: dict[str, Any] | None = None,
+    artifact_text: str | None = None,
+) -> dict[str, Any]:
+    """Validate and prepare a reconciliation without publishing either file."""
+    root = root.resolve()
+    redirect_errors = audit_internal_redirect_errors(root)
+    if redirect_errors:
         raise ValueError("Cannot bind challenge: " + "; ".join(redirect_errors))
-    matches: list[tuple[Path, dict[str, Any]]] = []
+    matches: list[tuple[Path, dict[str, Any], str]] = []
     for ledger_path in live_local_check_artifacts(root, ".ledger.json"):
+        ledger_baseline_sha256 = sha256_file(ledger_path)
         ledger, ledger_errors = load_json_object(ledger_path, "proof ledger")
         if ledger_errors:
             continue
-        if ledger.get("unit_id") == args.unit_id:
-            matches.append((ledger_path, ledger))
+        if sha256_file(ledger_path) != ledger_baseline_sha256:
+            if ledger.get("unit_id") == unit_id:
+                raise ValueError(
+                    f"Proof ledger changed while bind-challenge read {unit_id}"
+                )
+            continue
+        if ledger.get("unit_id") == unit_id:
+            matches.append((ledger_path, ledger, ledger_baseline_sha256))
     if len(matches) != 1:
         raise ValueError(
             "bind-challenge requires exactly one ledger for "
-            f"{args.unit_id}; found {len(matches)}"
+            f"{unit_id}; found {len(matches)}"
         )
-    ledger_path, ledger = matches[0]
+    ledger_path, ledger, ledger_baseline_sha256 = matches[0]
+    if ledger_override is not None:
+        if canonical_primary_ledger_sha256(ledger_override) != canonical_primary_ledger_sha256(ledger):
+            raise ValueError("Reconciliation cannot change primary proof evidence; revise and validate the primary ledger first")
+        ledger = json.loads(json.dumps(ledger_override))
     if ledger.get("schema_version") != SCHEMA_VERSION:
         raise ValueError(
             "bind-challenge requires a current-schema ledger for "
-            f"{args.unit_id}"
+            f"{unit_id}"
         )
     challenge = ledger.get("independent_check")
-    if not isinstance(challenge, dict) or challenge.get("required") is not True:
+    if not isinstance(challenge, dict):
         raise ValueError(
-            f"bind-challenge requires an independent check for {args.unit_id}"
+            f"bind-challenge requires an independent_check object for {unit_id}"
         )
+    _, manifest, manifest_errors = load_audit_manifest(root)
+    _, issues, issue_schema, issue_errors = load_issue_log(root)
+    if manifest_errors or issue_errors or issue_schema != SCHEMA_VERSION:
+        raise ValueError(
+            "Cannot bind challenge: "
+            + "; ".join(
+                [
+                    *manifest_errors,
+                    *issue_errors,
+                    *(
+                        ["ISSUE_LOG.json must use the current schema"]
+                        if issue_schema != SCHEMA_VERSION
+                        else []
+                    ),
+                ]
+            )
+        )
+    required_units, severe_by_unit = required_challenge_requirements(
+        manifest, issues
+    )
+    if unit_id not in required_units:
+        raise ValueError(
+            f"bind-challenge requires an in-scope unit: {unit_id}"
+        )
+    packet = build_context_packet(root, unit_id, "challenge")
+    if challenge_contract_version(manifest) >= 2:
+        initial, initial_reference, initial_errors = load_initial_challenge(
+            root, unit_id, packet, challenge
+        )
+        if initial_errors:
+            raise ValueError("Cannot bind challenge: " + "; ".join(initial_errors))
+        conclusion_errors = initial_conclusion_reconciliation_errors(initial, ledger, challenge)
+        if conclusion_errors:
+            raise ValueError("Cannot bind challenge: " + "; ".join(conclusion_errors))
+        initial_response = initial["response"]
+        for field, pending in (("challenger_verdict", "not_checked"), ("independence_level", "none")):
+            existing_value = challenge.get(field)
+            if existing_value not in {None, pending, initial_response[field]}:
+                raise ValueError(f"Cannot bind challenge: {field} differs from the preserved initial response")
+            challenge[field] = initial_response[field]
+        challenge["initial_response"] = initial_reference
+        initial_assessments = initial_response["issue_assessments"]
+        if not challenge.get("issue_assessments"):
+            challenge["issue_assessments"] = json.loads(json.dumps(initial_assessments))
+        final_assessments = [
+            {key: value for key, value in row.items() if key != "target_contract_sha256"}
+            for row in challenge.get("issue_assessments", []) if isinstance(row, dict)
+        ]
+        if final_assessments != initial_assessments and (not challenge.get("disagreements") or not is_substantive_string(challenge.get("resolution"))):
+            raise ValueError("Cannot bind challenge: changed issue assessments require explicit disagreement and resolution")
+    required_issue_ids = sorted(severe_by_unit.get(unit_id, set()))
+    trigger_hashes = {
+        str(row.get("id")): row.get("target_contract_sha256")
+        for row in packet.get("issue_triggers", [])
+        if isinstance(row, dict) and is_nonempty_string(row.get("id"))
+    }
+    assessments = challenge.get("issue_assessments")
+    if isinstance(assessments, list):
+        for assessment in assessments:
+            if not isinstance(assessment, dict):
+                continue
+            issue_id = assessment.get("issue_id")
+            if issue_id in trigger_hashes:
+                assessment["target_contract_sha256"] = trigger_hashes[issue_id]
+    review = ledger.get("review")
+    support_results = [row for row in (review or {}).get("conclusion_results", []) if isinstance(row, dict) and "statement_support" in row]
+    if support_results:
+        support_acceptance, support_errors = load_statement_support_review(root, ledger)
+        if support_errors or any(support_acceptance.get(row["conclusion_id"]) != "accepted" for row in support_results):
+            raise ValueError("Cannot bind challenge: every claimed statement supplement needs its current accepted immutable review; " + "; ".join(support_errors))
+    final_verdict = review.get("unit_status") if isinstance(review, dict) else None
+    if not is_enum_value(final_verdict, UNIT_STATUSES - {"not_checked"}):
+        raise ValueError(
+            f"bind-challenge requires a final primary verdict for {unit_id}"
+        )
+    disagreements = challenge.get("disagreements")
+    disagreements = disagreements if isinstance(disagreements, list) else []
+    challenger_verdict = challenge.get("challenger_verdict")
+    reconciled_verdict = challenge.get("reconciled_verdict")
+    if not is_enum_value(
+        reconciled_verdict, UNIT_STATUSES - {"not_checked"}
+    ):
+        raise ValueError(
+            "bind-challenge requires an explicit reconciled verdict"
+        )
+    if reconciled_verdict != final_verdict:
+        raise ValueError(
+            "Cannot bind challenge: reconciled_verdict must match the final "
+            "primary ledger verdict; revise and recheck the primary ledger if "
+            "the reconciliation changed its judgment"
+        )
+    if challenger_verdict == final_verdict and not disagreements:
+        challenge_status = "agreed"
+        challenge["resolution"] = ""
+    elif disagreements and is_substantive_string(challenge.get("resolution")):
+        challenge_status = "resolved"
+    else:
+        raise ValueError(
+            "Cannot bind challenge: record no disagreements when the verdicts "
+            "agree, or record substantive disagreements and a resolution"
+        )
+    snapshot = manifest.get("source_snapshot")
+    snapshot_id = snapshot.get("sha256") if isinstance(snapshot, dict) else None
+    challenge.update(
+        {
+            "required": True,
+            "status": challenge_status,
+            "covered_issue_ids": required_issue_ids,
+            "source_snapshot_sha256": snapshot_id,
+            "challenged_ledger_sha256": canonical_primary_ledger_sha256(ledger),
+            "challenge_context_sha256": packet.get("context_binding_sha256"),
+            "challenge_artifact_sha256": "",
+            "generated_utc": datetime.now(timezone.utc).isoformat().replace(
+                "+00:00", "Z"
+            ),
+        }
+    )
     validation_probe = json.loads(json.dumps(challenge, ensure_ascii=False))
     validation_probe["challenge_artifact_sha256"] = "0" * 64
     validation_errors: list[str] = []
@@ -9217,16 +11021,12 @@ def cmd_bind_challenge(args: argparse.Namespace) -> int:
         primary_ledger_sha256=canonical_primary_ledger_sha256(ledger),
         current_contract=True,
     )
-    covered_issue_ids = challenge.get("covered_issue_ids")
-    covered_issue_ids = (
-        covered_issue_ids if isinstance(covered_issue_ids, list) else []
-    )
     validation_errors.extend(
         challenge_semantic_freshness_errors(
             root,
-            args.unit_id,
+            unit_id,
             challenge,
-            covered_issue_ids,
+            required_issue_ids,
         )
     )
     if validation_errors:
@@ -9236,30 +11036,60 @@ def cmd_bind_challenge(args: argparse.Namespace) -> int:
     artifact_path, artifact_valid = canonical_challenge_artifact_path(
         root,
         challenge.get("artifact"),
-        f"Effective critical unit {args.unit_id} challenger artifact",
+        f"In-scope unit {unit_id} challenger artifact",
         validation_errors,
     )
     if not artifact_valid or artifact_path is None:
         raise ValueError(
             "Cannot bind challenge: " + "; ".join(validation_errors[:12])
         )
-    if not artifact_path.is_file():
-        raise FileNotFoundError(
-            f"Challenger artifact not found: {artifact_path}"
-        )
+    expected_sha256 = {ledger_path: ledger_baseline_sha256}
+    if artifact_path.is_file():
+        artifact_baseline_sha256 = sha256_file(artifact_path)
+        if artifact_text is None:
+            artifact_text = read_text(artifact_path)
+        if sha256_file(artifact_path) != artifact_baseline_sha256:
+            raise ValueError(f"Challenger artifact changed while bind-challenge read {unit_id}")
+        expected_sha256[artifact_path] = artifact_baseline_sha256
+    elif artifact_text is None:
+        raise FileNotFoundError(f"Challenger artifact not found: {artifact_path}")
     bound_text = upsert_challenge_artifact_binding(
-        read_text(artifact_path), args.unit_id, challenge
+        artifact_text, unit_id, challenge
     )
     challenge["challenge_artifact_sha256"] = sha256_text(bound_text)
-    transactional_write_texts(
-        [
-            (artifact_path, bound_text),
-            (
-                ledger_path,
-                json.dumps(ledger, ensure_ascii=False, indent=2) + "\n",
-            ),
-        ]
+    return {"ledger_path": ledger_path, "ledger": ledger,
+            "artifact_path": artifact_path, "artifact_text": bound_text,
+            "expected_sha256": expected_sha256}
+
+
+def cmd_bind_challenge(args: argparse.Namespace) -> int:
+    """Complete derived challenge fields and bind the fixed artifact."""
+    root = args.root.resolve()
+    prepared = prepare_challenge_binding(root, args.unit_id)
+    ledger_path, ledger = prepared["ledger_path"], prepared["ledger"]
+    artifact_path, bound_text = prepared["artifact_path"], prepared["artifact_text"]
+    challenge = ledger["independent_check"]
+    lock, lock_payload = acquire_migration_update_lock(
+        root, "cmd_bind_challenge"
     )
+    release_lock = True
+    try:
+        transactional_write_texts(
+            [
+                (artifact_path, bound_text),
+                (
+                    ledger_path,
+                    json.dumps(ledger, ensure_ascii=False, indent=2) + "\n",
+                ),
+            ],
+            expected_sha256=prepared["expected_sha256"],
+        )
+    except MigrationRecoveryRequired:
+        release_lock = False
+        raise
+    finally:
+        if release_lock:
+            release_migration_update_lock(lock, lock_payload)
     print(
         json.dumps(
             {
@@ -9436,11 +11266,10 @@ def _build_scaffold(args: argparse.Namespace, output: Path) -> dict[str, Any]:
         "DEPENDENCY_GRAPH.md",
         output / "audit" / "03_dependencies" / "dependency_graph.md",
     )
-    copy_template(
-        skill_root,
-        "FINAL_REPORT.md",
-        output / "audit" / "06_reports" / "FINAL_REPORT.md",
-    )
+    if getattr(args, "report_format", "html") == "markdown":
+        copy_template(
+            skill_root, "FINAL_REPORT.md",
+            output / "audit" / "06_reports" / "FINAL_REPORT.md")
     original_paper = paper
     original_project_root = project_root
     original_additional_paths = list(additional_paths)
@@ -9534,6 +11363,9 @@ def _build_scaffold(args: argparse.Namespace, output: Path) -> dict[str, Any]:
         source_warnings=source_warnings,
         path_identity_base=paper.parent if portable_sources else None,
     )
+    identity_errors = inventory_identity_errors(inventory["units"])
+    if identity_errors:
+        raise ValueError("Cannot create audit: " + "; ".join(identity_errors))
     cross_references = scan_cross_references(
         paper,
         source_files=source_files,
@@ -9676,6 +11508,12 @@ def _build_scaffold(args: argparse.Namespace, output: Path) -> dict[str, Any]:
         "report_deliverables": [],
         "notes": [],
     }
+    manifest["protocol"]["challenge_contract_version"] = 3
+    if getattr(args, "report_format", "html") == "html":
+        release = report_module("proofcheck_release")
+        manifest["report_contract"] = release.contract(report_api())
+        manifest["report_context"] = {}
+        manifest["report_deliverables"] = release.declarations(manifest)
     progress = {
         "schema_version": SCHEMA_VERSION,
         "paper_file": paper_value,
@@ -9759,6 +11597,9 @@ def _build_scaffold(args: argparse.Namespace, output: Path) -> dict[str, Any]:
     )
     sync_workflow_views(output)
 
+    if uses_html_report(manifest):
+        report_module("proofcheck_release").render_working(report_api(), output)
+
     return {
         "audit_root": str(output),
         "paper_file": paper_value,
@@ -9824,7 +11665,95 @@ def cmd_index(args: argparse.Namespace) -> int:
     return 0
 
 
+def crossref_refresh_hint(root: Path) -> str:
+    return (
+        "for unchanged locked sources, run: "
+        f'python "{Path(__file__).resolve()}" crossref --root "{root}"'
+    )
+
+
+@audit_migration_locked
+def refresh_audit_crossref(args: argparse.Namespace) -> int:
+    """Regenerate both canonical views without renewing sources or judgments."""
+    root = args.root.resolve()
+    errors: list[str] = []
+    manifest_path, valid = canonical_artifact_path(
+        root, "AUDIT_MANIFEST.json", "audit manifest", errors
+    )
+    if not valid or not manifest_path.is_file():
+        raise ValueError("Cannot refresh cross-references: " + "; ".join(
+            errors or [f"Audit manifest not found: {manifest_path}"]
+        ))
+    guards = {manifest_path: sha256_file(manifest_path)}
+    _, manifest, manifest_errors = load_audit_manifest(root)
+    errors.extend(manifest_errors)
+    errors.extend(source_snapshot_freshness_errors(root, manifest))
+    paths = []
+    absent = []
+    for suffix in ("json", "md"):
+        path, _ = canonical_artifact_path(
+            root, f"audit/01_index/cross_reference_audit.{suffix}",
+            f"cross-reference audit {suffix}", errors,
+        )
+        paths.append(path)
+        if path.is_file():
+            guards[path] = sha256_file(path)
+        elif not path.exists():
+            absent.append(path)
+    if errors:
+        raise ValueError("Cannot refresh cross-references: " + "; ".join(errors))
+
+    paper = resolve_stored_path(manifest["paper_file"], root)
+    members = packet_source_members(root, manifest)
+    guards.update({path: row["sha256"] for path, row in members})
+    additional, fls, project_root, _ = parse_manifest_source_discovery(
+        manifest, root, errors
+    )
+    if fls is not None:
+        guards[fls] = manifest["source_discovery"]["fls"]["sha256"]
+    portable = manifest.get("input_provenance", {}).get("portable_sources") is True
+    if portable:
+        warnings = manifest.get("source_discovery", {}).get("recorded_warnings", [])
+        if not isinstance(warnings, list) or not all(isinstance(item, str) for item in warnings):
+            errors.append("source_discovery.recorded_warnings must be a string list")
+        files = [path for path, _ in members]
+        if manifest["input_provenance"]["kind"] == "latex" and not errors:
+            files, warnings = rediscover_portable_source_closure(
+                paper, files, additional, root, warnings
+            )
+    else:
+        closure = discover_source_closure(
+            paper, additional_files=additional, fls_file=fls,
+            project_root=project_root or paper.parent,
+        )
+        files, warnings = closure["files"], closure["warnings"]
+    if errors:
+        raise ValueError("Cannot refresh cross-references: " + "; ".join(errors))
+    data = scan_cross_references(
+        paper, source_files=files, source_warnings=warnings,
+        path_identity_base=paper.parent if portable else None,
+    )
+    errors = source_snapshot_freshness_errors(root, manifest)
+    if errors:
+        raise ValueError("Cannot refresh cross-references: " + "; ".join(errors))
+    transactional_write_texts(
+        [(paths[0], serialize(data, "json")), (paths[1], crossref_markdown(data))],
+        expected_sha256=guards, expected_absent=absent,
+    )
+    print(json.dumps({
+        "command": "crossref", "status": "refreshed", "audit_root": str(root),
+        "outputs": [relative_or_absolute(path, root) for path in paths],
+        "next_action": "Resume audit checks; a finalized audit still requires finalize and delivery-check.",
+    }, indent=2))
+    return 0
+
+
 def cmd_crossref(args: argparse.Namespace) -> int:
+    if getattr(args, "root", None) is not None:
+        if (getattr(args, "file", None) is not None or args.output is not None
+                or args.format != "json" or args.force):
+            raise ValueError("crossref --root refreshes both canonical files; do not combine it with --file, --output, --format markdown, or --force")
+        return refresh_audit_crossref(args)
     if not args.file.is_file():
         raise FileNotFoundError(f"LaTeX source not found: {args.file}")
     if args.file.suffix.lower() == ".pdf":
@@ -9965,7 +11894,6 @@ def cmd_extract(args: argparse.Namespace) -> int:
             "argument_status": "not_checked",
             "statement_status": "not_assessed",
             "dependency_closure": "not_checked",
-            "use_site_sufficiency": "not_checked",
             "explicit_assumptions": [],
             "inherited_assumptions": [],
             "direct_dependencies": [],
@@ -9995,6 +11923,23 @@ def cmd_extract(args: argparse.Namespace) -> int:
         },
         "steps": [],
     }
+    extraction_project_root = source.parent
+    if audit_root is not None:
+        extraction_manifest, extraction_errors = load_json_object(audit_root / "AUDIT_MANIFEST.json", "manifest")
+        if not extraction_errors and is_nonempty_string(extraction_manifest.get("paper_file")):
+            extraction_project_root = resolve_stored_path(extraction_manifest["paper_file"], audit_root).parent
+    source_fragment_support().lock(report_api(), ledger, source, args.start, args.end,
+                                   output.parent, project_root=extraction_project_root)
+    if statement_start is not None:
+        statement_expansion = source_fragment_support().expand(
+            report_api(), statement_source, statement_start, statement_end,
+            output.parent, project_root=extraction_project_root)
+        if statement_expansion["has_inclusion"]:
+            ledger["obligation"]["statement_spans"].extend(
+                locked_span(resolve_stored_path(fragment["file"], output.parent),
+                            fragment["start_line"], fragment["end_line"], output.parent)
+                for fragment in statement_expansion["fragments"]
+                if resolve_stored_path(fragment["file"], output.parent) != statement_source)
     atomic_write_json(output, ledger)
     print(
         json.dumps(
@@ -10002,7 +11947,7 @@ def cmd_extract(args: argparse.Namespace) -> int:
                 "ledger": str(output),
                 "unit_id": args.unit_id,
                 "source_range": f"{args.start}-{args.end}",
-                "physical_lines": len(selected),
+                "physical_lines": len(ledger["source_lines"]),
                 "artifact_state": "source_locked_skeleton",
                 "finalizable": False,
                 "next_action": (
@@ -10073,8 +12018,25 @@ def validate_current_primary_packet(
         raise ValueError(
             "The compiler packet must remain outside the canonical audit root"
         )
+    artifact = packet.get("semantic_artifact")
+    expected_relative = ledger_path.relative_to(audit_root).as_posix()
+    if (
+        not isinstance(artifact, dict)
+        or artifact.get("kind") != "source_locked_skeleton"
+        or artifact.get("audit_relative_file") != expected_relative
+    ):
+        raise ValueError("Compiler packet does not bind this source-locked skeleton")
+    # Discover the canonical input independently; never select a path supplied
+    # by the packet. Existing ledgers remain live for issue/dependency targets.
+    skeleton_path, skeleton = packet_skeleton(
+        audit_root, str(ledger.get("unit_id"))
+    )
+    if skeleton_path != ledger_path or skeleton != ledger:
+        raise ValueError(
+            "Compiler packet requires the actual current canonical source-locked skeleton"
+        )
     expected_packet = build_context_packet(
-        audit_root, str(ledger.get("unit_id")), "primary"
+        audit_root, str(ledger.get("unit_id")), "primary", for_recompile=True
     )
     context_binding = packet.get("context_binding")
     if (
@@ -10114,14 +12076,6 @@ def validate_current_primary_packet(
     obligation_hash = canonical_sha256(ledger.get("obligation"))
     if packet.get("obligation_sha256") != obligation_hash:
         raise ValueError("Compiler packet obligation_sha256 binding is stale")
-    artifact = packet.get("semantic_artifact")
-    expected_relative = ledger_path.relative_to(audit_root).as_posix()
-    if (
-        not isinstance(artifact, dict)
-        or artifact.get("kind") != "source_locked_skeleton"
-        or artifact.get("audit_relative_file") != expected_relative
-    ):
-        raise ValueError("Compiler packet does not bind this source-locked skeleton")
     validated_packet = dict(packet)
     validated_packet["_submitted_operational_binding_sha256"] = packet.get(
         "operational_binding_sha256"
@@ -10135,6 +12089,7 @@ def validate_current_primary_packet(
     validated_packet["operational_binding_sha256"] = expected_packet.get(
         "operational_binding_sha256"
     )
+    validated_packet["dependencies"] = expected_packet.get("dependencies")
     return validated_packet
 
 
@@ -10149,6 +12104,35 @@ def validate_compiler_context_packet(
         ledger_path,
         packet_path,
     )
+    dependencies = packet.get("dependencies")
+    if not isinstance(dependencies, dict):
+        raise ValueError("Compiler packet dependencies are malformed")
+    preliminary_uses: list[str] = []
+    for field in ("direct_internal_uses", "direct_external_uses"):
+        rows = dependencies.get(field)
+        if not isinstance(rows, list):
+            raise ValueError(f"Compiler packet dependencies.{field} is malformed")
+        for index, row in enumerate(rows, 1):
+            if not isinstance(row, dict):
+                raise ValueError(
+                    f"Compiler packet dependencies.{field}[{index}] is malformed"
+                )
+            step_ids = row.get("step_ids")
+            if (
+                row.get("status") == "unchecked"
+                or not isinstance(step_ids, list)
+                or not step_ids
+            ):
+                preliminary_uses.append(
+                    str(row.get("use_id") or f"{field}[{index}]")
+                )
+    if preliminary_uses:
+        raise ValueError(
+            "compile-annotations requires every direct dependency row to bind "
+            "exact step_ids and a non-unchecked status; complete the dependency "
+            "registry and regenerate the packet: "
+            + ", ".join(preliminary_uses)
+        )
     if annotations.get("context_binding_sha256") != packet.get(
         "context_binding_sha256"
     ):
@@ -10235,7 +12219,6 @@ def validate_compile_skeleton(
         "argument_status": "not_checked",
         "statement_status": "not_assessed",
         "dependency_closure": "not_checked",
-        "use_site_sufficiency": "not_checked",
     }
     expected_review_lists = (
         "conclusion_results",
@@ -10320,7 +12303,7 @@ def annotation_scaffold_data(
             or not isinstance(row.get("text"), str)
         ):
             raise ValueError("The extracted skeleton has malformed source lines")
-        if is_non_substantive(row["text"]):
+        if locked_line_is_non_substantive(row) if "source_fragments" in ledger else is_non_substantive(row["text"]):
             continue
         line_number = int(row["line"])
         steps.append(
@@ -10332,7 +12315,8 @@ def annotation_scaffold_data(
                 "goal": None,
                 "claim": None,
                 "literal": (
-                    f"Line {line_number} says exactly: {row['text'].rstrip()}"
+                    (f"Coverage position {line_number}, {row['file']} line {row['source_line']}, says exactly: {row['text'].rstrip()}"
+                     if "source_fragments" in ledger else f"Line {line_number} says exactly: {row['text'].rstrip()}")
                 ),
                 "atomicity_evidence": None,
                 "adversarial": None,
@@ -10359,7 +12343,6 @@ def annotation_scaffold_data(
             "support_step": None,
             "contract_fidelity": None,
             "statement_status": None,
-            "use_site_sufficiency": None,
             "issue_ids": None,
         }
         for row in raw_conclusions
@@ -10916,8 +12899,7 @@ def annotation_preflight_diagnostics(
     source_groups = annotations.get("source_groups")
     if isinstance(source_groups, list):
         source = ledger.get("source")
-        source_start = source.get("start_line") if isinstance(source, dict) else None
-        source_end = source.get("end_line") if isinstance(source, dict) else None
+        source_start, source_end = source_coverage_bounds(ledger)
         previous_group_end = source_start - 1 if is_int(source_start) else None
         for index, group in enumerate(source_groups):
             pointer = f"/source_groups/{index}"
@@ -11009,7 +12991,7 @@ def annotation_preflight_diagnostics(
                     "needed_form",
                     "compatibility_check",
                 ),
-                optional=("conclusion_id",),
+                optional=("conclusion_id", "statement_support_sha256"),
             ):
                 annotation_string_diagnostic(
                     row.get("id"), f"{pointer}/id", diagnostics
@@ -11084,9 +13066,8 @@ def annotation_preflight_diagnostics(
                 step,
                 pointer,
                 diagnostics,
-                required=COMPACT_STEP_FIELDS
-                - {"rule", "justification", "failure"},
-                optional=("rule", "justification", "failure"),
+                required=COMPACT_STEP_FIELDS - COMPACT_STEP_OPTIONAL_FIELDS,
+                optional=COMPACT_STEP_OPTIONAL_FIELDS,
             ):
                 continue
             key = step.get("key")
@@ -11144,25 +13125,65 @@ def annotation_preflight_diagnostics(
                 diagnostics,
                 required=RISK_ASPECTS,
             ):
+                shorthand_aspects: list[str] = []
                 for aspect in RISK_ASPECTS:
                     if aspect in risks:
-                        if annotation_object_diagnostics(
-                            risks[aspect],
+                        risk = risks[aspect]
+                        if isinstance(risk, str):
+                            if risk == "not_applicable":
+                                shorthand_aspects.append(aspect)
+                            else:
+                                append_annotation_diagnostic(
+                                    diagnostics,
+                                    f"{pointer}/risks/{aspect}",
+                                    "invalid_enum",
+                                    "string shorthand must be exactly not_applicable",
+                                )
+                        elif annotation_object_diagnostics(
+                            risk,
                             f"{pointer}/risks/{aspect}",
                             diagnostics,
                             required=("status", "evidence"),
                         ):
                             annotation_enum_diagnostic(
-                                risks[aspect].get("status"),
+                                risk.get("status"),
                                 f"{pointer}/risks/{aspect}/status",
                                 RISK_STATUSES,
                                 diagnostics,
                             )
                             annotation_string_diagnostic(
-                                risks[aspect].get("evidence"),
+                                risk.get("evidence"),
                                 f"{pointer}/risks/{aspect}/evidence",
                                 diagnostics,
                             )
+                basis_pointer = f"{pointer}/not_applicable_basis"
+                if shorthand_aspects:
+                    if "not_applicable_basis" not in step:
+                        append_annotation_diagnostic(
+                            diagnostics,
+                            basis_pointer,
+                            "missing_field",
+                            "required when any risk uses not_applicable shorthand",
+                        )
+                    else:
+                        annotation_string_diagnostic(
+                            step.get("not_applicable_basis"),
+                            basis_pointer,
+                            diagnostics,
+                        )
+                elif "not_applicable_basis" in step:
+                    annotation_string_diagnostic(
+                        step.get("not_applicable_basis"),
+                        basis_pointer,
+                        diagnostics,
+                    )
+                    append_annotation_diagnostic(
+                        diagnostics,
+                        basis_pointer,
+                        "unused_field",
+                        "remove this field unless at least one risk uses the "
+                        "not_applicable shorthand",
+                    )
             inputs = step.get("inputs")
             if isinstance(inputs, list):
                 for input_index, compact_input in enumerate(inputs):
@@ -11209,12 +13230,26 @@ def annotation_preflight_diagnostics(
                                 diagnostics,
                             )
                         if "anchor" in compact_input:
-                            annotation_object_diagnostics(
-                                compact_input.get("anchor"),
+                            anchor = compact_input.get("anchor")
+                            if annotation_object_diagnostics(
+                                anchor,
                                 f"{input_pointer}/anchor",
                                 diagnostics,
                                 required=("kind", "index"),
-                            )
+                            ) and compact_input.get("kind") == "obligation":
+                                annotation_enum_diagnostic(
+                                    anchor.get("kind"),
+                                    f"{input_pointer}/anchor/kind",
+                                    {"statement_span", "context_span"},
+                                    diagnostics,
+                                )
+                                if not is_int(anchor.get("index")) or anchor["index"] < 1:
+                                    append_annotation_diagnostic(
+                                        diagnostics,
+                                        f"{input_pointer}/anchor/index",
+                                        "invalid_value",
+                                        "must be a positive one-based integer (not a Boolean)",
+                                    )
                         input_kind = compact_input.get("kind")
                         reference = compact_input.get("reference")
                         if input_kind == "obligation":
@@ -11261,6 +13296,15 @@ def annotation_preflight_diagnostics(
                                     f"{input_pointer}/reference",
                                     "forward_reference",
                                     "must identify a step established earlier",
+                                )
+                            elif steps[reference_position].get("mode") == "noninferential":
+                                append_annotation_diagnostic(
+                                    diagnostics,
+                                    f"{input_pointer}/reference",
+                                    "unsupported_premise_root",
+                                    f"step {reference} is noninferential and cannot supply "
+                                    "a factual premise; link the normalized premise or "
+                                    "record an introduction inference in that step",
                                 )
                         elif input_kind == "dependency":
                             for field in ("anchor", "compatibility_check"):
@@ -11502,9 +13546,9 @@ def annotation_preflight_diagnostics(
                     "support_step",
                     "contract_fidelity",
                     "statement_status",
-                    "use_site_sufficiency",
                     "issue_ids",
                 ),
+                optional=("statement_support",),
             ):
                 annotation_string_diagnostic(
                     row.get("support_step"),
@@ -11533,12 +13577,6 @@ def annotation_preflight_diagnostics(
                     row.get("statement_status"),
                     f"{pointer}/statement_status",
                     STATEMENT_STATUSES,
-                    diagnostics,
-                )
-                annotation_enum_diagnostic(
-                    row.get("use_site_sufficiency"),
-                    f"{pointer}/use_site_sufficiency",
-                    USE_STATUSES,
                     diagnostics,
                 )
                 annotation_string_list_diagnostics(
@@ -11658,7 +13696,12 @@ def annotation_preflight_diagnostics(
                     annotation_enum_diagnostic(
                         row.get("disposition"),
                         f"{pointer}/disposition",
-                        {"internal_result", "navigation", "non_load_bearing"},
+                        {
+                            "internal_result",
+                            "obligation_context",
+                            "navigation",
+                            "non_load_bearing",
+                        },
                         diagnostics,
                     )
                     annotation_string_diagnostic(
@@ -11794,7 +13837,7 @@ def annotation_preflight_diagnostics(
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        validation_errors, _ = check_ledger_data(temporary, True)
+        validation_errors, summary = check_ledger_data(temporary, True)
     finally:
         if temporary.exists():
             temporary.unlink()
@@ -11806,7 +13849,8 @@ def annotation_preflight_diagnostics(
             "message": message,
         }
         for message in validation_errors
-    ]
+    ] + (compiled_dependency_binding_diagnostics(candidate, summary, packet, annotations)
+         if not validation_errors else [])
 
 
 def cmd_annotation_check(args: argparse.Namespace) -> int:
@@ -11966,8 +14010,7 @@ def build_compiled_source_units(
     source_lines = ledger.get("source_lines")
     if not isinstance(source, dict) or not isinstance(source_lines, list):
         raise ValueError("The extracted skeleton has no locked source records")
-    start = source.get("start_line")
-    end = source.get("end_line")
+    start, end = source_coverage_bounds(ledger)
     if not is_int(start) or not is_int(end) or start < 1 or end < start:
         raise ValueError("The extracted skeleton has an invalid source range")
     if len(source_lines) != end - start + 1:
@@ -12025,7 +14068,7 @@ def build_compiled_source_units(
                 raise ValueError(
                     f"The extracted skeleton has malformed source line {line_number}"
                 )
-            kind = "non_substantive" if is_non_substantive(text) else "one_line"
+            kind = "non_substantive" if locked_line_is_non_substantive(row) else "one_line"
             evidence = (
                 f"Locked line {line_number} is mechanically non-substantive."
                 if kind == "non_substantive"
@@ -12046,14 +14089,24 @@ def build_compiled_source_units(
             }
         )
         ranges[(unit_start, unit_end)] = unit_id
+        if "source_fragments" in ledger:
+            units[-1]["source_span"] = source_unit_location(ledger, units[-1])
         line_number = unit_end + 1
     return units, ranges
 
 
-def expand_compact_risks(value: Any, field: str) -> list[dict[str, str]]:
+def expand_compact_risks(
+    value: Any,
+    field: str,
+    not_applicable_basis: Any = None,
+) -> list[dict[str, str]]:
     risks = annotation_object(value, field, required=RISK_ASPECTS)
     expanded: list[dict[str, str]] = []
+    shorthand_aspects: list[str] = []
     for aspect in RISK_ASPECTS:
+        if risks[aspect] == "not_applicable":
+            shorthand_aspects.append(aspect)
+            continue
         record = annotation_object(
             risks[aspect],
             f"{field}.{aspect}",
@@ -12069,6 +14122,27 @@ def expand_compact_risks(value: Any, field: str) -> list[dict[str, str]]:
                 "status": record["status"],
                 "evidence": record["evidence"],
             }
+        )
+    if shorthand_aspects:
+        if not is_substantive_string(not_applicable_basis):
+            raise ValueError(
+                f"{field} uses not_applicable shorthand but its step has no "
+                "substantive not_applicable_basis"
+            )
+        by_aspect = {record["aspect"]: record for record in expanded}
+        for aspect in shorthand_aspects:
+            by_aspect[aspect] = {
+                "aspect": aspect,
+                "status": "not_applicable",
+                "evidence": (
+                    f"{aspect} is not applicable to this step: "
+                    f"{not_applicable_basis}"
+                ),
+            }
+        expanded = [by_aspect[aspect] for aspect in RISK_ASPECTS]
+    elif not_applicable_basis is not None:
+        raise ValueError(
+            f"{field} has not_applicable_basis but uses no not_applicable shorthand"
         )
     return expanded
 
@@ -12091,7 +14165,7 @@ def load_compact_dependencies(value: Any) -> tuple[list[dict[str, Any]], dict[st
                 "needed_form",
                 "compatibility_check",
             ),
-            optional=("conclusion_id",),
+            optional=("conclusion_id", "statement_support_sha256"),
         )
         if record["kind"] not in {"internal_result", "external_result"}:
             raise ValueError(f"{field}.kind must be an internal or external result")
@@ -12128,6 +14202,7 @@ def load_compact_dependencies(value: Any) -> tuple[list[dict[str, Any]], dict[st
                 "status",
                 "needed_form",
                 "compatibility_check",
+                "statement_support_sha256",
             )
             if key in record
         }
@@ -12154,6 +14229,13 @@ COMPACT_STEP_FIELDS = {
     "rule",
     "justification",
     "failure",
+    "not_applicable_basis",
+}
+COMPACT_STEP_OPTIONAL_FIELDS = {
+    "rule",
+    "justification",
+    "failure",
+    "not_applicable_basis",
 }
 
 
@@ -12184,8 +14266,8 @@ def prepare_compact_step_plans(
         step = annotation_object(
             raw_step,
             field,
-            required=COMPACT_STEP_FIELDS - {"rule", "justification", "failure"},
-            optional=("rule", "justification", "failure"),
+            required=COMPACT_STEP_FIELDS - COMPACT_STEP_OPTIONAL_FIELDS,
+            optional=COMPACT_STEP_OPTIONAL_FIELDS,
         )
         key = step["key"]
         if not is_nonempty_string(key):
@@ -12224,7 +14306,11 @@ def prepare_compact_step_plans(
         annotation_string_list(
             step["adversarial"], f"{field}.adversarial", allow_empty=False
         )
-        expand_compact_risks(step["risks"], f"{field}.risks")
+        expand_compact_risks(
+            step["risks"],
+            f"{field}.risks",
+            step.get("not_applicable_basis"),
+        )
         if not isinstance(step["inputs"], list):
             raise ValueError(f"{field}.inputs must be a list")
         if not isinstance(step["side_conditions"], list):
@@ -12513,6 +14599,14 @@ def build_compact_steps(
                                 f"{input_field} references a step not established earlier"
                             )
                         raise ValueError(f"{input_field} references unknown step {reference}")
+                    if not is_nonempty_string(
+                        prior.get("inference", {}).get("conclusion_move")
+                    ):
+                        raise ValueError(
+                            f"{input_field} cannot use noninferential step {reference} "
+                            "as a factual premise; link the normalized premise or "
+                            "record an introduction inference in that step"
+                        )
                     claim = prior["restatement"]
                     prior_id = prior["id"]
                     dependency = {
@@ -12559,7 +14653,11 @@ def build_compact_steps(
                     premise["source_reference_occurrence_id"] = source_occurrence_id
                 premise_uses.append(premise)
 
-            risks = expand_compact_risks(plan["risks"], f"{field}.risks")
+            risks = expand_compact_risks(
+                plan["risks"],
+                f"{field}.risks",
+                plan.get("not_applicable_basis"),
+            )
             issue_ids = compact_issue_ids(plan["issue_ids"], f"{field}.issue_ids")
             common: dict[str, Any] = {
                 "id": plan["compiled_id"],
@@ -12745,7 +14843,11 @@ def build_compact_candidate_dispositions(
         )
     output: list[dict[str, Any]] = []
     seen: set[str] = set()
-    nondependency_roles = {"navigation", "non_load_bearing"}
+    nondependency_roles = {
+        "navigation",
+        "non_load_bearing",
+        "obligation_context",
+    }
     for index, raw_record in enumerate(value, 1):
         field = f"review.candidate_dependency_dispositions[{index}]"
         record = annotation_object(
@@ -12843,20 +14945,6 @@ def build_compact_citation_dispositions(value: Any) -> list[dict[str, Any]]:
     return output
 
 
-def aggregate_use_site_status(statuses: list[str]) -> str:
-    substantive = [status for status in statuses if status != "not_applicable"]
-    if not substantive:
-        return "not_applicable"
-    rank = {
-        "sufficient": 0,
-        "conditional": 1,
-        "unclear": 2,
-        "insufficient": 3,
-        "not_checked": 4,
-    }
-    return max(substantive, key=lambda status: rank[status])
-
-
 def build_compact_review(
     ledger: dict[str, Any],
     value: Any,
@@ -12922,9 +15010,9 @@ def build_compact_review(
                 "support_step",
                 "contract_fidelity",
                 "statement_status",
-                "use_site_sufficiency",
                 "issue_ids",
             ),
+            optional=("statement_support",),
         )
         conclusion_id = record["conclusion_id"]
         if conclusion_id in compact_by_id:
@@ -12935,8 +15023,6 @@ def build_compact_review(
             raise ValueError(f"{field}.contract_fidelity is invalid")
         if record["statement_status"] not in STATEMENT_STATUSES:
             raise ValueError(f"{field}.statement_status is invalid")
-        if record["use_site_sufficiency"] not in USE_STATUSES:
-            raise ValueError(f"{field}.use_site_sufficiency is invalid")
         compact_issue_ids(record["issue_ids"], f"{field}.issue_ids")
         if record["support_step"] not in built_by_key:
             raise ValueError(f"{field}.support_step is unknown")
@@ -13008,11 +15094,24 @@ def build_compact_review(
                 "argument_status": argument_map[support_step["status"]],
                 "statement_status": compact["statement_status"],
                 "dependency_closure": closure_map[dependency_state],
-                "use_site_sufficiency": compact["use_site_sufficiency"],
                 "dependency_use_ids": dependency_use_ids,
                 "issue_ids": issue_ids,
             }
         )
+        if "statement_support" in compact:
+            supplied = annotation_object(
+                compact["statement_support"], f"Conclusion {conclusion_id}.statement_support",
+                required=("support_step", "extra_conditions", "evidence"),
+            )
+            supplied_step = built_by_key.get(supplied["support_step"])
+            if not isinstance(supplied_step, dict):
+                raise ValueError(f"Conclusion {conclusion_id}.statement_support.support_step is unknown")
+            conclusion_results[-1]["statement_support"] = {
+                "schema_version": 1,
+                "support": {"step_id": supplied_step["id"], "move_id": (supplied_step.get("inference") or {}).get("conclusion_move")},
+                "target_contract_sha256": canonical_sha256(conclusion_contract_payload(ledger["obligation"], conclusion_id)),
+                "extra_conditions": supplied["extra_conditions"], "evidence": supplied["evidence"],
+            }
 
     step_statuses = [
         step["status"] for step in steps if step["status"] != "non_substantive"
@@ -13036,9 +15135,6 @@ def build_compact_review(
     unit_closure = expected_unit_status(
         [record["dependency_closure"] for record in conclusion_results]
     )
-    unit_use_status = aggregate_use_site_status(
-        [record["use_site_sufficiency"] for record in conclusion_results]
-    )
     return {
         "unit_status": unit_status,
         "conclusion_step_id": (
@@ -13051,7 +15147,6 @@ def build_compact_review(
         "argument_status": argument_map[unit_status],
         "statement_status": unit_statement_status,
         "dependency_closure": unit_closure,
-        "use_site_sufficiency": unit_use_status,
         "explicit_assumptions": list(review_input["explicit_assumptions"]),
         "inherited_assumptions": list(review_input["inherited_assumptions"]),
         "direct_dependencies": [dict(record) for record in direct_dependencies],
@@ -13145,7 +15240,11 @@ def validate_compiled_candidate_reconciliation(
         for row in expected_dependencies
         if row.get("kind") == "internal_result"
     }
-    nondependency_roles = {"navigation", "non_load_bearing"}
+    nondependency_roles = {
+        "navigation",
+        "non_load_bearing",
+        "obligation_context",
+    }
     errors: list[str] = []
     mapped_set = set(mapped_ids)
     for candidate_id in candidate_ids:
@@ -13232,7 +15331,7 @@ def validate_compiled_packet_dispositions(
             details.append("stale " + ", ".join(stale))
         raise ValueError(
             "Source-reference dispositions must cover exactly the packet "
-            "proof occurrences: " + "; ".join(details)
+            "statement-or-proof occurrences: " + "; ".join(details)
         )
 
     proof = packet.get("source")
@@ -13247,7 +15346,25 @@ def validate_compiled_packet_dispositions(
             clean = strip_latex_comment(str(row.get("text", ""))).strip()
             if clean and not re.fullmatch(r"\\end\s*\{proof\}", clean):
                 proof_last = int(row["line"])
+    if isinstance(proof, dict) and is_int(proof.get("last_substantive_position")):
+        proof_last = proof["last_substantive_position"]
 
+    candidate_paths = inventory.get("candidate_dependency_paths", [])
+    candidate_paths = (
+        candidate_paths if isinstance(candidate_paths, list) else []
+    )
+    foreign_nonproof_occurrences = {
+        str(occurrence.get("occurrence_id"))
+        for path in candidate_paths
+        if isinstance(path, dict)
+        for occurrence in path.get("reference_chain", [])
+        if isinstance(occurrence, dict)
+        and occurrence.get("owner_proof_required") is False
+        and occurrence.get("owner_environment")
+        in OBLIGATION_CONTEXT_ENVIRONMENTS
+        and occurrence.get("owner_region") == "statement"
+        and is_nonempty_string(occurrence.get("occurrence_id"))
+    }
     errors: list[str] = []
     for occurrence_id, occurrence in expected_occurrences.items():
         disposition = actual_dispositions[occurrence_id]
@@ -13272,6 +15389,7 @@ def validate_compiled_packet_dispositions(
                 or dependency is None
                 or dependency.get("kind") != "internal_result"
                 or dependency.get("id") != owner_unit_id
+                or occurrence_id in foreign_nonproof_occurrences
             ):
                 errors.append(
                     f"{occurrence_id}: internal_result does not map to "
@@ -13286,19 +15404,26 @@ def validate_compiled_packet_dispositions(
                     f"{occurrence_id}: local_step does not name this unit"
                 )
         elif role == "obligation_context":
-            if owner_status == "unique" and (
-                owner_unit_id != packet.get("unit_id")
-                or owner_region != "statement"
-            ):
-                errors.append(
-                    f"{occurrence_id}: obligation_context has a foreign owner"
+            if owner_status == "unique":
+                owned_statement = (
+                    owner_unit_id == packet.get("unit_id")
+                    and owner_region == "statement"
                 )
+                reviewed_foreign_context = (
+                    owner_unit_id != packet.get("unit_id")
+                    and occurrence_id in foreign_nonproof_occurrences
+                )
+                if not owned_statement and not reviewed_foreign_context:
+                    errors.append(
+                        f"{occurrence_id}: obligation_context must name this "
+                        "unit's statement or a reviewed foreign non-proof unit"
+                    )
         elif role == "own_result_identification":
             closing = bool(
                 occurrence.get("structural_context") == "proof_header"
                 or (
-                    is_int(occurrence.get("line"))
-                    and occurrence["line"]
+                    is_int(occurrence.get("source_position", occurrence.get("line")))
+                    and occurrence.get("source_position", occurrence.get("line"))
                     >= max(int(proof_start or 0), proof_last - 2)
                 )
             )
@@ -13323,8 +15448,8 @@ def validate_compiled_packet_dispositions(
                 and target == packet.get("unit_id")
                 and occurrence.get("structural_context") != "proof_header"
                 and (
-                    not is_int(occurrence.get("line"))
-                    or occurrence["line"]
+                    not is_int(occurrence.get("source_position", occurrence.get("line")))
+                    or occurrence.get("source_position", occurrence.get("line"))
                     < max(int(proof_start or 0), proof_last - 2)
                 )
             ):
@@ -13395,10 +15520,6 @@ def validate_compiled_packet_dispositions(
                 f"{citation}: verified unit cannot leave it unresolved"
             )
 
-    candidate_paths = inventory.get("candidate_dependency_paths", [])
-    candidate_paths = (
-        candidate_paths if isinstance(candidate_paths, list) else []
-    )
     path_by_id = {
         str(row.get("path_id")): row
         for row in candidate_paths
@@ -13431,10 +15552,31 @@ def validate_compiled_packet_dispositions(
                     errors.append(
                         f"{path_id}: navigation candidate requires hyperref"
                     )
+            elif role == "obligation_context":
+                root_disposition = actual_dispositions.get(
+                    str(root_occurrence.get("occurrence_id"))
+                )
+                if (
+                    root_occurrence.get("owner_proof_required") is not False
+                    or root_occurrence.get("owner_environment")
+                    not in OBLIGATION_CONTEXT_ENVIRONMENTS
+                    or root_occurrence.get("owner_region") != "statement"
+                    or root_occurrence.get("owner_unit_id")
+                    != disposition.get("candidate_id")
+                    or not isinstance(root_disposition, dict)
+                    or root_disposition.get("disposition")
+                    != "obligation_context"
+                ):
+                    errors.append(
+                        f"{path_id}: obligation_context candidate must resolve "
+                        "through its exact premise-bearing occurrence to a "
+                        "reviewed foreign non-proof unit"
+                    )
             elif role != "non_load_bearing":
                 errors.append(
                     f"{path_id}: foreign dependency candidate without a "
-                    "registry edge may only be navigation or non_load_bearing"
+                    "registry edge may only be obligation_context, navigation, "
+                    "or non_load_bearing"
                 )
     if errors:
         raise ValueError(
@@ -13609,6 +15751,70 @@ def compile_annotation_data(
     return candidate
 
 
+def compiled_dependency_binding_diagnostics(
+    candidate: dict[str, Any], summary: dict[str, Any],
+    packet: dict[str, Any], annotations: dict[str, Any],
+) -> list[dict[str, str]]:
+    """One exact-use gate shared by preflight, compilation, and submission."""
+    diagnostics: list[dict[str, str]] = []
+    errors: list[str] = []
+    unit_id = str(candidate.get("unit_id", ""))
+    invoking = expected_result_uses({unit_id: summary}, errors)
+    projection = packet.get("dependencies")
+    if not isinstance(projection, dict):
+        errors.append("Compiler packet dependencies are malformed")
+        projection = {}
+    for message in errors:
+        append_annotation_diagnostic(
+            diagnostics, "/dependencies", "dependency_binding_error", message
+        )
+    seen: set[str] = set()
+    for field in ("direct_internal_uses", "direct_external_uses"):
+        rows = projection.get(field, [])
+        if not isinstance(rows, list):
+            append_annotation_diagnostic(
+                diagnostics, "/dependencies", "dependency_binding_error",
+                f"Compiler packet dependencies.{field} is malformed",
+            )
+            continue
+        for index, row in enumerate(rows, 1):
+            use = row if isinstance(row, dict) else {}
+            use_id = str(use.get("use_id", ""))
+            prefix = f"dependencies.{field}[{index}] ({use_id or 'unnamed use'})"
+            expected = invoking.get((unit_id, use_id))
+            row_errors: list[str] = []
+            if use_id in seen:
+                row_errors.append(f"{prefix}: duplicate dependency use")
+            seen.add(use_id)
+            if expected is None:
+                row_errors.append(f"{prefix} is not invoked by the compiled ledger")
+            else:
+                validate_dependency_use_identity(use, prefix, expected, row_errors)
+                if use.get("status") != expected.get("status"):
+                    row_errors.append(f"{prefix}.status disagrees with the compiled ledger")
+            sites = [
+                (f"/steps/{step_index}/inputs/{input_index}/reference", step.get("key"))
+                for step_index, step in enumerate(annotations.get("steps", []))
+                if isinstance(step, dict)
+                for input_index, premise in enumerate(step.get("inputs", []))
+                if isinstance(premise, dict) and premise.get("kind") == "dependency"
+                and premise.get("reference") == use_id
+            ]
+            for message in row_errors:
+                for pointer, key in sites or [("/dependencies", None)]:
+                    append_annotation_diagnostic(
+                        diagnostics, pointer, "dependency_binding_error",
+                        message + (f"; draft step {key!r}" if key else ""),
+                    )
+    for _, use_id in sorted(invoking):
+        if use_id not in seen:
+            append_annotation_diagnostic(
+                diagnostics, "/dependencies", "dependency_binding_error",
+                f"{use_id}: compiled invocation is missing from the current registry",
+            )
+    return diagnostics
+
+
 def cmd_compile_annotations(args: argparse.Namespace) -> int:
     configure_console_errors()
     ledger_path = args.ledger.resolve()
@@ -13631,15 +15837,20 @@ def cmd_compile_annotations(args: argparse.Namespace) -> int:
             "Compact compiler input must end in .skeleton.json so canonical ledger "
             "discovery cannot treat the unfinished input as audit evidence"
         )
-    if not output_path.name.endswith(".ledger.json"):
-        raise ValueError("Compiled output must end in .ledger.json")
     expected_output_name = (
         ledger_path.name[: -len(".skeleton.json")] + ".ledger.json"
     )
+    expected_output_path = ledger_path.with_name(expected_output_name)
+    if not output_path.name.endswith(".ledger.json"):
+        raise ValueError(
+            "Compiled output must end in .ledger.json; "
+            f"required canonical sibling path: {expected_output_path}"
+        )
     if output_path.name != expected_output_name:
         raise ValueError(
             "Compiled output basename must equal the skeleton basename with "
-            ".skeleton.json replaced by .ledger.json"
+            ".skeleton.json replaced by .ledger.json; "
+            f"required canonical sibling path: {expected_output_path}"
         )
     if output_path == ledger_path:
         raise ValueError("Compiled output must not overwrite the extracted ledger")
@@ -13650,7 +15861,8 @@ def cmd_compile_annotations(args: argparse.Namespace) -> int:
     if output_path.parent != ledger_path.parent:
         raise ValueError(
             "Compiled output must be in the extracted ledger directory so locked "
-            "relative paths retain their identity"
+            "relative paths retain their identity; "
+            f"required canonical sibling path: {expected_output_path}"
         )
     if output_path.exists():
         raise FileExistsError(
@@ -13736,6 +15948,19 @@ def cmd_compile_annotations(args: argparse.Namespace) -> int:
             )
             raise ValueError(
                 "Compiled ledger failed full final validation: " + shown + suffix
+            )
+        dependency_binding_errors = [row["message"] for row in
+            compiled_dependency_binding_diagnostics(candidate, summary, packet, annotations)]
+        if dependency_binding_errors:
+            shown = "; ".join(dependency_binding_errors[:12])
+            suffix = (
+                f"; and {len(dependency_binding_errors) - 12} more"
+                if len(dependency_binding_errors) > 12
+                else ""
+            )
+            raise ValueError(
+                "Compiled ledger dependency binding disagrees with the current "
+                "registry: " + shown + suffix
             )
         publication_method = publish_no_overwrite(
             temporary, output_path, "Compiled ledger"
@@ -13843,7 +16068,6 @@ def cmd_migrate_ledger(args: argparse.Namespace) -> int:
             "argument_status": "not_checked",
             "statement_status": "not_assessed",
             "dependency_closure": "not_checked",
-            "use_site_sufficiency": "not_checked",
             "explicit_assumptions": [],
             "inherited_assumptions": [],
             "direct_dependencies": [],
@@ -13924,6 +16148,7 @@ def validate_source_units(
     start: int,
     end: int,
     selected_lines: list[str],
+    source_records: list[dict[str, Any]] | None = None,
     final: bool,
     errors: list[str],
 ) -> tuple[
@@ -13939,13 +16164,8 @@ def validate_source_units(
     coverage: dict[int, list[str]] = defaultdict(list)
     order: dict[str, int] = {}
     previous_end = start - 1
-    display_ranges = [
-        (
-            start + span["start_line"] - 1,
-            start + span["end_line"] - 1,
-        )
-        for span in display_math_spans(selected_lines)
-    ]
+    display_spans = display_math_spans(selected_lines)
+    masked_lines = mask_structural_tex("\n".join(selected_lines)).split("\n")
     for index, record in enumerate(value, 1):
         prefix = f"source_units[{index}]"
         if not isinstance(record, dict):
@@ -13995,11 +16215,12 @@ def validate_source_units(
             errors.append(f"{prefix}.partition_evidence must be substantive")
         if kind == "one_line" and unit_start != unit_end:
             errors.append(f"{prefix}: one_line must cover exactly one physical line")
+        substantive_flags = [locked_line_is_non_substantive(row) for row in source_records[local_start:local_end]] if source_records is not None else [is_non_substantive(text) for text in texts]
         if kind == "non_substantive":
-            if not all(is_non_substantive(text) for text in texts):
+            if not all(substantive_flags):
                 errors.append(f"{prefix}: non_substantive covers mathematical content")
         else:
-            if all(is_non_substantive(text) for text in texts):
+            if all(substantive_flags):
                 errors.append(f"{prefix}: substantive source unit has no content")
         if kind == "continued_sentence":
             if unit_start == unit_end:
@@ -14012,9 +16233,8 @@ def validate_source_units(
         if kind == "continued_display":
             if unit_start == unit_end:
                 errors.append(f"{prefix}: continued_display must span multiple lines")
-            if not any(
-                display_start <= unit_start and unit_end <= display_end
-                for display_start, display_end in display_ranges
+            if not display_math_contains_lines(
+                display_spans, masked_lines, local_start + 1, local_end
             ):
                 errors.append(
                     f"{prefix}: continued_display must lie inside one complete "
@@ -14090,6 +16310,289 @@ def conclusion_contract_payload(
     }
 
 
+def statement_support_projection(
+    ledger: dict[str, Any], result: dict[str, Any], errors: list[str],
+    *, provisional: bool = False,
+) -> dict[str, Any] | None:
+    """Check a separate reconstruction using the ordinary checked move graph."""
+    value = result.get("statement_support")
+    if value is None:
+        return None
+    prefix = f"conclusion {result.get('conclusion_id')}.statement_support"
+    fields = {"schema_version", "support", "target_contract_sha256", "extra_conditions", "evidence"}
+    before = len(errors)
+    if not isinstance(value, dict) or set(value) != fields or type(value.get("schema_version")) is not int or value.get("schema_version") != 1:
+        errors.append(f"{prefix} requires the version-1 checked-support fields")
+        return None
+    obligation = ledger.get("obligation") or {}
+    contract = conclusion_contract_payload(obligation, str(result.get("conclusion_id")))
+    if not contract or value.get("target_contract_sha256") != canonical_sha256(contract):
+        errors.append(f"{prefix}.target_contract_sha256 is stale or names a different conclusion")
+    if not is_substantive_string(value.get("evidence")):
+        errors.append(f"{prefix}.evidence must explain the supplied reconstruction")
+    support = value.get("support")
+    if (not isinstance(support, dict) or set(support) != {"step_id", "move_id"}
+            or not all(is_nonempty_string(support.get(key)) for key in ("step_id", "move_id"))):
+        errors.append(f"{prefix}.support must identify one checked move")
+        return None
+    if support == result.get("support"):
+        errors.append(f"{prefix} must preserve a distinct written-argument support move")
+    steps = {step.get("id"): step for step in ledger.get("steps", []) if isinstance(step, dict)}
+    step = steps.get(support["step_id"], {})
+    moves = (step.get("inference") or {}).get("moves", [])
+    move = next((row for row in moves if isinstance(row, dict) and row.get("id") == support["move_id"]), None)
+    if not move or step.get("support_role") != "derivation":
+        errors.append(f"{prefix} must name an ordinary checked derivation move")
+        return None
+    if contract and move.get("claim") != contract.get("claim"):
+        errors.append(f"{prefix} move must reach the exact original conclusion claim")
+    closure = ledger_support_contract_closure(ledger, support["step_id"], support["move_id"])
+    closure_ids = {key[0] for key in closure["move_keys"]}
+    closure_steps = [step for step in ledger.get("steps", []) if isinstance(step, dict) and step.get("id") in closure_ids]
+    conditions: list[str] = []
+    for member in closure_steps:
+        if member.get("status") not in {"verified", "conditionally_verified"}:
+            errors.append(f"{prefix} inherits a nonverified move {member.get('id')}")
+        for cause in member.get("conditions", []):
+            inherited_side_condition = (isinstance(cause, dict) and cause.get("kind") == "dependency"
+                                        and cause.get("reference") in closure_ids)
+            if isinstance(cause, dict) and cause.get("kind") != "side_condition" and not inherited_side_condition:
+                errors.append(f"{prefix} cannot replace unchecked dependencies or risks with extra conditions")
+        for condition in member.get("side_conditions", []):
+            if isinstance(condition, dict) and condition.get("status") == "open":
+                text = condition.get("condition")
+                if is_substantive_string(text) and text not in conditions:
+                    conditions.append(text)
+    extra = value.get("extra_conditions")
+    if extra != conditions:
+        errors.append(f"{prefix}.extra_conditions must exactly list its open side conditions in support order")
+    direct = {row.get("use_id"): row for row in (ledger.get("review") or {}).get("direct_dependencies", []) if isinstance(row, dict)}
+    dependency_ids = sorted(closure["dependency_uses"])
+    for use_id in dependency_ids:
+        if direct.get(use_id, {}).get("status") != "verified":
+            errors.append(f"{prefix} requires checked dependency {use_id}")
+    allowed = {row.get("pointer") for row in (contract or {}).get("applicability", []) if isinstance(row, dict)}
+    if closure["obligation_pointers"] - allowed:
+        errors.append(f"{prefix} uses assumptions outside the exact conclusion contract")
+    if result.get("contract_fidelity") != "verified":
+        errors.append(f"{prefix} requires verified original contract fidelity")
+    if result.get("statement_status") == "established" and conditions:
+        errors.append(f"{prefix}: extra conditions cannot establish the unrestricted statement")
+    if result.get("statement_status") == "refuted" and not conditions:
+        errors.append(f"{prefix}: an unrestricted supplement cannot coexist with a refutation of the same target")
+    payload = {
+        "unit_id": ledger.get("unit_id"), "source": ledger.get("source"),
+        "work_context_sha256": ledger.get("work_context_sha256"),
+        "contract": contract, "statement_support": value,
+        "steps": closure_steps, "dependencies": [direct.get(key) for key in dependency_ids],
+    }
+    return {
+        **value, "sha256": canonical_sha256(payload), "claim": (contract or {}).get("claim"),
+        "status": "conditional" if conditions else "verified",
+        "dependency_use_ids": dependency_ids, "dependency_closure": "verified",
+        "acceptance": "pending", "provisional": provisional,
+        "valid": len(errors) == before,
+    }
+
+
+def statement_support_proposals(ledger: dict[str, Any]) -> list[dict[str, Any]]:
+    """Expose proposed mathematics, not the primary judgment, for separate review."""
+    proposals = []
+    for result in (ledger.get("review") or {}).get("conclusion_results", []):
+        if not isinstance(result, dict) or "statement_support" not in result:
+            continue
+        errors: list[str] = []
+        support = statement_support_projection(ledger, result, errors)
+        if errors or support is None:
+            raise ValueError("Invalid statement support: " + "; ".join(errors))
+        closure = ledger_support_contract_closure(ledger, support["support"]["step_id"], support["support"]["move_id"])
+        ids = {key[0] for key in closure["move_keys"]}
+        proposed_steps = []
+        source_units = {row.get("id"): row for row in ledger.get("source_units", []) if isinstance(row, dict)}
+        for step in ledger.get("steps", []):
+            if step.get("id") not in ids:
+                continue
+            proposed_steps.append({
+                "step_id": step.get("id"), "source_unit_id": step.get("source_unit_id"),
+                "source_span": source_unit_location(ledger, source_units.get(step.get("source_unit_id"), {})),
+                "claim": step.get("restatement"),
+                "premises": step.get("premise_uses", []),
+                "moves": [{key: row.get(key) for key in ("id", "claim", "rule", "justification", "premise_ids", "prior_move_ids")}
+                          for row in (step.get("inference") or {}).get("moves", []) if isinstance(row, dict)],
+                "side_conditions": [{key: row.get(key) for key in ("id", "condition", "generated_by", "discharge")}
+                                    for row in step.get("side_conditions", []) if isinstance(row, dict)],
+            })
+        proposals.append({
+            "conclusion_id": result["conclusion_id"], "statement_support_sha256": support["sha256"],
+            "target": conclusion_contract_payload(ledger["obligation"], result["conclusion_id"]),
+            "extra_conditions": support["extra_conditions"],
+            "reconstruction": support["evidence"], "steps": proposed_steps,
+        })
+    return proposals
+
+
+def statement_support_response_errors(response: Any, packet: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    fields = {"response_schema_version", "unit_id", "packet_sha256", "independence_level", "assessments"}
+    if packet.get("suggested_changes"):
+        fields.add("change_assessments")
+    if not isinstance(response, dict) or set(response) != fields:
+        return ["Statement-support response requires exactly: " + ", ".join(sorted(fields))]
+    if type(response.get("response_schema_version")) is not int or response["response_schema_version"] != 1:
+        errors.append("Statement-support response_schema_version must be 1")
+    if response.get("unit_id") != packet.get("unit_id") or response.get("packet_sha256") != canonical_sha256(packet):
+        errors.append("Statement-support response must bind the exact consumed packet and unit")
+    if not is_enum_value(response.get("independence_level"), INDEPENDENCE_LEVELS - {"none"}):
+        errors.append("Statement-support review needs a declared independent context")
+    proposals = packet.get("statement_supports")
+    if not isinstance(proposals, list) or not proposals or any(not isinstance(row, dict) or not is_nonempty_string(row.get("conclusion_id")) or not is_nonempty_string(row.get("statement_support_sha256")) for row in proposals):
+        return [*errors, "Statement-support packet needs exact nonempty proposal targets"]
+    expected = {row["conclusion_id"]: row["statement_support_sha256"] for row in proposals}
+    seen = []
+    rows = response.get("assessments")
+    if not isinstance(rows, list):
+        return [*errors, "Statement-support assessments must be a list"]
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {"conclusion_id", "statement_support_sha256", "assessment", "reason"}:
+            errors.append("Each support assessment requires conclusion_id, statement_support_sha256, assessment, reason")
+            continue
+        key = row.get("conclusion_id")
+        seen.append(key)
+        if not isinstance(key, str) or key not in expected or row.get("statement_support_sha256") != expected.get(key):
+            errors.append("Statement-support assessment has a stale or unknown exact target")
+        if not is_enum_value(row.get("assessment"), {"accepted", "rejected", "unclear"}):
+            errors.append("Statement-support assessment must be accepted, rejected, or unclear")
+        if not is_substantive_string(row.get("reason")):
+            errors.append("Statement-support assessment needs its checked mathematical reason")
+    if sorted(str(key) for key in seen) != sorted(expected):
+        errors.append("Statement-support review must assess exactly every proposed support")
+    if packet.get("suggested_changes"):
+        changes = packet["suggested_changes"]
+        assessed = response.get("change_assessments")
+        expected_changes = {(row["issue_id"], row["change_index"]): row["sha256"] for row in changes}
+        seen_changes = []
+        if not isinstance(assessed, list):
+            errors.append("Statement-support change_assessments must be a list")
+            assessed = []
+        for row in assessed:
+            if not isinstance(row, dict) or set(row) != {"issue_id", "change_index", "sha256", "assessment", "reason"}:
+                errors.append("Each change assessment requires issue_id, change_index, sha256, assessment, and reason")
+                continue
+            key = (str(row.get("issue_id")), row.get("change_index"))
+            if not is_int(key[1]) or key not in expected_changes or row.get("sha256") != expected_changes.get(key):
+                errors.append("Suggested-change assessment does not bind the exact proposal and source target")
+            seen_changes.append(key)
+            if not is_enum_value(row.get("assessment"), {"accepted", "rejected", "unclear"}) or not is_substantive_string(row.get("reason")):
+                errors.append("Suggested-change assessment requires accepted/rejected/unclear and its mathematical reason")
+        if sorted((str(a), str(b)) for a, b in seen_changes) != sorted((str(a), str(b)) for a, b in expected_changes):
+            errors.append("Statement-support review must assess exactly every linked suggested change")
+    return errors
+
+
+def statement_support_changes(root: Path, ledger: dict[str, Any]) -> list[dict[str, Any]]:
+    _, issues, _, errors = load_issue_log(root)
+    if errors:
+        raise ValueError("Cannot inspect linked suggested changes: " + "; ".join(errors))
+    rows = []
+    for issue in issues:
+        for index, change in enumerate(issue.get("suggested_changes", []), 1):
+            if not isinstance(change, dict):
+                continue
+            reference = change.get("statement_support_ref")
+            if not isinstance(reference, dict) or reference.get("unit_id") != ledger.get("unit_id"):
+                continue
+            payload = {key: value for key, value in change.items() if key != "verification_status"}
+            rows.append({"issue_id": issue.get("id"), "change_index": index,
+                         "sha256": canonical_sha256(payload), "change": payload})
+    return rows
+
+
+def load_statement_support_review(root: Path, ledger: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
+    """Read the immutable supplemental response; coordinator flags supply no support."""
+    check = ledger.get("independent_check") or {}
+    reference = check.get("statement_support_review")
+    if reference is None:
+        return {}, []
+    errors: list[str] = []
+    history = check.get("statement_support_review_history", [])
+    if not isinstance(history, list):
+        errors.append("statement_support_review_history must preserve a list of exact references")
+        history = []
+    seen_history = set()
+    for prior in history:
+        if not isinstance(prior, dict) or set(prior) != {"artifact", "sha256"}:
+            errors.append("Historical statement-support review must retain its artifact and digest")
+            continue
+        historical_path, historical_valid = canonical_challenge_artifact_path(root, prior.get("artifact"), "Historical statement-support review", errors)
+        if (not historical_valid or historical_path is None or not historical_path.is_file()
+                or sha256_file(historical_path) != prior.get("sha256") or prior.get("artifact") in seen_history):
+            errors.append("Historical statement-support review is missing, altered, or duplicated")
+        seen_history.add(prior.get("artifact"))
+    if not isinstance(reference, dict) or set(reference) != {"artifact", "sha256"}:
+        return {}, ["statement_support_review needs an artifact and exact sha256"]
+    path, valid = canonical_challenge_artifact_path(root, reference.get("artifact"), "Statement-support review", errors)
+    if not valid or path is None or not path.is_file():
+        return {}, [*errors, "Statement-support review artifact is unavailable"]
+    if reference.get("sha256") != sha256_file(path):
+        return {}, ["Statement-support review artifact is stale or altered"]
+    record, read_errors = load_json_object(path, "statement-support review")
+    if read_errors:
+        return {}, read_errors
+    packet = record.get("packet")
+    if not isinstance(packet, dict) or packet.get("kind") != "stat-paper-proofcheck-statement-support-packet":
+        return {}, ["Statement-support review has no authenticated proposal packet"]
+    try:
+        expected = statement_support_proposals(ledger)
+    except ValueError as exc:
+        return {}, [str(exc)]
+    if packet.get("statement_supports") != expected or packet.get("unit_id") != ledger.get("unit_id"):
+        errors.append("Statement-support review is stale relative to its current target, conditions, or checked derivation")
+    if packet.get("initial_response") != (ledger.get("independent_check") or {}).get("initial_response"):
+        errors.append("Statement-support review must preserve the current initial blind response")
+    try:
+        if packet.get("suggested_changes", []) != statement_support_changes(root, ledger):
+            errors.append("Statement-support review is stale relative to its linked suggested changes")
+    except ValueError as exc:
+        errors.append(str(exc))
+    errors.extend(statement_support_response_errors(record.get("response"), packet))
+    if errors:
+        return {}, errors
+    return {row["conclusion_id"]: row["assessment"] for row in record["response"]["assessments"]}, []
+
+
+def checked_suggested_change_errors(
+    issue: dict[str, Any], change: dict[str, Any], index: int, root: Path,
+    ledgers: dict[str, dict[str, Any]],
+) -> list[str]:
+    prefix = f"{issue.get('id')}.suggested_changes[{index}]"
+    reference = change.get("statement_support_ref")
+    if not isinstance(reference, dict) or set(reference) != {"unit_id", "conclusion_id", "sha256"}:
+        return [f"{prefix}: unapplied verified_sufficient needs an exact statement_support_ref"]
+    ledger = ledgers.get(str(reference.get("unit_id")))
+    if ledger is None or reference.get("unit_id") != issue.get("affected_result"):
+        return [f"{prefix}: checked proposal must support the root affected result"]
+    result = next((row for row in (ledger.get("review") or {}).get("conclusion_results", []) if isinstance(row, dict) and row.get("conclusion_id") == reference.get("conclusion_id")), {})
+    errors: list[str] = []
+    support = statement_support_projection(ledger, result, errors)
+    if support is None or support.get("sha256") != reference.get("sha256"):
+        errors.append(f"{prefix}: proposal support is missing or stale")
+    acceptance, review_errors = load_statement_support_review(root, ledger)
+    errors.extend(review_errors)
+    if acceptance.get(str(reference.get("conclusion_id"))) != "accepted":
+        errors.append(f"{prefix}: proposal requires an accepted immutable support review")
+    review_ref = (ledger.get("independent_check") or {}).get("statement_support_review")
+    if not errors and isinstance(review_ref, dict):
+        record, record_errors = load_json_object(root / review_ref["artifact"], "statement-support review")
+        errors.extend(record_errors)
+        payload = {key: value for key, value in change.items() if key != "verification_status"}
+        matches = [row for row in (record.get("response") or {}).get("change_assessments", [])
+                   if isinstance(row, dict) and row.get("issue_id") == issue.get("id") and row.get("change_index") == index
+                   and row.get("sha256") == canonical_sha256(payload) and row.get("assessment") == "accepted"]
+        if len(matches) != 1:
+            errors.append(f"{prefix}: accepted proof support alone does not verify this exact proposed edit")
+    return errors
+
+
 def validate_conclusion_records(
     obligation: dict[str, Any],
     ledger_path: Path,
@@ -14129,6 +16632,11 @@ def validate_conclusion_records(
         claim = record.get("claim")
         if not is_substantive_string(claim):
             errors.append(f"{prefix}.claim must be substantive")
+        if "reader_description" in record:
+            description = record["reader_description"]
+            if (not is_substantive_string(description) or len(description) > 120
+                    or any(char in description for char in "\r\n")):
+                errors.append(f"{prefix}.reader_description must be substantive single-line text of at most 120 characters")
         spans = record.get("source_spans")
         if not isinstance(spans, list) or (final and not spans):
             errors.append(f"{prefix}.source_spans must be a nonempty list")
@@ -14321,7 +16829,10 @@ def validate_obligation(
         "not_applicable",
         "unclear",
     }):
-        errors.append("obligation.uniformity has an invalid or missing value")
+        errors.append(
+            "obligation.uniformity has an invalid or missing value; expected one of "
+            "pointwise, uniform, mixed, not_applicable, unclear"
+        )
     if not is_enum_value(obligation.get("regime"), {
         "finite_sample",
         "asymptotic",
@@ -14329,7 +16840,10 @@ def validate_obligation(
         "not_applicable",
         "unclear",
     }):
-        errors.append("obligation.regime has an invalid or missing value")
+        errors.append(
+            "obligation.regime has an invalid or missing value; expected one of "
+            "finite_sample, asymptotic, both, not_applicable, unclear"
+        )
     for aspect in ("uniformity", "regime"):
         if (
             obligation.get(aspect) == "unclear"
@@ -14457,6 +16971,9 @@ def validate_dependency_record(
                 f"{prefix}.conclusion_id must identify the exact dependency "
                 "conclusion"
             )
+    if "statement_support_sha256" in dependency:
+        if kind != "internal_result" or not isinstance(dependency["statement_support_sha256"], str) or not SHA256_RE.fullmatch(dependency["statement_support_sha256"]):
+            errors.append(f"{prefix}.statement_support_sha256 requires an exact internal supplemental support digest")
     elif kind == "external_result" and dependency.get("conclusion_id") is not None:
         errors.append(
             f"{prefix}.conclusion_id is reserved for internal result conclusions"
@@ -14587,6 +17104,8 @@ def validate_independent_check(
         if value.get("status") == "agreed":
             if disagreements:
                 errors.append("agreed independent check must have no disagreements")
+            if value.get("resolution") != "":
+                errors.append("agreed independent check must have an empty resolution")
             if value.get("challenger_verdict") != reconciled_verdict:
                 errors.append(
                     "agreed independent check requires identical challenger and "
@@ -14635,6 +17154,64 @@ def validate_independent_check(
     return value
 
 
+def prior_step_establishes_statement_label(
+    ledger: dict[str, Any] | None,
+    ledger_dir: Path,
+    step_id: str,
+    claim: str | None,
+    move_id: str | None,
+    label: str,
+) -> bool:
+    """Resolve a statement label through its recorded earlier proof support."""
+    if ledger is None or not is_nonempty_string(claim) or not is_nonempty_string(move_id):
+        return False
+    obligation = ledger.get("obligation")
+    review = ledger.get("review")
+    if not isinstance(obligation, dict) or not isinstance(review, dict):
+        return False
+    conclusions = obligation.get("conclusions")
+    results = review.get("conclusion_results")
+    statement_spans = obligation.get("statement_spans")
+    if not all(isinstance(rows, list) for rows in (conclusions, results, statement_spans)):
+        return False
+    statement_metadata = [
+        metadata for span in statement_spans
+        if (metadata := resolved_span_metadata(span, ledger_dir)) is not None
+    ]
+    for conclusion in conclusions:
+        if not isinstance(conclusion, dict) or conclusion.get("claim") != claim:
+            continue
+        matching_results = [
+            result for result in results
+            if isinstance(result, dict)
+            and result.get("conclusion_id") == conclusion.get("id")
+        ]
+        if len(matching_results) != 1:
+            continue
+        support = matching_results[0].get("support")
+        if not isinstance(support, dict) or (
+            support.get("step_id") != step_id or support.get("move_id") != move_id
+        ):
+            continue
+        spans = conclusion.get("source_spans")
+        if not isinstance(spans, list):
+            continue
+        for span in spans:
+            metadata = resolved_span_metadata(span, ledger_dir)
+            if metadata is None or not any(
+                Path(parent["file"]) == Path(metadata["file"])
+                and parent["start_line"] <= metadata["start_line"]
+                and metadata["end_line"] <= parent["end_line"]
+                for parent in statement_metadata
+            ):
+                continue
+            span_errors: list[str] = []
+            validate_locked_span(span, ledger_dir, "statement conclusion", span_errors)
+            if not span_errors and locked_span_contains_label(span, ledger_dir, label):
+                return True
+    return False
+
+
 def validate_premise_uses(
     value: Any,
     prefix: str,
@@ -14645,9 +17222,11 @@ def validate_premise_uses(
     prior_step_kinds: dict[str, str],
     prior_step_claims: dict[str, str],
     prior_step_ranges: dict[str, tuple[int, int]],
+    prior_step_conclusion_moves: dict[str, str | None],
     source_path: Path,
     final: bool,
     errors: list[str],
+    source_ledger: dict[str, Any] | None = None,
 ) -> tuple[dict[str, dict[str, Any]], set[str]]:
     if value is None and not final:
         return {}, set()
@@ -14836,20 +17415,37 @@ def validate_premise_uses(
                     f"{item_prefix} cannot use the theorem statement step "
                     f"{reference} as a premise"
                 )
+            elif final and not is_nonempty_string(
+                prior_step_conclusion_moves.get(reference)
+            ):
+                errors.append(
+                    f"{item_prefix} cannot use non-inferential or unsupported step "
+                    f"{reference} as a factual premise; link the normalized premise "
+                    "or record an introduction inference in that step"
+                )
             if is_nonempty_string(source_reference_id):
                 prior_range = prior_step_ranges.get(reference)
-                if prior_range is None or not locked_span_contains_label(
-                    {
+                label_in_prior_step = prior_range is not None and locked_span_contains_label(
+                    source_unit_location(source_ledger, {"lines": list(prior_range)}) if source_ledger is not None else {
                         "file": relative_or_absolute(source_path, ledger_dir),
                         "start_line": prior_range[0],
                         "end_line": prior_range[1],
                     },
                     ledger_dir,
                     source_reference_id,
+                )
+                if not label_in_prior_step and not prior_step_establishes_statement_label(
+                    source_ledger,
+                    ledger_dir,
+                    reference,
+                    prior_step_claims.get(reference),
+                    prior_step_conclusion_moves.get(reference),
+                    source_reference_id,
                 ):
                     errors.append(
                         f"{item_prefix}.source_reference_id {source_reference_id} "
-                        f"is not active inside earlier step {reference}"
+                        f"is not active inside earlier step {reference} "
+                        "or a statement conclusion it establishes"
                     )
         else:
             dependency = dependencies_by_id.get(reference)
@@ -15394,6 +17990,7 @@ def validate_condition_records(
         errors.append(f"{prefix}: conditions are only allowed on conditionally_verified steps")
 
 
+@gate_context_reader
 def check_ledger_data(
     ledger_path: Path,
     final: bool = False,
@@ -15559,14 +18156,16 @@ def check_ledger_data(
     if not source.is_file():
         errors.append(f"Source file not found: {source}")
     elif valid_range:
-        current = read_lines(source)
-        if end > len(current):
-            errors.append(f"Source now has only {len(current)} lines; ledger ends at {end}")
+        try:
+            current_selected = source_fragment_support().current(report_api(), ledger, ledger_path.parent)
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            errors.append(str(exc))
         else:
-            current_selected = current[start - 1 : end]
             current_hash = sha256_text("\n".join(current_selected))
             if current_hash != source_info.get("unit_sha256"):
                 errors.append("Source drift: unit SHA-256 no longer matches the ledger")
+    if "source_fragments" in ledger:
+        start, end = source_coverage_bounds(ledger)
     if valid_range:
         expected_count = end - start + 1
         if len(source_lines) != expected_count:
@@ -15597,6 +18196,8 @@ def check_ledger_data(
         item.get("text", "") if isinstance(item, dict) else ""
         for item in source_lines
     ]
+    locked_display_spans = display_math_spans(locked_selected)
+    locked_masked_lines = mask_structural_tex("\n".join(locked_selected)).split("\n")
     source_units: dict[str, dict[str, Any]] = {}
     source_unit_coverage: dict[int, list[str]] = defaultdict(list)
     source_unit_order: dict[str, int] = {}
@@ -15606,9 +18207,19 @@ def check_ledger_data(
             start=start,
             end=end,
             selected_lines=locked_selected,
+            source_records=source_lines if "source_fragments" in ledger else None,
             final=final,
             errors=errors,
         )
+        if "source_fragments" in ledger:
+            for source_unit in source_units.values():
+                try:
+                    expected_location = source_unit_location(ledger, source_unit)
+                except (KeyError, TypeError, ValueError) as exc:
+                    errors.append(str(exc))
+                else:
+                    if source_unit.get("source_span") != expected_location:
+                        errors.append(f"{source_unit.get('id')}: source_span does not match its original source fragment")
 
     obligation = ledger.get("obligation")
     obligation_error_start = len(errors)
@@ -15644,6 +18255,7 @@ def check_ledger_data(
     step_status_by_id: dict[str, str] = {}
     step_kind_by_id: dict[str, str] = {}
     step_claim_by_id: dict[str, str] = {}
+    step_conclusion_move_by_id: dict[str, str | None] = {}
     step_support_role_by_id: dict[str, str] = {}
     premise_records_by_step: dict[str, dict[str, dict[str, Any]]] = {}
     step_ranges_by_id: dict[str, tuple[int, int]] = {}
@@ -15756,7 +18368,7 @@ def check_ledger_data(
         if status == "non_substantive":
             if locked_selected and covered_lines:
                 texts = [locked_selected[number - start] for number in covered_lines]
-                if not all(is_non_substantive(text) for text in texts):
+                if not all(locked_line_is_non_substantive(source_lines[number - start]) if "source_fragments" in ledger else is_non_substantive(locked_selected[number - start]) for number in covered_lines):
                     errors.append(
                         f"{prefix}: non_substantive covers prose or mathematical content"
                     )
@@ -15854,6 +18466,7 @@ def check_ledger_data(
                             "status": dependency_status,
                             "needed_form": record.get("needed_form"),
                             "compatibility_check": record.get("compatibility_check"),
+                            **({"statement_support_sha256": record["statement_support_sha256"]} if "statement_support_sha256" in record else {}),
                         }
                     )
 
@@ -16047,9 +18660,11 @@ def check_ledger_data(
                 for prior_id, prior_range in step_ranges_by_id.items()
                 if prior_id != step_id
             },
+            step_conclusion_move_by_id,
             source,
             final and status != "not_checked",
             errors,
+            source_ledger=ledger,
         )
         premise_records_by_step[step_id] = premises
         premise_claims = [
@@ -16099,6 +18714,12 @@ def check_ledger_data(
             schema_version == SCHEMA_VERSION,
             final and status != "not_checked",
             errors,
+        )
+        step_inference = step.get("inference")
+        step_conclusion_move_by_id[step_id] = (
+            step_inference.get("conclusion_move")
+            if isinstance(step_inference, dict)
+            else None
         )
         if schema_version == SCHEMA_VERSION:
             inference_value = step.get("inference")
@@ -16198,7 +18819,7 @@ def check_ledger_data(
                 and valid_range
             ):
                 unit_text = "\n".join(
-                    locked_selected[anchor_range[0] - start : anchor_range[1] - start + 1]
+                    locked_masked_lines[anchor_range[0] - start : anchor_range[1] - start + 1]
                 )
                 evidence_anchoring_records.append(
                     {
@@ -16207,6 +18828,11 @@ def check_ledger_data(
                             unit_text,
                             whole_math=(
                                 anchor_unit.get("kind") == "continued_display"
+                                or display_math_contains_lines(
+                                    locked_display_spans, locked_masked_lines,
+                                    anchor_range[0] - start + 1,
+                                    anchor_range[1] - start + 1,
+                                )
                             ),
                         ),
                         "texts": collect_step_evidence_texts(step),
@@ -16713,6 +19339,7 @@ def check_ledger_data(
                 "status",
                 "needed_form",
                 "compatibility_check",
+                "statement_support_sha256",
             ):
                 if direct_dependency.get(dependency_field) != claim.get(
                     dependency_field
@@ -16753,7 +19380,6 @@ def check_ledger_data(
     dependency_closure = review.get("dependency_closure")
     argument_status = review.get("argument_status")
     statement_status = review.get("statement_status")
-    use_status = review.get("use_site_sufficiency")
     if not is_enum_value(contract_status, UNIT_STATUSES):
         errors.append("review.contract_fidelity is invalid or missing")
     if not is_enum_value(dependency_closure, UNIT_STATUSES):
@@ -16762,8 +19388,6 @@ def check_ledger_data(
         errors.append("review.argument_status is invalid or missing")
     if not is_enum_value(statement_status, STATEMENT_STATUSES):
         errors.append("review.statement_status is invalid or missing")
-    if not is_enum_value(use_status, USE_STATUSES):
-        errors.append("review.use_site_sufficiency is invalid or missing")
 
     conclusions = (
         obligation.get("conclusions", [])
@@ -16825,6 +19449,12 @@ def check_ledger_data(
                 )
                 if is_nonempty_string(prior_move):
                     pending.append((reference, prior_move))
+                elif final:
+                    errors.append(
+                        f"{step_id} premise {premise_id}: support closure stops at "
+                        f"{reference} without an introduction or derivation inference; "
+                        "a non-inferential declaration cannot supply a factual root"
+                    )
 
         while pending:
             step_id, move_id = pending.pop()
@@ -16898,11 +19528,26 @@ def check_ledger_data(
     seen_conclusion_results: set[str] = set()
     conclusion_result_records: list[dict[str, Any]] = []
     all_conclusion_dependency_uses: set[str] = set()
-    for index, result in enumerate(conclusion_results_value, 1):
+    support_acceptance: dict[str, str] = {}
+    support_root = containing_audit_root(ledger_path)
+    if support_root is not None:
+        support_acceptance, support_review_errors = load_statement_support_review(support_root, ledger)
+        if not primary_only:
+            errors.extend(support_review_errors)
+    for index, raw_result in enumerate(conclusion_results_value, 1):
         prefix = f"review.conclusion_results[{index}]"
-        if not isinstance(result, dict):
+        if not isinstance(raw_result, dict):
             errors.append(f"{prefix} must be an object")
             continue
+        result = dict(raw_result)
+        supplied = statement_support_projection(ledger, raw_result, errors, provisional=primary_only)
+        if supplied is not None:
+            supplied["acceptance"] = support_acceptance.get(str(result.get("conclusion_id")), "pending")
+            result["statement_support"] = supplied
+            all_conclusion_dependency_uses.update(supplied["dependency_use_ids"])
+            if (final and not primary_only and (ledger.get("independent_check") or {}).get("required")
+                    and supplied["acceptance"] != "accepted"):
+                errors.append(f"{prefix}.statement_support requires a current accepted immutable supplemental review")
         conclusion_id = result.get("conclusion_id")
         if conclusion_id not in conclusions_by_id:
             errors.append(f"{prefix}.conclusion_id is unknown")
@@ -16946,6 +19591,7 @@ def check_ledger_data(
         claim = conclusions_by_id[conclusion_id].get("claim")
         if (
             result_statement_status in {"established", "conditional"}
+            and supplied is None
             and move.get("claim") != claim
         ):
             errors.append(
@@ -16980,7 +19626,10 @@ def check_ledger_data(
             if isinstance(result_statement_status, str)
             else set()
         )
-        if not is_enum_value(step_status, allowed_step_statuses):
+        supplied_statement = supplied is not None and supplied.get("valid") and result_statement_status in {"established", "conditional"}
+        if supplied_statement and result_statement_status == "conditional" and not supplied["extra_conditions"]:
+            errors.append(f"{prefix}: a conditional supplemental statement requires explicit extra conditions")
+        if not supplied_statement and not is_enum_value(step_status, allowed_step_statuses):
             errors.append(
                 f"{prefix}.statement_status is inconsistent with support step "
                 f"status {step_status!r}"
@@ -16988,15 +19637,12 @@ def check_ledger_data(
         result_contract = result.get("contract_fidelity")
         result_argument = result.get("argument_status")
         result_closure = result.get("dependency_closure")
-        result_use_status = result.get("use_site_sufficiency")
         if not is_enum_value(result_contract, UNIT_STATUSES):
             errors.append(f"{prefix}.contract_fidelity is invalid")
         if not is_enum_value(result_argument, ARGUMENT_STATUSES):
             errors.append(f"{prefix}.argument_status is invalid")
         if not is_enum_value(result_closure, UNIT_STATUSES):
             errors.append(f"{prefix}.dependency_closure is invalid")
-        if not is_enum_value(result_use_status, USE_STATUSES):
-            errors.append(f"{prefix}.use_site_sufficiency is invalid")
         step_to_argument = {
             "verified": "valid",
             "conditionally_verified": "conditional",
@@ -17157,8 +19803,6 @@ def check_ledger_data(
             errors.append("Final ledger requires a dependency-closure judgment")
         if statement_status == "not_assessed":
             errors.append("Final ledger requires a separate statement-status judgment")
-        if use_status == "not_checked":
-            errors.append("Final ledger requires a use-site-sufficiency judgment")
 
     if (
         final
@@ -17291,9 +19935,10 @@ def check_ledger_data(
             ),
         },
         "source_file": str(source),
-        "source_start": start,
-        "source_end": end,
-        "source_range": f"{start}-{end}",
+        "source_reference": str(file_value),
+        "source_start": source_info["start_line"],
+        "source_end": source_info["end_line"],
+        "source_range": f"{source_info['start_line']}-{source_info['end_line']}",
         "coverage_mode": coverage_mode,
         "external_restatement_use_id": (
             external_restatement_use_id
@@ -17358,7 +20003,6 @@ def check_ledger_data(
             "argument_status": argument_status,
             "statement_status": statement_status,
             "dependency_closure": dependency_closure,
-            "use_site_sufficiency": use_status,
         },
         "obligation_statement_spans": obligation_statement_spans,
         "obligation_context_spans": obligation_context_spans,
@@ -17742,6 +20386,9 @@ def archived_ledger_step_projection(
     )
     source = ledger.get("source")
     file_value = source.get("file") if isinstance(source, dict) else None
+    if "source_fragments" in ledger:
+        location = source_unit_location(ledger, source_unit)
+        file_value, start_line, end_line = location["file"], location["start_line"], location["end_line"]
     return {
         "step": step,
         "file": str(file_value),
@@ -17827,34 +20474,48 @@ def archived_ledger_move_failure_rows(
     ]]
 
 
-DEPENDENCY_REPORT_COLUMNS = [
-    "Dependent",
-    "Use ID",
-    "Dependency",
-    "Dependency conclusion",
-    "Kind",
-    "Source status",
-    "Applicability status",
-    "Effective status",
-    "Issue IDs",
-]
+def sealed_prerequisite_status(value: Any) -> str:
+    """Derive prerequisite applicability from a sealed, previously final row."""
+    if not isinstance(value, list) or not value:
+        return "unchecked"
+    mapped = {
+        "satisfied": "passed",
+        "not_satisfied": "gap",
+        "partial": "conditional",
+        "unclear": "unclear",
+    }
+    statuses = [
+        mapped.get(str(row.get("status")), "unchecked")
+        for row in value
+        if isinstance(row, dict)
+    ]
+    nonclean = [status for status in statuses if status != "passed"]
+    return combine_dependency_statuses(nonclean) if nonclean else "passed"
 
 
-def archived_dependency_edge_hashes(
+def legacy_archived_dependency_edge_hashes(
     prior_registry: dict[str, Any],
     prior_report_text: str,
     issue_id: str,
     errors: list[str],
+    edge_output: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, str]:
-    """Reconstruct normalized closure-edge hashes from sealed prior evidence."""
+    """Reconstruct schema-one closure edges from its sealed report."""
+    columns = [
+        "Dependent",
+        "Use ID",
+        "Dependency",
+        "Dependency conclusion",
+        "Kind",
+        "Source status",
+        "Applicability status",
+        "Effective status",
+        "Issue IDs",
+    ]
     section = report_section(prior_report_text, "## Dependency closure")
     tables = markdown_tables(section or "")
     table = next(
-        (
-            candidate
-            for candidate in tables
-            if candidate and candidate[0] == DEPENDENCY_REPORT_COLUMNS
-        ),
+        (candidate for candidate in tables if candidate and candidate[0] == columns),
         None,
     )
     if table is None:
@@ -17864,7 +20525,7 @@ def archived_dependency_edge_hashes(
         return {}
     report_by_use: dict[str, list[str]] = {}
     for index, row in enumerate(table[2:], 1):
-        if len(row) != len(DEPENDENCY_REPORT_COLUMNS):
+        if len(row) != len(columns):
             errors.append(
                 f"{issue_id} sealed dependency row {index} has invalid width"
             )
@@ -17993,10 +20654,458 @@ def archived_dependency_edge_hashes(
                     source_evidence=result.get("source_evidence", []),
                     source_status=result.get("status"),
                 )
+    if edge_output is not None:
+        edge_output.update(normalized_by_use)
     return {
         use_id: canonical_sha256(edge)
         for use_id, edge in normalized_by_use.items()
     }
+
+
+def archived_statement_support_summaries(
+    ledgers: dict[str, dict[str, Any]], records: Any,
+    artifact_hashes: dict[str, str], errors: list[str],
+) -> dict[str, dict[str, Any]]:
+    sealed = {}
+    if not isinstance(records, list):
+        errors.append("Archived statement_support_reviews must be a sealed-member list")
+        records = []
+    for record in records:
+        decoded = sealed_json_object(record, "Archived supplemental review", errors)
+        if decoded is None:
+            continue
+        name, digest, content = decoded
+        if artifact_hashes.get(name) != digest or name in sealed:
+            errors.append("Archived supplemental review bytes must be unique and bound by prior finalization")
+        sealed[name] = (digest, content)
+    expected_files = set()
+    summaries = {}
+    for unit_id, ledger in ledgers.items():
+        raw_results = (ledger.get("review") or {}).get("conclusion_results", [])
+        if not any(isinstance(row, dict) and "statement_support" in row for row in raw_results):
+            continue
+        check = ledger.get("independent_check") or {}
+        for field in ("initial_response", "statement_support_review"):
+            reference = check.get(field)
+            if not isinstance(reference, dict) or reference.get("artifact") not in sealed:
+                errors.append(f"Archived {unit_id} requires its sealed {field}")
+                continue
+            expected_files.add(reference["artifact"])
+            if sealed[reference["artifact"]][0] != reference.get("sha256"):
+                errors.append(f"Archived {unit_id} {field} disagrees with its sealed bytes")
+        reference = check.get("statement_support_review") or {}
+        record = sealed.get(reference.get("artifact"), (None, {}))[1]
+        packet = record.get("packet") or {}
+        before = len(errors)
+        try:
+            if packet.get("statement_supports") != statement_support_proposals(ledger):
+                errors.append(f"Archived {unit_id} supplemental review has stale target or support")
+        except ValueError as exc:
+            errors.append(str(exc))
+        if packet.get("initial_response") != check.get("initial_response"):
+            errors.append(f"Archived {unit_id} supplemental review lost its original blind response")
+        errors.extend(statement_support_response_errors(record.get("response"), packet))
+        accepted = {row.get("conclusion_id"): row.get("assessment") for row in (record.get("response") or {}).get("assessments", []) if isinstance(row, dict)}
+        results = []
+        for raw in raw_results:
+            result = dict(raw)
+            support = statement_support_projection(ledger, raw, errors)
+            if support is not None:
+                support["acceptance"] = accepted.get(result.get("conclusion_id"), "pending") if len(errors) == before else "pending"
+                if support["acceptance"] != "accepted":
+                    errors.append(f"Archived {unit_id} support lacks accepted preserved review")
+                result["statement_support"] = support
+            results.append(result)
+        summaries[unit_id] = {"conclusion_results": results}
+    if set(sealed) != expected_files:
+        errors.append("Archived supplemental review members must exactly cover the sealed support-bearing ledgers")
+    return summaries
+
+
+def archived_dependency_edge_hashes(
+    prior_registry: dict[str, Any],
+    ledgers: dict[str, dict[str, Any]],
+    issue_id: str,
+    errors: list[str],
+    required_use_ids: set[str] | None = None,
+    edge_output: dict[str, dict[str, Any]] | None = None,
+    support_summaries: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, str]:
+    """Reconstruct closure-edge hashes from sealed registry and ledger JSON."""
+    normalized_by_use: dict[str, dict[str, Any]] = {}
+
+    def add_edge(
+        use: Any,
+        *,
+        kind: str,
+        dependency_id: Any,
+        dependency_conclusion_id: Any,
+        prerequisite_map: Any,
+        source_evidence: Any,
+        source_status: Any,
+    ) -> None:
+        if not isinstance(use, dict) or not is_nonempty_string(use.get("use_id")):
+            return
+        use_id = str(use["use_id"])
+        if required_use_ids is not None and use_id not in required_use_ids:
+            return
+        if use_id in normalized_by_use:
+            errors.append(
+                f"{issue_id} sealed dependency registry duplicates use ID {use_id}"
+            )
+            return
+        local_errors: list[str] = []
+        compatibility, _ = validate_compatibility_matrix(
+            use.get("compatibility_checks"),
+            f"sealed dependency {use_id}.compatibility_checks",
+            local_errors,
+        )
+        errors.extend(f"{issue_id} {message}" for message in local_errors)
+        applicability = compatibility
+        if kind == "external_result":
+            applicability = combine_dependency_statuses(
+                (
+                    compatibility,
+                    sealed_prerequisite_status(prerequisite_map),
+                )
+            )
+            if applicability == "verified":
+                applicability = "passed"
+        effective = combine_dependency_statuses(
+            (str(source_status), applicability)
+        )
+        if use.get("status") != effective:
+            errors.append(
+                f"{issue_id} sealed dependency {use_id} status disagrees "
+                f"with its source and applicability status"
+            )
+        normalized_by_use[use_id] = {
+            "dependent_unit": use.get("dependent_unit"),
+            "use_id": use_id,
+            "dependency_id": dependency_id,
+            "dependency_conclusion_id": dependency_conclusion_id,
+            "kind": kind,
+            "source_status": source_status,
+            "applicability_status": applicability,
+            "effective_status": effective,
+            "step_ids": use.get("step_ids", []),
+            "issue_ids": use.get("issue_ids", []),
+            "compatibility_checks": use.get("compatibility_checks", []),
+            "prerequisite_map": prerequisite_map,
+            "source_evidence": source_evidence,
+        }
+
+    internal_rows = prior_registry.get("internal_uses")
+    if isinstance(internal_rows, list):
+        for use in internal_rows:
+            if not isinstance(use, dict):
+                continue
+            if (
+                required_use_ids is not None
+                and str(use.get("use_id")) not in required_use_ids
+            ):
+                continue
+            dependency_id = use.get("dependency_id")
+            dependency_ledger = ledgers.get(str(dependency_id), {})
+            dependency_review = dependency_ledger.get("review")
+            dependency_summary = {
+                "conclusion_results": (
+                    dependency_review.get("conclusion_results", [])
+                    if isinstance(dependency_review, dict)
+                    else []
+                )
+            }
+            if support_summaries and str(dependency_id) in support_summaries:
+                dependency_summary = support_summaries[str(dependency_id)]
+            conclusion_id = use.get("dependency_conclusion_id")
+            source_status = internal_dependency_status(
+                dependency_summary, str(conclusion_id)
+            )
+            selected_support = None
+            if "statement_support_sha256" in use:
+                selected_support = selected_statement_support(dependency_summary, str(conclusion_id), use["statement_support_sha256"])
+                condition_rows = use.get("statement_support_conditions", [])
+                if (selected_support is None or selected_support.get("acceptance") != "accepted"
+                        or not isinstance(condition_rows, list)
+                        or sorted(str(row.get("condition")) for row in condition_rows if isinstance(row, dict)) != sorted(selected_support.get("extra_conditions", []))):
+                    errors.append(f"{issue_id} sealed selected support is missing, stale, or lacks its exact condition map")
+                    source_status = "unchecked"
+                else:
+                    source_status = combine_dependency_statuses([
+                        {"satisfied": "verified", "partial": "conditional", "not_satisfied": "incorrect", "unclear": "unclear"}.get(row.get("status"), "unchecked")
+                        for row in condition_rows
+                    ] or ["verified"])
+            if not dependency_ledger:
+                errors.append(
+                    f"{issue_id} sealed dependency {use.get('use_id')} "
+                    f"lacks source ledger {dependency_id}"
+                )
+            add_edge(
+                use,
+                kind="internal_result",
+                dependency_id=dependency_id,
+                dependency_conclusion_id=conclusion_id,
+                prerequisite_map=[],
+                source_evidence=[],
+                source_status=source_status,
+            )
+            if selected_support is not None and str(use.get("use_id")) in normalized_by_use:
+                normalized_by_use[str(use["use_id"])]["statement_support"] = selected_support
+                normalized_by_use[str(use["use_id"])]["statement_support_conditions"] = use.get("statement_support_conditions", [])
+    external_results = prior_registry.get("external_results")
+    if isinstance(external_results, list):
+        for result in external_results:
+            if not isinstance(result, dict):
+                continue
+            uses = result.get("uses")
+            if not isinstance(uses, list):
+                continue
+            for use in uses:
+                add_edge(
+                    use,
+                    kind="external_result",
+                    dependency_id=result.get("id"),
+                    dependency_conclusion_id=None,
+                    prerequisite_map=(
+                        use.get("prerequisite_map", [])
+                        if isinstance(use, dict)
+                        else []
+                    ),
+                    source_evidence=result.get("source_evidence", []),
+                    source_status=result.get("status"),
+                )
+    if edge_output is not None:
+        edge_output.update(normalized_by_use)
+    return {
+        use_id: canonical_sha256(edge)
+        for use_id, edge in normalized_by_use.items()
+    }
+
+
+def archived_structured_failure_rows(
+    issue: dict[str, Any],
+    ledgers: dict[str, dict[str, Any]],
+    ledger_files: dict[str, str],
+    dependency_edges: dict[str, dict[str, Any]],
+    sealed_sources: dict[str, bytes],
+    root: Path,
+) -> list[list[str]] | None:
+    """Rebuild dependency and obligation failures from sealed canonical JSON."""
+    origin = issue.get("origin_ref")
+    if not isinstance(origin, dict):
+        return None
+    kind = origin.get("kind")
+    if kind not in {"dependency_use", "obligation_pointer"}:
+        return None
+    affected_result = str(issue.get("affected_result"))
+    unit_id = str(origin.get("unit_id", affected_result))
+    ledger = ledgers.get(unit_id)
+    if not isinstance(ledger, dict):
+        return None
+    origin_reference = compact_json_value(
+        {
+            key: value
+            for key, value in origin.items()
+            if key != "evidence_spans"
+        }
+    )
+    claim = "none"
+    rule = str(kind)
+    premises = "none"
+    failure_evidence = "none"
+    failure_kind = str(issue.get("invalidation_kind", "none"))
+    projections: list[dict[str, Any]] = []
+
+    if kind == "dependency_use":
+        use_id = origin.get("use_id")
+        direct_dependencies = ledger.get("review", {}).get(
+            "direct_dependencies", []
+        )
+        matches = [
+            row
+            for row in direct_dependencies
+            if isinstance(row, dict) and row.get("use_id") == use_id
+        ] if isinstance(direct_dependencies, list) else []
+        edge = dependency_edges.get(str(use_id))
+        if len(matches) != 1 or not isinstance(edge, dict):
+            return None
+        direct = matches[0]
+        owner_step = next(
+            (
+                step.get("id")
+                for step in ledger.get("steps", [])
+                if isinstance(step, dict)
+                and step.get("status") != "non_substantive"
+                and any(
+                    isinstance(dependency, dict)
+                    and dependency.get("use_id") == use_id
+                    for dependency in step.get("dependencies", [])
+                )
+            ),
+            None,
+        )
+        projection = archived_ledger_step_projection(ledger, owner_step)
+        if projection is None:
+            return None
+        projections = [projection]
+        claim = str(direct.get("needed_form", "none"))
+        rule = str(direct.get("compatibility_check", "dependency_use"))
+        premises = json.dumps(
+            {
+                "dependency_id": direct.get("id"),
+                "conclusion_id": direct.get("conclusion_id"),
+                "needed_form": direct.get("needed_form"),
+            },
+            ensure_ascii=False,
+        )
+        failure_evidence = json.dumps(
+            {
+                "source_status": edge.get("source_status"),
+                "applicability_status": edge.get("applicability_status"),
+                "effective_status": edge.get("effective_status"),
+                "issue_ids": edge.get("issue_ids"),
+                "nonpassing_compatibility_checks": [
+                    {
+                        "aspect": row.get("aspect"),
+                        "status": row.get("status"),
+                        "evidence": row.get("evidence"),
+                        "issue_ids": row.get("issue_ids"),
+                    }
+                    for row in edge.get("compatibility_checks", [])
+                    if isinstance(row, dict)
+                    and row.get("status")
+                    not in {"passed", "not_applicable"}
+                ],
+                "nonpassing_prerequisites": [
+                    {
+                        "prerequisite": row.get("prerequisite"),
+                        "status": row.get("status"),
+                        "manuscript_evidence": row.get(
+                            "manuscript_evidence"
+                        ),
+                        "evidence_spans": row.get("evidence_spans"),
+                        "issue_ids": row.get("issue_ids"),
+                    }
+                    for row in edge.get("prerequisite_map", [])
+                    if isinstance(row, dict)
+                    and row.get("status") != "satisfied"
+                ],
+                "source_evidence": (
+                    edge.get("source_evidence", [])
+                    if edge.get("source_status") != "verified"
+                    else []
+                ),
+            },
+            ensure_ascii=False,
+        )
+        failure_kind = str(direct.get("status", failure_kind))
+    else:
+        obligation = ledger.get("obligation")
+        if not isinstance(obligation, dict):
+            return None
+        found, pointer_value = resolve_json_pointer(
+            obligation, origin.get("pointer")
+        )
+        if not found:
+            return None
+        claim = json.dumps(pointer_value, ensure_ascii=False)
+        premises = json.dumps(
+            {"obligation_pointer": origin.get("pointer")},
+            ensure_ascii=False,
+        )
+        failure_evidence = (
+            "The issue is anchored to this exact normalized obligation "
+            "field and its source-locked statement context."
+        )
+        spans = nested_locked_spans(pointer_value)
+        if not spans:
+            spans = [
+                span
+                for field in ("statement_spans", "context_spans")
+                for span in (
+                    obligation.get(field)
+                    if isinstance(obligation.get(field), list)
+                    else []
+                )
+                if isinstance(span, dict)
+            ]
+        ledger_file = ledger_files.get(unit_id)
+        ledger_path = (
+            resolve_stored_path(ledger_file, root)
+            if is_nonempty_string(ledger_file)
+            else None
+        )
+        for span in spans:
+            file_value = span.get("file")
+            start_line = span.get("start_line")
+            end_line = span.get("end_line")
+            if (
+                ledger_path is None
+                or not is_nonempty_string(file_value)
+                or not is_int(start_line)
+                or not is_int(end_line)
+                or start_line < 1
+                or end_line < start_line
+            ):
+                continue
+            target = resolve_stored_path(str(file_value), ledger_path.parent)
+            source_bytes = next(
+                (
+                    raw
+                    for stored, raw in sealed_sources.items()
+                    if resolve_stored_path(stored, root) == target
+                ),
+                None,
+            )
+            try:
+                lines = (
+                    source_bytes.decode("utf-8-sig").splitlines()
+                    if source_bytes is not None
+                    else []
+                )
+            except UnicodeError:
+                lines = []
+            if end_line > len(lines):
+                continue
+            quote = "\n".join(lines[start_line - 1 : end_line])
+            projections.append(
+                {
+                    "file": str(file_value),
+                    "start_line": start_line,
+                    "end_line": end_line,
+                    "sha256": sha256_text(quote),
+                    "quote": quote,
+                }
+            )
+
+    if not projections:
+        return [[
+            origin_reference,
+            "none",
+            "none",
+            unit_id,
+            origin_reference,
+            claim,
+            rule,
+            premises,
+            failure_evidence,
+            failure_kind,
+        ]]
+    return [
+        [
+            f"{row['file']}:{row['start_line']}-{row['end_line']}",
+            str(row["sha256"]),
+            json.dumps(row["quote"], ensure_ascii=False),
+            unit_id,
+            origin_reference,
+            claim,
+            rule,
+            premises,
+            failure_evidence,
+            failure_kind,
+        ]
+        for row in projections
+    ]
 
 
 def validate_resolution_archive_provenance(
@@ -18024,6 +21133,24 @@ def validate_resolution_archive_provenance(
         artifact_hashes,
         errors,
     )
+    # The manifest binds challenge-contract metadata that older and current
+    # finalization records may omit. Only that known representation difference
+    # is permitted; explicit versions and all other fields must agree.
+    archived_protocol = archive.get("protocol")
+    manifest_protocol = prior_manifest.get("protocol") if isinstance(prior_manifest, dict) else None
+    finalized_protocol = prior_record.get("protocol")
+    expected_finalized = dict(archived_protocol) if isinstance(archived_protocol, dict) else {}
+    if isinstance(finalized_protocol, dict) and "challenge_contract_version" not in finalized_protocol:
+        expected_finalized.pop("challenge_contract_version", None)
+    if (not isinstance(archived_protocol, dict)
+            or archived_protocol != manifest_protocol
+            or finalized_protocol != expected_finalized):
+        errors.append(f"{issue_id} archived protocol disagrees with its bound prior manifest or finalization")
+    if isinstance(prior_manifest, dict):
+        try:
+            challenge_contract_version(prior_manifest)
+        except ValueError as exc:
+            errors.append(f"{issue_id} archived protocol: {exc}")
     prior_issue_log = validate_sealed_audit_artifact(
         prior_artifacts.get("issue_log"),
         f"{issue_id} prior_artifacts.issue_log",
@@ -18039,7 +21166,7 @@ def validate_resolution_archive_provenance(
     )
     if report_record is not None:
         report_file, report_digest, report_bytes = report_record
-        if report_file != "audit/06_reports/FINAL_REPORT.md":
+        if report_file != preferred_report_path(prior_manifest or {}):
             errors.append(
                 f"{issue_id} prior_artifacts.final_report.file is invalid"
             )
@@ -18049,9 +21176,10 @@ def validate_resolution_archive_provenance(
                 "by the prior finalization manifest"
             )
         try:
-            prior_report_text = active_markdown_text(
-                report_bytes.decode("utf-8-sig")
-            )
+            decoded_report = report_bytes.decode("utf-8-sig")
+            prior_report_text = (
+                None if report_file.endswith(".html")
+                else active_markdown_text(decoded_report))
         except UnicodeError:
             errors.append(
                 f"{issue_id} prior_artifacts.final_report is not UTF-8"
@@ -18143,6 +21271,7 @@ def validate_resolution_archive_provenance(
         errors.append(f"{issue_id} prior_artifacts.ledgers must be a list")
         ledgers_value = []
     ledgers: dict[str, dict[str, Any]] = {}
+    ledger_files: dict[str, str] = {}
     ledger_hashes: dict[str, str] = {}
     for index, value in enumerate(ledgers_value, 1):
         label = f"{issue_id} prior_artifacts.ledgers[{index}]"
@@ -18162,15 +21291,19 @@ def validate_resolution_archive_provenance(
             errors.append(f"{issue_id} archived ledger is duplicated: {unit_id}")
             continue
         ledgers[str(unit_id)] = ledger
+        ledger_files[str(unit_id)] = file_value
         ledger_hashes[str(unit_id)] = digest
-    if sorted(ledgers) != required_units:
+    if not set(required_units).issubset(ledgers):
         errors.append(
-            f"{issue_id} archived ledgers must cover the required units exactly"
+            f"{issue_id} archived ledgers must cover every required unit"
         )
     if archive.get("ledger_sha256s") != ledger_hashes:
         errors.append(
             f"{issue_id} archive ledger_sha256s disagree with sealed ledgers"
         )
+    support_summaries = archived_statement_support_summaries(
+        ledgers, prior_artifacts.get("statement_support_reviews", []), artifact_hashes, errors,
+    )
 
     if isinstance(prior_artifacts.get("inventory"), dict):
         inventory_digest = prior_artifacts["inventory"].get("sha256")
@@ -18185,24 +21318,58 @@ def validate_resolution_archive_provenance(
                 f"{issue_id} archive dependency_registry_sha256 disagrees "
                 "with sealed registry"
             )
+    normalized_edges: dict[str, dict[str, Any]] = {}
+    legacy_archive_semantics = False
+    required_closure = archive.get("required_closure")
+    required_rows = (
+        required_closure.get("dependency_uses")
+        if isinstance(required_closure, dict)
+        else []
+    )
+    required_use_ids = {
+        str(row.get("use_id"))
+        for row in required_rows
+        if isinstance(row, dict) and is_nonempty_string(row.get("use_id"))
+    } if isinstance(required_rows, list) else set()
     if prior_inventory is None or prior_registry is None:
         errors.append(
             f"{issue_id} resolution archive lacks a usable prior inventory "
             "or dependency registry"
         )
-    elif prior_report_text is not None:
-        normalized_edge_hashes = archived_dependency_edge_hashes(
-            prior_registry,
-            prior_report_text,
-            issue_id,
-            errors,
+    else:
+        internal_rows = prior_registry.get("internal_uses")
+        support_units = {
+            str(row.get("dependency_id"))
+            for row in internal_rows
+            if isinstance(row, dict)
+            and row.get("use_id") in required_use_ids
+            and is_nonempty_string(row.get("dependency_id"))
+        } if isinstance(internal_rows, list) else set()
+        expected_ledger_units = set(required_units) | support_units
+        legacy_archive_semantics = bool(
+            support_units - set(required_units)
+            and set(ledgers) == set(required_units)
+            and not protocol_matches_current(archive.get("protocol"))
+            and prior_report_text is not None
         )
-        required_closure = archive.get("required_closure")
-        required_rows = (
-            required_closure.get("dependency_uses")
-            if isinstance(required_closure, dict)
-            else []
-        )
+        if legacy_archive_semantics:
+            normalized_edge_hashes = legacy_archived_dependency_edge_hashes(
+                prior_registry,
+                prior_report_text,
+                issue_id,
+                errors,
+                normalized_edges,
+            )
+        else:
+            normalized_edge_hashes = archived_dependency_edge_hashes(
+                prior_registry,
+                ledgers,
+                issue_id,
+                errors,
+                required_use_ids,
+                normalized_edges,
+                support_summaries,
+            )
         if isinstance(required_rows, list):
             for row in required_rows:
                 if not isinstance(row, dict) or not is_nonempty_string(
@@ -18215,6 +21382,14 @@ def validate_resolution_archive_provenance(
                         f"{issue_id} archived dependency edge hash for {use_id} "
                         "does not match the sealed normalized closure edge"
                     )
+            if (
+                not legacy_archive_semantics
+                and set(ledgers) != expected_ledger_units
+            ):
+                errors.append(
+                    f"{issue_id} archived ledgers must cover exactly the "
+                    "required units and internal dependency sources"
+                )
 
     prior_interfaces: dict[str, dict[str, Any]] = {}
     if isinstance(prior_interface_registry, dict):
@@ -18305,35 +21480,6 @@ def validate_resolution_archive_provenance(
 
     projection = archive.get("projection")
     if isinstance(projection, dict):
-        if prior_report_text is not None:
-            detailed = report_section(
-                prior_report_text, "## Detailed findings"
-            )
-            block_match = (
-                re.search(
-                    rf"^###\s+{re.escape(issue_id)}\s+\[[^\]]+\].*?\n"
-                    rf"(.*?)(?=^###\s+I-[0-9]{{3}}\s|\Z)",
-                    detailed,
-                    re.MULTILINE | re.DOTALL,
-                )
-                if detailed is not None
-                else None
-            )
-            block = block_match.group(1) if block_match is not None else ""
-            exact_section = report_subsection(
-                block, "#### 1. Exact failure site and contract"
-            )
-            tables = markdown_tables(exact_section or "")
-            prior_failure_rows = (
-                tables[0][2:]
-                if tables and len(tables[0]) >= 2
-                else []
-            )
-            if projection.get("failure") != prior_failure_rows:
-                errors.append(
-                    f"{issue_id} archived failure projection is not the exact "
-                    "prior finalized report row"
-                )
         recomputed_failure = archived_ledger_move_failure_rows(
             archived_issue, ledgers
         )
@@ -18363,54 +21509,32 @@ def validate_resolution_archive_provenance(
                     f"{issue_id} archived failure projection does not match "
                     "the sealed canonical origin record"
                 )
-        else:
-            failure_rows = projection.get("failure")
-            if not isinstance(failure_rows, list) or not failure_rows:
+        elif archived_issue.get("origin_ref", {}).get("kind") in {
+            "dependency_use",
+            "obligation_pointer",
+        }:
+            recomputed_structured_failure = archived_structured_failure_rows(
+                archived_issue,
+                ledgers,
+                ledger_files,
+                normalized_edges,
+                sealed_sources,
+                root,
+            )
+            if not recomputed_structured_failure:
                 errors.append(
-                    f"{issue_id} archived failure projection is missing"
+                    f"{issue_id} archived structured origin cannot be "
+                    "recomputed from sealed canonical records"
                 )
-            else:
-                for row_index, row in enumerate(failure_rows, 1):
-                    label = (
-                        f"{issue_id} archived failure projection[{row_index}]"
-                    )
-                    if not isinstance(row, list) or len(row) != 10:
-                        errors.append(f"{label} must have ten exact fields")
-                        continue
-                    location = row[0]
-                    match = re.fullmatch(r"(.+):([0-9]+)-([0-9]+)", location)
-                    try:
-                        quote = json.loads(row[2])
-                    except (TypeError, json.JSONDecodeError):
-                        quote = None
-                    if (
-                        match is None
-                        or not isinstance(quote, str)
-                        or row[1] != sha256_text(quote)
-                    ):
-                        errors.append(
-                            f"{label} has an invalid exact location or quote hash"
-                        )
-                        continue
-                    file_value = match.group(1)
-                    start_line = int(match.group(2))
-                    end_line = int(match.group(3))
-                    source_bytes = sealed_sources.get(file_value)
-                    try:
-                        source_lines = (
-                            source_bytes.decode("utf-8-sig").splitlines()
-                            if source_bytes is not None
-                            else []
-                        )
-                    except UnicodeError:
-                        source_lines = []
-                    expected_quote = "\n".join(
-                        source_lines[start_line - 1 : end_line]
-                    )
-                    if quote != expected_quote:
-                        errors.append(
-                            f"{label} quote disagrees with sealed prior source"
-                        )
+            elif projection.get("failure") != recomputed_structured_failure:
+                errors.append(
+                    f"{issue_id} archived failure projection does not match "
+                    "the sealed canonical origin record"
+                )
+        else:
+            errors.append(
+                f"{issue_id} archived failure origin is unsupported"
+            )
     return ledgers
 
 
@@ -18513,9 +21637,12 @@ def load_resolution_archive(
     if not isinstance(protocol, dict):
         errors.append(f"{issue_id} resolution archive protocol must be an object")
         protocol = {}
+    unknown_protocol_fields = set(protocol) - set(protocol_identity()) - {"challenge_contract_version"}
+    if unknown_protocol_fields:
+        errors.append(f"{issue_id} resolution archive protocol has unsupported fields: "
+                      + ", ".join(sorted(unknown_protocol_fields)))
     for field, expected in {
         "skill_name": SKILL_NAME,
-        "skill_version": SKILL_VERSION,
         "artifact_schema_version": SCHEMA_VERSION,
         "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
         "method_interface_schema_version": METHOD_INTERFACE_SCHEMA_VERSION,
@@ -18525,6 +21652,10 @@ def load_resolution_archive(
             errors.append(
                 f"{issue_id} resolution archive protocol.{field} is invalid"
             )
+    if not is_nonempty_string(protocol.get("skill_version")):
+        errors.append(
+            f"{issue_id} resolution archive protocol.skill_version is invalid"
+        )
     if not (
         isinstance(protocol.get("validator_sha256"), str)
         and SHA256_RE.fullmatch(protocol["validator_sha256"])
@@ -18559,7 +21690,6 @@ def load_resolution_archive(
         or prior_record.get("record_payload_sha256")
         != finalization_payload_sha256(prior_record)
         or prior_record.get("source_snapshot_sha256") != source_snapshot
-        or prior_record.get("protocol") != protocol
     ):
         errors.append(
             f"{issue_id} resolution archive is not bound to a valid prior "
@@ -18673,8 +21803,8 @@ def load_resolution_archive(
             )
 
     ledger_hashes = archive.get("ledger_sha256s")
-    if not isinstance(ledger_hashes, dict) or set(ledger_hashes) != set(
-        required_units
+    if not isinstance(ledger_hashes, dict) or not set(required_units).issubset(
+        ledger_hashes
     ):
         errors.append(
             f"{issue_id} archive ledger_sha256s must cover every required unit"
@@ -20246,9 +23376,10 @@ def validate_issues(
                         "affected result closure"
                     )
                 if verification_status == "verified_sufficient" and status != "resolved":
-                    errors.append(
-                        f"{change_prefix}: verified_sufficient requires a resolved issue"
-                    )
+                    if evidence_base is None:
+                        errors.append(f"{change_prefix}: verified_sufficient requires a resolved issue or a source-checked accepted supplemental review")
+                    else:
+                        errors.extend(checked_suggested_change_errors(issue, change, change_index, evidence_base, ledgers_by_unit))
             if status == "resolved" and isinstance(
                 resolution_archive, dict
             ) and evidence_base is not None:
@@ -20731,14 +23862,18 @@ def render_issue_summary(issues: list[dict[str, Any]]) -> str:
     return "\n".join(rows)
 
 
-def audit_ledgers(root: Path, final: bool) -> tuple[list[str], list[dict[str, Any]], set[str]]:
+def audit_ledgers(
+    root: Path, final: bool, *, primary_only: bool = False
+) -> tuple[list[str], list[dict[str, Any]], set[str]]:
     errors: list[str] = []
     summaries: list[dict[str, Any]] = []
     referenced: set[str] = set()
     root = root.resolve()
     live_ledger_directory = (root / "audit" / "04_local_checks").resolve()
     for ledger_path in live_local_check_artifacts(root, ".ledger.json"):
-        ledger_errors, summary = check_ledger_data(ledger_path, final)
+        ledger_errors, summary = check_ledger_data(
+            ledger_path, final, primary_only=primary_only
+        )
         summaries.append(summary)
         referenced.update(summary.get("issue_references", []))
         errors.extend(f"{ledger_path}: {error}" for error in ledger_errors)
@@ -20758,6 +23893,11 @@ def audit_ledgers(root: Path, final: bool) -> tuple[list[str], list[dict[str, An
                     f"calibration-bound work context: {exc}"
                 )
             else:
+                if primary_only and expected_packet.get("semantic_review_ready") is not True:
+                    errors.append(
+                        f"{ledger_path}: primary context is not ready for independent "
+                        "review: " + "; ".join(expected_packet.get("semantic_review_reasons", []))
+                    )
                 ledger, read_errors = load_json_object(
                     ledger_path, "proof-unit ledger"
                 )
@@ -20778,13 +23918,24 @@ def audit_ledgers(root: Path, final: bool) -> tuple[list[str], list[dict[str, An
 
 def cmd_issues(args: argparse.Namespace) -> int:
     root = args.root.resolve()
-    errors, summaries, referenced = audit_ledgers(root, args.final)
+    before_challenge = bool(getattr(args, "before_challenge", False))
+    if before_challenge and (
+        args.final or args.write_summary or getattr(args, "write_report_views", False)
+    ):
+        raise ValueError(
+            "issues --before-challenge is read-only and cannot be combined with "
+            "--final, --write-summary, or --write-report-views"
+        )
+    strict = args.final or before_challenge
+    errors, summaries, referenced = audit_ledgers(
+        root, strict, primary_only=before_challenge
+    )
     errors = [*audit_internal_redirect_errors(root), *errors]
-    if args.final and not summaries:
+    if strict and not summaries:
         errors.append("Final issue reconciliation requires at least one ledger")
     issue_path, issues, issue_schema_version, issue_read_errors = load_issue_log(root)
     errors.extend(issue_read_errors)
-    if args.final and issue_schema_version != SCHEMA_VERSION:
+    if strict and issue_schema_version != SCHEMA_VERSION:
         errors.append(
             "upgrade_required: final issue reconciliation requires "
             f"ISSUE_LOG.json schema_version {SCHEMA_VERSION}; schema "
@@ -20792,6 +23943,11 @@ def cmd_issues(args: argparse.Namespace) -> int:
         )
     _, manifest, manifest_errors = load_audit_manifest(root)
     errors.extend(manifest_errors)
+    if before_challenge and not manifest_errors:
+        source_errors, _ = check_audit_finalization(
+            root, check_reports=False, source_inventory_only=True
+        )
+        errors.extend(source_errors)
     summaries_by_id = {
         summary.get("unit_id"): summary
         for summary in summaries
@@ -20824,7 +23980,7 @@ def cmd_issues(args: argparse.Namespace) -> int:
             errors.extend(registry_errors)
             if not registry_errors:
                 interfaces = validate_method_interface_registry(
-                    registry, root, errors, final=args.final
+                    registry, root, errors, final=strict
                 )
                 for interface in interfaces.values():
                     referenced.update(
@@ -20832,7 +23988,7 @@ def cmd_issues(args: argparse.Namespace) -> int:
                         for issue_id in interface.get("issue_ids", [])
                         if is_nonempty_string(issue_id)
                     )
-        if args.final:
+        if strict:
             errors.extend(source_snapshot_freshness_errors(root, manifest))
             scope = manifest.get("audit_scope")
             if not isinstance(scope, dict):
@@ -20849,6 +24005,19 @@ def cmd_issues(args: argparse.Namespace) -> int:
                 "audit_scope.in_scope_units",
                 errors,
             )
+            if before_challenge:
+                if not in_scope or len(in_scope) != len(set(in_scope)):
+                    errors.append(
+                        "Pre-challenge readiness requires unique nonempty in_scope_units"
+                    )
+                primary_units = [summary.get("unit_id") for summary in summaries]
+                for unit_id in in_scope:
+                    count = primary_units.count(unit_id)
+                    if count != 1:
+                        errors.append(
+                            "Pre-challenge readiness requires exactly one completed "
+                            f"primary ledger for in-scope unit {unit_id}; found {count}"
+                        )
             inventory_path, inventory_path_valid = (
                 manifest_canonical_artifact_path(
                     manifest,
@@ -20895,6 +24064,9 @@ def cmd_issues(args: argparse.Namespace) -> int:
                     errors=errors,
                 )
                 dependency_edges = closure_result["edges"]
+                apply_derived_use_site_sufficiency(
+                    summaries_by_id, dependency_edges
+                )
                 referenced.update(closure_result["issue_ids"])
                 reverse_graph = {
                     unit_id: set() for unit_id in summaries_by_id
@@ -20906,6 +24078,16 @@ def cmd_issues(args: argparse.Namespace) -> int:
                         reverse_graph.setdefault(dependency, set()).add(
                             dependent
                         )
+            if before_challenge and inventory_path_valid and inventory_path.is_file():
+                inventory, inventory_errors = load_json_object(
+                    inventory_path, "proof-unit inventory"
+                )
+                errors.extend(inventory_errors)
+                if not inventory_errors:
+                    errors.extend(primary_reference_readiness_errors(
+                        root, manifest, inventory, summaries_by_id,
+                        dependency_edges, in_scope,
+                    ))
             completion = manifest.get("completion")
             if not isinstance(completion, dict):
                 errors.append(
@@ -20932,14 +24114,14 @@ def cmd_issues(args: argparse.Namespace) -> int:
     issue_errors, counts = validate_issues(
         issues,
         referenced,
-        args.final,
+        strict,
         evidence_base=root,
         interfaces=interfaces,
         source_snapshot_id=source_snapshot_id,
         in_scope=in_scope,
         reverse_graph=reverse_graph,
         ledger_summaries=summaries,
-        dependency_edges=dependency_edges if args.final else None,
+        dependency_edges=dependency_edges if strict else None,
         global_checks=global_checks,
     )
     errors.extend(issue_errors)
@@ -20958,7 +24140,7 @@ def cmd_issues(args: argparse.Namespace) -> int:
     report_views_written = False
     report_path: Path | None = None
     report_candidate: str | None = None
-    if getattr(args, "write_report_views", False):
+    if getattr(args, "write_report_views", False) and not uses_html_report(manifest):
         if not args.final:
             errors.append("--write-report-views requires --final")
         elif not errors:
@@ -20973,7 +24155,7 @@ def cmd_issues(args: argparse.Namespace) -> int:
             elif not report_path.is_file():
                 errors.append(f"Canonical final report not found: {report_path}")
             else:
-                effective_critical, _ = effective_critical_requirements(
+                required_challenges, _ = required_challenge_requirements(
                     manifest, issues
                 )
                 report_deliverables = manifest.get("report_deliverables")
@@ -20985,30 +24167,68 @@ def cmd_issues(args: argparse.Namespace) -> int:
                     if isinstance(scope, dict)
                     else None
                 )
-                issue_index, detailed_findings = render_issue_report_views(
+                results_and_impact = render_results_and_impact(
+                    summaries_by_id,
+                    scope.get("in_scope_units", [])
+                    if isinstance(scope, dict)
+                    else [],
+                )
+                findings_and_repairs = render_findings_and_repairs(
                     issues,
                     summaries_by_id,
                     dependency_edges,
-                    effective_critical,
+                    required_challenges,
                     report_deliverables,
                     assessment,
                     interfaces=interfaces,
                     global_checks=global_checks,
+                )
+                independent_verification = render_independent_verification(
+                    summaries_by_id, required_challenges
+                )
+                declared_deliverables = render_declared_deliverables(
+                    report_deliverables
+                )
+                summary_fields = canonical_report_summary_fields(
+                    assessment,
+                    summaries_by_id,
+                    scope.get("in_scope_units", [])
+                    if isinstance(scope, dict)
+                    else [],
+                    issues,
                 )
                 try:
                     report_text = read_text(report_path)
                 except TextArtifactReadError as exc:
                     errors.append(str(exc))
                 else:
+                    for label, value in summary_fields.items():
+                        report_text = replace_report_scalar_text(
+                            report_text, label, value
+                        )
                     report_text = replace_report_section_text(
-                        report_text, "## Issue index", issue_index
+                        report_text,
+                        "## Results and impact",
+                        results_and_impact,
                     )
                     report_text = replace_report_section_text(
-                        report_text, "## Detailed findings", detailed_findings
+                        report_text,
+                        "## Findings and repairs",
+                        findings_and_repairs,
+                    )
+                    report_text = replace_report_nested_section_text(
+                        report_text,
+                        "### Independent verification",
+                        independent_verification,
+                    )
+                    report_text = replace_report_nested_section_text(
+                        report_text,
+                        "### Declared external deliverables",
+                        declared_deliverables,
                     )
                     report_candidate = report_text
 
-    if not errors:
+    if not errors and not before_challenge:
         pending_writes: list[tuple[Path, str]] = []
         if report_path is not None and report_candidate is not None:
             pending_writes.append((report_path, report_candidate))
@@ -21016,6 +24236,9 @@ def cmd_issues(args: argparse.Namespace) -> int:
             pending_writes.append((summary_path, summary_candidate))
         transactional_write_texts(pending_writes)
         report_views_written = report_candidate is not None
+        if getattr(args, "write_report_views", False) and uses_html_report(manifest):
+            report_module("proofcheck_release").render_working(report_api(), root)
+            report_views_written = True
 
     result = {
         "audit_root": str(root),
@@ -21026,6 +24249,14 @@ def cmd_issues(args: argparse.Namespace) -> int:
         "report_views_written": report_views_written,
         "errors": len(errors),
     }
+    if before_challenge:
+        result.update({
+            "mode": "before_challenge",
+            "readiness": "ready" if not errors else "not_ready",
+            "delivery_status": "NONFINAL",
+            "read_only": True,
+            "note": "Primary evidence and issue closure only; independent review and finalization remain required.",
+        })
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if errors:
         for error in errors:
@@ -21287,7 +24518,8 @@ def cmd_archive_issue(args: argparse.Namespace) -> int:
             + "; ".join(closure_errors[:5])
         )
     dependency_edges = closure["edges"]
-    effective_critical, _ = effective_critical_requirements(manifest, issues)
+    apply_derived_use_site_sufficiency(summaries_by_id, dependency_edges)
+    required_challenges, _ = required_challenge_requirements(manifest, issues)
     report_deliverables = manifest.get("report_deliverables")
     if not isinstance(report_deliverables, list):
         report_deliverables = []
@@ -21344,7 +24576,7 @@ def cmd_archive_issue(args: argparse.Namespace) -> int:
         issue,
         summaries_by_id,
         dependency_edges,
-        effective_critical,
+        required_challenges,
         report_deliverables,
         scope.get("overall_assessment"),
         evidence_base=root,
@@ -21376,7 +24608,16 @@ def cmd_archive_issue(args: argparse.Namespace) -> int:
 
     ledger_sha256s: dict[str, str] = {}
     sealed_ledgers: list[dict[str, str]] = []
-    for unit_id in required_units:
+    sealed_support_reviews: dict[str, dict[str, str]] = {}
+    support_units = {
+        str(edge.get("dependency_id"))
+        for edge in selected_edges
+        if edge.get("use_id") in required_use_ids
+        and edge.get("kind") == "internal_result"
+        and is_nonempty_string(edge.get("dependency_id"))
+    }
+    sealed_unit_ids = sorted(set(required_units) | support_units)
+    for unit_id in sealed_unit_ids:
         summary = summaries_by_id.get(str(unit_id))
         ledger_value = summary.get("ledger") if isinstance(summary, dict) else None
         if not is_nonempty_string(ledger_value):
@@ -21391,6 +24632,15 @@ def cmd_archive_issue(args: argparse.Namespace) -> int:
         record = sealed_file_record(ledger_path, stored_ledger)
         ledger_sha256s[str(unit_id)] = record["sha256"]
         sealed_ledgers.append(record)
+        ledger, ledger_errors = load_json_object(ledger_path, "archived ledger")
+        if ledger_errors:
+            raise ValueError("; ".join(ledger_errors))
+        if any("statement_support" in row for row in (ledger.get("review") or {}).get("conclusion_results", []) if isinstance(row, dict)):
+            for field in ("initial_response", "statement_support_review"):
+                reference = (ledger.get("independent_check") or {}).get(field)
+                if not isinstance(reference, dict):
+                    raise ValueError(f"archive-issue requires {field} for supplemental support")
+                sealed_support_reviews[reference["artifact"]] = sealed_file_record(root / reference["artifact"], reference["artifact"])
 
     prior_record_path = Path(str(freshness.get("record")))
     prior_record, prior_record_errors = load_json_object(
@@ -21431,8 +24681,8 @@ def cmd_archive_issue(args: argparse.Namespace) -> int:
             issue_path, "audit/06_reports/ISSUE_LOG.json"
         ),
         "final_report": sealed_file_record(
-            root / "audit" / "06_reports" / "FINAL_REPORT.md",
-            "audit/06_reports/FINAL_REPORT.md",
+            root / preferred_report_path(manifest),
+            preferred_report_path(manifest),
         ),
         "inventory": sealed_file_record(
             inventory_path, str(manifest.get("inventory_file"))
@@ -21448,6 +24698,8 @@ def cmd_archive_issue(args: argparse.Namespace) -> int:
             sealed_ledgers, key=lambda record: record["file"]
         ),
     }
+    if sealed_support_reviews:
+        prior_artifacts["statement_support_reviews"] = [sealed_support_reviews[name] for name in sorted(sealed_support_reviews)]
     archived_issue = json.loads(json.dumps(issue, ensure_ascii=False))
     archive = {
         "archive_schema_version": RESOLUTION_ARCHIVE_SCHEMA_VERSION,
@@ -21526,6 +24778,133 @@ def combine_dependency_statuses(statuses: Iterable[str]) -> str:
     return "verified"
 
 
+def derive_use_site_sufficiency(
+    edges: Iterable[dict[str, Any]],
+    dependency_id: str,
+    conclusion_id: str | None = None,
+) -> str:
+    """Project actual outgoing support, keeping applicability distinct."""
+    uses = [
+        edge
+        for edge in edges
+        if isinstance(edge, dict)
+        and edge.get("kind") == "internal_result"
+        and edge.get("dependency_id") == dependency_id
+        and (
+            conclusion_id is None
+            or edge.get("dependency_conclusion_id") == conclusion_id
+        )
+    ]
+    if not uses:
+        return "not_applicable"
+    statuses = {
+        str(edge.get(field, "unchecked"))
+        for edge in uses
+        for field in ("applicability_status", "effective_status")
+    }
+    if statuses & {"incorrect", "gap"}:
+        return "insufficient"
+    if "unclear" in statuses:
+        return "unclear"
+    if statuses - {"verified", "passed", "conditional", "not_applicable"}:
+        return "not_checked"
+    if "conditional" in statuses:
+        return "conditional"
+    return "sufficient"
+
+
+def apply_derived_use_site_sufficiency(
+    summaries_by_id: dict[str, dict[str, Any]],
+    edges: Iterable[dict[str, Any]],
+) -> None:
+    """Attach audit-wide use-site projections to in-memory summaries only."""
+    edge_rows = list(edges)
+    for unit_id, summary in summaries_by_id.items():
+        components = summary.get("review_components")
+        if isinstance(components, dict):
+            components["use_site_sufficiency"] = (
+                derive_use_site_sufficiency(edge_rows, unit_id)
+            )
+        results = summary.get("conclusion_results")
+        if not isinstance(results, list):
+            continue
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            conclusion_id = result.get("conclusion_id")
+            if is_nonempty_string(conclusion_id):
+                result["use_site_sufficiency"] = (
+                    derive_use_site_sufficiency(
+                        edge_rows, unit_id, str(conclusion_id)
+                    )
+                )
+
+
+def selected_statement_support(summary: dict[str, Any], conclusion_id: str, digest: Any) -> dict[str, Any] | None:
+    result = next((row for row in summary.get("conclusion_results", []) if isinstance(row, dict) and row.get("conclusion_id") == conclusion_id), {})
+    support = result.get("statement_support")
+    return support if isinstance(support, dict) and support.get("valid") is True and support.get("sha256") == digest else None
+
+
+def statement_support_use_status(
+    summary: dict[str, Any], conclusion_id: str, use: dict[str, Any], root: Path,
+    errors: list[str], *, dependent_summary: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, Any] | None]:
+    support = selected_statement_support(summary, conclusion_id, use.get("statement_support_sha256"))
+    prefix = f"dependency {use.get('use_id')}.statement_support"
+    if support is None:
+        errors.append(f"{prefix} selects stale, invalid, or missing checked support")
+        return "unchecked", None
+    rows = use.get("statement_support_conditions", [])
+    if not isinstance(rows, list):
+        errors.append(f"{prefix}_conditions must be an exact condition map")
+        rows = []
+    conditions = support["extra_conditions"]
+    seen = []
+    statuses = []
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {"condition", "status", "evidence", "evidence_spans"}:
+            errors.append(f"{prefix} condition needs condition, status, evidence, and evidence_spans")
+            continue
+        seen.append(row.get("condition"))
+        status = row.get("status")
+        if not is_enum_value(status, {"satisfied", "not_satisfied", "partial", "unclear"}):
+            errors.append(f"{prefix} condition status is invalid")
+        statuses.append({"satisfied": "verified", "not_satisfied": "incorrect", "partial": "conditional", "unclear": "unclear"}.get(status, "unchecked"))
+        if not is_substantive_string(row.get("evidence")):
+            errors.append(f"{prefix} condition requires its mathematical discharge evidence")
+        validate_locked_span_list(row.get("evidence_spans"), root, prefix + ".evidence_spans", errors, allow_empty=False)
+        if dependent_summary is not None and isinstance(row.get("evidence_spans"), list):
+            allowed = [
+                {"file": dependent_summary.get("source_file"), "start_line": dependent_summary.get("source_start"), "end_line": dependent_summary.get("source_end")},
+                *dependent_summary.get("obligation_statement_spans", []), *dependent_summary.get("obligation_context_spans", []),
+            ]
+            for span in row["evidence_spans"]:
+                metadata = resolved_span_metadata(span, root)
+                if metadata is None:
+                    continue
+                anchored = False
+                for location in allowed:
+                    if not isinstance(location, dict) or not is_nonempty_string(location.get("file")):
+                        continue
+                    base = root if location.get("file") == dependent_summary.get("source_file") else Path(dependent_summary.get("ledger", str(root))).parent
+                    try:
+                        file = resolve_stored_path(location["file"], base)
+                    except ValueError:
+                        continue
+                    if (str(file.resolve()) == str(Path(metadata["file"]).resolve())
+                            and is_int(location.get("start_line")) and is_int(location.get("end_line"))
+                            and location["start_line"] <= metadata["start_line"] <= metadata["end_line"] <= location["end_line"]):
+                        anchored = True
+                if not anchored:
+                    errors.append(f"{prefix} condition evidence must lie in the dependent unit's locked source or assumptions")
+    if sorted(str(text) for text in seen) != sorted(conditions):
+        errors.append(f"{prefix}_conditions must cover exactly its explicit extra conditions")
+    if support.get("acceptance") != "accepted" and not support.get("provisional"):
+        return "unchecked", support
+    return combine_dependency_statuses(statuses or ["verified"]), support
+
+
 def internal_dependency_status(
     summary: dict[str, Any], conclusion_id: str
 ) -> str:
@@ -21543,6 +24922,13 @@ def internal_dependency_status(
         return "unchecked"
     statement_status = result.get("statement_status")
     if is_enum_value(statement_status, {"established", "conditional"}):
+        supplied = result.get("statement_support")
+        if isinstance(supplied, dict):
+            if not supplied.get("valid") or (supplied.get("acceptance") != "accepted" and not supplied.get("provisional")):
+                return "unchecked"
+            if result.get("contract_fidelity") != "verified" or supplied.get("dependency_closure") != "verified":
+                return "unchecked"
+            return "conditional" if supplied.get("extra_conditions") else "verified"
         contract_value = result.get("contract_fidelity")
         argument_value = result.get("argument_status")
         closure_value = result.get("dependency_closure")
@@ -22206,6 +25592,12 @@ def _bibtex_entry_end(text: str, opening: int, opening_char: str) -> int | None:
 def bibtex_entry_spans(path: Path) -> list[dict[str, Any]]:
     """Index complete citation-bearing BibTeX entries by exact physical lines."""
     text = read_text(path)
+    return _memoize_text(
+        "bibtex_entry_spans", text, lambda: _bibtex_entry_spans_from_text(text)
+    )
+
+
+def _bibtex_entry_spans_from_text(text: str) -> list[dict[str, Any]]:
     masked = mask_latex_comments(text)
     entries: list[dict[str, Any]] = []
     cursor = 0
@@ -22946,6 +26338,7 @@ def expected_result_uses(
                     "status": direct.get("status"),
                     "needed_form": direct.get("needed_form"),
                     "compatibility_check": direct.get("compatibility_check"),
+                    "statement_support_sha256": direct.get("statement_support_sha256"),
                     "step_ids": set(),
                 },
             )
@@ -22957,6 +26350,7 @@ def expected_result_uses(
                 "status",
                 "needed_form",
                 "compatibility_check",
+                "statement_support_sha256",
             ):
                 expected_field = {
                     "id": "dependency_id",
@@ -22980,6 +26374,8 @@ def validate_dependency_use_identity(
     prefix: str,
     expected: dict[str, Any] | None,
     errors: list[str],
+    *,
+    allow_preliminary_step_ids: bool = False,
 ) -> dict[str, Any]:
     if not isinstance(use, dict):
         errors.append(f"{prefix} must be an object")
@@ -22996,6 +26392,9 @@ def validate_dependency_use_identity(
         use.get("step_ids"),
         f"{prefix}.step_ids",
         errors,
+        allow_empty=(
+            allow_preliminary_step_ids and use.get("status") == "unchecked"
+        ),
     )
     if len(step_ids) != len(set(step_ids)):
         errors.append(f"{prefix}.step_ids contains duplicates")
@@ -23017,6 +26416,7 @@ def validate_dependency_use_identity(
             "step_ids",
             "needed_form",
             "compatibility_check",
+            "statement_support_sha256",
         ):
             if use.get(field) != expected.get(field):
                 errors.append(f"{prefix}.{field} disagrees with the invoking ledger")
@@ -23083,6 +26483,56 @@ def validate_prerequisite_map(
     return applicability, issue_ids
 
 
+def external_prerequisite_source_errors(
+    root: Path, result: dict[str, Any], use: dict[str, Any], prefix: str
+) -> list[str]:
+    """Bind textual hypothesis mappings to the inspected external source.
+
+    PDF evidence stays available through its existing file hash and locator;
+    this check cannot establish that a human transcription is complete.
+    """
+    errors: list[str] = []
+    sources: dict[Path, dict[str, Any]] = {}
+    for evidence in result.get("source_evidence", []):
+        if isinstance(evidence, dict) and is_nonempty_string(evidence.get("file")):
+            try:
+                path = resolve_stored_path(evidence["file"], root)
+                if path.is_file() and evidence.get("sha256") == sha256_file(path):
+                    sources[path] = evidence
+            except (OSError, ValueError):
+                pass
+    textual_sources = {path for path in sources if path.suffix.lower() in {".txt", ".tex", ".md"}}
+    rows = use.get("prerequisite_map") or []
+    for index, row in enumerate(rows, 1):
+        if not isinstance(row, dict):
+            continue
+        spans = row.get("source_evidence_spans", [])
+        field = f"{prefix}.prerequisite_map[{index}].source_evidence_spans"
+        if not isinstance(spans, list):
+            errors.append(f"{field} must be a list")
+            continue
+        anchored_text = False
+        for span in spans:
+            validate_locked_span(span, root, field, errors)
+            if not isinstance(span, dict) or not is_nonempty_string(span.get("file")):
+                continue
+            try:
+                path = resolve_stored_path(span["file"], root)
+            except ValueError:
+                continue
+            if path not in sources:
+                errors.append(f"{field} must reference the hash-locked external theorem source, not manuscript or metadata")
+            if path in textual_sources:
+                anchored_text = True
+        if textual_sources and row.get("status") == "satisfied" and not anchored_text:
+            errors.append(
+                f"{field} must anchor the actual external hypothesis in the registered "
+                "text theorem evidence before claiming satisfied; add its locked text "
+                "span even when PDF evidence is also registered"
+            )
+    return errors
+
+
 def validate_dependency_closure(
     registry: dict[str, Any],
     root: Path,
@@ -23105,6 +26555,8 @@ def validate_dependency_closure(
     external_results, external_hashes = validate_external_result_catalog(
         registry, root, errors
     )
+    _, challenge_manifest, challenge_manifest_errors = load_audit_manifest(root)
+    require_hypothesis_sources = not challenge_manifest_errors and challenge_contract_version(challenge_manifest) >= 3
     collision = set(external_results) & set(summaries_by_id)
     if collision:
         errors.append(
@@ -23160,6 +26612,14 @@ def validate_dependency_closure(
             if target
             else "unchecked"
         )
+        selected_support = None
+        if "statement_support_sha256" in use and target is not None:
+            source_status, selected_support = statement_support_use_status(
+                target, str(dependency_conclusion_id), use, root, errors,
+                dependent_summary=summaries_by_id.get(str(use.get("dependent_unit"))),
+            )
+        elif "statement_support_conditions" in use:
+            errors.append(f"{prefix}.statement_support_conditions requires exact supplemental support selection")
         if target is None and is_nonempty_string(dependency_id):
             errors.append(f"{prefix}: unknown internal dependency {dependency_id}")
         target_conclusion = next(
@@ -23249,6 +26709,9 @@ def validate_dependency_closure(
                     "source_evidence": [],
                 }
             )
+            if selected_support is not None:
+                edges[-1]["statement_support"] = selected_support
+                edges[-1]["statement_support_conditions"] = use.get("statement_support_conditions", [])
 
     expected_internal = {
         key for key, value in expected.items() if value.get("kind") == "internal_result"
@@ -23326,6 +26789,8 @@ def validate_dependency_closure(
                 f"{prefix}.prerequisite_map",
                 errors,
             )
+            if require_hypothesis_sources:
+                errors.extend(external_prerequisite_source_errors(root, record, use, prefix))
             applicability = combine_dependency_statuses(
                 (compatibility, prerequisite_status)
             )
@@ -23577,23 +27042,38 @@ def canonical_challenge_issue_assessments(value: Any) -> list[dict[str, Any]]:
     ]
 
 
-CHALLENGE_BINDING_BEGIN = "<!-- proofcheck-challenge-binding-v1"
+LEGACY_CHALLENGE_BINDING_BEGIN = "<!-- proofcheck-challenge-binding-v1"
+CHALLENGE_BINDING_BEGIN = "<!-- proofcheck-challenge-binding-v2"
 CHALLENGE_BINDING_END = "-->"
+CHALLENGE_ARTIFACT_SCAFFOLD_MARKER = "NONFINAL CHALLENGE SCAFFOLD"
 
 
 def challenge_artifact_binding_payload(
     unit_id: str, challenge: dict[str, Any]
 ) -> dict[str, Any]:
     """Return the exact ledger facts that a challenge artifact must carry."""
-    return {
-        "schema_version": 1,
+    payload = {
+        "schema_version": 2,
         "unit_id": unit_id,
         "challenge_context_sha256": challenge.get("challenge_context_sha256"),
+        "independence_level": challenge.get("independence_level"),
         "challenger_verdict": challenge.get("challenger_verdict"),
+        "reconciled_verdict": challenge.get("reconciled_verdict"),
+        "artifact": challenge.get("artifact"),
+        "disagreements": challenge.get("disagreements"),
+        "resolution": challenge.get("resolution"),
+        "generated_utc": challenge.get("generated_utc"),
         "issue_assessments": canonical_challenge_issue_assessments(
             challenge.get("issue_assessments", [])
         ),
     }
+    if "initial_response" in challenge:
+        payload["initial_response"] = challenge["initial_response"]
+    if "statement_support_review" in challenge:
+        payload["statement_support_review"] = challenge["statement_support_review"]
+    if "statement_support_review_history" in challenge:
+        payload["statement_support_review_history"] = challenge["statement_support_review_history"]
+    return payload
 
 
 def render_challenge_artifact_binding(
@@ -23611,16 +27091,57 @@ def render_challenge_artifact_binding(
     )
 
 
+def has_substantive_challenge_narrative(text: str) -> bool:
+    """Return whether the artifact records actual checking rationale."""
+    active_text = active_markdown_text(text)
+    if ACTIVE_HIDDEN_HTML_MARKER in active_text:
+        return False
+    lines = active_text.splitlines()
+    setext_heading_lines: set[int] = set()
+    for index in range(1, len(lines)):
+        if (
+            lines[index - 1].strip()
+            and re.fullmatch(r"\s*(?:=+|-+)\s*", lines[index])
+        ):
+            setext_heading_lines.update({index - 1, index})
+    for index, line in enumerate(lines):
+        if index in setext_heading_lines:
+            continue
+        candidate = line.strip()
+        if not candidate or re.fullmatch(r"#{1,6}(?:\s+.*)?", candidate):
+            continue
+        candidate = re.sub(r"^(?:[-+*]|\d+[.)])\s+", "", candidate)
+        if re.fullmatch(r"[|:\-\s]+", candidate):
+            continue
+        word_count = len(re.findall(r"\b\w+\b", candidate))
+        alphanumeric_count = sum(
+            character.isalnum() for character in candidate
+        )
+        if (
+            is_substantive_string(candidate)
+            and word_count >= 4
+            and alphanumeric_count >= 20
+        ):
+            return True
+    return False
+
+
 def upsert_challenge_artifact_binding(
     text: str, unit_id: str, challenge: dict[str, Any]
 ) -> str:
     """Replace one prior binding block and preserve the narrative around it."""
     marker_count = text.count(CHALLENGE_BINDING_BEGIN)
-    if marker_count > 1:
+    legacy_marker_count = text.count(LEGACY_CHALLENGE_BINDING_BEGIN)
+    if marker_count + legacy_marker_count > 1:
         raise ValueError(
             "Challenger artifact contains duplicate challenge binding blocks"
         )
-    start = text.find(CHALLENGE_BINDING_BEGIN)
+    binding_begin = (
+        CHALLENGE_BINDING_BEGIN
+        if marker_count == 1
+        else LEGACY_CHALLENGE_BINDING_BEGIN
+    )
+    start = text.find(binding_begin)
     if start >= 0:
         end = text.find(CHALLENGE_BINDING_END, start)
         if end < 0:
@@ -23630,8 +27151,16 @@ def upsert_challenge_artifact_binding(
             )
         text = text[:start] + text[end + len(CHALLENGE_BINDING_END) :]
     narrative = text.strip()
+    if CHALLENGE_ARTIFACT_SCAFFOLD_MARKER in narrative:
+        raise ValueError(
+            "Challenger artifact still contains the NONFINAL challenge scaffold"
+        )
+    if not has_substantive_challenge_narrative(narrative):
+        raise ValueError(
+            "Challenger artifact must contain substantive checking narrative"
+        )
     binding = render_challenge_artifact_binding(unit_id, challenge)
-    rendered = f"{narrative}\n\n{binding}\n" if narrative else f"{binding}\n"
+    rendered = f"{narrative}\n\n{binding}\n"
     if rendered.count(CHALLENGE_BINDING_BEGIN) != 1:
         raise ValueError(
             "Challenger artifact binding could not be canonicalized"
@@ -23645,13 +27174,20 @@ def challenge_artifact_binding_errors(
     challenge: dict[str, Any],
 ) -> list[str]:
     """Require one parseable artifact block equal to the ledger assessment."""
-    prefix = f"Effective critical unit {unit_id} challenger artifact"
+    prefix = f"In-scope unit {unit_id} challenger artifact"
     try:
         text = read_text(artifact_path)
     except (OSError, UnicodeError) as exc:
         return [f"{prefix} cannot be read as UTF-8 text: {exc}"]
     if text.count(CHALLENGE_BINDING_BEGIN) != 1:
+        if text.count(LEGACY_CHALLENGE_BINDING_BEGIN) == 1:
+            return [
+                f"{prefix} uses obsolete v1 challenge binding; rerun "
+                f"bind-challenge --root <audit-root> --unit-id {unit_id}"
+            ]
         return [f"{prefix} must contain exactly one challenge binding block"]
+    if LEGACY_CHALLENGE_BINDING_BEGIN in text:
+        return [f"{prefix} must not retain an obsolete v1 challenge binding"]
     start = text.find(CHALLENGE_BINDING_BEGIN) + len(CHALLENGE_BINDING_BEGIN)
     end = text.find(CHALLENGE_BINDING_END, start)
     if end < 0:
@@ -23665,8 +27201,15 @@ def challenge_artifact_binding_errors(
     if payload != expected:
         return [
             f"{prefix} challenge binding block disagrees with the exact "
-            "ledger context, verdict, or issue assessments"
+            "ledger context, independent judgment, or issue assessments"
         ]
+    narrative = text[: start - len(CHALLENGE_BINDING_BEGIN)] + text[
+        end + len(CHALLENGE_BINDING_END) :
+    ]
+    if CHALLENGE_ARTIFACT_SCAFFOLD_MARKER in narrative:
+        return [f"{prefix} still contains the NONFINAL challenge scaffold"]
+    if not has_substantive_challenge_narrative(narrative):
+        return [f"{prefix} must contain substantive checking narrative"]
     return []
 
 
@@ -23738,8 +27281,11 @@ def canonical_interface_issue_row(
 
 
 REPORT_SCALAR_FIELDS = (
-    "Overall assessment code",
     "Overall judgment",
+    "Main reason",
+    "Impact on paper conclusions/results",
+    "Repair options and difficulty",
+    "Overall assessment code",
     "Checked scope",
     "Target results",
     "Source revision",
@@ -23757,8 +27303,23 @@ REPORT_SCALAR_FIELDS = (
     "External results checked",
     "External results not checked",
     "Tooling, extraction, or rendering limitations",
-    "Independence level of the critical-path challenge",
+    "Independent check levels",
     "Declared external deliverables",
+)
+REPORT_SUMMARY_FIELDS = (
+    "Overall judgment",
+    "Main reason",
+    "Impact on paper conclusions/results",
+    "Repair options and difficulty",
+)
+REPORT_SCOPE_FIELDS = tuple(
+    label for label in REPORT_SCALAR_FIELDS if label not in REPORT_SUMMARY_FIELDS
+)
+REPORT_REQUIRED_SECTIONS = (
+    "Summary",
+    "Results and impact",
+    "Findings and repairs",
+    "Scope and assurance",
 )
 
 
@@ -23827,14 +27388,14 @@ def undeclared_report_markdown_files(value: Any, root: Path) -> list[str]:
         path.relative_to(root).as_posix()
         for path in sorted(reports_dir.iterdir(), key=lambda item: item.name.lower())
         if path.is_file()
-        and path.suffix.lower() == ".md"
+        and path.suffix.lower() in {".md", ".html", ".htm"}
         and path.resolve() not in allowed
     ]
 
 
 def undeclared_report_error(path: str) -> str:
     return (
-        "Undeclared Markdown report artifact in audit/06_reports: "
+        "Undeclared Markdown or HTML report artifact in audit/06_reports: "
         f"{path}. Move non-deliverable working notes outside audit/06_reports, "
         "or declare a complete user_facing_report in report_deliverables."
     )
@@ -23874,20 +27435,7 @@ def validate_report_deliverables(
             errors.append(
                 "Canonical final report contains active raw HTML"
             )
-    semantic_sections = (
-        "Verdict",
-        "Audit boundary and limitations",
-        "Main theorem chain",
-        "Conclusion judgments",
-        "Dependency closure",
-        "Issue index",
-        "Detailed findings",
-        "Independent critical-path challenges",
-        "Method-interface findings",
-        "Computational evidence",
-        "Unchecked scope",
-        "Assurance boundary",
-    )
+    semantic_sections = REPORT_REQUIRED_SECTIONS
     if canonical_report_path_valid and canonical_report_text is None and value:
         errors.append(
             "Declared reports cannot be reconciled because the canonical "
@@ -23953,6 +27501,12 @@ def validate_report_deliverables(
             errors.append(
                 f"{prefix}: user-facing report still contains the "
                 "NONFINAL scaffold marker"
+            )
+        first_h2 = re.search(r"^##\s+.*$", text, re.MULTILINE)
+        if first_h2 is None or first_h2.group(0) != "## Summary":
+            errors.append(
+                f"{prefix}: user-facing report must begin its substantive "
+                "content with ## Summary"
             )
         validate_report_assurance_language(
             raw_text, f"{prefix} user-facing report", errors
@@ -24053,6 +27607,17 @@ def validate_report_deliverables(
 def report_section(text: str, heading: str) -> str | None:
     match = re.search(
         rf"^{re.escape(heading)}\s*$\n(.*?)(?=^##\s|\Z)",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    return match.group(1) if match is not None else None
+
+
+def report_nested_section(text: str, heading: str) -> str | None:
+    """Return a Markdown subsection until the next heading of equal rank."""
+    level = len(heading) - len(heading.lstrip("#"))
+    match = re.search(
+        rf"^{re.escape(heading)}\s*$\n(.*?)(?=^#{{1,{level}}}\s|\Z)",
         text,
         re.MULTILINE | re.DOTALL,
     )
@@ -24266,6 +27831,21 @@ def authorial_report_text(text: str) -> str:
     """Return active report prose with quotations and exact evidence masked."""
     active = active_markdown_text(text)
     characters = list(active)
+    generated_section_patterns = (
+        r"^## Results and impact\s*$\n.*?(?=^##\s|\Z)",
+        r"^## Findings and repairs\s*$\n.*?(?=^##\s|\Z)",
+        (
+            r"^### Independent verification\s*$\n.*?"
+            r"(?=^#{1,3}\s|\Z)"
+        ),
+        (
+            r"^### Declared external deliverables\s*$\n.*?"
+            r"(?=^#{1,3}\s|\Z)"
+        ),
+    )
+    for pattern in generated_section_patterns:
+        for match in re.finditer(pattern, active, re.MULTILINE | re.DOTALL):
+            mask_tex_range(characters, match.start(), match.end())
     offset = 0
     lines = active.splitlines(keepends=True)
     for line in lines:
@@ -24444,6 +28024,9 @@ def ledger_step_projection(
     )
     source = ledger.get("source", {})
     file_value = source.get("file") if isinstance(source, dict) else None
+    if "source_fragments" in ledger:
+        location = source_unit_location(ledger, source_unit)
+        file_value, start_line, end_line = location["file"], location["start_line"], location["end_line"]
     return {
         "ledger": ledger,
         "ledger_path": ledger_path,
@@ -24692,7 +28275,7 @@ def canonical_issue_detail_projection(
     issue: dict[str, Any],
     summaries_by_id: dict[str, dict[str, Any]],
     dependency_edges: list[dict[str, Any]],
-    critical_units: Iterable[str],
+    challenge_units: Iterable[str],
     report_deliverables: list[dict[str, Any]],
     overall_assessment: Any,
     evidence_base: Path | None = None,
@@ -25259,7 +28842,7 @@ def canonical_issue_detail_projection(
         else set()
     )
     required_challenges = sorted(
-        (set(critical_units) & set(required_units))
+        (set(challenge_units) & set(required_units))
         | historical_required_challenges
     )
     reconciled_challenges = [
@@ -25376,16 +28959,363 @@ def render_markdown_table(
     return "\n".join(lines)
 
 
-def render_issue_report_views(
-    issues: list[dict[str, Any]],
+REPAIR_SCOPE_LANGUAGE = {
+    "local_step": "localized proof edit; the statement can remain unchanged",
+    "unit_statement": (
+        "the result statement changes; its downstream uses must be rechecked"
+    ),
+    "cross_unit": "the repair spans multiple results",
+    "global": "the paper-wide argument or claim must be revised",
+}
+ASSUMPTION_COST_LANGUAGE = {
+    "none": "no stronger assumption",
+    "tightens_constant": "a tighter numerical condition",
+    "adds_regularity_or_moment": "stronger regularity or moment assumptions",
+    "changes_regime": "a different asymptotic or probabilistic regime",
+    "structural": "a structural assumption change",
+}
+CLAIM_COST_LANGUAGE = {
+    "none": "no additional weakening of the claim",
+    "restricts_scope": "the result applies in a narrower setting",
+    "weakens_rate": "the stated rate is weakened",
+    "loses_uniformity": "uniformity is lost",
+    "weakens_mode": "the convergence mode or guarantee is weakened",
+}
+REPAIR_OUTLOOK_LANGUAGE = {
+    "candidate_repair_exists": (
+        "A candidate repair is recorded below and still requires the listed "
+        "rechecks."
+    ),
+    "no_local_repair_found": (
+        "No local repair was found; a broader claim or assumption revision "
+        "may be needed."
+    ),
+}
+
+
+def canonical_report_summary_fields(
+    assessment: Any,
+    summaries_by_id: dict[str, dict[str, Any]],
+    in_scope: Iterable[str],
+    issues: Iterable[dict[str, Any]],
+) -> dict[str, str]:
+    judgments: list[tuple[str, dict[str, Any]]] = []
+    affected: list[tuple[str, dict[str, Any]]] = []
+    for result_id in in_scope:
+        for result in summaries_by_id.get(str(result_id), {}).get(
+            "conclusion_results", []
+        ):
+            if not isinstance(result, dict):
+                continue
+            key = f"{result_id}/{result.get('conclusion_id')}"
+            judgments.append((key, result))
+            if (
+                result.get("contract_fidelity") != "verified"
+                or result.get("argument_status") != "valid"
+                or result.get("statement_status") != "established"
+                or result.get("dependency_closure") != "verified"
+                or result.get("use_site_sufficiency")
+                not in {"sufficient", "not_applicable"}
+            ):
+                affected.append((key, result))
+    active_issues = sorted(
+        (
+            issue
+            for issue in issues
+            if isinstance(issue, dict)
+            and issue.get("status") in {"open", "deferred"}
+        ),
+        key=lambda issue: (
+            ISSUE_SEVERITY_RANK.get(str(issue.get("severity")), 99),
+            str(issue.get("id", "")),
+        ),
+    )
+    canonical_judgments = {
+        "no_defect_found": (
+            "No load-bearing defect found under the stated non-formal protocol."
+        ),
+        "defects_found": "Defects found under the stated non-formal protocol.",
+        "inconclusive": "Inconclusive under the stated non-formal protocol.",
+    }
+    if active_issues:
+        lead_issue = active_issues[0]
+        lead_text = (
+            f"{lead_issue.get('id')}: "
+            f"{escape_markdown_heading(lead_issue.get('summary'))}"
+        )
+        main_reason = (
+            lead_text
+            if len(active_issues) == 1
+            else (
+                f"{len(active_issues)} unresolved issues; the highest-priority "
+                f"finding is {lead_text}"
+            )
+        )
+    elif affected:
+        verb = "has" if len(affected) == 1 else "have"
+        main_reason = (
+            f"{len(affected)} of {len(judgments)} checked conclusions {verb} "
+            "a nonpassing or unresolved judgment."
+        )
+    else:
+        main_reason = (
+            "Every in-scope conclusion and recorded dependency use passed its "
+            "required closure checks."
+        )
+    if affected:
+        impact_rows = [
+            (
+                f"{key}: statement {result.get('statement_status')}, argument "
+                f"{result.get('argument_status')}, dependencies "
+                f"{result.get('dependency_closure')}, later use "
+                f"{result.get('use_site_sufficiency')}"
+            ).replace("_", " ")
+            for key, result in affected
+        ]
+        verb = "is" if len(affected) == 1 else "are"
+        impact = (
+            f"{len(affected)} of {len(judgments)} checked conclusions {verb} "
+            "affected: " + "; ".join(impact_rows) + "."
+        )
+    else:
+        impact = (
+            f"All {len(judgments)} checked conclusions are established with "
+            "closed dependencies and sufficient or inapplicable later use."
+        )
+    if not active_issues:
+        repairs = "No current repair is required by the canonical issue log."
+    else:
+        repair_rows: list[str] = []
+        for issue in active_issues:
+            raw_changes = issue.get("suggested_changes")
+            changes = [
+                change
+                for change in (
+                    raw_changes if isinstance(raw_changes, list) else []
+                )
+                if isinstance(change, dict)
+            ]
+            if not changes:
+                repair_rows.append(
+                    f"{issue.get('id')}: no concrete repair is recorded"
+                )
+                continue
+            first = changes[0]
+            option_label = (
+                "1 option" if len(changes) == 1 else f"{len(changes)} options"
+            )
+            repair_rows.append(
+                f"{issue.get('id')}: {option_label}; first option: "
+                f"{repair_cost_language(first)}; status "
+                f"{str(first.get('verification_status')).replace('_', ' ')}; "
+                "recheck "
+                + canonical_id_field(first.get("required_rechecks", []))
+            )
+        repairs = "; ".join(repair_rows) + "."
+    return {
+        "Overall judgment": canonical_judgments.get(
+            str(assessment), "Inconclusive under the stated non-formal protocol."
+        ),
+        "Main reason": main_reason,
+        "Impact on paper conclusions/results": impact,
+        "Repair options and difficulty": repairs,
+    }
+
+
+def report_failure_anchor(issue: dict[str, Any]) -> str:
+    origin = issue.get("origin_ref")
+    if not isinstance(origin, dict):
+        return "unresolved origin"
+    kind = str(origin.get("kind", "origin")).replace("_", " ")
+    if origin.get("kind") == "ledger_move":
+        return f"{origin.get('step_id')}/{origin.get('move_id')}"
+    for field, label in (
+        ("use_id", "dependency use"),
+        ("interface_id", "interface"),
+        ("aspect", "global check"),
+        ("pointer", "obligation field"),
+    ):
+        if is_nonempty_string(origin.get(field)):
+            return f"{label} {origin[field]}"
+    return kind
+
+
+def plain_report_diagnostic(value: Any) -> str:
+    """Translate canonical structured diagnostics into short report prose."""
+    parsed = value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return value.replace("\n", " ")
+    if not isinstance(parsed, dict):
+        return str(parsed).replace("\n", " ")
+    if "source_status" in parsed or "applicability_status" in parsed:
+        parts = [
+            f"dependency source status is {parsed.get('source_status')}",
+            f"use-site applicability is {parsed.get('applicability_status')}",
+            f"effective dependency status is {parsed.get('effective_status')}",
+        ]
+        for check in parsed.get("nonpassing_compatibility_checks", []):
+            if isinstance(check, dict):
+                parts.append(
+                    f"{check.get('aspect')} is {check.get('status')}: "
+                    f"{check.get('evidence')}"
+                )
+        for prerequisite in parsed.get("nonpassing_prerequisites", []):
+            if isinstance(prerequisite, dict):
+                parts.append(
+                    f"prerequisite {prerequisite.get('prerequisite')} is "
+                    f"{prerequisite.get('status')}"
+                )
+        return "; ".join(parts) + "."
+    if "target_relation" in parsed or "implementation_relation" in parsed:
+        target = parsed.get("target_relation")
+        implementation = parsed.get("implementation_relation")
+        target = target if isinstance(target, dict) else {}
+        implementation = implementation if isinstance(implementation, dict) else {}
+        return (
+            f"target relation is {target.get('verdict')}: "
+            f"{target.get('reason')}; implementation inspection is "
+            f"{implementation.get('inspection_status')}: "
+            f"{implementation.get('reason')}."
+        )
+    if "aspect" in parsed and "status" in parsed:
+        return (
+            f"global check {parsed.get('aspect')} is {parsed.get('status')}: "
+            f"{parsed.get('evidence')}."
+        )
+    scalar_parts = [
+        f"{str(key).replace('_', ' ')} is {item}"
+        for key, item in parsed.items()
+        if isinstance(item, (str, int, float, bool)) or item is None
+    ]
+    return (
+        "; ".join(scalar_parts) + "."
+        if scalar_parts
+        else "The canonical record identifies a structured inconsistency."
+    )
+
+
+def render_results_and_impact(
+    summaries_by_id: dict[str, dict[str, Any]],
+    in_scope: Iterable[str],
+) -> str:
+    """Render one answer-oriented row per mathematical conclusion."""
+    rows: list[list[str]] = []
+    for result_id in in_scope:
+        summary = summaries_by_id.get(result_id, {})
+        claims = {
+            row.get("id"): row.get("claim")
+            for row in summary.get("obligation_conclusions", [])
+            if isinstance(row, dict)
+        }
+        source_name = str(summary.get("source_reference") or "unknown")
+        source_range = summary.get("source_range") or "unknown"
+        for result in summary.get("conclusion_results", []):
+            if not isinstance(result, dict):
+                continue
+            conclusion_id = str(result.get("conclusion_id"))
+            claim = claims.get(conclusion_id)
+            support = result.get("support")
+            support_text = (
+                f"{support.get('step_id')}/{support.get('move_id')}"
+                if isinstance(support, dict)
+                else "unresolved"
+            )
+            rows.append(
+                [
+                    result_id,
+                    f"{conclusion_id}: {claim}",
+                    str(result.get("contract_fidelity")),
+                    str(result.get("argument_status")),
+                    str(result.get("statement_status")),
+                    str(result.get("dependency_closure")),
+                    str(result.get("use_site_sufficiency")),
+                    f"{source_name}:{source_range}; {support_text}",
+                    canonical_id_field(result.get("issue_ids", [])),
+                ]
+            )
+    return render_markdown_table(
+        [
+            "Result",
+            "Conclusion",
+            "Contract",
+            "Argument",
+            "Statement",
+            "Dependencies",
+            "Later use",
+            "Evidence",
+            "Issues",
+        ],
+        rows,
+    )
+
+
+def repair_cost_language(change: dict[str, Any]) -> str:
+    parts = [
+        REPAIR_SCOPE_LANGUAGE.get(
+            str(change.get("repair_scope")),
+            str(change.get("repair_scope")),
+        ),
+        ASSUMPTION_COST_LANGUAGE.get(
+            str(change.get("assumption_cost")),
+            str(change.get("assumption_cost")),
+        ),
+    ]
+    if "claim_cost" in change:
+        parts.append(
+            CLAIM_COST_LANGUAGE.get(
+                str(change.get("claim_cost")),
+                str(change.get("claim_cost")),
+            )
+        )
+    return "; ".join(part for part in parts if part and part != "None")
+
+
+def issue_result_impact(
+    issue: dict[str, Any],
+    summaries_by_id: dict[str, dict[str, Any]],
+) -> str:
+    impacts: list[str] = []
+    raw_affected_results = issue.get("affected_results")
+    affected_results = (
+        raw_affected_results
+        if isinstance(raw_affected_results, list)
+        else []
+    )
+    for result_id in affected_results:
+        summary = summaries_by_id.get(str(result_id), {})
+        conclusions = [
+            (
+                f"{row.get('conclusion_id')} is "
+                f"{row.get('statement_status')} "
+                f"(argument {row.get('argument_status')})"
+            )
+            for row in summary.get("conclusion_results", [])
+            if isinstance(row, dict)
+        ]
+        impacts.append(
+            f"{result_id}: "
+            + (
+                "; ".join(conclusions)
+                if conclusions
+                else str(summary.get("declared_unit_status", "unknown"))
+            )
+        )
+    return "; ".join(impacts) or "No result-level impact recorded."
+
+
+def render_findings_and_repairs(
+    issues: Iterable[dict[str, Any]],
     summaries_by_id: dict[str, dict[str, Any]],
     dependency_edges: list[dict[str, Any]],
-    critical_units: Iterable[str],
+    challenge_units: Iterable[str],
     report_deliverables: list[dict[str, Any]],
     overall_assessment: Any,
     interfaces: dict[str, dict[str, Any]] | None = None,
     global_checks: dict[str, dict[str, Any]] | None = None,
-) -> tuple[str, str]:
+) -> str:
     canonical_issues = sorted(
         (issue for issue in issues if isinstance(issue, dict)),
         key=lambda issue: (
@@ -25394,148 +29324,183 @@ def render_issue_report_views(
         ),
     )
     if not canonical_issues:
-        return "No issues.", "No issues."
-
-    issue_header = [
-        "Issue",
-        "Severity",
-        "Load-bearing",
-        "Confidence",
-        "Lifecycle",
-        "Finding",
-        "Invalidation kind",
-        "Origin ref",
-        "Contract refs",
-        "Affected results",
-    ]
-    issue_index = render_markdown_table(
-        issue_header,
-        (canonical_issue_row(issue) for issue in canonical_issues),
-    )
-
-    detail_blocks: list[str] = []
+        return "No issues."
+    blocks: list[str] = []
     for issue in canonical_issues:
-        issue_id = str(issue.get("id"))
         projection = canonical_issue_detail_projection(
             issue,
             summaries_by_id,
             dependency_edges,
-            critical_units,
+            challenge_units,
             report_deliverables,
             overall_assessment,
             interfaces=interfaces,
             global_checks=global_checks,
         )
-        block = [
-            f"### {issue_id} [{issue.get('severity')}] "
-            f"{escape_markdown_heading(issue.get('summary'))}",
-            "",
-            "#### 1. Exact failure site and contract",
-            "",
-            render_markdown_table(
-                [
-                    "File and lines",
-                    "Span SHA256",
-                    "Exact locked quote",
-                    "Result",
-                    "Step and move",
-                    "Claim",
-                    "Rule attempted",
-                    "Premises",
-                    "Failure evidence",
-                    "Failure kind",
-                ],
-                projection["failure"],
-            ),
-            "",
-            render_markdown_table(
-                [
-                    "Contract ref",
-                    "Normalized claim or assumption",
-                    "Scope, model, and regime",
-                    "Evidence",
-                ],
-                projection["contract"],
-            ),
-            "",
-            "#### 2. Downstream consequences",
-            "",
-            render_markdown_table(
-                [
-                    "Affected result",
-                    "Relation",
-                    "Use ID",
-                    "Dependency conclusion",
-                    "Use-site file and lines",
-                    "Use-site SHA256",
-                    "Exact use-site quote",
-                    "Propagated effect",
-                ],
-                projection["propagation"],
-            ),
-            "",
-            "#### 3. Severity and validity effect",
-            "",
-            render_markdown_table(
-                [
-                    "Severity",
-                    "Load-bearing",
-                    "Confidence",
-                    "Invalidation kind",
-                    "Current unit effect",
-                    "Current conclusion effect",
-                    "Overall assessment effect",
-                ],
-                projection["severity"],
-            ),
-            *(
-                [
-                    "",
-                    "Repair search conclusion: "
-                    f"`{projection['repair_search_conclusion']}`",
-                    "",
-                    render_markdown_table(
-                        ["Strategy", "Attempt", "Outcome", "Evidence"],
-                        projection["repair_search"],
-                    ),
-                ]
-                if projection["repair_search"] is not None
-                else []
-            ),
-            "",
-            "#### 4. Suggested changes and recheck",
-            "",
-            render_markdown_table(
-                [
-                    "Target",
-                    "Action",
-                    "Repair scope",
-                    "Assumption cost",
-                    "Claim cost",
-                    "Proposal",
-                    "Verification status",
-                    "Required rechecks",
-                ],
-                projection["changes"],
-            ),
-            "",
-            render_markdown_table(
-                [
-                    "Required units",
-                    "Rechecked units",
-                    "Required dependency uses",
-                    "Rechecked dependency uses",
-                    "Required challenges",
-                    "Reconciled challenges",
-                    "Required deliverables",
-                    "Reconciled deliverables",
-                    "Closure status",
-                ],
-                projection["closure"],
-            ),
+        failures = projection["failure"]
+        failure = failures[0] if failures else []
+        failure_sites = [
+            row[0] for row in failures if isinstance(row, list) and row
         ]
-        detail_blocks.append("\n".join(block))
-    return issue_index, "\n\n".join(detail_blocks)
+        rule = failure[6] if len(failure) > 6 else "unresolved"
+        failure_evidence = plain_report_diagnostic(
+            failure[8] if len(failure) > 8 else str(
+            issue.get("summary")
+            )
+        )
+        evidence_rows: list[list[str]] = []
+        for row in failures:
+            quote_value: Any = row[2] if len(row) > 2 else "unavailable"
+            try:
+                quote_value = json.loads(quote_value)
+            except (json.JSONDecodeError, TypeError):
+                pass
+            evidence_rows.append(
+                [
+                    str(row[0]) if row else "unresolved",
+                    report_failure_anchor(issue),
+                    str(quote_value).replace("\n", " "),
+                ]
+            )
+        raw_changes = issue.get("suggested_changes")
+        changes = [
+            change
+            for change in (
+                raw_changes if isinstance(raw_changes, list) else []
+            )
+            if isinstance(change, dict)
+        ]
+        repair_rows = [
+            [
+                str(change.get("proposal")),
+                repair_cost_language(change),
+                str(change.get("verification_status")).replace("_", " "),
+                canonical_id_field(change.get("required_rechecks", [])),
+            ]
+            for change in changes
+        ]
+        repair_search = issue.get("repair_search")
+        repair_outlook = (
+            REPAIR_OUTLOOK_LANGUAGE.get(
+                str(repair_search.get("conclusion")),
+                str(repair_search.get("conclusion")).replace("_", " "),
+            )
+            if isinstance(repair_search, dict)
+            and is_substantive_string(repair_search.get("conclusion"))
+            else (
+                "The recorded options below require validation."
+                if repair_rows
+                else "No repair option is currently recorded."
+            )
+        )
+        blocks.extend(
+            [
+                (
+                    f"### {issue.get('id')} [{issue.get('severity')}] "
+                    f"{escape_markdown_heading(issue.get('summary'))}"
+                ),
+                "",
+                (
+                    f"- Status: {issue.get('status')}; confidence: "
+                    f"{issue.get('confidence')}; load-bearing: "
+                    f"{str(issue.get('load_bearing')).lower()}."
+                ),
+                "- Failure site: "
+                + ("; ".join(failure_sites) if failure_sites else "unresolved")
+                + ".",
+                "",
+                render_markdown_table(
+                    ["Location", "Step or move", "Exact locked quote"],
+                    evidence_rows,
+                ),
+                "",
+                f"- Why it fails: {failure_evidence} Rule checked: {rule}.",
+                f"- Impact: {issue_result_impact(issue, summaries_by_id)}",
+                f"- Repair outlook: {repair_outlook}",
+                "",
+                (
+                    render_markdown_table(
+                        [
+                            "Repair option",
+                            "Scope and scientific cost",
+                            "Status",
+                            "Required rechecks",
+                        ],
+                        repair_rows,
+                    )
+                    if repair_rows
+                    else "No concrete repair proposal is recorded."
+                ),
+            ]
+        )
+        blocks.append("")
+    return "\n".join(blocks).strip()
+
+
+def render_independent_verification(
+    summaries_by_id: dict[str, dict[str, Any]],
+    required_challenges: Iterable[str],
+) -> str:
+    rows: list[list[str]] = []
+    for unit_id in required_challenges:
+        check = summaries_by_id.get(str(unit_id), {}).get(
+            "independent_check", {}
+        )
+        resolution = check.get("resolution")
+        rows.append(
+            [
+                str(unit_id),
+                str(check.get("status")),
+                str(check.get("independence_level")),
+                str(check.get("challenger_verdict")),
+                str(check.get("reconciled_verdict")),
+                (
+                    str(resolution).replace("\n", " ")
+                    if check.get("status") == "resolved"
+                    and is_substantive_string(resolution)
+                    else "agreed"
+                ),
+            ]
+        )
+    return render_markdown_table(
+        [
+            "Result",
+            "Check status",
+            "Independence",
+            "Challenger verdict",
+            "Final verdict",
+            "Reconciliation",
+        ],
+        rows,
+    )
+
+
+def render_declared_deliverables(
+    report_deliverables: Iterable[dict[str, Any]],
+) -> str:
+    rows = [
+        [
+            str(record.get("id")),
+            str(record.get("role")),
+            str(record.get("path")),
+            canonical_id_field(record.get("issue_ids", [])),
+            str(record.get("overall_verdict")),
+        ]
+        for record in report_deliverables
+        if isinstance(record, dict)
+    ]
+    if not rows:
+        return "None."
+    return render_markdown_table(
+        [
+            "Deliverable ID",
+            "Role",
+            "Path",
+            "Issue IDs",
+            "Overall verdict",
+        ],
+        rows,
+    )
 
 
 def replace_report_section_text(text: str, heading: str, body: str) -> str:
@@ -25550,6 +29515,35 @@ def replace_report_section_text(text: str, heading: str, body: str) -> str:
         )
     replacement = f"{heading}\n\n{body.strip()}\n\n"
     return pattern.sub(lambda _: replacement, text, count=1)
+
+
+def replace_report_nested_section_text(
+    text: str, heading: str, body: str
+) -> str:
+    pattern = re.compile(
+        rf"^{re.escape(heading)}\s*$\n.*?(?=^###\s|^##\s|\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
+    matches = list(pattern.finditer(text))
+    if len(matches) != 1:
+        raise ValueError(
+            f"Final report must contain exactly one {heading} section"
+        )
+    trailing = "\n" if matches[0].end() == len(text) else "\n\n"
+    replacement = f"{heading}\n\n{body.strip()}{trailing}"
+    return pattern.sub(lambda _: replacement, text, count=1)
+
+
+def replace_report_scalar_text(text: str, label: str, value: str) -> str:
+    pattern = re.compile(
+        rf"^- {re.escape(label)}:[ \t]*[^\r\n]*$", re.MULTILINE
+    )
+    matches = list(pattern.finditer(text))
+    if len(matches) != 1:
+        raise ValueError(
+            f"Final report must contain exactly one {label} field"
+        )
+    return pattern.sub(lambda _: f"- {label}: {value}", text, count=1)
 
 
 
@@ -25709,8 +29703,465 @@ def rediscover_portable_source_closure(
     return files, warnings
 
 
+def annotate_primary_reference_errors(
+    errors: list[str], start: int, unit: dict[str, Any],
+    summary: dict[str, Any], occurrences: list[dict[str, Any]],
+    field: str, identity_field: str,
+) -> None:
+    """Attach the manuscript location and editable record pointer to a diagnostic."""
+    rows = summary.get(field, [])
+    for index in range(start, len(errors)):
+        message = errors[index]
+        row_index = next((i for i, row in enumerate(rows)
+                          if isinstance(row, dict)
+                          and is_nonempty_string(row.get(identity_field))
+                          and re.search(
+                              r"(?<![\w:./-])" + re.escape(str(row[identity_field]))
+                              + r"(?![\w:./-])", message)), None)
+        row = rows[row_index] if row_index is not None else {}
+        occurrence = next((item for item in occurrences
+                           if (identity_field == "occurrence_id"
+                               and item.get("occurrence_id") == row.get(identity_field))
+                           or (identity_field == "candidate_id"
+                               and item.get("owner_unit_id") == row.get(identity_field))), {})
+        location = occurrence or unit.get("statement") or {}
+        file_name = location.get("file", "source")
+        line = location.get("line", location.get("start_line", "?"))
+        pointer = f"/review/{field}"
+        if row_index is not None:
+            pointer += f"/{row_index}"
+        errors[index] = f"{message} [{file_name}:{line}; {pointer}]"
+
+
+def validate_primary_reference_roles(
+    unit_id: str, unit: dict[str, Any], summary: dict[str, Any],
+    reviewed_occurrences: list[dict[str, Any]],
+    unit_inventory: dict[str, dict[str, Any]], paper_base: Path,
+    errors: list[str],
+) -> None:
+    """Reconcile primary occurrence roles without independent-review evidence."""
+    first_error = len(errors)
+    proof_location = unit.get("proof")
+    direct_by_use = {
+        record.get("use_id"): record
+        for record in summary.get("direct_dependencies", [])
+        if isinstance(record, dict)
+        and is_nonempty_string(record.get("use_id"))
+    }
+    dispositions_by_occurrence = {
+        record.get("occurrence_id"): record
+        for record in summary.get("source_reference_dispositions", [])
+        if isinstance(record, dict)
+        and is_nonempty_string(record.get("occurrence_id"))
+    }
+    source_occurrences = {
+        record.get("occurrence_id"): record
+        for record in reviewed_occurrences
+        if isinstance(record, dict)
+        and is_nonempty_string(record.get("occurrence_id"))
+    }
+    step_result_claims = {
+        claim.get("use_id"): claim
+        for claim in summary.get("result_dependency_claims", [])
+        if isinstance(claim, dict)
+        and is_nonempty_string(claim.get("use_id"))
+    }
+    missing_dispositions = set(source_occurrences) - set(
+        dispositions_by_occurrence
+    )
+    if missing_dispositions:
+        errors.append(
+            f"{unit_id}: source occurrences lack reviewed dispositions: "
+            + ", ".join(sorted(missing_dispositions))
+        )
+    stale_dispositions = set(dispositions_by_occurrence) - set(
+        source_occurrences
+    )
+    if stale_dispositions:
+        errors.append(
+            f"{unit_id}: source-reference dispositions are not present in "
+            "the reviewed statement or proof: "
+            + ", ".join(sorted(stale_dispositions))
+        )
+    proof_path: Path | None = None
+    proof_start = proof_end = proof_last_line = 0
+    if isinstance(proof_location, dict):
+        try:
+            proof_path = resolve_stored_path(
+                str(proof_location["file"]), paper_base
+            )
+            proof_start = proof_location["start_line"]
+            proof_end = proof_location["end_line"]
+            if is_int(proof_start) and is_int(proof_end):
+                proof_last_line = last_substantive_line(
+                    proof_path, proof_start, proof_end
+                )
+                expanded_proof = source_fragment_support().expand(report_api(), proof_path, proof_start, proof_end, paper_base)
+                if expanded_proof["has_inclusion"]:
+                    proof_last_line = expanded_last_substantive_position(expanded_proof)
+        except (KeyError, TypeError, ValueError, OSError, UnicodeError):
+            proof_path = None
+    for occurrence_id, disposition in dispositions_by_occurrence.items():
+        occurrence = source_occurrences.get(occurrence_id)
+        if occurrence is None:
+            continue
+        if (
+            disposition.get("target") != occurrence.get("target")
+            or disposition.get("command") != occurrence.get("command")
+        ):
+            errors.append(
+                f"{unit_id}: disposition {occurrence_id} does not match the "
+                "canonical occurrence target and command"
+            )
+        role = disposition.get("disposition")
+        target = occurrence.get("target")
+        owner_status = occurrence.get("resolution_status")
+        owner_unit_id = occurrence.get("owner_unit_id")
+        owner_region = occurrence.get("owner_region")
+        if role == "internal_result":
+            use_id = disposition.get("dependency_use_id")
+            dependency = direct_by_use.get(use_id)
+            claim = step_result_claims.get(use_id)
+            foreign_owner = unit_inventory.get(str(owner_unit_id), {})
+            if (
+                owner_status != "unique"
+                or not is_nonempty_string(owner_unit_id)
+                or owner_unit_id == unit_id
+                or (
+                    foreign_owner.get("proof_required") is False
+                    and (foreign_owner.get("semantic_kind") or foreign_owner.get("environment"))
+                    in OBLIGATION_CONTEXT_ENVIRONMENTS
+                )
+            ):
+                errors.append(
+                    f"{unit_id}: occurrence {occurrence_id} cannot be an "
+                    "internal result because it has no unique other-unit owner"
+                )
+            if (
+                dependency is None
+                or dependency.get("kind") != "internal_result"
+                or dependency.get("id") != owner_unit_id
+            ):
+                errors.append(
+                    f"{unit_id}: occurrence {occurrence_id} does not resolve "
+                    "through its exact dependency use to the label owner"
+                )
+            if (
+                claim is None
+                or claim.get("kind") != "internal_result"
+                or claim.get("id") != owner_unit_id
+            ):
+                errors.append(
+                    f"{unit_id}: occurrence {occurrence_id} is not mapped to "
+                    "an exact proof-step dependency use"
+                )
+        elif role == "local_step":
+            if owner_status != "unique" or owner_unit_id != unit_id:
+                errors.append(
+                    f"{unit_id}: local-step occurrence {occurrence_id} must "
+                    "resolve to a label owned by the same unit"
+                )
+        elif role == "obligation_context":
+            if owner_status == "unique":
+                foreign_owner = unit_inventory.get(str(owner_unit_id), {})
+                owned_statement = (
+                    owner_unit_id == unit_id
+                    and owner_region == "statement"
+                )
+                reviewed_foreign_context = (
+                    owner_unit_id != unit_id
+                    and foreign_owner.get("proof_required") is False
+                    and (foreign_owner.get("semantic_kind") or foreign_owner.get("environment"))
+                    in OBLIGATION_CONTEXT_ENVIRONMENTS
+                    and owner_region == "statement"
+                )
+                if not owned_statement and not reviewed_foreign_context:
+                    errors.append(
+                        f"{unit_id}: obligation occurrence {occurrence_id} "
+                        "must name this result's statement or a reviewed "
+                        "foreign non-proof unit"
+                    )
+        elif role == "own_result_identification":
+            closing_occurrence = bool(
+                occurrence.get("structural_context") == "proof_header"
+                or (
+                    proof_path is not None
+                    and is_int(occurrence.get("source_position", occurrence.get("line")))
+                    and occurrence.get("source_position", occurrence.get("line")) >= max(
+                        proof_start, proof_last_line - 2
+                    )
+                )
+            )
+            if (
+                owner_status != "unique"
+                or owner_unit_id != unit_id
+                or target != unit_id
+                or not closing_occurrence
+            ):
+                errors.append(
+                    f"{unit_id}: own-result occurrence {occurrence_id} is "
+                    "not a proof header or reviewed closing identification"
+                )
+        elif role == "navigation":
+            if occurrence.get("command") != "hyperref":
+                errors.append(
+                    f"{unit_id}: navigation occurrence {occurrence_id} must "
+                    "use an explicit hyperref command"
+                )
+        elif role == "non_load_bearing":
+            if (
+                owner_status == "unique"
+                and owner_unit_id == unit_id
+                and target == unit_id
+                and occurrence.get("structural_context") != "proof_header"
+                and (
+                    not is_int(occurrence.get("source_position", occurrence.get("line")))
+                    or occurrence.get("source_position", occurrence.get("line")) < max(
+                        proof_start, proof_last_line - 2
+                    )
+                )
+            ):
+                errors.append(
+                    f"{unit_id}: a mid-proof self-reference "
+                    f"{occurrence_id} cannot be hidden as non-load-bearing"
+                )
+        if (
+            role == "unresolved"
+            and summary.get("declared_unit_status") == "verified"
+        ):
+            errors.append(
+                f"{unit_id}: verified unit has unresolved source occurrence "
+                f"{occurrence_id}"
+            )
+        if (
+            owner_status
+            in {"missing", "duplicate", "ambiguous", "dynamic", "unowned"}
+            and role not in {"unresolved", "navigation", "non_load_bearing"}
+            and not (
+                owner_status == "unowned"
+                and role == "obligation_context"
+            )
+        ):
+            errors.append(
+                f"{unit_id}: unresolved occurrence {occurrence_id} cannot "
+                f"serve the premise-bearing role {role}"
+            )
+
+    annotate_primary_reference_errors(
+        errors, first_error, unit, summary, reviewed_occurrences,
+        "source_reference_dispositions", "occurrence_id",
+    )
+
+
+def validate_primary_candidate_references(
+    root: Path, inventory: dict[str, Any], unit_id: str,
+    unit: dict[str, Any], summary: dict[str, Any],
+    unit_inventory: dict[str, dict[str, Any]], paper_base: Path,
+    reviewed_occurrences: list[dict[str, Any]],
+    candidate_source_members: list[tuple[Path, dict[str, Any]]],
+    internal_uses: list[dict[str, Any]], errors: list[str], *,
+    candidate_paths: list[dict[str, Any]] | None = None,
+) -> None:
+    """Apply the same exact candidate/use reconciliation at handoff and release."""
+    first_error = len(errors)
+    internal_edge_by_pair = {
+        (
+            str(edge.get("dependent_unit")),
+            str(edge.get("dependency_id")),
+        ): edge
+        for edge in internal_uses
+        if isinstance(edge, dict)
+        and edge.get("kind", "internal_result") == "internal_result"
+        and is_nonempty_string(edge.get("dependent_unit"))
+        and is_nonempty_string(edge.get("dependency_id"))
+    }
+    candidate_ids = {
+        str(value)
+        for value in unit.get("candidate_internal_dependencies", [])
+        if is_nonempty_string(value)
+    }
+    disposition_rows = summary.get(
+        "candidate_dependency_dispositions", []
+    )
+    dispositions_by_id = {
+        str(row.get("candidate_id")): row
+        for row in disposition_rows
+        if isinstance(row, dict)
+        and is_nonempty_string(row.get("candidate_id"))
+    }
+    if set(dispositions_by_id) != candidate_ids:
+        missing = sorted(candidate_ids - set(dispositions_by_id))
+        stale = sorted(set(dispositions_by_id) - candidate_ids)
+        if missing:
+            errors.append(
+                f"{unit_id}: candidate dependency dispositions are missing "
+                + ", ".join(missing)
+            )
+        if stale:
+            errors.append(
+                f"{unit_id}: candidate dependency dispositions are stale "
+                + ", ".join(stale)
+            )
+    if not candidate_ids or (not candidate_source_members and candidate_paths is None):
+        annotate_primary_reference_errors(
+            errors, first_error, unit, summary, reviewed_occurrences,
+            "candidate_dependency_dispositions", "candidate_id",
+        )
+        return
+    if candidate_paths is None:
+        try:
+            candidate_paths = packet_candidate_dependency_paths(
+                inventory,
+                unit,
+                paper_base,
+                root,
+                candidate_source_members,
+                reviewed_occurrences,
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
+            errors.append(
+                f"{unit_id}: cannot reconstruct dependency-candidate paths: {exc}"
+            )
+            annotate_primary_reference_errors(
+                errors, first_error, unit, summary, reviewed_occurrences,
+                "candidate_dependency_dispositions", "candidate_id",
+            )
+            return
+    path_ids_by_candidate: dict[str, list[str]] = defaultdict(list)
+    paths_by_id: dict[str, dict[str, Any]] = {}
+    for path in candidate_paths:
+        if (
+            isinstance(path, dict)
+            and is_nonempty_string(path.get("candidate_id"))
+            and is_nonempty_string(path.get("path_id"))
+        ):
+            path_ids_by_candidate[str(path["candidate_id"])].append(
+                str(path["path_id"])
+            )
+            paths_by_id[str(path["path_id"])] = path
+    for candidate_id in sorted(candidate_ids):
+        disposition = dispositions_by_id.get(candidate_id)
+        if not isinstance(disposition, dict):
+            continue
+        expected_paths = sorted(
+            path_ids_by_candidate.get(candidate_id, [])
+        )
+        if (
+            not expected_paths
+            or sorted(disposition.get("path_ids", [])) != expected_paths
+        ):
+            errors.append(
+                f"{unit_id}: candidate {candidate_id} path_ids disagree "
+                "with canonical parser provenance"
+            )
+        edge = internal_edge_by_pair.get((unit_id, candidate_id))
+        if edge is not None:
+            dependency_unit = unit_inventory.get(candidate_id, {})
+            if (
+                disposition.get("disposition") != "internal_result"
+                or disposition.get("dependency_use_id")
+                != edge.get("use_id")
+                or (
+                    dependency_unit.get("proof_required") is False
+                    and (dependency_unit.get("semantic_kind") or dependency_unit.get("environment"))
+                    in OBLIGATION_CONTEXT_ENVIRONMENTS
+                )
+            ):
+                errors.append(
+                    f"{unit_id}: candidate {candidate_id} must map to its "
+                    "exact registry dependency use"
+                )
+        elif disposition.get("disposition") == "obligation_context":
+            for path_id in expected_paths:
+                path = paths_by_id.get(path_id, {})
+                chain = path.get("reference_chain")
+                root_occurrence = (
+                    chain[0]
+                    if isinstance(chain, list)
+                    and chain
+                    and isinstance(chain[0], dict)
+                    else {}
+                )
+                root_disposition = summary.get(
+                    "source_reference_dispositions", []
+                )
+                root_disposition = next(
+                    (
+                        row
+                        for row in root_disposition
+                        if isinstance(row, dict)
+                        and row.get("occurrence_id")
+                        == root_occurrence.get("occurrence_id")
+                    ),
+                    None,
+                )
+                if (
+                    root_occurrence.get("owner_unit_id") != candidate_id
+                    or root_occurrence.get("owner_proof_required") is not False
+                    or root_occurrence.get("owner_environment")
+                    not in OBLIGATION_CONTEXT_ENVIRONMENTS
+                    or root_occurrence.get("owner_region") != "statement"
+                    or not isinstance(root_disposition, dict)
+                    or root_disposition.get("disposition")
+                    != "obligation_context"
+                ):
+                    errors.append(
+                        f"{unit_id}: candidate {candidate_id} must bind "
+                        "directly to its exact formal-context occurrence"
+                    )
+        elif disposition.get("disposition") not in {
+            "navigation",
+            "non_load_bearing",
+        }:
+            errors.append(
+                f"{unit_id}: unmapped foreign candidate {candidate_id} "
+                "must be obligation_context, navigation, or "
+                "non_load_bearing"
+            )
+    annotate_primary_reference_errors(
+        errors, first_error, unit, summary, reviewed_occurrences,
+        "candidate_dependency_dispositions", "candidate_id",
+    )
+
+
+def primary_reference_readiness_errors(
+    root: Path, manifest: dict[str, Any], inventory: dict[str, Any],
+    summaries_by_id: dict[str, dict[str, Any]],
+    internal_uses: list[dict[str, Any]], in_scope: list[str],
+) -> list[str]:
+    """Inspect primary reference meaning; completion and challenges are not inputs."""
+    errors: list[str] = []
+    paper = resolve_stored_path(str(manifest.get("paper_file", "")), root)
+    units = {unit["id"]: unit for unit in inventory.get("units", [])
+             if isinstance(unit, dict) and is_nonempty_string(unit.get("id"))}
+    owners = inventory.get("label_owners") or {}
+    try:
+        members = packet_source_members(root, manifest)
+    except (OSError, UnicodeError, ValueError) as exc:
+        errors.append(f"Cannot reconstruct dependency-candidate provenance: {exc}")
+        members = []
+    for unit_id in sorted(set(in_scope) & set(units) & set(summaries_by_id)):
+        unit, summary = units[unit_id], summaries_by_id[unit_id]
+        try:
+            occurrences = reviewed_unit_reference_occurrences(unit, paper.parent, owners)
+            validate_primary_reference_roles(
+                unit_id, unit, summary, occurrences, units, paper.parent, errors,
+            )
+            validate_primary_candidate_references(
+                root, inventory, unit_id, unit, summary, units, paper.parent,
+                occurrences, members, internal_uses, errors,
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
+            errors.append(f"{unit_id}: cannot reconstruct primary references: {exc}")
+    return errors
+
+
 def _check_audit_finalization(
-    root: Path, *, progress_override: dict[str, Any] | None = None
+    root: Path, *, progress_override: dict[str, Any] | None = None,
+    check_reports: bool = True,
+    manifest_override: dict[str, Any] | None = None,
+    report_outputs_override: dict[str, str] | None = None,
+    source_inventory_only: bool = False,
 ) -> tuple[list[str], dict[str, Any]]:
     root = root.resolve()
     errors: list[str] = []
@@ -25718,6 +30169,10 @@ def _check_audit_finalization(
     errors.extend(manifest_errors)
     if manifest_errors:
         return errors, {"audit_root": str(root), "errors": len(errors)}
+    if manifest_override is not None:
+        manifest = manifest_override
+    if "report_contract" in manifest and not uses_html_report(manifest):
+        errors.append("Unsupported report_contract; explicit migration is required")
     errors.extend(audit_internal_redirect_errors(root))
     errors.extend(checker_calibration_errors(root))
     if manifest.get("schema_version") != SCHEMA_VERSION:
@@ -25727,6 +30182,10 @@ def _check_audit_finalization(
         errors.append("AUDIT_MANIFEST.json protocol must be an object")
         protocol = {}
     expected_protocol = protocol_identity()
+    try:
+        challenge_contract_version(manifest)
+    except ValueError as exc:
+        errors.append(str(exc))
     for field, expected in expected_protocol.items():
         if protocol.get(field) != expected:
             errors.append(
@@ -25917,13 +30376,16 @@ def _check_audit_finalization(
         else ({}, [])
     )
     errors.extend(crossref_read_errors)
+    if crossref_read_errors:
+        errors.append("Cannot read canonical cross-reference audit; " + crossref_refresh_hint(root))
     if (
         crossref_json_path_valid
         and not crossref_read_errors
         and stored_cross_references != fresh_cross_references
     ):
         errors.append(
-            "cross_reference_audit.json is stale or disagrees with the fresh scan"
+            "cross_reference_audit.json is stale or disagrees with the fresh scan; "
+            + crossref_refresh_hint(root)
         )
     crossref_markdown_path, crossref_markdown_path_valid = canonical_artifact_path(
         root,
@@ -25932,16 +30394,19 @@ def _check_audit_finalization(
         errors,
     )
     if crossref_markdown_path_valid and not crossref_markdown_path.is_file():
-        errors.append(f"cross_reference_audit.md not found: {crossref_markdown_path}")
+        errors.append(
+            f"cross_reference_audit.md not found: {crossref_markdown_path}; "
+            + crossref_refresh_hint(root)
+        )
     elif (
         crossref_markdown_path_valid
-        and crossref_json_path_valid
-        and not crossref_read_errors
+        and paper.is_file()
         and read_text(crossref_markdown_path)
-        != crossref_markdown(stored_cross_references)
+        != crossref_markdown(fresh_cross_references)
     ):
         errors.append(
-            "cross_reference_audit.md is stale or disagrees with cross_reference_audit.json"
+            "cross_reference_audit.md is stale or disagrees with the fresh scan; "
+            + crossref_refresh_hint(root)
         )
 
     inventory, inventory_errors = (
@@ -25987,11 +30452,13 @@ def _check_audit_finalization(
     for unit_id in sorted(fresh_unit_ids & set(unit_inventory)):
         fresh_unit = fresh_units_by_id[unit_id]
         reviewed_unit = unit_inventory[unit_id]
-        for field in ("environment", "label", "proof_required"):
+        for field in ("environment", "label", "environment_declaration", "statement_title", "restatable", "restatements"):
             if reviewed_unit.get(field) != fresh_unit.get(field):
                 errors.append(
                     f"Reviewed inventory changes parser-discovered {field} for {unit_id}"
                 )
+        if any(reviewed_unit.get(field) != fresh_unit.get(field) for field in ("proof_required", "semantic_kind")):
+            required_inventory_overrides.add((unit_id, "environment_classification"))
         if canonical_location(reviewed_unit.get("statement")) != canonical_location(
             fresh_unit.get("statement")
         ):
@@ -26054,23 +30521,17 @@ def _check_audit_finalization(
     if not set(target_units).issubset(in_scope):
         errors.append("Every target unit must also be in scope")
     critical = validate_string_list(
-        scope.get("critical_units"), "audit_scope.critical_units", errors
+        scope.get("critical_units", []), "audit_scope.critical_units", errors,
+        allow_empty=True,
     )
     if len(set(critical)) != len(critical):
         errors.append("audit_scope.critical_units contains duplicates")
     if not set(critical).issubset(in_scope):
         errors.append("Every critical unit must also be in scope")
-    if not set(target_units).issubset(critical):
-        errors.append("Every target unit must also be critical")
-    sample_rate = scope.get("verified_challenge_sample_rate")
-    if (
-        sample_rate is not None
-        and verified_challenge_sample_fraction(sample_rate) is None
-    ):
+    if "verified_challenge_sample_rate" in scope:
         errors.append(
-            "audit_scope.verified_challenge_sample_rate must be a finite "
-            "number greater than 0 and at most 1; omit the field entirely "
-            "to disable sampling"
+            "audit_scope.verified_challenge_sample_rate is obsolete; remove "
+            "the field because every in-scope unit now requires an independent check"
         )
     in_scope_interfaces = validate_string_list(
         scope.get("in_scope_interfaces"),
@@ -26106,6 +30567,7 @@ def _check_audit_finalization(
                 "proof_location",
                 "proof_association",
                 "external_restatement",
+                "environment_classification",
             },
         ):
             errors.append(f"{prefix} needs a valid unit_id and kind")
@@ -26121,7 +30583,32 @@ def _check_audit_finalization(
                 )
         fresh_unit = fresh_units_by_id.get(str(unit_id))
         reviewed_unit = unit_inventory.get(str(unit_id))
-        if kind == "manual_unit":
+        if kind == "environment_classification":
+            if fresh_unit is None or reviewed_unit is None:
+                errors.append(f"{prefix}: environment_classification requires a parser-discovered unit")
+                continue
+            if fresh_unit.get("semantic_kind") is not None:
+                errors.append(f"{prefix}: an explicit declared theorem role cannot be reclassified")
+            for field in ("proof_required", "semantic_kind"):
+                if override.get("parser_" + field) != fresh_unit.get(field):
+                    errors.append(f"{prefix}.parser_{field} is stale")
+                if override.get("reviewed_" + field) != reviewed_unit.get(field):
+                    errors.append(f"{prefix}.reviewed_{field} is stale")
+            reviewed_kind = reviewed_unit.get("semantic_kind")
+            if not is_enum_value(reviewed_kind, FORMAL_ENVIRONMENTS) or reviewed_unit.get("proof_required") != (reviewed_kind not in NON_PROOF_ENVIRONMENTS):
+                errors.append(f"{prefix}: reviewed semantic_kind and proof_required must agree")
+            statement = reviewed_unit.get("statement", {})
+            try:
+                statement_path = resolve_stored_path(statement["file"], paper.parent)
+                digest = source_span_sha256(statement_path, statement["start_line"], statement["end_line"])
+            except (KeyError, TypeError, OSError, UnicodeError, ValueError):
+                errors.append(f"{prefix}: classification statement cannot be source-locked")
+            else:
+                if override.get("statement_sha256") != digest:
+                    errors.append(f"{prefix}.statement_sha256 is stale")
+            if override.get("environment_declaration") != fresh_unit.get("environment_declaration"):
+                errors.append(f"{prefix}.environment_declaration must match its source-bound declaration")
+        elif kind == "manual_unit":
             if fresh_unit is not None or reviewed_unit is None:
                 errors.append(
                     f"{prefix}: manual_unit must bind one parser-omitted reviewed unit"
@@ -26151,6 +30638,7 @@ def _check_audit_finalization(
                                 manual_start,
                                 manual_end,
                                 target_unit_id=str(unit_id),
+                                source_files=current_files,
                             )
                         )
                     except (OSError, UnicodeError, ValueError):
@@ -26228,6 +30716,7 @@ def _check_audit_finalization(
                                 reviewed_start,
                                 reviewed_end,
                                 target_unit_id=str(unit_id),
+                                source_files=current_files,
                             ):
                                 errors.append(
                                     f"{prefix}.reviewed_proof must equal a complete "
@@ -26435,6 +30924,9 @@ def _check_audit_finalization(
         paper.parent,
     )
     canonical_evidence_by_unit: dict[str, dict[str, Any]] = {}
+    reviewed_reference_occurrences_by_unit: dict[
+        str, list[dict[str, Any]]
+    ] = {}
     reviewed_proof_spans: list[tuple[str, Path, int, int]] = []
     global_occurrence_ids = {
         occurrence.get("occurrence_id")
@@ -26532,6 +31024,7 @@ def _check_audit_finalization(
                     proof_start,
                     proof_end,
                     target_unit_id=unit_id,
+                    source_files=current_files,
                 ):
                     errors.append(
                         f"{unit_id}: reviewed proof must equal a complete proof "
@@ -26543,6 +31036,7 @@ def _check_audit_finalization(
                     paper.parent,
                     label_owners,
                     support_index,
+                    source_files=current_files,
                 )
             except (OSError, UnicodeError, ValueError) as exc:
                 errors.append(f"{unit_id}: cannot rescan reviewed proof span: {exc}")
@@ -26579,6 +31073,7 @@ def _check_audit_finalization(
                     label_owners,
                     support_index,
                     statement_as_primary=unit_id in external_restatements,
+                    source_files=current_files,
                 )
                 inventory_evidence = (
                     reviewed_span_evidence(
@@ -26587,6 +31082,7 @@ def _check_audit_finalization(
                         paper.parent,
                         label_owners,
                         support_index,
+                        source_files=current_files,
                     )
                     if unit_id in external_restatements
                     else evidence
@@ -26597,6 +31093,18 @@ def _check_audit_finalization(
                 )
                 continue
             canonical_evidence_by_unit[unit_id] = evidence
+
+        try:
+            reviewed_reference_occurrences_by_unit[unit_id] = (
+                reviewed_unit_reference_occurrences(
+                    unit, paper.parent, label_owners
+                )
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
+            errors.append(
+                f"{unit_id}: cannot rescan statement and proof references: {exc}"
+            )
+            reviewed_reference_occurrences_by_unit[unit_id] = []
 
         for field in (
             "reference_occurrences",
@@ -26799,6 +31307,11 @@ def _check_audit_finalization(
         errors,
     )
 
+    if source_inventory_only:
+        # Pre-challenge issues reuses this source consistency boundary while
+        # its existing primary ledger, dependency and issue checks run there.
+        return errors, {"audit_root": str(root), "errors": len(errors)}
+
     completion = manifest.get("completion")
     if not isinstance(completion, dict):
         errors.append("completion must be an object")
@@ -26808,10 +31321,11 @@ def _check_audit_finalization(
         "parser_warnings_reviewed",
         "dependency_registry_reviewed",
         "method_interface_registry_reviewed",
-        "final_report_ready",
     ):
         if completion.get(field) is not True:
             errors.append(f"completion.{field} must be true")
+    if check_reports and completion.get("final_report_ready") is not True:
+        errors.append("completion.final_report_ready must be true")
     global_consistency_result = validate_global_consistency_pass(
         completion.get("global_consistency_pass"), in_scope, errors
     )
@@ -26849,152 +31363,164 @@ def _check_audit_finalization(
     validate_completion_pass(
         completion.get("adversarial_pass"), "adversarial_pass", errors
     )
-    final_report, final_report_path_valid = canonical_artifact_path(
-        root,
-        "audit/06_reports/FINAL_REPORT.md",
-        "final report",
-        errors,
-    )
-    report_assessment: str | None = None
     report_text = ""
-    raw_report_text = ""
-    report_fields: dict[str, str] = {}
-    if final_report_path_valid and not final_report.is_file():
-        errors.append(f"Final report not found: {final_report}")
-    elif (
-        final_report_path_valid
-        and completion.get("final_report_ready") is not True
-    ):
-        nonfinal_report_text = active_markdown_text(read_text(final_report))
-        if not contains_report_scaffold_marker(nonfinal_report_text):
-            errors.append(
-                "Final report removed the NONFINAL scaffold marker before "
-                "completion.final_report_ready is true"
-            )
-        if (
-            not report_has_exact_title(
-                nonfinal_report_text, WORKING_REPORT_TITLE
-            )
+    if check_reports and not uses_html_report(manifest):
+        final_report, final_report_path_valid = canonical_artifact_path(
+            root,
+            "audit/06_reports/FINAL_REPORT.md",
+            "final report",
+            errors,
+        )
+        report_assessment: str | None = None
+        report_text = ""
+        raw_report_text = ""
+        report_fields: dict[str, str] = {}
+        if final_report_path_valid and not final_report.is_file():
+            errors.append(f"Final report not found: {final_report}")
+        elif (
+            final_report_path_valid
+            and completion.get("final_report_ready") is not True
         ):
-            errors.append(
-                "Nonfinal report must use the working title as its sole H1: "
-                f"{WORKING_REPORT_TITLE}"
-            )
-    elif final_report_path_valid and completion.get("final_report_ready") is True:
-        raw_report_text = read_text(final_report)
-        report_text = active_markdown_text(raw_report_text)
-        if contains_report_scaffold_marker(report_text):
-            errors.append(
-                "Final report still contains the NONFINAL scaffold marker"
-            )
-        if (
-            not report_has_exact_title(report_text, FINAL_REPORT_TITLE)
-        ):
-            errors.append(
-                "Final report must use the final title as its sole H1: "
-                f"{FINAL_REPORT_TITLE}"
-            )
-        if ACTIVE_HIDDEN_HTML_MARKER in report_text:
-            errors.append(
-                "Final report contains active raw HTML"
-            )
-        for label in REPORT_SCALAR_FIELDS:
-            matches = list(re.finditer(
-                rf"^- {re.escape(label)}:\s*(.*?)\s*$", report_text, re.MULTILINE
-            ))
-            if not matches:
-                errors.append(f"Final report is missing the {label} field")
-            elif len(matches) != 1:
-                errors.append(f"Final report has a duplicate {label} field")
-            elif not matches[0].group(1):
-                errors.append(f"Final report still has an empty {label} field")
-            else:
-                report_fields[label] = matches[0].group(1)
-                if label == "Overall assessment code":
-                    report_assessment = matches[0].group(1)
-        for heading in (
-            "## Audit boundary and limitations",
-            "## Main theorem chain",
-            "## Conclusion judgments",
-            "## Dependency closure",
-            "## Issue index",
-            "## Detailed findings",
-            "## Independent critical-path challenges",
-            "## Method-interface findings",
-            "## Computational evidence",
-            "## Unchecked scope",
-            "## Assurance boundary",
-        ):
-            heading_count = len(
-                re.findall(rf"^{re.escape(heading)}\s*$", report_text, re.MULTILINE)
-            )
-            if heading_count == 0:
-                errors.append(f"Final report is missing required heading: {heading}")
-            elif heading_count != 1:
-                errors.append(f"Final report has a duplicate required heading: {heading}")
-        for obsolete_heading in (
-            "## Verified results",
-            "## Conditional, gap, incorrect, or unclear results",
-            "## Independent critical-path challenge",
-            "## Issue summary",
-            "## Proposed repairs",
-        ):
-            if re.search(
-                rf"^{re.escape(obsolete_heading)}\s*$", report_text, re.MULTILINE
+            nonfinal_report_text = active_markdown_text(read_text(final_report))
+            if not contains_report_scaffold_marker(nonfinal_report_text):
+                errors.append(
+                    "Final report removed the NONFINAL scaffold marker before "
+                    "completion.final_report_ready is true"
+                )
+            if (
+                not report_has_exact_title(
+                    nonfinal_report_text, WORKING_REPORT_TITLE
+                )
             ):
                 errors.append(
-                    f"Final report contains obsolete duplicate status heading: {obsolete_heading}"
+                    "Nonfinal report must use the working title as its sole H1: "
+                    f"{WORKING_REPORT_TITLE}"
                 )
-        if report_assessment is not None and report_assessment != assessment:
-            errors.append(
-                "Final report assessment disagrees with audit_scope.overall_assessment"
+        elif final_report_path_valid and completion.get("final_report_ready") is True:
+            raw_report_text = read_text(final_report)
+            report_text = active_markdown_text(raw_report_text)
+            if contains_report_scaffold_marker(report_text):
+                errors.append(
+                    "Final report still contains the NONFINAL scaffold marker"
+                )
+            if (
+                not report_has_exact_title(report_text, FINAL_REPORT_TITLE)
+            ):
+                errors.append(
+                    "Final report must use the final title as its sole H1: "
+                    f"{FINAL_REPORT_TITLE}"
+                )
+            if ACTIVE_HIDDEN_HTML_MARKER in report_text:
+                errors.append(
+                    "Final report contains active raw HTML"
+                )
+            for label in REPORT_SCALAR_FIELDS:
+                matches = list(re.finditer(
+                    rf"^- {re.escape(label)}:\s*(.*?)\s*$", report_text, re.MULTILINE
+                ))
+                if not matches:
+                    errors.append(f"Final report is missing the {label} field")
+                elif len(matches) != 1:
+                    errors.append(f"Final report has a duplicate {label} field")
+                elif not matches[0].group(1):
+                    errors.append(f"Final report still has an empty {label} field")
+                else:
+                    report_fields[label] = matches[0].group(1)
+                    if label == "Overall assessment code":
+                        report_assessment = matches[0].group(1)
+            first_h2 = re.search(r"^##\s+.*$", report_text, re.MULTILINE)
+            if first_h2 is None or first_h2.group(0) != "## Summary":
+                errors.append("Final report must begin its substantive content with ## Summary")
+            summary_text = report_section(report_text, "## Summary") or ""
+            for label in REPORT_SUMMARY_FIELDS:
+                summary_matches = re.findall(
+                    rf"^- {re.escape(label)}:\s*(.*?)\s*$",
+                    summary_text,
+                    re.MULTILINE,
+                )
+                if len(summary_matches) != 1:
+                    errors.append(
+                        f"Final report {label} must appear exactly once within ## Summary"
+                    )
+            scope_text = report_section(
+                report_text, "## Scope and assurance"
+            ) or ""
+            for label in REPORT_SCOPE_FIELDS:
+                scope_matches = re.findall(
+                    rf"^- {re.escape(label)}:\s*(.*?)\s*$",
+                    scope_text,
+                    re.MULTILINE,
+                )
+                if len(scope_matches) != 1:
+                    errors.append(
+                        f"Final report {label} must appear exactly once within "
+                        "## Scope and assurance"
+                    )
+            for label in (
+                "Main reason",
+                "Impact on paper conclusions/results",
+                "Repair options and difficulty",
+            ):
+                if not is_substantive_string(report_fields.get(label)):
+                    errors.append(f"Final report {label} must be substantive")
+            actual_h2 = re.findall(r"^##\s+(.+?)\s*$", report_text, re.MULTILINE)
+            if actual_h2 != list(REPORT_REQUIRED_SECTIONS):
+                errors.append(
+                    "Final report must contain exactly these four H2 sections in "
+                    "order: " + ", ".join(REPORT_REQUIRED_SECTIONS)
+                )
+            if report_assessment is not None and report_assessment != assessment:
+                errors.append(
+                    "Final report assessment disagrees with audit_scope.overall_assessment"
+                )
+            expected_report_protocol = {
+                "Skill version": SKILL_VERSION,
+                "Artifact schema version": str(SCHEMA_VERSION),
+                "Evidence contract version": str(EVIDENCE_CONTRACT_VERSION),
+                "Method-interface schema version": str(METHOD_INTERFACE_SCHEMA_VERSION),
+                "Closure contract version": str(CLOSURE_CONTRACT_VERSION),
+                "Source snapshot ID": (
+                    snapshot.get("sha256") if isinstance(snapshot, dict) else None
+                ),
+                "Finalization record": manifest.get("finalization_record"),
+            }
+            for label, expected in expected_report_protocol.items():
+                if report_fields.get(label) != expected:
+                    errors.append(f"Final report {label} disagrees with the manifest")
+            canonical_judgments = {
+                "no_defect_found": (
+                    "No load-bearing defect found under the stated non-formal protocol."
+                ),
+                "defects_found": "Defects found under the stated non-formal protocol.",
+                "inconclusive": "Inconclusive under the stated non-formal protocol.",
+            }
+            canonical_judgment = (
+                canonical_judgments.get(assessment)
+                if isinstance(assessment, str)
+                else None
             )
-        expected_report_protocol = {
-            "Skill version": SKILL_VERSION,
-            "Artifact schema version": str(SCHEMA_VERSION),
-            "Evidence contract version": str(EVIDENCE_CONTRACT_VERSION),
-            "Method-interface schema version": str(METHOD_INTERFACE_SCHEMA_VERSION),
-            "Closure contract version": str(CLOSURE_CONTRACT_VERSION),
-            "Source snapshot ID": (
-                snapshot.get("sha256") if isinstance(snapshot, dict) else None
-            ),
-            "Finalization record": manifest.get("finalization_record"),
-        }
-        for label, expected in expected_report_protocol.items():
-            if report_fields.get(label) != expected:
-                errors.append(f"Final report {label} disagrees with the manifest")
-        canonical_judgments = {
-            "no_defect_found": "No defect found under the stated non-formal protocol.",
-            "defects_found": "Defects found under the stated non-formal protocol.",
-            "inconclusive": "Inconclusive under the stated non-formal protocol.",
-        }
-        canonical_judgment = (
-            canonical_judgments.get(assessment)
-            if isinstance(assessment, str)
-            else None
-        )
-        if report_fields.get("Overall judgment") != canonical_judgment:
-            errors.append("Final report Overall judgment is not the canonical judgment")
-        if report_fields.get("Checked scope") != canonical_id_field(in_scope):
-            errors.append("Final report Checked scope disagrees with audit scope")
-        if report_fields.get("Target results") != canonical_id_field(
-            target_units
-        ):
-            errors.append("Final report Target results disagrees with audit scope")
-        if report_fields.get("Results not checked") != canonical_id_field(excluded_ids):
-            errors.append("Final report Results not checked disagrees with exclusions")
-        expected_limits = canonical_id_field(scope.get("source_or_parser_limits", []))
-        if report_fields.get(
-            "Tooling, extraction, or rendering limitations"
-        ) != expected_limits:
-            errors.append(
-                "Final report Tooling, extraction, or rendering limitations disagree with audit scope"
+            if report_fields.get("Overall judgment") != canonical_judgment:
+                errors.append("Final report Overall judgment is not the canonical judgment")
+            if report_fields.get("Checked scope") != canonical_id_field(in_scope):
+                errors.append("Final report Checked scope disagrees with audit scope")
+            if report_fields.get("Target results") != canonical_id_field(
+                target_units
+            ):
+                errors.append("Final report Target results disagrees with audit scope")
+            if report_fields.get("Results not checked") != canonical_id_field(excluded_ids):
+                errors.append("Final report Results not checked disagrees with exclusions")
+            expected_limits = canonical_id_field(scope.get("source_or_parser_limits", []))
+            if report_fields.get(
+                "Tooling, extraction, or rendering limitations"
+            ) != expected_limits:
+                errors.append(
+                    "Final report Tooling, extraction, or rendering limitations disagree with audit scope"
+                )
+            if "This is a non-formal audit." not in report_text:
+                errors.append("Final report must state the non-formal assurance boundary")
+            validate_report_assurance_language(
+                raw_report_text, "Final report", errors
             )
-        if "This is a non-formal audit." not in report_text:
-            errors.append("Final report must state the non-formal assurance boundary")
-        validate_report_assurance_language(
-            raw_report_text, "Final report", errors
-        )
 
     ledger_errors, summaries, referenced = audit_ledgers(root, True)
     errors.extend(ledger_errors)
@@ -27025,6 +31551,12 @@ def _check_audit_finalization(
         if not isinstance(statement, dict):
             errors.append(f"{unit_id}: invalid inventory statement location")
             continue
+        loaded_for_fragments = load_summary_ledger(summary)
+        if loaded_for_fragments is not None:
+            fragment_ledger, fragment_ledger_path = loaded_for_fragments
+            errors.extend(f"{unit_id}: {message}" for message in source_fragment_support().statement_binding_errors(
+                report_api(), statement, paper.parent,
+                (fragment_ledger.get("obligation") or {}).get("statement_spans"), fragment_ledger_path.parent))
         try:
             statement_source = resolve_stored_path(str(statement["file"]), paper.parent)
             statement_start = statement["start_line"]
@@ -27131,195 +31663,19 @@ def _check_audit_finalization(
                     f"{unit_id}: ledger range omits part of the required statement/proof source"
                 )
 
+        validate_primary_reference_roles(
+            unit_id, unit, summary,
+            reviewed_reference_occurrences_by_unit.get(unit_id, []),
+            unit_inventory, paper.parent, errors,
+        )
         direct_by_use = {
-            record.get("use_id"): record
-            for record in summary.get("direct_dependencies", [])
-            if isinstance(record, dict)
-            and is_nonempty_string(record.get("use_id"))
-        }
-        dispositions_by_occurrence = {
-            record.get("occurrence_id"): record
-            for record in summary.get("source_reference_dispositions", [])
-            if isinstance(record, dict)
-            and is_nonempty_string(record.get("occurrence_id"))
-        }
-        source_occurrences = {
-            record.get("occurrence_id"): record
-            for record in canonical_evidence_by_unit.get(unit_id, {}).get(
-                "reference_occurrences", []
-            )
-            if isinstance(record, dict)
-            and is_nonempty_string(record.get("occurrence_id"))
+            row.get("use_id"): row for row in summary.get("direct_dependencies", [])
+            if isinstance(row, dict) and is_nonempty_string(row.get("use_id"))
         }
         step_result_claims = {
-            claim.get("use_id"): claim
-            for claim in summary.get("result_dependency_claims", [])
-            if isinstance(claim, dict)
-            and is_nonempty_string(claim.get("use_id"))
+            row.get("use_id"): row for row in summary.get("result_dependency_claims", [])
+            if isinstance(row, dict) and is_nonempty_string(row.get("use_id"))
         }
-        missing_dispositions = set(source_occurrences) - set(
-            dispositions_by_occurrence
-        )
-        if missing_dispositions:
-            errors.append(
-                f"{unit_id}: source occurrences lack reviewed dispositions: "
-                + ", ".join(sorted(missing_dispositions))
-            )
-        stale_dispositions = set(dispositions_by_occurrence) - set(
-            source_occurrences
-        )
-        if stale_dispositions:
-            errors.append(
-                f"{unit_id}: source-reference dispositions are not present in "
-                "the reviewed proof: "
-                + ", ".join(sorted(stale_dispositions))
-            )
-        proof_path: Path | None = None
-        proof_start = proof_end = proof_last_line = 0
-        if isinstance(proof_location, dict):
-            try:
-                proof_path = resolve_stored_path(
-                    str(proof_location["file"]), paper.parent
-                )
-                proof_start = proof_location["start_line"]
-                proof_end = proof_location["end_line"]
-                if is_int(proof_start) and is_int(proof_end):
-                    proof_last_line = last_substantive_line(
-                        proof_path, proof_start, proof_end
-                    )
-            except (KeyError, TypeError, ValueError, OSError, UnicodeError):
-                proof_path = None
-        for occurrence_id, disposition in dispositions_by_occurrence.items():
-            occurrence = source_occurrences.get(occurrence_id)
-            if occurrence is None:
-                continue
-            if (
-                disposition.get("target") != occurrence.get("target")
-                or disposition.get("command") != occurrence.get("command")
-            ):
-                errors.append(
-                    f"{unit_id}: disposition {occurrence_id} does not match the "
-                    "canonical occurrence target and command"
-                )
-            role = disposition.get("disposition")
-            target = occurrence.get("target")
-            owner_status = occurrence.get("resolution_status")
-            owner_unit_id = occurrence.get("owner_unit_id")
-            owner_region = occurrence.get("owner_region")
-            if role == "internal_result":
-                use_id = disposition.get("dependency_use_id")
-                dependency = direct_by_use.get(use_id)
-                claim = step_result_claims.get(use_id)
-                if (
-                    owner_status != "unique"
-                    or not is_nonempty_string(owner_unit_id)
-                    or owner_unit_id == unit_id
-                ):
-                    errors.append(
-                        f"{unit_id}: occurrence {occurrence_id} cannot be an "
-                        "internal result because it has no unique other-unit owner"
-                    )
-                if (
-                    dependency is None
-                    or dependency.get("kind") != "internal_result"
-                    or dependency.get("id") != owner_unit_id
-                ):
-                    errors.append(
-                        f"{unit_id}: occurrence {occurrence_id} does not resolve "
-                        "through its exact dependency use to the label owner"
-                    )
-                if (
-                    claim is None
-                    or claim.get("kind") != "internal_result"
-                    or claim.get("id") != owner_unit_id
-                ):
-                    errors.append(
-                        f"{unit_id}: occurrence {occurrence_id} is not mapped to "
-                        "an exact proof-step dependency use"
-                    )
-            elif role == "local_step":
-                if owner_status != "unique" or owner_unit_id != unit_id:
-                    errors.append(
-                        f"{unit_id}: local-step occurrence {occurrence_id} must "
-                        "resolve to a label owned by the same unit"
-                    )
-            elif role == "obligation_context":
-                if (
-                    owner_status == "unique"
-                    and (
-                        owner_unit_id != unit_id
-                        or owner_region != "statement"
-                    )
-                ):
-                    errors.append(
-                        f"{unit_id}: obligation occurrence {occurrence_id} is "
-                        "not owned by this result's statement"
-                    )
-            elif role == "own_result_identification":
-                closing_occurrence = bool(
-                    occurrence.get("structural_context") == "proof_header"
-                    or (
-                        proof_path is not None
-                        and is_int(occurrence.get("line"))
-                        and occurrence["line"] >= max(
-                            proof_start, proof_last_line - 2
-                        )
-                    )
-                )
-                if (
-                    owner_status != "unique"
-                    or owner_unit_id != unit_id
-                    or target != unit_id
-                    or not closing_occurrence
-                ):
-                    errors.append(
-                        f"{unit_id}: own-result occurrence {occurrence_id} is "
-                        "not a proof header or reviewed closing identification"
-                    )
-            elif role == "navigation":
-                if occurrence.get("command") != "hyperref":
-                    errors.append(
-                        f"{unit_id}: navigation occurrence {occurrence_id} must "
-                        "use an explicit hyperref command"
-                    )
-            elif role == "non_load_bearing":
-                if (
-                    owner_status == "unique"
-                    and owner_unit_id == unit_id
-                    and target == unit_id
-                    and occurrence.get("structural_context") != "proof_header"
-                    and (
-                        not is_int(occurrence.get("line"))
-                        or occurrence["line"] < max(
-                            proof_start, proof_last_line - 2
-                        )
-                    )
-                ):
-                    errors.append(
-                        f"{unit_id}: a mid-proof self-reference "
-                        f"{occurrence_id} cannot be hidden as non-load-bearing"
-                    )
-            if (
-                role == "unresolved"
-                and summary.get("declared_unit_status") == "verified"
-            ):
-                errors.append(
-                    f"{unit_id}: verified unit has unresolved source occurrence "
-                    f"{occurrence_id}"
-                )
-            if (
-                owner_status
-                in {"missing", "duplicate", "ambiguous", "dynamic", "unowned"}
-                and role not in {"unresolved", "navigation", "non_load_bearing"}
-                and not (
-                    owner_status == "unowned"
-                    and role == "obligation_context"
-                )
-            ):
-                errors.append(
-                    f"{unit_id}: unresolved occurrence {occurrence_id} cannot "
-                    f"serve the premise-bearing role {role}"
-                )
 
         citation_dispositions = {
             record.get("key"): record
@@ -27473,16 +31829,6 @@ def _check_audit_finalization(
                 f"{unit_id}: review.use_sites disagrees with canonical downstream "
                 "uses; expected " + canonical_id_field(expected_use_sites)
             )
-        if (
-            expected_use_sites
-            and summary.get("review_components", {}).get("use_site_sufficiency")
-            == "not_applicable"
-        ):
-            errors.append(
-                f"{unit_id}: use-site sufficiency cannot be not_applicable because "
-                "the result is referenced"
-            )
-
     registry, registry_errors = (
         load_json_object(registry_path, "dependency registry")
         if registry_path_valid
@@ -27513,6 +31859,7 @@ def _check_audit_finalization(
     )
     external_results = closure_result["external_results"]
     dependency_edges = closure_result["edges"]
+    apply_derived_use_site_sufficiency(summaries_by_id, dependency_edges)
     unit_graph = closure_result["unit_graph"]
     referenced.update(closure_result["issue_ids"])
     try:
@@ -27522,106 +31869,13 @@ def _check_audit_finalization(
             f"Cannot reconstruct dependency-candidate provenance: {exc}"
         )
         candidate_source_members = []
-    internal_edge_by_pair = {
-        (
-            str(edge.get("dependent_unit")),
-            str(edge.get("dependency_id")),
-        ): edge
-        for edge in dependency_edges
-        if isinstance(edge, dict)
-        and edge.get("kind") == "internal_result"
-        and is_nonempty_string(edge.get("dependent_unit"))
-        and is_nonempty_string(edge.get("dependency_id"))
-    }
     for unit_id in sorted(set(in_scope) & set(unit_inventory) & set(summaries_by_id)):
-        unit = unit_inventory[unit_id]
-        candidate_ids = {
-            str(value)
-            for value in unit.get("candidate_internal_dependencies", [])
-            if is_nonempty_string(value)
-        }
-        summary = summaries_by_id[unit_id]
-        disposition_rows = summary.get(
-            "candidate_dependency_dispositions", []
+        validate_primary_candidate_references(
+            root, inventory, unit_id, unit_inventory[unit_id],
+            summaries_by_id[unit_id], unit_inventory, paper.parent,
+            reviewed_reference_occurrences_by_unit.get(unit_id, []),
+            candidate_source_members, dependency_edges, errors,
         )
-        dispositions_by_id = {
-            str(row.get("candidate_id")): row
-            for row in disposition_rows
-            if isinstance(row, dict)
-            and is_nonempty_string(row.get("candidate_id"))
-        }
-        if set(dispositions_by_id) != candidate_ids:
-            missing = sorted(candidate_ids - set(dispositions_by_id))
-            stale = sorted(set(dispositions_by_id) - candidate_ids)
-            if missing:
-                errors.append(
-                    f"{unit_id}: candidate dependency dispositions are missing "
-                    + ", ".join(missing)
-                )
-            if stale:
-                errors.append(
-                    f"{unit_id}: candidate dependency dispositions are stale "
-                    + ", ".join(stale)
-                )
-        if not candidate_ids or not candidate_source_members:
-            continue
-        try:
-            candidate_paths = packet_candidate_dependency_paths(
-                inventory,
-                unit,
-                paper.parent,
-                root,
-                candidate_source_members,
-            )
-        except (OSError, UnicodeError, ValueError) as exc:
-            errors.append(
-                f"{unit_id}: cannot reconstruct dependency-candidate paths: {exc}"
-            )
-            continue
-        path_ids_by_candidate: dict[str, list[str]] = defaultdict(list)
-        for path in candidate_paths:
-            if (
-                isinstance(path, dict)
-                and is_nonempty_string(path.get("candidate_id"))
-                and is_nonempty_string(path.get("path_id"))
-            ):
-                path_ids_by_candidate[str(path["candidate_id"])].append(
-                    str(path["path_id"])
-                )
-        for candidate_id in sorted(candidate_ids):
-            disposition = dispositions_by_id.get(candidate_id)
-            if not isinstance(disposition, dict):
-                continue
-            expected_paths = sorted(
-                path_ids_by_candidate.get(candidate_id, [])
-            )
-            if (
-                not expected_paths
-                or sorted(disposition.get("path_ids", [])) != expected_paths
-            ):
-                errors.append(
-                    f"{unit_id}: candidate {candidate_id} path_ids disagree "
-                    "with canonical parser provenance"
-                )
-            edge = internal_edge_by_pair.get((unit_id, candidate_id))
-            if edge is not None:
-                if (
-                    disposition.get("disposition") != "internal_result"
-                    or disposition.get("dependency_use_id")
-                    != edge.get("use_id")
-                ):
-                    errors.append(
-                        f"{unit_id}: candidate {candidate_id} must map to its "
-                        "exact registry dependency use"
-                    )
-            elif disposition.get("disposition") not in {
-                "navigation",
-                "non_load_bearing",
-            }:
-                errors.append(
-                    f"{unit_id}: unmapped foreign candidate {candidate_id} "
-                    "must be explicitly navigation or non_load_bearing"
-                )
     for unit_id, external_use_id in sorted(external_restatements.items()):
         if unit_id not in in_scope:
             continue
@@ -27764,46 +32018,44 @@ def _check_audit_finalization(
         for issue in issues
         if isinstance(issue, dict) and is_nonempty_string(issue.get("id"))
     }
-    report_deliverables = validate_report_deliverables(
-        manifest.get("report_deliverables"),
-        root,
-        set(issues_by_id),
-        assessment,
-        errors,
-    )
-    for report_path in undeclared_report_markdown_files(
-        manifest.get("report_deliverables"), root
-    ):
-        errors.append(undeclared_report_error(report_path))
-    critical, severe_issue_ids_by_unit = effective_critical_requirements(
+    report_deliverables = manifest.get("report_deliverables", [])
+    if check_reports and not uses_html_report(manifest):
+        report_deliverables = validate_report_deliverables(
+            report_deliverables, root, set(issues_by_id), assessment, errors)
+    if check_reports:
+        for report_path in undeclared_report_markdown_files(
+            manifest.get("report_deliverables"), root
+        ):
+            errors.append(undeclared_report_error(report_path))
+    required_challenges, severe_issue_ids_by_unit = required_challenge_requirements(
         manifest, issues_by_id.values()
     )
-    for unit_id in critical:
+    for unit_id in required_challenges:
         summary = summaries_by_id.get(unit_id)
         if summary is None:
-            errors.append(f"Effective critical unit has no ledger: {unit_id}")
+            errors.append(f"In-scope unit has no ledger: {unit_id}")
             continue
         challenge = summary.get("independent_check", {})
         triggering_issue_ids = sorted(severe_issue_ids_by_unit.get(unit_id, set()))
         if not challenge.get("required"):
             errors.append(
-                f"Effective critical unit {unit_id} requires an independent "
+                f"In-scope unit {unit_id} requires an independent "
                 "challenger pass"
             )
             continue
         if not is_enum_value(challenge.get("status"), {"agreed", "resolved"}):
             errors.append(
-                f"Effective critical unit {unit_id} has no reconciled challenger verdict"
+                f"In-scope unit {unit_id} has no reconciled challenger verdict"
             )
         if challenge.get("covered_issue_ids") != triggering_issue_ids:
             errors.append(
-                f"Effective critical unit {unit_id} covered_issue_ids must equal "
+                f"In-scope unit {unit_id} covered_issue_ids must equal "
                 "its current severe triggering issues: "
                 + canonical_id_field(triggering_issue_ids)
             )
         if challenge.get("source_snapshot_sha256") != source_snapshot_id:
             errors.append(
-                f"Effective critical unit {unit_id} challenger source snapshot is stale"
+                f"In-scope unit {unit_id} challenger source snapshot is stale"
             )
         errors.extend(
             challenge_semantic_freshness_errors(
@@ -27818,21 +32070,21 @@ def _check_audit_finalization(
             artifact_path, artifact_path_valid = canonical_challenge_artifact_path(
                 root,
                 artifact,
-                f"Effective critical unit {unit_id} challenger artifact",
+                f"In-scope unit {unit_id} challenger artifact",
                 errors,
             )
             if not artifact_path_valid or artifact_path is None:
                 pass
             elif not artifact_path.is_file() or artifact_path.stat().st_size == 0:
                 errors.append(
-                    f"Effective critical unit {unit_id} challenger artifact is "
+                    f"In-scope unit {unit_id} challenger artifact is "
                     f"missing or empty: {artifact_path}"
                 )
             elif challenge.get("challenge_artifact_sha256") != sha256_file(
                 artifact_path
             ):
                 errors.append(
-                    f"Effective critical unit {unit_id} challenger artifact hash is stale"
+                    f"In-scope unit {unit_id} challenger artifact hash is stale"
                 )
             else:
                 errors.extend(
@@ -27880,13 +32132,15 @@ def _check_audit_finalization(
             checked_external
         ):
             errors.append(
-                "Final report External results checked disagrees with the dependency registry"
+                "Final report External results checked disagrees with the "
+                "dependency registry"
             )
-        if report_fields.get("External results not checked") != canonical_id_field(
-            unchecked_external
-        ):
+        if report_fields.get(
+            "External results not checked"
+        ) != canonical_id_field(unchecked_external):
             errors.append(
-                "Final report External results not checked disagrees with the dependency registry"
+                "Final report External results not checked disagrees with the "
+                "dependency registry"
             )
         unresolved_issues = [
             issue
@@ -27895,26 +32149,30 @@ def _check_audit_finalization(
             and is_enum_value(issue.get("severity"), ISSUE_SEVERITIES)
         ]
         if unresolved_issues:
-            severity_rank = {"S0": 0, "S1": 1, "S2": 2, "S3": 3}
-            highest_rank = min(severity_rank[issue["severity"]] for issue in unresolved_issues)
-            highest_issue_ids = {
-                issue["id"]
+            highest_rank = min(
+                ISSUE_SEVERITY_RANK[str(issue.get("severity"))]
                 for issue in unresolved_issues
-                if severity_rank[issue["severity"]] == highest_rank
+            )
+            highest_issue_ids = {
+                str(issue.get("id"))
+                for issue in unresolved_issues
+                if ISSUE_SEVERITY_RANK[str(issue.get("severity"))]
+                == highest_rank
             }
         else:
             highest_issue_ids = set()
-        if report_fields.get("Highest-consequence issue") != canonical_id_field(
-            highest_issue_ids
-        ):
+        if report_fields.get(
+            "Highest-consequence issue"
+        ) != canonical_id_field(highest_issue_ids):
             errors.append(
-                "Final report Highest-consequence issue disagrees with the issue log"
+                "Final report Highest-consequence issue disagrees with the "
+                "issue log"
             )
         independence_levels = [
             summaries_by_id[unit_id].get("independent_check", {}).get(
                 "independence_level"
             )
-            for unit_id in critical
+            for unit_id in required_challenges
             if unit_id in summaries_by_id
         ]
         expected_independence = canonical_id_field(
@@ -27923,583 +32181,194 @@ def _check_audit_finalization(
             if is_enum_value(level, INDEPENDENCE_LEVELS)
         )
         if report_fields.get(
-            "Independence level of the critical-path challenge"
+            "Independent check levels"
         ) != expected_independence:
             errors.append(
-                "Final report Independence level of the critical-path challenge disagrees with critical ledgers"
+                "Final report Independent check levels disagree with in-scope "
+                "ledgers"
             )
-        challenge_section = report_section(
-            report_text, "## Independent critical-path challenges"
+        checked_description = report_fields.get(
+            "Files and results checked", ""
         )
-        challenge_rows = markdown_table_rows(challenge_section or "")
-        challenge_header = [
-            "Result",
-            "Challenge status",
-            "Independence",
-            "Covered issue IDs",
-            "Issue assessments",
-            "Challenger verdict",
-            "Reconciled verdict",
-            "Disagreements",
-            "Artifact",
-            "Source snapshot SHA256",
-            "Challenged ledger SHA256",
-            "Challenge context SHA256",
-            "Artifact SHA256",
-            "Generated UTC",
-            "Resolution",
-        ]
-        if not challenge_rows or challenge_rows[0] != challenge_header:
-            errors.append(
-                "Final report Independent critical-path challenges has an invalid table header"
-            )
-        challenge_data = challenge_rows[2:] if len(challenge_rows) >= 2 else []
-        expected_challenge_rows: list[list[str]] = []
-        for unit_id in critical:
-            check = summaries_by_id.get(unit_id, {}).get("independent_check", {})
-            resolution = check.get("resolution")
-            expected_challenge_rows.append(
-                [
-                    unit_id,
-                    str(check.get("status")),
-                    str(check.get("independence_level")),
-                    canonical_id_field(check.get("covered_issue_ids", [])),
-                    json.dumps(
-                        canonical_challenge_issue_assessments(
-                            check.get("issue_assessments", [])
-                        ),
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ),
-                    str(check.get("challenger_verdict")),
-                    str(check.get("reconciled_verdict")),
-                    json.dumps(
-                        check.get("disagreements", []),
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ),
-                    str(check.get("artifact")),
-                    str(check.get("source_snapshot_sha256")),
-                    str(check.get("challenged_ledger_sha256")),
-                    str(check.get("challenge_context_sha256")),
-                    str(check.get("challenge_artifact_sha256")),
-                    str(check.get("generated_utc")),
-                    (
-                        str(resolution).replace("\n", " ")
-                        if is_substantive_string(resolution)
-                        else "none"
-                    ),
-                ]
-            )
-        if sorted(challenge_data) != sorted(expected_challenge_rows):
-            errors.append(
-                "Final report Independent critical-path challenges rows disagree with critical ledgers"
-            )
-        checked_description = report_fields.get("Files and results checked", "")
         if paper.name not in checked_description or any(
             re.search(
-                rf"(?<![A-Za-z0-9:_-]){re.escape(unit_id)}(?![A-Za-z0-9:_-])",
+                rf"(?<![A-Za-z0-9:_-]){re.escape(unit_id)}"
+                rf"(?![A-Za-z0-9:_-])",
                 checked_description,
             )
             is None
             for unit_id in in_scope
         ):
             errors.append(
-                "Final report Files and results checked omits the paper or an in-scope result"
+                "Final report Files and results checked omits the paper or an "
+                "in-scope result"
             )
 
-        main_section = report_section(report_text, "## Main theorem chain")
-        main_rows = markdown_table_rows(main_section or "")
-        main_header = [
+        expected_summary_fields = canonical_report_summary_fields(
+            assessment, summaries_by_id, in_scope, issues
+        )
+        for label, expected_value in expected_summary_fields.items():
+            if report_fields.get(label) != expected_value:
+                errors.append(
+                    f"Final report {label} disagrees with the canonical "
+                    "conclusion and issue records"
+                )
+
+        expected_results = render_results_and_impact(
+            summaries_by_id, in_scope
+        ).strip()
+        actual_results = (
+            report_section(report_text, "## Results and impact") or ""
+        ).strip()
+        if actual_results != expected_results:
+            errors.append(
+                "Final report Results and impact disagrees with the canonical "
+                "per-conclusion judgments"
+            )
+
+        expected_findings = render_findings_and_repairs(
+            issues,
+            summaries_by_id,
+            dependency_edges,
+            required_challenges,
+            report_deliverables,
+            assessment,
+            interfaces=interfaces,
+            global_checks=global_checks_by_aspect,
+        ).strip()
+        actual_findings = (
+            report_section(report_text, "## Findings and repairs") or ""
+        ).strip()
+        if actual_findings != expected_findings:
+            errors.append(
+                "Final report Findings and repairs disagrees with canonical "
+                "issues and repair records"
+            )
+        for issue in issues_by_id.values():
+            projection = canonical_issue_detail_projection(
+                issue,
+                summaries_by_id,
+                dependency_edges,
+                required_challenges,
+                report_deliverables,
+                assessment,
+                interfaces=interfaces,
+                global_checks=global_checks_by_aspect,
+            )
+            if (
+                issue.get("status") == "resolved"
+                and projection["closure"][0][-1] != "complete"
+            ):
+                errors.append(
+                    f"{issue.get('id')}: resolved issue has an incomplete "
+                    "recheck closure"
+                )
+
+        scope_section = (
+            report_section(report_text, "## Scope and assurance") or ""
+        )
+        challenge_section = report_nested_section(
+            scope_section, "### Independent verification"
+        )
+        challenge_rows = markdown_table_rows(challenge_section or "")
+        challenge_header = [
             "Result",
-            "Unit status",
-            "Contract fidelity",
-            "Argument status",
-            "Statement status",
-            "Dependency closure",
-            "Use-site sufficiency",
-            "Evidence",
+            "Check status",
+            "Independence",
+            "Challenger verdict",
+            "Final verdict",
+            "Reconciliation",
         ]
-        if not main_rows or main_rows[0] != main_header:
-            errors.append("Final report Main theorem chain has an invalid table header")
-        main_data = main_rows[2:] if len(main_rows) >= 2 else []
-        seen_main: set[str] = set()
-        for row in main_data:
-            if len(row) != 8 or not is_nonempty_string(row[0]):
-                errors.append("Final report contains a malformed main-chain row")
-                continue
-            if row[0] in seen_main:
-                errors.append(f"Final report has a duplicate main-chain row for {row[0]}")
-            seen_main.add(row[0])
-            summary = summaries_by_id.get(row[0])
-            if summary is None or row[0] not in in_scope:
-                errors.append(f"Final report has a stale main-chain row for {row[0]}")
-                continue
-            components = summary.get("review_components", {})
-            expected_prefix = [
-                row[0],
-                str(summary.get("declared_unit_status")),
-                str(components.get("contract_fidelity")),
-                str(components.get("argument_status")),
-                str(components.get("statement_status")),
-                str(components.get("dependency_closure")),
-                str(components.get("use_site_sufficiency")),
-            ]
-            if row[:7] != expected_prefix or not is_substantive_string(row[7]):
-                errors.append(
-                    f"Final report main-chain row disagrees with ledger {row[0]}"
-                )
-        missing_main = set(in_scope) - seen_main
-        if missing_main:
-            errors.append(
-                "Final report Main theorem chain omits: "
-                + ", ".join(sorted(missing_main))
+        expected_challenge_rows: list[list[str]] = []
+        for unit_id in required_challenges:
+            check = summaries_by_id.get(unit_id, {}).get(
+                "independent_check", {}
             )
-        conclusion_section = report_section(
-            report_text, "## Conclusion judgments"
-        )
-        conclusion_rows = markdown_table_rows(conclusion_section or "")
-        conclusion_header = [
-            "Result",
-            "Conclusion",
-            "Contract fidelity",
-            "Argument status",
-            "Statement status",
-            "Dependency closure",
-            "Use-site sufficiency",
-            "Support",
-            "Dependency use IDs",
-            "Issue IDs",
-        ]
-        if not conclusion_rows or conclusion_rows[0] != conclusion_header:
-            errors.append(
-                "Final report Conclusion judgments has an invalid table header"
-            )
-        conclusion_data = (
-            conclusion_rows[2:] if len(conclusion_rows) >= 2 else []
-        )
-        expected_conclusion_rows: list[list[str]] = []
-        for result_id in in_scope:
-            for conclusion_result in summaries_by_id.get(
-                result_id, {}
-            ).get("conclusion_results", []):
-                if not isinstance(conclusion_result, dict):
-                    continue
-                support = conclusion_result.get("support")
-                support_text = (
-                    f"{support.get('step_id')}/{support.get('move_id')}"
-                    if isinstance(support, dict)
-                    else "<invalid>"
-                )
-                expected_conclusion_rows.append(
-                    [
-                        result_id,
-                        str(conclusion_result.get("conclusion_id")),
-                        str(conclusion_result.get("contract_fidelity")),
-                        str(conclusion_result.get("argument_status")),
-                        str(conclusion_result.get("statement_status")),
-                        str(conclusion_result.get("dependency_closure")),
-                        str(conclusion_result.get("use_site_sufficiency")),
-                        support_text,
-                        canonical_id_field(
-                            conclusion_result.get("dependency_use_ids", [])
-                        ),
-                        canonical_id_field(
-                            conclusion_result.get("issue_ids", [])
-                        ),
-                    ]
-                )
-        if sorted(conclusion_data) != sorted(expected_conclusion_rows):
-            errors.append(
-                "Final report Conclusion judgments rows disagree with the "
-                "per-conclusion ledger judgments"
-            )
-        closure_section = report_section(report_text, "## Dependency closure")
-        closure_rows = markdown_table_rows(closure_section or "")
-        closure_header = [
-            "Dependent",
-            "Use ID",
-            "Dependency",
-            "Dependency conclusion",
-            "Kind",
-            "Source status",
-            "Applicability status",
-            "Effective status",
-            "Issue IDs",
-        ]
-        if not closure_rows or closure_rows[0] != closure_header:
-            errors.append("Final report Dependency closure has an invalid table header")
-        closure_data = closure_rows[2:] if len(closure_rows) >= 2 else []
-        expected_closure_rows = sorted(
-            [
-                str(edge.get("dependent_unit")),
-                str(edge.get("use_id")),
-                str(edge.get("dependency_id")),
-                (
-                    str(edge.get("dependency_conclusion_id"))
-                    if is_nonempty_string(
-                        edge.get("dependency_conclusion_id")
-                    )
-                    else "none"
-                ),
-                str(edge.get("kind")),
-                str(edge.get("source_status")),
-                str(edge.get("applicability_status")),
-                str(edge.get("effective_status")),
-                canonical_id_field(edge.get("issue_ids", [])),
-            ]
-            for edge in dependency_edges
-        )
-        if sorted(closure_data) != expected_closure_rows:
-            errors.append(
-                "Final report Dependency closure rows disagree with canonical dependency uses"
-            )
-        issue_section = report_section(report_text, "## Issue index") or ""
-        issue_rows = markdown_table_rows(issue_section)
-        issue_header = [
-            "Issue",
-            "Severity",
-            "Load-bearing",
-            "Confidence",
-            "Lifecycle",
-            "Finding",
-            "Invalidation kind",
-            "Origin ref",
-            "Contract refs",
-            "Affected results",
-        ]
-        if issues_by_id:
-            if not issue_rows or issue_rows[0] != issue_header:
-                errors.append(
-                    "Final report Issue index must contain the canonical table"
-                )
-            issue_data = issue_rows[2:] if len(issue_rows) >= 2 else []
-            expected_issue_rows = sorted(
-                canonical_issue_row(issue) for issue in issues_by_id.values()
-            )
-            if sorted(issue_data) != expected_issue_rows:
-                errors.append(
-                    "Final report Issue index rows disagree with canonical issues"
-                )
-        elif issue_rows or issue_section.strip() != "No issues.":
-            errors.append(
-                "Final report Issue index must state exactly No issues. when the log is empty"
-            )
-        detailed_section = report_section(
-            report_text, "## Detailed findings"
-        ) or ""
-        if issues_by_id:
-            rendered_detail_ids = re.findall(
-                r"^###\s+(I-[0-9]{3})\s+\[S[0-3]\]\s+.*$",
-                detailed_section,
-                re.MULTILINE,
-            )
-            if sorted(rendered_detail_ids) != sorted(issues_by_id):
-                errors.append(
-                    "Final report Detailed findings issue headings disagree with "
-                    "ISSUE_LOG.json"
-                )
-            for issue_id, issue in issues_by_id.items():
-                expected_heading_prefix = (
-                    f"### {issue_id} [{issue.get('severity')}] "
-                )
-                matching_headings = [
-                    line
-                    for line in detailed_section.splitlines()
-                    if line.startswith(expected_heading_prefix)
-                ]
-                expected_heading = expected_heading_prefix + escape_markdown_heading(
-                    issue.get("summary")
-                )
-                if len(matching_headings) != 1 or matching_headings[0] != expected_heading:
-                    errors.append(
-                        f"Final report Detailed findings heading is stale for {issue_id}"
-                    )
-                    continue
-                block_match = re.search(
-                    rf"^{re.escape(matching_headings[0])}\s*$\n(.*?)(?=^###\s+I-[0-9]{{3}}\s|\Z)",
-                    detailed_section,
-                    re.MULTILINE | re.DOTALL,
-                )
-                block = block_match.group(1) if block_match is not None else ""
-                for subheading in (
-                    "#### 1. Exact failure site and contract",
-                    "#### 2. Downstream consequences",
-                    "#### 3. Severity and validity effect",
-                    "#### 4. Suggested changes and recheck",
-                ):
-                    if len(
-                        re.findall(
-                            rf"^{re.escape(subheading)}\s*$", block, re.MULTILINE
-                        )
-                    ) != 1:
-                        errors.append(
-                            f"Final report {issue_id} is missing or duplicates "
-                            f"{subheading}"
-                        )
-                projection = canonical_issue_detail_projection(
-                    issue,
-                    summaries_by_id,
-                    dependency_edges,
-                    critical,
-                    report_deliverables,
-                    assessment,
-                    interfaces=interfaces,
-                    global_checks=global_checks_by_aspect,
-                )
-                if (
-                    issue.get("status") == "resolved"
-                    and projection["closure"][0][-1] != "complete"
-                ):
-                    errors.append(
-                        f"{issue_id}: resolved issue has an incomplete affected "
-                        "result, dependency, challenge, or deliverable recheck closure"
-                    )
-                subsection_contracts = [
+            resolution = check.get("resolution")
+            expected_challenge_rows.append(
+                [
+                    unit_id,
+                    str(check.get("status")),
+                    str(check.get("independence_level")),
+                    str(check.get("challenger_verdict")),
+                    str(check.get("reconciled_verdict")),
                     (
-                        "#### 1. Exact failure site and contract",
-                        [
-                            (
-                                [
-                                    "File and lines",
-                                    "Span SHA256",
-                                    "Exact locked quote",
-                                    "Result",
-                                    "Step and move",
-                                    "Claim",
-                                    "Rule attempted",
-                                    "Premises",
-                                    "Failure evidence",
-                                    "Failure kind",
-                                ],
-                                projection["failure"],
-                            ),
-                            (
-                                [
-                                    "Contract ref",
-                                    "Normalized claim or assumption",
-                                    "Scope, model, and regime",
-                                    "Evidence",
-                                ],
-                                projection["contract"],
-                            ),
-                        ],
-                    ),
-                    (
-                        "#### 2. Downstream consequences",
-                        [
-                            (
-                                [
-                                    "Affected result",
-                                    "Relation",
-                                    "Use ID",
-                                    "Dependency conclusion",
-                                    "Use-site file and lines",
-                                    "Use-site SHA256",
-                                    "Exact use-site quote",
-                                    "Propagated effect",
-                                ],
-                                projection["propagation"],
-                            )
-                        ],
-                    ),
-                    (
-                        "#### 3. Severity and validity effect",
-                        [
-                            (
-                                [
-                                    "Severity",
-                                    "Load-bearing",
-                                    "Confidence",
-                                    "Invalidation kind",
-                                    "Current unit effect",
-                                    "Current conclusion effect",
-                                    "Overall assessment effect",
-                                ],
-                                projection["severity"],
-                            ),
-                            *(
-                                [
-                                    (
-                                        [
-                                            "Strategy",
-                                            "Attempt",
-                                            "Outcome",
-                                            "Evidence",
-                                        ],
-                                        projection["repair_search"],
-                                    )
-                                ]
-                                if projection["repair_search"] is not None
-                                else []
-                            ),
-                        ],
-                    ),
-                    (
-                        "#### 4. Suggested changes and recheck",
-                        [
-                            (
-                                [
-                                    "Target",
-                                    "Action",
-                                    "Repair scope",
-                                    "Assumption cost",
-                                    "Claim cost",
-                                    "Proposal",
-                                    "Verification status",
-                                    "Required rechecks",
-                                ],
-                                projection["changes"],
-                            ),
-                            (
-                                [
-                                    "Required units",
-                                    "Rechecked units",
-                                    "Required dependency uses",
-                                    "Rechecked dependency uses",
-                                    "Required challenges",
-                                    "Reconciled challenges",
-                                    "Required deliverables",
-                                    "Reconciled deliverables",
-                                    "Closure status",
-                                ],
-                                projection["closure"],
-                            ),
-                        ],
+                        str(resolution).replace("\n", " ")
+                        if check.get("status") == "resolved"
+                        and is_substantive_string(resolution)
+                        else "agreed"
                     ),
                 ]
-                for subheading, expected_tables in subsection_contracts:
-                    subsection = report_subsection(block, subheading) or ""
-                    actual_tables = markdown_tables(subsection)
-                    if len(actual_tables) != len(expected_tables):
-                        errors.append(
-                            f"Final report {issue_id} {subheading} has the wrong "
-                            "number of canonical tables"
-                        )
-                        continue
-                    for table_index, (expected_header, expected_rows) in enumerate(
-                        expected_tables
-                    ):
-                        actual_table = actual_tables[table_index]
-                        actual_header = actual_table[0] if actual_table else []
-                        actual_rows = actual_table[2:] if len(actual_table) >= 2 else []
-                        if actual_header != expected_header:
-                            errors.append(
-                                f"Final report {issue_id} {subheading} table "
-                                f"{table_index + 1} has an invalid header"
-                            )
-                        if actual_rows != expected_rows:
-                            errors.append(
-                                f"Final report {issue_id} {subheading} table "
-                                f"{table_index + 1} disagrees with canonical evidence"
-                            )
-        elif detailed_section.strip() != "No issues.":
-            errors.append(
-                "Final report Detailed findings must state exactly No issues. "
-                "when the issue log is empty"
             )
-        method_section = report_section(
-            report_text, "## Method-interface findings"
-        ) or ""
-        method_rows = markdown_table_rows(method_section)
-        method_header = [
-            "Issue",
-            "Finding class",
-            "Interface ID",
-            "Estimator-target status",
-            "Implementation inspection",
-            "Inspection mode",
-            "Code to documented estimator",
-            "Code to required target",
-            "Execution provenance",
-            "Affected layer",
-        ]
-        interface_issues = [
-            issue
-            for issue in issues_by_id.values()
-            if is_nonempty_string(issue.get("interface_id"))
-        ]
-        if interface_issues:
-            if not method_rows or method_rows[0] != method_header:
-                errors.append(
-                    "Final report Method-interface findings has an invalid table header"
-                )
-            method_data = method_rows[2:] if len(method_rows) >= 2 else []
-            expected_method_rows = sorted(
-                canonical_interface_issue_row(issue, interfaces)
-                for issue in interface_issues
-            )
-            if sorted(method_data) != expected_method_rows:
-                errors.append(
-                    "Final report Method-interface findings rows disagree with canonical interface issues"
-                )
-        elif method_rows or method_section.strip() != "None.":
-            errors.append(
-                "Final report Method-interface findings must state exactly None. when there are no interface issues"
-            )
-        deliverable_section_value = report_section(
-            report_text, "## Declared external deliverables"
+        challenge_data = (
+            challenge_rows[2:] if len(challenge_rows) >= 2 else []
         )
-        deliverable_section = deliverable_section_value or ""
-        deliverable_rows = markdown_table_rows(deliverable_section)
-        deliverable_header = [
-            "Deliverable ID",
-            "Role",
-            "Path",
-            "SHA256",
-            "Issue IDs",
-            "Overall verdict",
-        ]
+        if (
+            not challenge_rows
+            or challenge_rows[0] != challenge_header
+            or sorted(challenge_data) != sorted(expected_challenge_rows)
+        ):
+            errors.append(
+                "Final report Independent verification disagrees with "
+                "in-scope ledgers"
+            )
+
         expected_declared_deliverables = canonical_id_field(
             record.get("id")
             for record in report_deliverables
-            if isinstance(record, dict) and is_nonempty_string(record.get("id"))
+            if isinstance(record, dict)
+            and is_nonempty_string(record.get("id"))
         )
-        if (
-            report_fields.get("Declared external deliverables")
-            != expected_declared_deliverables
-        ):
+        if report_fields.get(
+            "Declared external deliverables"
+        ) != expected_declared_deliverables:
             errors.append(
                 "Final report Declared external deliverables field disagrees "
                 "with the manifest"
             )
+        deliverable_section = report_nested_section(
+            scope_section, "### Declared external deliverables"
+        )
         if report_deliverables:
-            if not deliverable_rows or deliverable_rows[0] != deliverable_header:
-                errors.append(
-                    "Final report Declared external deliverables has an invalid "
-                    "table header"
-                )
-            deliverable_data = (
-                deliverable_rows[2:] if len(deliverable_rows) >= 2 else []
-            )
+            deliverable_rows = markdown_table_rows(deliverable_section or "")
+            deliverable_header = [
+                "Deliverable ID",
+                "Role",
+                "Path",
+                "Issue IDs",
+                "Overall verdict",
+            ]
             expected_deliverable_rows = sorted(
                 [
                     str(record.get("id")),
                     str(record.get("role")),
                     str(record.get("path")),
-                    str(record.get("sha256")),
                     canonical_id_field(record.get("issue_ids", [])),
                     str(record.get("overall_verdict")),
                 ]
                 for record in report_deliverables
             )
-            if sorted(deliverable_data) != expected_deliverable_rows:
+            deliverable_data = (
+                deliverable_rows[2:] if len(deliverable_rows) >= 2 else []
+            )
+            if (
+                not deliverable_rows
+                or deliverable_rows[0] != deliverable_header
+                or sorted(deliverable_data) != expected_deliverable_rows
+            ):
                 errors.append(
-                    "Final report Declared external deliverables rows disagree "
-                    "with the manifest"
+                    "Final report Declared external deliverables disagree with "
+                    "the manifest"
                 )
-        elif deliverable_section_value is not None and (
-            deliverable_rows or deliverable_section.strip() not in {"", "None."}
-        ):
+        elif deliverable_section is not None and deliverable_section.strip() not in {
+            "",
+            "None.",
+        }:
             errors.append(
                 "Final report Declared external deliverables must be absent or "
                 "state exactly None. when none are declared"
             )
-        for issue_id, issue in issues_by_id.items():
-            if re.search(rf"(?<![A-Za-z0-9-]){re.escape(issue_id)}(?![A-Za-z0-9-])", report_text) is None:
-                errors.append(f"Final report omits canonical issue {issue_id}")
-        if issues_by_id and re.search(r"\bNo issues\b\.?", report_text, re.IGNORECASE):
-            errors.append("Final report says no issues although canonical issues exist")
+
     for unit_id, summary in summaries_by_id.items():
         links_by_step: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for link in summary.get("issue_links", []):
@@ -28825,6 +32694,18 @@ def _check_audit_finalization(
             ):
                 errors.append(f"{unit_id}: use-site sufficiency is not established")
 
+    if uses_html_report(manifest):
+        for issue in issues_by_id.values():
+            projection = canonical_issue_detail_projection(
+                issue, summaries_by_id, dependency_edges, required_challenges,
+                report_deliverables, assessment, interfaces=interfaces,
+                global_checks=global_checks_by_aspect)
+            if issue.get("status") == "resolved" and projection["closure"][0][-1] != "complete":
+                errors.append(f"{issue.get('id')}: resolved issue has an incomplete recheck closure")
+        if check_reports:
+            errors.extend(report_module("proofcheck_release").validate(
+                report_api(), root, manifest, outputs_override=report_outputs_override))
+
     result = {
         "audit_root": str(root),
         "schema_version": SCHEMA_VERSION,
@@ -28850,20 +32731,27 @@ def _check_audit_finalization(
 
 
 def check_audit_finalization(
-    root: Path, *, progress_override: dict[str, Any] | None = None
+    root: Path, *, progress_override: dict[str, Any] | None = None,
+    check_reports: bool = True,
+    manifest_override: dict[str, Any] | None = None,
+    report_outputs_override: dict[str, str] | None = None,
+    source_inventory_only: bool = False,
 ) -> tuple[list[str], dict[str, Any]]:
     """Run the full gate without allowing unreadable artifacts to crash it."""
-    lock_error = migration_update_lock_error(root)
-    if lock_error is not None:
-        return [lock_error], {
-            "audit_root": str(root.resolve()),
-            "errors": 1,
-            "read_error": lock_error,
-        }
     try:
-        return _check_audit_finalization(
-            root, progress_override=progress_override
-        )
+        with gate_context_snapshot(root):
+            lock_error = migration_update_lock_error(root)
+            if lock_error is not None:
+                return [lock_error], {
+                    "audit_root": str(root.resolve()),
+                    "errors": 1,
+                    "read_error": lock_error,
+                }
+            return _check_audit_finalization(
+                root, progress_override=progress_override, check_reports=check_reports,
+                manifest_override=manifest_override, report_outputs_override=report_outputs_override,
+                source_inventory_only=source_inventory_only,
+            )
     except (TextArtifactReadError, OSError, UnicodeError, ValueError) as exc:
         message = str(exc)
         return [message], {
@@ -28885,6 +32773,17 @@ def cmd_finalize(args: argparse.Namespace) -> int:
     lock_error = migration_update_lock_error(root)
     if lock_error is not None:
         raise ValueError(lock_error)
+    current = unchanged_final_delivery(root)
+    if current is not None:
+        print(json.dumps(current, ensure_ascii=False, indent=2))
+        return 0
+    _, report_manifest, report_manifest_errors = load_audit_manifest(root)
+    if not report_manifest_errors and uses_html_report(report_manifest):
+        errors, result = report_module("proofcheck_release").finalize(report_api(), root)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        for error in errors:
+            print(f"ERROR: {error}", file=sys.stderr)
+        return 1 if errors else 0
     view_errors: list[str] = []
     _, preflight_manifest, preflight_manifest_errors = load_audit_manifest(root)
     preflight_protocol = preflight_manifest.get("protocol")
@@ -28999,9 +32898,12 @@ def artifact_manifest_changes(
     return errors, changes
 
 
-def check_finalization_freshness(root: Path) -> dict[str, Any]:
+def check_finalization_freshness(
+    root: Path, *, gate_errors: list[str] | None = None
+) -> dict[str, Any]:
     root = root.resolve()
-    gate_errors, _ = check_audit_finalization(root)
+    if gate_errors is None:
+        gate_errors, _ = check_audit_finalization(root)
     result: dict[str, Any] = {
         "record_status": "missing",
         "freshness": "not_applicable",
@@ -29107,7 +33009,7 @@ def check_finalization_freshness(root: Path) -> dict[str, Any]:
     reasons.extend(artifact_errors)
     result["artifact_changes"] = changes
 
-    if record.get("protocol") != protocol_identity():
+    if not protocol_matches_current(record.get("protocol")):
         reasons.append("Finalization protocol does not match the current validator")
     snapshot = manifest.get("source_snapshot")
     manifest_snapshot = snapshot.get("sha256") if isinstance(snapshot, dict) else None
@@ -29310,18 +33212,17 @@ def source_snapshot_freshness_errors(
     return list(dict.fromkeys(errors))
 
 
-def effective_critical_requirements(
+def required_challenge_requirements(
     manifest: dict[str, Any], issues: Iterable[dict[str, Any]]
 ) -> tuple[list[str], dict[str, set[str]]]:
+    """Return every in-scope unit and its severe issue triggers.
+
+    Challenge coverage is exhaustive. Critical declarations can affect only
+    work priority, never whether a proof unit receives an independent check.
+    """
     scope = manifest.get("audit_scope")
     if not isinstance(scope, dict):
         return [], {}
-    declared_value = scope.get("critical_units")
-    declared = {
-        unit_id
-        for unit_id in declared_value
-        if is_nonempty_string(unit_id)
-    } if isinstance(declared_value, list) else set()
     in_scope_value = scope.get("in_scope_units")
     in_scope = {
         unit_id
@@ -29359,54 +33260,7 @@ def effective_critical_requirements(
         for unit_id in promoted_units:
             if is_nonempty_string(unit_id) and unit_id in in_scope:
                 severe_by_unit[unit_id].add(issue_id)
-    sampled = sampled_challenge_units(scope, manifest, in_scope)
-    return (
-        sorted(declared | set(severe_by_unit) | sampled),
-        dict(severe_by_unit),
-    )
-
-
-def sampled_challenge_units(
-    scope: dict[str, Any],
-    manifest: dict[str, Any],
-    in_scope: set[str],
-) -> set[str]:
-    """Deterministically sample in-scope units for independent challenge.
-
-    Membership is a pure function of the source snapshot hash and the
-    in-scope unit set: every in-scope unit is scored and the fixed fraction
-    with the lowest scores is selected. Mutable declarations such as
-    critical_units or issue records are deliberately excluded from the
-    population, so they cannot steer which units land in the sample; the
-    in-scope set itself is pinned to the source by the scope gates. A
-    sampled unit that is independently required is simply covered by its own
-    challenge. The ceiling is computed in exact rational arithmetic so
-    boundary rates never under-sample through floating-point error.
-    """
-    rate = scope.get("verified_challenge_sample_rate")
-    rate_fraction = verified_challenge_sample_fraction(rate)
-    if rate_fraction is None:
-        return set()
-    population = sorted(in_scope)
-    if not population:
-        return set()
-    snapshot = manifest.get("source_snapshot")
-    snapshot_id = (
-        snapshot.get("sha256") if isinstance(snapshot, dict) else None
-    )
-    if not is_nonempty_string(snapshot_id):
-        return set()
-    count = (
-        rate_fraction.numerator * len(population)
-        + rate_fraction.denominator
-        - 1
-    ) // rate_fraction.denominator
-    count = min(len(population), count)
-    scored = sorted(
-        (sha256_text(f"{snapshot_id}:{unit_id}"), unit_id)
-        for unit_id in population
-    )
-    return {unit_id for _, unit_id in scored[:count]}
+    return sorted(in_scope), dict(severe_by_unit)
 
 
 def challenge_semantic_freshness_errors(
@@ -29416,7 +33270,7 @@ def challenge_semantic_freshness_errors(
     triggering_issue_ids: Iterable[str],
 ) -> list[str]:
     """Check that a challenger record binds the current neutral target packet."""
-    prefix = f"Effective critical unit {unit_id}"
+    prefix = f"In-scope unit {unit_id}"
     if not isinstance(challenge, dict):
         return [f"{prefix} independent check is malformed"]
     required_ids = sorted(set(triggering_issue_ids))
@@ -29428,6 +33282,26 @@ def challenge_semantic_freshness_errors(
         ]
 
     errors: list[str] = []
+    _, manifest, manifest_errors = load_audit_manifest(root)
+    errors.extend(manifest_errors)
+    if not manifest_errors and challenge_contract_version(manifest) >= 2:
+        initial, reference, initial_errors = load_initial_challenge(root, unit_id, packet, challenge)
+        errors.extend(initial_errors)
+        if challenge.get("initial_response") != reference or not reference:
+            errors.append(f"{prefix} must bind its preserved initial challenge response")
+        response = initial.get("response")
+        if isinstance(response, dict):
+            for field in ("challenger_verdict", "independence_level"):
+                if challenge.get(field) != response.get(field):
+                    errors.append(f"{prefix} {field} differs from the initial response")
+            _, ledger = packet_ledger(root, unit_id)
+            if isinstance(ledger, dict):
+                errors.extend(initial_conclusion_reconciliation_errors(initial, ledger, challenge))
+            initial_assessments = response.get("issue_assessments")
+            final_assessments = [{key: value for key, value in row.items() if key != "target_contract_sha256"}
+                                 for row in challenge.get("issue_assessments", []) if isinstance(row, dict)]
+            if final_assessments != initial_assessments and (not challenge.get("disagreements") or not is_substantive_string(challenge.get("resolution"))):
+                errors.append(f"{prefix}: changed issue assessments require explicit disagreement and resolution")
     if challenge.get("challenge_context_sha256") != packet.get(
         "context_binding_sha256"
     ):
@@ -29484,7 +33358,7 @@ def challenge_semantic_freshness_errors(
     return errors
 
 
-def critical_challenges_complete(
+def independent_checks_complete(
     root: Path,
     manifest: dict[str, Any],
     summaries_by_id: dict[str, dict[str, Any]],
@@ -29492,13 +33366,13 @@ def critical_challenges_complete(
 ) -> bool:
     scope = manifest.get("audit_scope")
     if not isinstance(scope, dict) or not isinstance(
-        scope.get("critical_units"), list
+        scope.get("in_scope_units"), list
     ):
         return False
-    effective, severe_by_unit = effective_critical_requirements(
+    required_units, severe_by_unit = required_challenge_requirements(
         manifest, issues
     )
-    if not effective:
+    if not required_units:
         return False
     source_snapshot = manifest.get("source_snapshot")
     snapshot_id = (
@@ -29506,7 +33380,7 @@ def critical_challenges_complete(
         if isinstance(source_snapshot, dict)
         else None
     )
-    for unit_id in effective:
+    for unit_id in required_units:
         summary = summaries_by_id.get(unit_id)
         check = summary.get("independent_check") if isinstance(summary, dict) else None
         if (
@@ -29525,7 +33399,7 @@ def critical_challenges_complete(
         artifact_path, artifact_path_valid = canonical_challenge_artifact_path(
             root,
             artifact,
-            f"Effective critical unit {unit_id} challenger artifact",
+            f"In-scope unit {unit_id} challenger artifact",
             artifact_errors,
         )
         if (
@@ -29589,7 +33463,7 @@ def derived_current_pass(
         or adversarial_pass.get("status") not in completed_passes
     ):
         return 5
-    if not critical_challenges_complete(
+    if not independent_checks_complete(
         root, manifest, summaries_by_id, issues
     ):
         return 6
@@ -29723,6 +33597,7 @@ def derive_progress_records(
         and is_nonempty_string(issue.get("id"))
     )
     completion_gate_errors: list[str] = []
+    reusable_full_gate_errors: list[str] | None = None
     if ready_for_completion and not errors and not fatal_ledger_errors:
         candidate_progress = {
             "schema_version": SCHEMA_VERSION,
@@ -29745,6 +33620,11 @@ def derive_progress_records(
             root, progress_override=candidate_progress
         )
         ready_for_completion = not completion_gate_errors
+        if candidate_progress == recorded_progress:
+            # The override equals the loaded record byte-for-byte, so this
+            # gate result is exactly what a plain gate on the same state
+            # returns; callers may reuse it instead of running a second one.
+            reusable_full_gate_errors = completion_gate_errors
     elif ready_for_completion:
         ready_for_completion = False
 
@@ -29771,6 +33651,7 @@ def derive_progress_records(
             "current_pass": current_pass,
             "expected_status": expected_status,
             "completion_gate_errors": completion_gate_errors,
+            "reusable_full_gate_errors": reusable_full_gate_errors,
             "fatal_ledger_errors": fatal_ledger_errors,
         },
         errors,
@@ -29873,6 +33754,16 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
     lock_error = migration_update_lock_error(root)
     if lock_error is not None:
         raise ValueError(lock_error)
+    current = unchanged_final_delivery(root)
+    if current is not None:
+        recorded, errors = load_json_object(root / "PROGRESS.json", "progress state")
+        if errors:
+            raise ValueError("; ".join(errors))
+        current.update({key: recorded.get(key) for key in (
+            "status", "current_pass", "active_unit", "completed_units", "next_action")})
+        current["note"] = "Delivered audit is unchanged. Use a working copy for deliberate repairs."
+        print(json.dumps(current, ensure_ascii=False, indent=2))
+        return 0
     redirect_errors = audit_internal_redirect_errors(root)
     if redirect_errors:
         raise ValueError("; ".join(redirect_errors))
@@ -30121,8 +34012,8 @@ def status_protocol_view(
         )
     elif status == "mismatch":
         next_action = (
-            "The recorded protocol identity is malformed or incompatible with "
-            "the current validator. Re-scaffold or use the documented migration "
+            "The recorded protocol identity is malformed or incompatible with the "
+            "current validator. Re-scaffold or use the documented migration "
             "workflow, then manually recheck affected records."
         )
     else:
@@ -30274,11 +34165,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         root, "AUDIT_MANIFEST.json", "audit manifest", structural_errors
     )
     manifest, manifest_errors = (
-        load_json_object(
-            manifest_path,
-            "audit manifest",
-            preserve_verified_challenge_rate=True,
-        )
+        load_json_object(manifest_path, "audit manifest")
         if manifest_path_valid
         else ({}, [])
     )
@@ -30351,11 +34238,11 @@ def cmd_status(args: argparse.Namespace) -> int:
         error = undeclared_report_error(report_path)
         if error not in structural_errors:
             structural_errors.append(error)
-    canonical_report = root / "audit" / "06_reports" / "FINAL_REPORT.md"
-    canonical_report_scaffold = False
+    canonical_report = root / preferred_report_path(manifest)
+    canonical_report_scaffold = uses_html_report(manifest) and manifest.get("report_release", {}).get("status") != "FINAL"
     prematurely_unmarked_report = False
     invalid_nonfinal_report_title = False
-    if canonical_report.is_file():
+    if canonical_report.is_file() and not uses_html_report(manifest):
         try:
             canonical_report_text = active_markdown_text(
                 read_text(canonical_report)
@@ -30399,7 +34286,9 @@ def cmd_status(args: argparse.Namespace) -> int:
             "stale": [],
             "errors": [str(exc)],
         }
-    finalization = check_finalization_freshness(root)
+    finalization = check_finalization_freshness(
+        root, gate_errors=derived.get("reusable_full_gate_errors")
+    )
     protocol_view = status_protocol_view(manifest, summaries)
     protocol_registry_errors: list[str] = []
     if (
@@ -30630,8 +34519,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         if not verbose:
             finalization_view["current_gate_errors"] = [
                 "Release identity revalidation required: the schema and contract "
-                "versions are current, but skill_version or validator_sha256 "
-                "changed.",
+                "versions are current, but the release identity changed.",
                 "Run revalidate-protocol, then rerun status and finalization.",
             ]
             finalization_view["current_gate_errors_omitted"] = len(
@@ -30687,6 +34575,9 @@ def cmd_status(args: argparse.Namespace) -> int:
                 or coherent_validator_revalidation
                 or protocol_mismatch
             )
+            else f"Audit finalized. Deliver {preferred_report_path(manifest)} "
+            "(delivery-check re-verifies the release)."
+            if finalization_view.get("usable_finalization") is True
             else recorded_progress.get("next_action")
         ),
         "drift": (
@@ -30779,11 +34670,7 @@ def cmd_migrate_closure(args: argparse.Namespace) -> int:
         else None
     )
     manifest, manifest_errors = (
-        load_json_object(
-            manifest_path,
-            "audit manifest",
-            preserve_verified_challenge_rate=True,
-        )
+        load_json_object(manifest_path, "audit manifest")
         if manifest_path_valid
         else ({}, [])
     )
@@ -31010,8 +34897,8 @@ def cmd_migrate_closure(args: argparse.Namespace) -> int:
         "pending_external_results": pending_results,
     }
 
-    migrated_manifest = copy.deepcopy(manifest)
-    migrated_manifest["protocol"] = dict(current_protocol)
+    migrated_manifest = json.loads(json.dumps(manifest, ensure_ascii=False))
+    migrated_manifest["protocol"] = retain_challenge_contract(current_protocol, manifest)
     completion = migrated_manifest.get("completion")
     if isinstance(completion, dict):
         completion["dependency_registry_reviewed"] = False
@@ -31072,7 +34959,8 @@ def cmd_migrate_closure(args: argparse.Namespace) -> int:
                 ),
                 (
                     manifest_path,
-                    render_audit_manifest_json(migrated_manifest) + "\n",
+                    json.dumps(migrated_manifest, ensure_ascii=False, indent=2)
+                    + "\n",
                 ),
             ],
             expected_sha256={
@@ -31150,11 +35038,7 @@ def cmd_migrate_evidence(args: argparse.Namespace) -> int:
         else None
     )
     manifest, manifest_errors = (
-        load_json_object(
-            manifest_path,
-            "audit manifest",
-            preserve_verified_challenge_rate=True,
-        )
+        load_json_object(manifest_path, "audit manifest")
         if manifest_path_valid
         else ({}, [])
     )
@@ -31381,10 +35265,10 @@ def cmd_migrate_evidence(args: argparse.Namespace) -> int:
         )
         return 0
 
-    migrated_manifest = copy.deepcopy(manifest)
+    migrated_manifest = json.loads(json.dumps(manifest, ensure_ascii=False))
     migrated_protocol = dict(protocol_identity())
     migrated_protocol["closure_contract_version"] = recorded_closure
-    migrated_manifest["protocol"] = migrated_protocol
+    migrated_manifest["protocol"] = retain_challenge_contract(migrated_protocol, manifest)
     completion = migrated_manifest.get("completion")
     if isinstance(completion, dict):
         completion["final_report_ready"] = False
@@ -31412,7 +35296,7 @@ def cmd_migrate_evidence(args: argparse.Namespace) -> int:
     writes.append(
         (
             manifest_path,
-            render_audit_manifest_json(migrated_manifest) + "\n",
+            json.dumps(migrated_manifest, ensure_ascii=False, indent=2) + "\n",
         )
     )
     evidence_history_existed = evidence_history_directory.exists()
@@ -31550,15 +35434,20 @@ def cmd_revalidate_protocol(args: argparse.Namespace) -> int:
         root, "AUDIT_MANIFEST.json", "audit manifest", errors
     )
     manifest, manifest_errors = (
-        load_json_object(
-            manifest_path,
-            "audit manifest",
-            preserve_verified_challenge_rate=True,
-        )
+        load_json_object(manifest_path, "audit manifest")
         if manifest_path_valid
         else ({}, [])
     )
     errors.extend(manifest_errors)
+    original_manifest_bytes = manifest_path.read_bytes() if manifest_path_valid and not manifest_errors else b""
+    baseline = audit_state_manifest(root) if not errors else []
+    if original_manifest_bytes:
+        captured = json.loads(original_manifest_bytes.decode("utf-8-sig"))
+        if captured != manifest or not any(
+            row["file"] == "AUDIT_MANIFEST.json" and row["sha256"] == hashlib.sha256(original_manifest_bytes).hexdigest()
+            for row in baseline
+        ):
+            errors.append("Audit manifest changed while capturing protocol revalidation inputs")
     current_protocol = protocol_identity()
     previous_validator: Any = None
     previous_skill_version: Any = None
@@ -31572,6 +35461,17 @@ def cmd_revalidate_protocol(args: argparse.Namespace) -> int:
         if not isinstance(recorded_protocol, dict):
             errors.append("AUDIT_MANIFEST.json protocol must be an object")
             recorded_protocol = {}
+        if set(recorded_protocol) - (set(current_protocol) | {"challenge_contract_version"}):
+            errors.append("protocol has unknown identity fields")
+        try:
+            challenge_contract_version(manifest)
+        except ValueError as exc:
+            errors.append(str(exc))
+        if "context_protocol" in manifest:
+            try:
+                context_protocol_identity(root, manifest)
+            except (OSError, ValueError, UnicodeError) as exc:
+                errors.append(str(exc))
         previous_validator = recorded_protocol.get("validator_sha256")
         previous_skill_version = recorded_protocol.get("skill_version")
         # skill_version is release identity, not record compatibility: a
@@ -31580,7 +35480,7 @@ def cmd_revalidate_protocol(args: argparse.Namespace) -> int:
         for field, expected in current_protocol.items():
             if field in {"validator_sha256", "skill_version"}:
                 continue
-            if recorded_protocol.get(field) != expected:
+            if type(recorded_protocol.get(field)) is not type(expected) or recorded_protocol.get(field) != expected:
                 errors.append(
                     f"protocol.{field} is not compatible with the current validator"
                 )
@@ -31705,7 +35605,7 @@ def cmd_revalidate_protocol(args: argparse.Namespace) -> int:
 
         report_path, report_path_valid = canonical_artifact_path(
             root,
-            "audit/06_reports/FINAL_REPORT.md",
+            preferred_report_path(manifest),
             "final report",
             errors,
         )
@@ -31764,10 +35664,46 @@ def cmd_revalidate_protocol(args: argparse.Namespace) -> int:
         updated = False
     else:
         updated_manifest = dict(manifest)
-        updated_manifest["protocol"] = dict(current_protocol)
-        atomic_write_text(
-            manifest_path, render_audit_manifest_json(updated_manifest) + "\n"
-        )
+        updated_manifest["protocol"] = retain_challenge_contract(current_protocol, manifest)
+        writes: list[tuple[Path, str | bytes]] = []
+        absent: list[Path] = []
+        if "context_protocol" not in manifest:
+            origin_digest = hashlib.sha256(original_manifest_bytes).hexdigest()
+            origin_relative = f"audit/06_reports/history/context-protocol-{origin_digest}.json"
+            origin_errors: list[str] = []
+            origin_path, valid = canonical_artifact_path(root, origin_relative, "Context protocol origin", origin_errors)
+            if not valid or origin_path is None:
+                raise ValueError("Cannot preserve context protocol: " + "; ".join(origin_errors))
+            origin_path.parent.mkdir(parents=True, exist_ok=True)
+            if origin_path.exists():
+                if origin_path.read_bytes() != original_manifest_bytes:
+                    raise ValueError("Context protocol origin history differs from the original manifest")
+            else:
+                writes.append((origin_path, original_manifest_bytes))
+                absent.append(origin_path)
+            identity = dict(recorded_protocol)
+            identity.pop("challenge_contract_version", None)
+            updated_manifest["context_protocol"] = {
+                "protocol": identity, "original_manifest_file": origin_relative,
+                "original_manifest_sha256": origin_digest,
+            }
+        writes.append((manifest_path, json.dumps(updated_manifest, ensure_ascii=False, indent=2) + "\n"))
+        lock, payload = acquire_migration_update_lock(root, "cmd_revalidate_protocol")
+        release = True
+        try:
+            if audit_state_manifest(root, lock) != baseline:
+                raise ValueError("Audit changed during protocol revalidation; retry against current evidence")
+            guards = {root / row["file"]: row["sha256"] for row in baseline}
+            guards.update({resolve_stored_path(row["file"], root): row["sha256"]
+                           for row in manifest["source_snapshot"]["files"]})
+            transactional_write_texts(writes, expected_sha256=guards,
+                                      expected_absent=absent)
+        except MigrationRecoveryRequired:
+            release = False
+            raise
+        finally:
+            if release:
+                release_migration_update_lock(lock, payload)
         status = "revalidated"
         updated = True
     result = {
@@ -31780,6 +35716,7 @@ def cmd_revalidate_protocol(args: argparse.Namespace) -> int:
         "previous_validator_sha256": previous_validator,
         "current_validator_sha256": current_validator,
         "finalization_invalidated": updated,
+        "context_protocol_retained": updated or "context_protocol" in manifest,
         "next_action": (
             "Run status, resolve every current gate error, and rerun finalize."
             if updated
@@ -31842,7 +35779,20 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         (
             "Missing or unreadable: " + ", ".join(unreadable_templates)
             if unreadable_templates
-            else "All bundled templates are readable UTF-8 text"
+            else "All required scaffold templates are readable UTF-8 text"
+        ),
+    )
+    math_info = report_renderer().math_renderer().renderer_info()
+    record(
+        "math_renderer",
+        "environment",
+        "passed" if math_info["available"] else "warning",
+        (
+            f"Offline LaTeX rendering available: {math_info['engine']} {math_info['version']}"
+            if math_info["available"]
+            else "Offline LaTeX converter unavailable; reports retain labeled literal LaTeX. "
+            "Install latex2mathml once in the shared interpreter listed above using "
+            "that interpreter's -m pip install --user latex2mathml."
         ),
     )
     input_kind = getattr(args, "input_kind", None)
@@ -32021,6 +35971,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 }
                 for path in discovered_files
             ]
+            inventory = scan_formal_units(
+                paper, source_files=discovered_files,
+                source_warnings=discovery.get("warnings", []),
+                path_identity_base=(paper.parent if getattr(args, "portable_sources", False) else None),
+            )
+            identity_errors = inventory_identity_errors(inventory["units"])
+            if identity_errors:
+                raise ValueError("; ".join(identity_errors))
         except (OSError, UnicodeError, ValueError) as exc:
             discovery_report["status"] = "failed"
             discovery_report["error"] = str(exc)
@@ -32029,7 +35987,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             discovery_report = {
                 "status": "passed",
                 "files": [row["file"] for row in closure_rows],
-                "warnings": list(discovery.get("warnings", [])),
+                "warnings": list(dict.fromkeys(inventory["warnings"])),
                 "outside_project_inputs": list(
                     discovery.get("outside_project_inputs", [])
                 ),
@@ -32041,7 +35999,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 "passed",
                 (
                     f"{len(discovered_files)} source file(s), "
-                    f"{len(discovery.get('warnings', []))} review warning(s); "
+                    f"{len(discovery_report['warnings'])} review warning(s); "
                     f"closure_sha256={canonical_sha256(closure_rows)}"
                 ),
             )
@@ -32290,8 +36248,10 @@ CHECKER_BINDING_SCOPE = "prospective_local_proof_checks"
 CHECKER_BINDING_LIMITATION = (
     "Checker profile, configuration, and context identifiers are reviewed "
     "coordinator declarations; proofcheck.py cannot independently verify "
-    "runtime checker identity. Any change requires a new balanced calibration "
-    "before further local checking."
+    "runtime checker identity. Calibration currency is the declared profile "
+    "and configuration; the context identifier records only the canary-run "
+    "context. A profile or configuration change requires a new balanced "
+    "calibration before further local checking."
 )
 
 
@@ -32681,7 +36641,7 @@ def calibration_checker_binding(args: argparse.Namespace) -> dict[str, Any]:
     if getattr(args, "reviewed_binding", False) is not True:
         raise ValueError(
             "--reviewed-binding is required to record the explicit checker "
-            "profile/configuration/context contract"
+            "profile/configuration qualification and context provenance"
         )
     return {
         **fields,
@@ -33002,7 +36962,8 @@ def calibration_record_errors(root: Path, calibration: Any) -> list[str]:
             # where it belongs: the canary-bundle digest stales sessions when
             # the canaries change, per-response re-grading under the current
             # grader stales them when grading semantics change, and a changed
-            # checker binding requires a new session by contract.
+            # A changed checker profile or configuration requires a new
+            # session by contract. The context ID is run provenance only.
             for field in ("source_snapshot_sha256", "validator_sha256"):
                 value = audit_binding.get(field)
                 if not isinstance(value, str) or not SHA256_RE.fullmatch(value):
@@ -33099,11 +37060,7 @@ def calibration_record_errors(root: Path, calibration: Any) -> list[str]:
 
 
 def current_calibration_receipt(root: Path) -> dict[str, Any]:
-    """Return the validated latest passing calibration session identity.
-
-    This intentionally omits the unchanged-preexisting-artifact gate so a
-    checker can regenerate packets needed to perform the required full recheck.
-    """
+    """Return the validated checker-profile qualification identity."""
     lock_error = calibration_update_lock_error(root)
     if lock_error is not None:
         raise ValueError(
@@ -33134,9 +37091,10 @@ def current_calibration_receipt(root: Path) -> dict[str, Any]:
     identity = {
         "calibration_schema_version": CALIBRATION_SCHEMA_VERSION,
         "canary_bundle_sha256": calibration["canary_bundle"]["sha256"],
-        "session_id": latest["session_id"],
-        "graded_utc": latest["graded_utc"],
-        "session_sha256": canonical_sha256(latest),
+        "checker_profile_id": latest["checker_binding"]["checker_profile_id"],
+        "checker_configuration_id": latest["checker_binding"][
+            "checker_configuration_id"
+        ],
     }
     return {**identity, "sha256": canonical_sha256(identity)}
 
@@ -33174,14 +37132,6 @@ def checker_calibration_errors(root: Path) -> list[str]:
         "checker calibration: the most recent session "
         f"{latest['session_id']!r}",
     )
-    for artifact in latest["audit_binding"]["preexisting_proof_artifacts"]:
-        path = (root / artifact["file"]).resolve()
-        if path.is_file() and sha256_file(path) == artifact["sha256"]:
-            errors.append(
-                "checker calibration post-hoc recheck required: preexisting "
-                f"proof artifact {artifact['file']} is unchanged; fully recheck "
-                "and replace or recompile it after this calibration session"
-            )
     return errors
 
 
@@ -33324,9 +37274,8 @@ def cmd_canary_grade(args: argparse.Namespace) -> int:
                 ],
                 "note": (
                     "A recorded failing session blocks finalization until a "
-                    "later session passes. Any proof artifacts listed as "
-                    "preexisting must be fully rechecked and replaced or "
-                    "recompiled before finalization. Expected verdicts are "
+                    "later session passes. Listed preexisting proof artifacts "
+                    "are historical provenance only. Expected verdicts are "
                     "never disclosed by this command."
                 ),
             },
@@ -33340,6 +37289,7 @@ def cmd_canary_grade(args: argparse.Namespace) -> int:
 def cmd_delivery_check(args: argparse.Namespace) -> int:
     """Return FINAL only for a current usable passed finalization record."""
     root = args.root.resolve()
+    freshness = None
     try:
         freshness = check_finalization_freshness(root)
         usable = freshness.get("usable_finalization") is True
@@ -33363,7 +37313,17 @@ def cmd_delivery_check(args: argparse.Namespace) -> int:
         "record_status": record_status,
         "freshness": freshness_status,
         "reasons": list(dict.fromkeys(str(reason) for reason in reasons)),
+        "report": (
+            (root / preferred_report_path(load_audit_manifest(root)[1])).as_posix()
+            if usable
+            else None
+        ),
     }
+    if not usable and freshness is not None:
+        diagnosis = report_module("proofcheck_release").presentation_refresh_note(
+            report_api(), root, freshness)
+        if diagnosis:
+            result["diagnosis"] = diagnosis
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if usable else 1
 
@@ -33386,6 +37346,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--input-kind", choices=("latex", "pdf_transcription"), required=True
     )
     scaffold.add_argument("--output", type=Path, required=True)
+    scaffold.add_argument("--report-format", choices=("html", "markdown"), default="html",
+                          help="HTML by default; Markdown retains the legacy report contract")
     scaffold.add_argument("--publisher-pdf", type=Path)
     scaffold.add_argument(
         "--visual-review-status",
@@ -33428,7 +37390,12 @@ def build_parser() -> argparse.ArgumentParser:
     index.set_defaults(func=cmd_index)
 
     crossref = subparsers.add_parser("crossref", help="Audit LaTeX labels and references")
-    crossref.add_argument("--file", type=Path, required=True)
+    crossref_source = crossref.add_mutually_exclusive_group(required=True)
+    crossref_source.add_argument("--file", type=Path, help="Scan standalone source")
+    crossref_source.add_argument(
+        "--root", type=Path,
+        help="Refresh both canonical cross-reference files from unchanged audit sources",
+    )
     add_output_arguments(crossref)
     crossref.set_defaults(func=cmd_crossref)
 
@@ -33560,15 +37527,39 @@ def build_parser() -> argparse.ArgumentParser:
     compile_annotations.add_argument("--output", type=Path, required=True)
     compile_annotations.set_defaults(func=cmd_compile_annotations)
 
+    submit_unit = subparsers.add_parser(
+        "submit-unit", help="Validate authored judgments and publish the ledger with exact dependency step bindings")
+    submit_unit.add_argument("ledger", type=Path, help="Canonical source-locked skeleton")
+    submit_unit.add_argument("--annotations", type=Path, required=True)
+    submit_unit.add_argument("--packet", type=Path, required=True)
+    submit_unit.set_defaults(func=cmd_submit_unit)
+
+    source_lookup = subparsers.add_parser(
+        "source-lookup", help="Look up locked proof passages, draft step identities, or manuscript references")
+    source_lookup.add_argument("ledger", type=Path, help="Canonical source-locked skeleton")
+    source_lookup.add_argument("--part", choices=("proof", "statement"), default="proof")
+    source_lookup.add_argument("--lines", type=int, nargs=2, metavar=("START", "END"),
+                               help="Proof coverage positions, or original manuscript lines for a statement")
+    source_lookup.add_argument("--annotations", type=Path)
+    source_lookup.add_argument("--step-key")
+    source_lookup.add_argument("--packet", type=Path)
+    source_lookup.add_argument("--reference")
+    source_lookup.set_defaults(func=cmd_source_lookup)
+
     packet = subparsers.add_parser(
         "packet", help="Write a minimal source and dependency context packet"
     )
     packet.add_argument("--root", type=Path, required=True)
     packet.add_argument("--unit-id", required=True)
     packet.add_argument(
-        "--mode", choices=("primary", "challenge"), default="primary"
+        "--mode", choices=("primary", "challenge", "statement-support"), default="primary"
     )
     packet.add_argument("--output", type=Path, required=True)
+    packet.add_argument(
+        "--for-recompile", action="store_true",
+        help=("Select the fresh canonical skeleton for primary recompilation "
+              "while retaining the existing ledger as issue context"),
+    )
     packet.add_argument("--force", action="store_true")
     packet.set_defaults(func=cmd_packet)
 
@@ -33582,6 +37573,30 @@ def build_parser() -> argparse.ArgumentParser:
     bind_challenge.add_argument("--root", type=Path, required=True)
     bind_challenge.add_argument("--unit-id", required=True)
     bind_challenge.set_defaults(func=cmd_bind_challenge)
+
+    submit_reconciliation = subparsers.add_parser(
+        "submit-reconciliation", help="Validate an authored reconciliation and publish its narrative and ledger binding together")
+    submit_reconciliation.add_argument("--root", type=Path, required=True)
+    submit_reconciliation.add_argument("--review", type=Path, required=True)
+    submit_reconciliation.set_defaults(func=cmd_submit_reconciliation)
+
+    record_challenge = subparsers.add_parser(
+        "record-challenge", help="Preserve the exact blinded packet and initial conclusion judgments without overwriting"
+    )
+    record_challenge.add_argument("--root", type=Path, required=True)
+    record_challenge.add_argument("--unit-id", required=True)
+    record_challenge.add_argument("--packet", type=Path, required=True)
+    record_challenge.add_argument("--response", type=Path, required=True)
+    record_challenge.set_defaults(func=cmd_record_challenge)
+
+    record_support = subparsers.add_parser(
+        "record-statement-support", help="Preserve an independent review of exact supplied proof support after the initial blind response"
+    )
+    record_support.add_argument("--root", type=Path, required=True)
+    record_support.add_argument("--unit-id", required=True)
+    record_support.add_argument("--packet", type=Path, required=True)
+    record_support.add_argument("--response", type=Path, required=True)
+    record_support.set_defaults(func=cmd_record_statement_support)
 
     sync_views = subparsers.add_parser(
         "sync-views", help="Regenerate concise workflow projections"
@@ -33627,11 +37642,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--write-report-views",
         action="store_true",
         help=(
-            "Regenerate the canonical Issue index and Detailed findings sections; "
-            "requires --final"
+            "Regenerate the canonical Results and impact section and Findings and "
+            "repairs section; requires --final"
         ),
     )
-    issues.add_argument("--final", action="store_true")
+    issue_validation = issues.add_mutually_exclusive_group()
+    issue_validation.add_argument("--final", action="store_true")
+    issue_validation.add_argument(
+        "--before-challenge", action="store_true",
+        help="Read-only strict primary and issue readiness check before independent review; remains NONFINAL",
+    )
     issues.set_defaults(func=cmd_issues)
 
     archive_issue = subparsers.add_parser(
@@ -33667,6 +37687,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     finalize.add_argument("--root", type=Path, required=True)
     finalize.set_defaults(func=cmd_finalize)
+
+    report = subparsers.add_parser("report", help="Render an honest NONFINAL HTML working report")
+    report.add_argument("--root", type=Path, required=True)
+    report.set_defaults(func=cmd_report)
+    migrate_report = subparsers.add_parser("migrate-report", help="Preserve legacy report history and enable HTML reporting")
+    migrate_report.add_argument("--root", type=Path, required=True)
+    migrate_report.add_argument("--markdown", action="store_true", help="Also generate Markdown from the report projection")
+    migrate_report.add_argument("--top-level", action="store_true", help="Archive the prior report and place HTML beside the audit manifest")
+    migrate_report.set_defaults(func=cmd_migrate_report)
 
     status = subparsers.add_parser("status", help="Summarize resumable audit state")
     status.add_argument("--root", type=Path, required=True)
@@ -33749,6 +37778,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     delivery.add_argument("--root", type=Path, required=True)
     delivery.set_defaults(func=cmd_delivery_check)
+
     return parser
 
 

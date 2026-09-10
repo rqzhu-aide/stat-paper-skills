@@ -2,12 +2,18 @@
 
 Working only from the blinded packet, I normalized the obligation and re-read lines 13-18. Lines 14-15 are exact definition unfolding. Line 16 promotes per-fixed-j tail convergence to the maximum over 1..m_n with m_n -> infinity; no uniform tail rate, union control, or dependence structure is available in the locked hypotheses. Counterexample check: independent X_{n,j} ~ Bernoulli(1/n), m_n = n^2 satisfies every hypothesis while P(max > 1/2) = 1 - (1 - 1/n)^{n^2} -> 1. Line 17 folds the refuted line-16 claim. Verdict: incorrect, statement refuted at eps = 1/2.
 
-<!-- proofcheck-challenge-binding-v1
+<!-- proofcheck-challenge-binding-v2
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "unit_id": "lem:growing-max",
-  "challenge_context_sha256": "dd5618fa59b1081b764462224461114f23a46eb429621bbf91a9169648fe8ceb",
+  "challenge_context_sha256": "d162f61512ae82901b648b4a09192e45939b1908d97bbf9da39f64432c3fd37a",
+  "independence_level": "fresh_context_same_model",
   "challenger_verdict": "incorrect",
+  "reconciled_verdict": "incorrect",
+  "artifact": "audit/05_adversarial/lem-growing-max-challenge.md",
+  "disagreements": [],
+  "resolution": "",
+  "generated_utc": "2026-09-02T19:35:19.867744Z",
   "issue_assessments": [
     {
       "issue_id": "I-001",

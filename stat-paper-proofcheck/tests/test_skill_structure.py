@@ -53,7 +53,7 @@ class SkillStructureTests(unittest.TestCase):
             "final report template": report_match.group(1),
             "README.md": readme_match.group(1),
         }
-        self.assertEqual({"1.2"}, set(versions.values()), versions)
+        self.assertEqual({"1.5"}, set(versions.values()), versions)
 
     def test_canonical_role_references_are_directly_discoverable(self) -> None:
         skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
@@ -69,17 +69,6 @@ class SkillStructureTests(unittest.TestCase):
         for name in required:
             with self.subTest(name=name):
                 self.assertIn(f"(references/{name})", skill)
-
-    def test_legacy_references_are_small_non_normative_routes(self) -> None:
-        for name in (
-            "evidence-status-and-issues.md",
-            "state-and-reporting.md",
-        ):
-            with self.subTest(name=name):
-                path = REFERENCES / name
-                text = path.read_text(encoding="utf-8")
-                self.assertLess(path.stat().st_size, 1_000)
-                self.assertIn("contains no normative audit rules", text)
 
     def test_role_context_budgets_prevent_accidental_reexpansion(self) -> None:
         sizes = {
@@ -102,11 +91,13 @@ class SkillStructureTests(unittest.TestCase):
             ),
             "calibration": skill + sizes["checker-calibration.md"],
         }
+        # These budgets keep each role's loaded instructions compact. Any
+        # further growth needs an explicit decision, never a silent bump.
         limits = {
-            "primary": 65_500,
-            "challenger": 22_500,
-            "reporter": 30_000,
-            "coordinator": 59_000,
+            "primary": 65_800,
+            "challenger": 22_700,
+            "reporter": 30_900,
+            "coordinator": 59_400,
             "calibration": 20_500,
         }
         for role, total in totals.items():
@@ -158,8 +149,13 @@ class SkillStructureTests(unittest.TestCase):
         challenge = (REFERENCES / "challenge-protocol.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("The effective-critical set is the union of", challenge)
-        self.assertIn("covered_issue_ids", challenge)
+        self.assertIn(
+            "Every unit in `audit_scope.in_scope_units` needs a fresh independent check",
+            challenge,
+        )
+        self.assertIn("never coverage", challenge)
+        self.assertIn("record-challenge", challenge)
+        self.assertIn("source_refs", challenge)
 
         linked_only = (
             "evidence-and-verdicts.md",
@@ -173,16 +169,6 @@ class SkillStructureTests(unittest.TestCase):
                 self.assertIn("challenge-protocol.md", text)
                 self.assertNotIn("covered_issue_ids", text)
 
-    def test_sampling_and_evidence_wording_stays_contract_current(self) -> None:
-        skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
-        protocol = (REFERENCES / "line-by-line-protocol.md").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("sample drawn from all in-scope units", skill)
-        self.assertNotIn("sample of the remaining units", skill)
-        self.assertIn("The current evidence\ncontract treats", protocol)
-        self.assertNotRegex(protocol, r"Evidence contract \d+ treats")
-
     def test_canonical_references_do_not_route_through_legacy_files(self) -> None:
         protocol = (REFERENCES / "line-by-line-protocol.md").read_text(
             encoding="utf-8"
@@ -192,12 +178,14 @@ class SkillStructureTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("report_deliverables", reporting)
-        self.assertIn("NONFINAL SCAFFOLD", reporting)
+        self.assertIn("FINAL_REPORT.html", reporting)
+        self.assertIn("NONFINAL", reporting)
+        self.assertIn("legacy-markdown-report.md", reporting)
 
     def test_method_interface_scope_contract_is_discoverable(self) -> None:
         skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("targeting materially different population quantities", skill)
-        self.assertIn("only assuming an oracle object", skill)
+        self.assertIn("implementations target different population", skill)
+        self.assertIn("claims more than an assumed oracle", skill)
         self.assertIn("method-to-implementation verification", skill)
         self.assertIn("`scope.trigger` as `required` or `not_required`", skill)
         self.assertIn("domain-risk-checks.md", skill)

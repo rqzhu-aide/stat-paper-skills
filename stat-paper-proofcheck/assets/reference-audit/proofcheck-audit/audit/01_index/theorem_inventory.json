@@ -18,6 +18,14 @@
     {
       "id": "lem:growing-max",
       "environment": "lemma",
+      "semantic_kind": "lemma",
+      "statement_title": null,
+      "environment_declaration": {
+        "file": "paper.tex",
+        "start_line": 2,
+        "end_line": 2,
+        "sha256": "81d6d0098fd1b0d18bb6fb8edca1791668ca399e5a6b270e57c41c31e4d2a855"
+      },
       "proof_required": true,
       "label": "lem:growing-max",
       "statement": {
@@ -46,6 +54,14 @@
     {
       "id": "thm:main",
       "environment": "theorem",
+      "semantic_kind": "theorem",
+      "statement_title": null,
+      "environment_declaration": {
+        "file": "paper.tex",
+        "start_line": 3,
+        "end_line": 3,
+        "sha256": "2e4c70b4297ea318d08510e245bc03f7cd327c5c51272a2aa5490452ff448be8"
+      },
       "proof_required": true,
       "label": "thm:main",
       "statement": {

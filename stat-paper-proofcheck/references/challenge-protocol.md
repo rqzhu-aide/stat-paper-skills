@@ -1,142 +1,182 @@
-# Independent Challenge Protocol
+# Independent Verification Protocol
 
-This file is the sole semantic authority for proofcheck challenger selection,
-blinding, evidence, reconciliation, and artifact binding. Reporting projects
-these records but does not redefine them.
+Every unit in `audit_scope.in_scope_units` needs a fresh independent check.
+`critical_units` controls priority, never coverage. The challenger reads this
+protocol and its exact packet, without the primary reasoning or conversation.
+Use `fresh_context_same_model`, `different_model`, or `independent_human` as
+the declared independence level. For an S0 issue, prefer another model or a
+human when available. These declarations do not prove runtime independence.
 
-## Select the effective-critical set
+## Build the blinded packet
 
-The effective-critical set is the union of:
-
-- manifest-declared critical units (every target unit must be declared
-  critical);
-- every in-scope unit affected by an open, deferred, or resolved load-bearing
-  S0 or S1 issue, including a historical required challenge retained after
-  repair; and
-- when the manifest sets `audit_scope.verified_challenge_sample_rate` to a
-  finite number in (0, 1], a deterministic sample drawn from all in-scope
-  units: score each as sha256 of `<source_snapshot_sha256>:<unit_id>` and take
-  the exact ceiling of rate times the in-scope count with the lowest scores.
-  Membership is a pure function of the source snapshot and the in-scope set,
-  so the sample is reproducible, identical at every computation site, and
-  cannot be steered by editing critical declarations or issue records; units
-  the sample shares with the other two branches are already required, so the
-  overlap costs nothing. Set a nonzero rate (0.2 is a reasonable default) for
-  a Full audit so that units the primary checker marked verified without
-  incident still receive independent re-derivation; a unit wrongly marked
-  verified never promotes itself through an issue.
-
-For each unit, set covered_issue_ids to the exact sorted triggering issue set.
-Use an empty list only when the unit is critical solely by manifest declaration
-or sampling. A resolved severe issue remains a trigger for the fresh
-post-repair challenge.
-
-## Build a blinded packet
-
-Start the challenger from a fresh context and generate:
+The coordinator first passes the
+[primary readiness checkpoint](issues-and-repairs.md#primary-readiness-before-independent-dispatch).
+Write the complete blinded packet outside the audit root:
 
     python "<skill-root>/scripts/proofcheck.py" packet --root "<audit-root>" --unit-id <unit-id> --mode challenge --output "<challenge-packet.json>"
 
-The packet must contain the current source-snapshot identity, exact locked
-source, normalized obligation, unit inventory, direct dependency contracts,
-relevant downstream uses, neutral issue triggers, and all risk aspects. Exact
-line number and text remain visible. Enclosing span hashes, source-member file
-hashes, source snapshot, and semantic context hashes retain traceability;
-redundant per-line hashes are not model-visible.
+It contains the locked statement and proof, proposed normalized obligation,
+complete direct prerequisite contracts, relevant later uses, neutral issue
+targets, and risk aspects. Internal contracts include resolved applicability,
+locked statement and conclusion excerpts, and relevant context; repeated uses
+share one contract. A contract hash alone is not prerequisite evidence.
 
-Each issue trigger contains only its ID, severity, structured target_contract,
-target_contract_sha256, and neutral propagation evidence. Do not expose the
-primary reasoning, steps, finding narrative, summary, verdict, repair proposal,
-report, unrelated ledger, or prior conversation.
+Primary normalization verdicts and their rationale are excluded, together
+with primary severity, compatibility judgments, proof verdicts, finding prose, and
+repairs. Independently compare the proposed obligation with the exact source,
+then check each conclusion, its premises, prerequisite applicability, material
+side conditions, and adversarial cases. Read separately any external source
+evidence named by the packet when needed for that application. Text sources
+appear as complete locked excerpts beside the authored contract and hypothesis
+mapping. Compare the mapping with the actual source, including inherited
+conditions, rather than assuming that the transcription is complete. For PDF
+evidence, inspect the hash-locked document at its recorded locator. Unavailable
+essential theorem text or an omitted source hypothesis leaves that application
+unresolved until it has been inspected and mapped.
 
-For a historical challenge whose old downstream path was retired, reconstruct
-the sealed prior dependency registry. Expose only the neutral retired edges
-that cut a prior root-to-unit path, the exact neutral current route when one
-exists, and current retirement anchors. Record explicitly when no current
-structural route exists. Do not expose archived statuses, compatibility
-verdicts, or issue backlinks.
+## Preserve the first response before reconciliation
 
-Source-locked code, configuration, and other valid evidence outside the LaTeX
-snapshot must be projected as portable names, exact ranges, hashes, and lines,
-without host-specific paths.
+New audits use `protocol.challenge_contract_version: 3`. Write a response
+outside the audit root, assessing exactly every packet conclusion. This small
+example illustrates the shape; substitute the actual conclusion and reason:
 
-## Perform the challenge
+```json
+{
+  "response_schema_version": 2,
+  "unit_id": "lem:example",
+  "independence_level": "fresh_context_same_model",
+  "challenger_verdict": "verified",
+  "conclusions": [
+    {
+      "conclusion_id": "C001",
+      "verdict": "verified",
+      "argument_status": "valid",
+      "statement_status": "established",
+      "decisive_reason": "Reflexivity proves x=x for the arbitrary real x introduced in the statement.",
+      "source_refs": [
+        {"packet_pointer": "/source/proof", "start_line": 5, "end_line": 5}
+      ]
+    }
+  ],
+  "issue_assessments": []
+}
+```
 
-A same-context reread is not independent. Record one of:
+Use the unit-status vocabulary for each `verdict`; `not_checked` cannot
+complete a challenge. The unit verdict is the weakest conclusion verdict in
+the existing order: incorrect, gap, unclear, conditionally verified, verified.
+Record `argument_status` separately as `valid`, `conditional`, `gap`, `invalid`,
+or `unclear`, and `statement_status` as `established`, `conditional`, `refuted`,
+`not_established`, or `unclear`. An invalid written argument need not refute its
+statement. Do not infer either dimension from the aggregate verdict or prose.
+Each `source_refs` pointer must select a canonical locked excerpt under
+`/source`, `/dependencies`, or `/issue_triggers`; the selected range must lie
+inside its authenticated lines. Operational notes, even with copied `lines`,
+are not source evidence. Use `/source/statement`, `/source/proof`, or an exact
+prerequisite excerpt pointer as appropriate.
 
-- fresh_context_same_model;
-- different_model;
-- independent_human.
+Ordinary units have no issue assessments. When neutral issue targets appear,
+assess exactly those IDs with `issue_id`, `assessment` (`confirmed`,
+`not_confirmed`, or `unclear`), `target_assessment`, and `downstream_assessment`.
+Do not supply machine-owned target hashes. Explain the target and consequence
+independently, including repaired or historically retained material issues.
 
-For a challenge covering an S0 issue, prefer `different_model` or
-`independent_human` when available: same-model blind spots correlate exactly
-where a fatal finding matters most. `fresh_context_same_model` remains valid;
-the recorded independence level discloses the limitation in the final report.
+Use explicit LaTeX delimiters for formulas in new mathematical reasons:
+`$...$` or `\(...\)` inline, and `$$...$$` or `\[...\]` for display math.
+Escape backslashes in JSON strings, for example
+`"$\\Pr(A_n) \\to 0$"`. Preserve the exact mathematical content.
 
-One fresh challenger pass should assess all triggering issues for one unit.
-Closely related units may share one call only when every complete packet fits
-and the output gives each unit a separate verdict, assessment set, and
-disagreement list. The challenger need not duplicate the full atomic ledger.
+A generic assertion that every step was checked cannot replace the
+conclusion-specific reason and exact source references. Structural validation
+does not grade the truth of that reason. Keep the account concise; a second
+atomic ledger is unnecessary.
 
-The challenger must:
+Before inspecting the primary judgment or reconciling disagreements, run:
 
-- inspect the exact source and obligation in order;
-- test the primary proof target without seeing the primary answer;
-- check all direct dependencies and relevant later uses;
-- apply all eight risk aspects;
-- assess every neutral issue target and its downstream relevance;
-- give a separate unit verdict and source-anchored disagreement list.
+    python "<skill-root>/scripts/proofcheck.py" record-challenge --root "<audit-root>" --unit-id <unit-id> --packet "<challenge-packet.json>" --response "<initial-response.json>"
 
-If a challenger is unavailable, disclose the audit as single-pass and do not
-claim independent confirmation.
+The command preserves the exact consumed packet and response in a
+deterministically named `initial-*.json` artifact under `audit/05_adversarial/`.
+It also captures the existing primary conclusion judgments and support before
+reconciliation, outside the blinded packet. It binds that artifact's exact hash into the ledger before publication, and
+refuses an existing destination. Never edit the initial artifact or remove its
+ledger reference. A new
+source or relevant contract requires a fresh check under its new context;
+the earlier response and its bound reconciliation remain historical evidence
+linked through the new initial artifact's `superseded_review`. Routine progress metadata
+does not require another check. Original packet identity is preserved even
+when reconciliation changes the primary judgment.
+If reconciliation recompiles the same unit, retain the ledger's exact
+`independent_check.initial_response` reference along with the initial artifact.
+Do not reset that historical evidence with the new primary verdict.
 
-## Record exact challenge evidence
+## Reconcile and bind
 
-Record:
+After fixing the first response, compare it with the primary result. Record
+source-anchored disagreements, their substantive resolution, and the explicit
+`reconciled_verdict` in the ledger's `independent_check`. The reconciled verdict
+must equal the final primary unit judgment. Revise and recheck the primary
+ledger first when the resolution changes its mathematics.
 
-- source_snapshot_sha256;
-- challenged_ledger_sha256, computed from the canonical ledger without
-  independent_check;
-- challenge_context_sha256, copied from the exact challenge packet
-  context_binding_sha256;
-- challenge_artifact_sha256;
-- generated_utc;
-- independence level;
-- primary, challenger, and reconciled verdicts;
-- ordered disagreements and resolution;
-- exact artifact path;
-- exact covered_issue_ids.
+For contract 3, author one JSON file outside the audit root with exactly
+`reconciliation_schema_version: 1`, `unit_id`, `status`, `reconciled_verdict`,
+`conclusions`, `disagreements`, `resolution`, and `issue_assessments`.
+The conclusion rows use the response-schema-2 fields above, including each
+reviewer's final `decisive_reason` and exact `source_refs`. Cover every conclusion
+and issue target once. Do not fill missing judgments by copying a default verdict.
 
-For every covered issue, record one issue_assessments object containing exactly:
+    python "<skill-root>/scripts/proofcheck.py" submit-reconciliation --root "<audit-root>" --review "<reconciliation.json>"
 
-- issue_id;
-- target_contract_sha256;
-- assessment, using only confirmed, not_confirmed, or unclear;
-- substantive target_assessment;
-- substantive downstream_assessment.
+Use `agreed` with no disagreements and empty resolution; `resolved` with explicit
+disagreements and a substantive resolution. Both require each submitted judgment
+to match the rechecked primary ledger. For `unresolved`, record the disagreement,
+use `reconciled_verdict: not_checked` and empty resolution, and retain explicit
+provisional conclusion judgments. It records an unfinished check, never FINAL.
+Submission derives the narrative, locations and binding fields, then publishes
+artifact and ledger together. It preserves the first response and primary
+judgments, retains prior reconciliation artifacts, rejects changed inputs, and
+returns unchanged on an identical successful retry.
 
-The assessment ID set must equal covered_issue_ids. Both lists are empty for a
-manifest-only critical unit. Listing an issue ID without assessing its exact
-target and downstream relevance is not coverage.
+Manual artifacts and older contracts retain
+[CHALLENGE_ARTIFACT.md](../assets/templates/CHALLENGE_ARTIFACT.md) followed by
+`bind-challenge --root "<audit-root>" --unit-id <unit-id>`. Replace its scaffold
+notice and author the actual reconciliation fields. The preserved first response
+supplies independence level and challenger verdict on both routes.
 
-Fix the blinded artifact and challenger record before reconciliation. An
-agreed challenge has identical challenger and reconciled verdicts equal to the
-final unit status, with no disagreements. A resolved challenge has a reconciled
-verdict equal to the final unit status, at least one recorded disagreement, and
-a substantive resolution.
+Binding reads the preserved initial response, checks its current mathematical
+inputs and already recorded hash, validates reconciliation, and derives final
+coverage, target hashes, ledger and artifact hashes, and time. A
+changed initial artifact cannot be restamped. Binding and full freshness checks
+compare each initial conclusion ID, support verdict, argument status, and
+statement status with the final primary result. Any changed judgment or primary
+support requires explicit disagreement and substantive resolution; equal
+aggregate verdicts do not hide opposite conclusions. If issue assessments change
+during reconciliation, record the disagreement and its resolution. An agreed
+check has identical challenger, reconciled, and final primary unit verdicts,
+with no disagreements, and equal recorded per-conclusion judgment dimensions.
 
-## Bind the artifact
+The final artifact and ledger update use the existing transaction lock.
+Do not edit them while binding runs. Finalization checks every in-scope unit,
+the initial evidence required by its contract, exact issue coverage, current
+packet context, final artifact binding, and reconciliation. An unavailable
+challenger leaves the required audit NONFINAL.
 
-After the blinded narrative, verdict, and assessment rows are fixed, run:
+## Historical compatibility
 
-    python "<skill-root>/scripts/proofcheck.py" bind-challenge --root "<audit-root>" --unit-id <unit-id>
+When separate reviewer proof support is claimed, preserve the ordinary blind
+response first, then follow the optional
+[statement-supplement review](statement-support.md#preserve-an-actual-supplemental-review).
+Its immutable acceptance supplements this check; it never replaces it or
+rewrites the initial written-proof judgment.
 
-The command inserts or replaces exactly one proofcheck-challenge-binding-v1
-JSON block, verifies current packet semantics, and writes the artifact and
-ledger transactionally. The binding block's unit ID, context hash, challenger
-verdict, and canonical issue assessments must equal the ledger. Do not hand-edit
-it. Rerun the command whenever the artifact or assessment changes.
-
-Finalization reconstructs the challenge packet and rejects a stale semantic
-context, stale target-contract hash, missing or extra issue, stale ledger or
-artifact hash, invalid independence level, or unresolved reconciliation.
+An absent challenge-contract field, or version 1, identifies the historical
+protocol without preserved initial responses. Version 2 uses response schema 1
+and records a per-conclusion verdict, but no separate statement judgment. Read
+that missing dimension as not recorded; do not retroactively fill it in.
+Presentation upgrades do not manufacture first responses or certify independence.
+To adopt the new contract on a repair working copy, explicitly set
+`protocol.challenge_contract_version` to `3`, renew each affected initial
+response using schema 2, reconcile, and finalize through the ordinary workflow.
+Preserve old references so renewed records can link their history. The upgrade
+does not convert a historical judgment into a fresh review. Declared reviewer
+or context identities describe available provenance, not runtime attestation.

@@ -2,6 +2,7 @@
 /examples/
 /.agents/
 /.codex/
+/archived/
 
 __pycache__/
 *.py[cod]

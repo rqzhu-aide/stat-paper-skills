@@ -1,0 +1,32 @@
+[
+  {
+    "check": "metadata",
+    "exit_code": 0,
+    "seconds": 0.10359300000709482,
+    "log": "metadata.txt",
+    "command": [
+      "C:\\Users\\zrq\\AppData\\Local\\Python\\pythoncore-3.14-64\\python.exe",
+      "-X",
+      "utf8",
+      "-B",
+      "C:\\Users\\zrq\\.codex\\skills\\.system\\skill-creator\\scripts\\quick_validate.py",
+      "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\archived\\proofcheck\\release-2026-09-10\\stat-paper-proofcheck"
+    ]
+  },
+  {
+    "check": "staged-delivery",
+    "exit_code": 0,
+    "seconds": 1.2038795000116806,
+    "log": "staged-delivery.txt",
+    "command": [
+      "C:\\Users\\zrq\\AppData\\Local\\Python\\pythoncore-3.14-64\\python.exe",
+      "-X",
+      "utf8",
+      "-B",
+      "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\archived\\proofcheck\\release-2026-09-10\\stat-paper-proofcheck\\scripts\\proofcheck.py",
+      "delivery-check",
+      "--root",
+      "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\archived\\proofcheck\\release-2026-09-10\\stat-paper-proofcheck\\assets\\reference-audit\\proofcheck-audit"
+    ]
+  }
+]

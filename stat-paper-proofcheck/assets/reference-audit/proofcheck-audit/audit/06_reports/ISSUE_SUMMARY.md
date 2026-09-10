@@ -22,4 +22,4 @@ This file is generated from `ISSUE_LOG.json`. Do not edit counts here.
 
 | Issue | Severity | Load-bearing | Confidence | Lifecycle | Finding | Invalidation kind | Origin ref | Contract refs | Affected results |
 |---|---|---|---|---|---|---|---|---|---|
-| I-001 | S1 | True | high | open | defect | statement_refuted | {"kind": "ledger_move", "unit_id": "lem:growing-max", "step_id": "S004", "move_id": "M001"} | [{"kind": "conclusion", "unit_id": "lem:growing-max", "conclusion_id": "C001"}, {"kind": "obligation_pointer", "unit_id": "lem:growing-max", "pointer": "/hypotheses/0"}, {"kind"... | lem:growing-max, thm:main |
+| I-001 | S1 | True | high | open | defect | statement_refuted | {"kind": "ledger_move", "unit_id": "lem:growing-max", "step_id": "S004", "move_id": "M001"} | [{"kind": "conclusion", "unit_id": "lem:growing-max", "conclusion_id": "C001"}, {"kind": "conclusion", "unit_id": "thm:main", "conclusion_id": "C001"}, {"kind": "obligation_poin... | lem:growing-max, thm:main |
