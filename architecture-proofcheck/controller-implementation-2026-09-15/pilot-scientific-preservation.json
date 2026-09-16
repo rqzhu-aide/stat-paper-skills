@@ -1,0 +1,12 @@
+{
+  "scientific_records_identical_to_recovery": true,
+  "record_count": 84,
+  "mathematical_revision": 31,
+  "theorem_composition_outcome": "supported",
+  "theorem_composition_conditions": [
+    "Take the exact stated Lemma 1 conclusion M_n -> 0 in probability as a premise for this same array."
+  ],
+  "statement_refutation_count": 2,
+  "preserved_pending_original_responses": 2,
+  "accepted_responses_with_verified_original_bytes": 4
+}

@@ -1,8 +1,8 @@
 ---
 name: stat-paper-proofcheck
 metadata:
-  version: "1.5"
-description: Rigorous line-by-line proof audit for statistics, probability, machine-learning theory, econometrics, biostatistics, mathematics, and theoretical computer science, with mandatory source-line coverage, atomic inference checking, dependency closure, instantiated counterexamples, independent checks of every in-scope unit, and evidence-backed final reports. This is heavyweight, multi-session work. Run it only when the user explicitly invokes /stat-paper-proofcheck (Codex, $stat-paper-proofcheck) or asks by name for a formal proofcheck audit. Never start it because a conversation merely involves a proof; answer casual proof questions directly and mention the command instead. Diagnose rather than silently repairing proofs.
+  version: "2.0.0"
+description: Rigorous proof audit for mathematical and statistical papers, with source coverage, atomic inference checking, dependency closure, instantiated counterexamples, independent review and evidence-backed reports. This is heavyweight, multi-session work. Run it only when the user explicitly invokes /stat-paper-proofcheck (Codex, $stat-paper-proofcheck) or asks by name for a formal proofcheck audit. Answer casual proof questions directly and mention the command. Diagnose rather than silently repairing proofs.
 ---
 
 # Statistical Paper Proofcheck
@@ -14,6 +14,14 @@ formal proofcheck request by name; otherwise confirm first. Active workers read
 only their assigned reference and packet.
 Codex also uses `allow_implicit_invocation: false`; Claude Code and Cowork use
 `{"skillOverrides": {"stat-paper-proofcheck": "user-invocable-only"}}`.
+
+## Choose the stored workflow first
+
+For new audits or `AUDIT.db`, follow [database-audit.md](references/database-audit.md).
+Coordinators use [controller-workflow.md](references/controller-workflow.md); workers use
+[checker-protocol.md](references/checker-protocol.md). The model owns graph and reasoning;
+the controller prepares and saves work.
+The role table and workflow below apply only to v1.5 folders, never database assignments.
 
 ## Core standard
 
@@ -58,7 +66,7 @@ Correctness questions require Focused or Full. For incomplete source, give a
 bounded NONFINAL assessment naming
 unavailable dependencies. `critical_units` controls priority only.
 
-## Nonnegotiable invariants
+## Legacy workflow invariants
 
 - JSON is canonical; HTML and optional Markdown are generated views.
 - Preserve exact source, dependency, issue, and checked-scope identity.
@@ -71,7 +79,7 @@ unavailable dependencies. `critical_units` controls priority only.
 - Lighter models may draft transcription fields, not mathematical judgments.
 - Reuse work only while dependency-closed semantic inputs remain current.
 
-## Workflow
+## Legacy workflow
 
 ### 1. Establish environment, scope, and source
 

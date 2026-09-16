@@ -1,0 +1,111 @@
+............................................................................................................................................................................................................................F................................................................................................................F....................F.......................................................s...................................................................................................................................................................................F..........................F......................................................................................................................................................................................................................................................................................................................................F........................................................................................F........................................................................
+======================================================================
+FAIL: test_the_command_surface_is_exactly_the_documented_set (test_cli.TestCommandSurface.test_the_command_surface_is_exactly_the_documented_set)
+No command appears or disappears from the CLI without this lane noticing.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\zrq\projects\skills\stat-paper-skills\tests\new_format\test_cli.py", line 487, in test_the_command_surface_is_exactly_the_documented_set
+    self.assertEqual({name for name, _ in self._leaves(build_parser())}, LEAF_COMMANDS)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Items in the first set but not the second:
+'work inspect'
+'migrate'
+'work list'
+'work submit'
+'work prepare'
+
+======================================================================
+FAIL: test_head_snapshot_mirrors_the_database (test_export_migration.ExportSnapshotTest.test_head_snapshot_mirrors_the_database)
+The default export is the head revision and its record list equals records_at(head).
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\zrq\projects\skills\stat-paper-skills\tests\new_format\test_export_migration.py", line 158, in test_head_snapshot_mirrors_the_database
+    self.assertEqual(snapshot["provenance"]["projection_version"], 1)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 2 != 1
+
+======================================================================
+FAIL: test_both_items_assess_red (test_export_migration.LegacyAuditImportTest.test_both_items_assess_red)
+The refuted legacy verdicts derive a red defect assessment for both items and both arguments.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\zrq\projects\skills\stat-paper-skills\tests\new_format\test_export_migration.py", line 885, in test_both_items_assess_red
+    self.assertEqual(derived["problems"], [])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Lists differ: ['register establishment for items:lem-gro[146 chars]oup'] != []
+
+First list contains 2 additional elements.
+First extra element 0:
+'register establishment for items:lem-growing-max: no exact registered proof route or local group'
+
++ []
+- ['register establishment for items:lem-growing-max: no exact registered proof '
+-  'route or local group',
+-  'register establishment for items:thm-main: no exact registered proof route '
+-  'or local group']
+
+======================================================================
+FAIL: test_the_released_export_carries_the_same_revision_and_contract (test_publication.ReleaseCommandTests.test_the_released_export_carries_the_same_revision_and_contract)
+export.json is the self-describing archive of the released revision, not a loose dump.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\zrq\projects\skills\stat-paper-skills\tests\new_format\test_publication.py", line 730, in test_the_released_export_carries_the_same_revision_and_contract
+    self.assertEqual((3, 2, payload["revision"], payload["paper_id"]),
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                     (export["contract_version"], export["storage_format"], export["revision"],
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                      export["paper_id"]))
+                      ^^^^^^^^^^^^^^^^^^^^
+AssertionError: Tuples differ: (3, 2, 13, 'pap_9d48556e052145d49179a9cb8ceb49b4') != (3, 3, 13, 'pap_9d48556e052145d49179a9cb8ceb49b4')
+
+First differing element 1:
+2
+3
+
+- (3, 2, 13, 'pap_9d48556e052145d49179a9cb8ceb49b4')
+?     ^
+
++ (3, 3, 13, 'pap_9d48556e052145d49179a9cb8ceb49b4')
+?     ^
+
+
+======================================================================
+FAIL: test_status_defaults_to_the_most_recently_registered_audit (test_queries.StatusTests.test_status_defaults_to_the_most_recently_registered_audit)
+With two audits the newest is the default; an explicit audit_id still reports the older one.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\zrq\projects\skills\stat-paper-skills\tests\new_format\test_queries.py", line 405, in test_status_defaults_to_the_most_recently_registered_audit
+    self.assertEqual(second["progress"]["required_obligations"], 3)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 5 != 3
+
+======================================================================
+FAIL: test_every_database_command_offers_run_id (test_telemetry.CommandInstrumentationTests.test_every_database_command_offers_run_id)
+The db-taking commands are exactly the known set and each accepts --run-id.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\zrq\projects\skills\stat-paper-skills\tests\new_format\test_telemetry.py", line 439, in test_every_database_command_offers_run_id
+    self.assertEqual(with_db, DB_COMMANDS)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'telemetry record', 'review map', 'statu[336 chars]iew'} != frozenset({'validate', 'review map', 'rev[276 chars]rd'})
+
+======================================================================
+FAIL: test_the_milestone_slice_runs_end_to_end (test_vertical_slice.TestVerticalSlice.test_the_milestone_slice_runs_end_to_end)
+Every step of handoff 11's first milestone lands, in order, on one database.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\zrq\projects\skills\stat-paper-skills\tests\new_format\test_vertical_slice.py", line 570, in test_the_milestone_slice_runs_end_to_end
+    self.assertEqual(reconciled["independent"],
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                     {"items:itm_lem": "complete", "items:itm_thm": "complete", "items:itm_asm": "not_required"})
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'items:itm_asm': 'not_required', 'items:itm_hidden':[69 chars]ete'} != {'items:itm_lem': 'complete', 'items:itm_thm': 'compl[33 chars]red'}
+  {'items:itm_asm': 'not_required',
+-  'items:itm_hidden': 'not_required',
+   'items:itm_lem': 'complete',
+   'items:itm_thm': 'complete'}
+
+----------------------------------------------------------------------
+Ran 1106 tests in 244.171s
+
+FAILED (failures=7, skipped=1)

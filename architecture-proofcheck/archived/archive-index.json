@@ -1,0 +1,339 @@
+{
+  "created_utc": "2026-09-13T01:25:57.9589041Z",
+  "original_root": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck",
+  "archive_root": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12",
+  "status": "complete",
+  "entries": [
+    {
+      "name": "bookkeeping-revision-2026-09-09",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\bookkeeping-revision-2026-09-09",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\bookkeeping-revision-2026-09-09",
+      "sha256": null
+    },
+    {
+      "name": "drl-case-review-2026-09-12",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\drl-case-review-2026-09-12",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\drl-case-review-2026-09-12",
+      "sha256": null
+    },
+    {
+      "name": "efficiency-revision-2026-09-07",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\efficiency-revision-2026-09-07",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\efficiency-revision-2026-09-07",
+      "sha256": null
+    },
+    {
+      "name": "evaluation-pilot-2026-09-07",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\evaluation-pilot-2026-09-07",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\evaluation-pilot-2026-09-07",
+      "sha256": null
+    },
+    {
+      "name": "followup-audit",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\followup-audit",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\followup-audit",
+      "sha256": null
+    },
+    {
+      "name": "graph-overview-plan-2026-09-09",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\graph-overview-plan-2026-09-09",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\graph-overview-plan-2026-09-09",
+      "sha256": null
+    },
+    {
+      "name": "graph-overview-revision-2026-09-09",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\graph-overview-revision-2026-09-09",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\graph-overview-revision-2026-09-09",
+      "sha256": null
+    },
+    {
+      "name": "graph-style-plan-2026-09-09",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\graph-style-plan-2026-09-09",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\graph-style-plan-2026-09-09",
+      "sha256": null
+    },
+    {
+      "name": "graph-style-revision-2026-09-09",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\graph-style-revision-2026-09-09",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\graph-style-revision-2026-09-09",
+      "sha256": null
+    },
+    {
+      "name": "implementation-audit",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\implementation-audit",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\implementation-audit",
+      "sha256": null
+    },
+    {
+      "name": "implementation-evaluation",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\implementation-evaluation",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\implementation-evaluation",
+      "sha256": null
+    },
+    {
+      "name": "implementation-preview",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\implementation-preview",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\implementation-preview",
+      "sha256": null
+    },
+    {
+      "name": "implementation-runs",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\implementation-runs",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\implementation-runs",
+      "sha256": null
+    },
+    {
+      "name": "item-graph-design-2026-09-12",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\item-graph-design-2026-09-12",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\item-graph-design-2026-09-12",
+      "sha256": null
+    },
+    {
+      "name": "maintenance-review-2026-09-09",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\maintenance-review-2026-09-09",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\maintenance-review-2026-09-09",
+      "sha256": null
+    },
+    {
+      "name": "maintenance-revision-2026-09-09",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\maintenance-revision-2026-09-09",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\maintenance-revision-2026-09-09",
+      "sha256": null
+    },
+    {
+      "name": "math-rendering-update",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\math-rendering-update",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\math-rendering-update",
+      "sha256": null
+    },
+    {
+      "name": "multi-turn-audit-2026-09-10",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\multi-turn-audit-2026-09-10",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\multi-turn-audit-2026-09-10",
+      "sha256": null
+    },
+    {
+      "name": "package-cleanup-2026-09-10",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\package-cleanup-2026-09-10",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\package-cleanup-2026-09-10",
+      "sha256": null
+    },
+    {
+      "name": "polish-2026-09-07",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\polish-2026-09-07",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\polish-2026-09-07",
+      "sha256": null
+    },
+    {
+      "name": "proof-graph",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\proof-graph",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\proof-graph",
+      "sha256": null
+    },
+    {
+      "name": "real-paper-pilot-2026-09-07",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\real-paper-pilot-2026-09-07",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\real-paper-pilot-2026-09-07",
+      "sha256": null
+    },
+    {
+      "name": "real-paper-replay-2026-09-07",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\real-paper-replay-2026-09-07",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\real-paper-replay-2026-09-07",
+      "sha256": null
+    },
+    {
+      "name": "reference",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\reference",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\reference",
+      "sha256": null
+    },
+    {
+      "name": "release-readiness-2026-09-08",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\release-readiness-2026-09-08",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\release-readiness-2026-09-08",
+      "sha256": null
+    },
+    {
+      "name": "source-layout-revision-2026-09-08",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\source-layout-revision-2026-09-08",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\source-layout-revision-2026-09-08",
+      "sha256": null
+    },
+    {
+      "name": "srf-real-case-audit-2026-09-08",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\srf-real-case-audit-2026-09-08",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\srf-real-case-audit-2026-09-08",
+      "sha256": null
+    },
+    {
+      "name": "srf-revision-2026-09-08",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\srf-revision-2026-09-08",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\srf-revision-2026-09-08",
+      "sha256": null
+    },
+    {
+      "name": "summary-revision-2026-09-10",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\summary-revision-2026-09-10",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\summary-revision-2026-09-10",
+      "sha256": null
+    },
+    {
+      "name": "surgical-repairs-2026-09-08",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\surgical-repairs-2026-09-08",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\surgical-repairs-2026-09-08",
+      "sha256": null
+    },
+    {
+      "name": "tightening-release-2026-09-10",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\tightening-release-2026-09-10",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\tightening-release-2026-09-10",
+      "sha256": null
+    },
+    {
+      "name": "usability-audit-2026-09-07",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\usability-audit-2026-09-07",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\usability-audit-2026-09-07",
+      "sha256": null
+    },
+    {
+      "name": "usability-repairs-2026-09-07",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\usability-repairs-2026-09-07",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\usability-repairs-2026-09-07",
+      "sha256": null
+    },
+    {
+      "name": "use-case-review-2026-09-09",
+      "directory": true,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\use-case-review-2026-09-09",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\use-case-review-2026-09-09",
+      "sha256": null
+    },
+    {
+      "name": "architecture.md",
+      "directory": false,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\architecture.md",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\architecture.md",
+      "sha256": "7228CA3A89845505209EC537354B173F22AD9C8078A924FD92471CC804C3DC63"
+    },
+    {
+      "name": "audit-baseline.md",
+      "directory": false,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\audit-baseline.md",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\audit-baseline.md",
+      "sha256": "564B6A36BCEF787F1595150E77372B8DE85FA1C50E496A2CB0F23921FDC74E4B"
+    },
+    {
+      "name": "evaluation-plan.md",
+      "directory": false,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\evaluation-plan.md",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\evaluation-plan.md",
+      "sha256": "FE7001C244B36D840CDD9163108D5A156AD394731A7E6B2B410F4ACD26D8124E"
+    },
+    {
+      "name": "implementation-decisions.md",
+      "directory": false,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\implementation-decisions.md",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\implementation-decisions.md",
+      "sha256": "3D825E32A44FED5484DDBD6673BC29CA615ED852090B8460F4D44070B467D014"
+    },
+    {
+      "name": "implementation.md",
+      "directory": false,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\implementation.md",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\implementation.md",
+      "sha256": "5AF25DA3564D59F2EB0876531C7A3FABD04E0538FAE202C763BD6B8EC3BDFB5F"
+    },
+    {
+      "name": "improvement-plan.md",
+      "directory": false,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\improvement-plan.md",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\improvement-plan.md",
+      "sha256": "D1E942D3E7A1C73AEE2D6EA8C081CF291F0CF2931FED6DB543004746E24D467E"
+    },
+    {
+      "name": "index.html",
+      "directory": false,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\index.html",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\index.html",
+      "sha256": "F8A8939D1D4EBB1A781668B3F6D27366EA1FFAFD05C61B97A777FE9F6611B8F6"
+    },
+    {
+      "name": "proof-graph-design.md",
+      "directory": false,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\proof-graph-design.md",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\proof-graph-design.md",
+      "sha256": "19E06DCE51A69194D8878636026803482DBC63FAC5C76C5DC49B979C5293602B"
+    },
+    {
+      "name": "prototype-review.md",
+      "directory": false,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\prototype-review.md",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\prototype-review.md",
+      "sha256": "A7954C0D50BB3963DF39654AA06514E904CBE06DD747E276D5A8F6FAB08D2FE1"
+    },
+    {
+      "name": "README.md",
+      "directory": false,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\README.md",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\README.md",
+      "sha256": "8D690548A7E03B09486159F1DE78F1C00A51E782FC4EB05516E73D689A4F1A24"
+    },
+    {
+      "name": "run_frozen_suite.py",
+      "directory": false,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\run_frozen_suite.py",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\run_frozen_suite.py",
+      "sha256": "ACC48730EF005D047A32E7F8836C5A6DAB2B53253BD09A64F4838A8B4DD4368B"
+    },
+    {
+      "name": "summary-revision-plan-2026-09-10.md",
+      "directory": false,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\summary-revision-plan-2026-09-10.md",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\summary-revision-plan-2026-09-10.md",
+      "sha256": "A2303FF82F7A7161CE812FB5088CB62C2062149B9DBDA1B8A6A38DBECCB7B51F"
+    },
+    {
+      "name": "tightening-audit-2026-09-10.md",
+      "directory": false,
+      "source": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\tightening-audit-2026-09-10.md",
+      "destination": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\architecture-proofcheck\\archived\\pre-item-graph-2026-09-12\\tightening-audit-2026-09-10.md",
+      "sha256": "42EA0F22841D84061176153A0AD1317C3F3BFCA89399EA4001E691EB3CA0ED8E"
+    }
+  ],
+  "verification": "All top-level paths checked; original top-level file hashes recorded. Nested historical contents are moved with their containing directories.",
+  "completed_utc": "2026-09-13T01:25:58.0969308Z"
+}

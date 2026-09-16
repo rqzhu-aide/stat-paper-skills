@@ -1,0 +1,11 @@
+{
+  "contract_version": 3,
+  "request_id": "req_example",
+  "packet_id": "pkt_example",
+  "rebase_packet_id": null,
+  "reviewer": "primary-example",
+  "qualification_id": null,
+  "exposure": null,
+  "exposure_note": ""
+}
+

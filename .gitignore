@@ -3,6 +3,11 @@
 /.agents/
 /.codex/
 /archived/
+/archify-proofs-overview/
+/tmp/
+/architecture-proofcheck/archived/pre-item-graph-2026-09-12/
+/architecture-proofcheck/controller-implementation-2026-09-15/input-manifest.json
+/architecture-proofcheck/controller-implementation-2026-09-15/pilot-evidence.zip
 
 __pycache__/
 *.py[cod]

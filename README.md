@@ -12,7 +12,7 @@ verification. The skills can be used independently or in sequence.
 |---|---|
 | `stat-paper-writing` | v1.2 |
 | `stat-paper-reviewer` | v1.2 |
-| `stat-paper-proofcheck` | v1.5 |
+| `stat-paper-proofcheck` | v2.0.0 |
 
 ## stat-paper-writing
 
@@ -33,18 +33,20 @@ Usage: `Use $stat-paper-reviewer to review this manuscript and identify the most
 
 ## stat-paper-proofcheck
 
-Use this skill by name for a rigorous proof audit. It locks the source, inventories theorems and assumptions, maps dependencies, checks every in-scope proof unit from prerequisites to dependents, independently verifies every unit, and produces a concise evidence-backed summary. Example: `Use $stat-paper-proofcheck to audit this theorem and its dependency closure line by line.`
+Use this skill by name for a rigorous, non-formal proof audit. Version 2.0 registers
+source-linked proof items and dependencies in a local database. The coordinator builds and
+refines the graph and makes scientific decisions. A small controller prepares bounded batches,
+validates structured responses, saves progress and recovers interrupted work.
 
-The HTML report begins with the overall finding, key issues, affected results,
-and recorded repair directions. Its paper overview groups theorems and lemmas
-by their manuscript identity, with detailed conclusions and source evidence
-available on demand. Unresolved findings remain distinct from confirmed defects,
-and each repair retains its own target, scientific cost, and verification status.
+The Archify reader shows major results and exposes intermediate reasoning and recorded checks
+through their connections. Local argument validity, upstream support and statement truth remain
+separate. Existing v1.5 audit folders retain their legacy workflow until explicitly imported.
 
-The current revision also tightens multi-file theorem identification, gives
-early diagnostics for inactive TeX material and selected chapter builds, and
-allows exact source lookup while review annotations are still unfinished.
-These changes preserve the existing proof and independent-review requirements.
+Example: `Use $stat-paper-proofcheck to audit this theorem and its dependency closure.`
+Start with the [database workflow](stat-paper-proofcheck/references/database-audit.md) and
+[coordinator instructions](stat-paper-proofcheck/references/controller-workflow.md).
+The [v2.0 release record](architecture-proofcheck/release-v2.0.md) contains validation evidence
+and remaining browser and large-paper evaluation limits.
 
 ### Install locally in Codex
 
@@ -94,8 +96,21 @@ For source preparation and supported proof layouts, see the
 A source-selection warning needs review before mathematical checking; a clean
 parser result does not certify that every proof is present or correct.
 
-The [release record](architecture-proofcheck/tightening-release-2026-09-10/STATUS.md)
-documents the current repairs and verification.
+### Validate the v2.0 database workflow
+
+The shared core is maintained in `shared/paper_core` and shipped identically in both skills.
+For a clean development checkout, clone the companion repository at its matching release tag:
+
+```text
+git clone --branch v2.0 https://github.com/rqzhu-aide/archify-proofs-overview.git archify-proofs-overview
+python -B tools/build_paper_core_bundles.py --check
+python -B -m unittest discover -s tests/new_format
+python -B -m unittest discover -s archify-proofs-overview/tests
+python -B -m unittest discover -s tools -p test_install_proofcheck.py
+```
+
+Use the shared Python and Node installations. The separate companion checkout is needed for
+cross-package development checks; each installed skill contains its own complete runtime.
 
 ### Preparing a versioned release
 

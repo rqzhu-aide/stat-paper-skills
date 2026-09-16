@@ -1,0 +1,41 @@
+{
+ "bundles": {
+  "archify-proofs-overview": {
+   "changed": [],
+   "constants_match": true,
+   "exists": true,
+   "file_count": 40,
+   "manifest_bytes": "46fa9d83563defd3a9beacfb4e68db638aef3648c18155e275ccff759289c5eb",
+   "matches_source": true,
+   "missing": [],
+   "ok": true,
+   "path": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\archify-proofs-overview\\scripts\\paper_core",
+   "present": true,
+   "source_identity": "dad859214fc02eaee4a4fe9693fafd896aa9f87a542ab7a48d8dd097375a3310",
+   "unexpected": []
+  },
+  "stat-paper-proofcheck": {
+   "changed": [],
+   "constants_match": true,
+   "exists": true,
+   "file_count": 40,
+   "manifest_bytes": "46fa9d83563defd3a9beacfb4e68db638aef3648c18155e275ccff759289c5eb",
+   "matches_source": true,
+   "missing": [],
+   "ok": true,
+   "path": "C:\\Users\\zrq\\projects\\skills\\stat-paper-skills\\stat-paper-proofcheck\\scripts\\paper_core",
+   "present": true,
+   "source_identity": "dad859214fc02eaee4a4fe9693fafd896aa9f87a542ab7a48d8dd097375a3310",
+   "unexpected": []
+  }
+ },
+ "bundles_identical": true,
+ "command": "check",
+ "ok": true,
+ "source_identity": "dad859214fc02eaee4a4fe9693fafd896aa9f87a542ab7a48d8dd097375a3310",
+ "wrappers": {
+  "archify-proofs-overview": "ff93ac6e5a0b655aeffd3762ac9789868af84770c4933830e82ab8856d4bf7f1",
+  "stat-paper-proofcheck": "ff93ac6e5a0b655aeffd3762ac9789868af84770c4933830e82ab8856d4bf7f1"
+ },
+ "wrappers_identical": true
+}

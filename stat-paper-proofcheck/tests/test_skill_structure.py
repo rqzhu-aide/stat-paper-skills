@@ -43,15 +43,21 @@ class SkillStructureTests(unittest.TestCase):
         self.assertIsNotNone(report_match)
         self.assertIsNotNone(readme_match)
 
-        versions = {
+        release_versions = {
             "SKILL.md": skill_match.group(1),
+            "README.md": readme_match.group(1),
+            "bundled core": json.loads((SKILL_ROOT / "scripts" / "paper_core" /
+                "bundle-manifest.json").read_text(encoding="utf-8"))["core_version"],
+        }
+        self.assertEqual({"2.0.0"}, set(release_versions.values()), release_versions)
+        # The retained v1.5 runtime and its record templates keep their own identity.
+        versions = {
             "proofcheck.py": script_match.group(1),
             "record examples": examples["skill_version"],
             "manifest example": examples[
                 "manifest_report_deliverables_example"
             ]["protocol"]["skill_version"],
             "final report template": report_match.group(1),
-            "README.md": readme_match.group(1),
         }
         self.assertEqual({"1.5"}, set(versions.values()), versions)
 
@@ -93,11 +99,14 @@ class SkillStructureTests(unittest.TestCase):
         }
         # These budgets keep each role's loaded instructions compact. Any
         # further growth needs an explicit decision, never a silent bump.
+        # Raised once, deliberately, when the database-backed pilot row was
+        # added to the entrypoint role table. SKILL.md is common to every
+        # role, so one added row moves all five totals by the same amount.
         limits = {
-            "primary": 65_800,
+            "primary": 66_000,
             "challenger": 22_700,
             "reporter": 30_900,
-            "coordinator": 59_400,
+            "coordinator": 59_500,
             "calibration": 20_500,
         }
         for role, total in totals.items():

@@ -1,0 +1,23 @@
+{
+  "start_utc": "2026-09-16T01:38:18Z",
+  "finished_at": "2026-09-15T20:39:29.624353-05:00",
+  "phase": "Final read-only scientific-record check using new runtime and copied database",
+  "controller_invocations": 8,
+  "exit_counts": {
+    "0": 8
+  },
+  "controller_subprocess_seconds": 4.5685422999667935,
+  "scientific_record_edits": 0,
+  "preparations": 0,
+  "submissions": 0,
+  "mappings": 0,
+  "new_scientific_reasoning_seconds": 0,
+  "new_reviewer_calls": 0,
+  "authoring_and_formatting_estimate_seconds": 75,
+  "token_usage": null,
+  "actual_model_api_invocations": null,
+  "runtime_source_identity": "b45abd465da23a6c67ce43c40d3a547ebfa88cb9f36c5eab25e9476350ae9b7d",
+  "mathematical_revision": 31,
+  "report_completed_utc": "2026-09-16T01:40:52Z",
+  "total_wall_seconds_through_report": 154
+}

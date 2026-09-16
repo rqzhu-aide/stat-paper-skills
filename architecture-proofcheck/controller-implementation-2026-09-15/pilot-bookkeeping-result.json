@@ -1,0 +1,16 @@
+{
+  "passed": true,
+  "new_independent_stale_refs": [],
+  "coverage_problems": [],
+  "progress": {
+    "completed_current_obligations": 17,
+    "draft_checks": 0,
+    "major_results": 5,
+    "process_complete": false,
+    "required_obligations": 19,
+    "source_unbound_items": 0
+  },
+  "new_mathematical_reasoning": false,
+  "new_reviewer_invocations": 0,
+  "prior_test_limitation": "Adding independent check IDs preserved freshness but invalidated primary coverage credit; this corrected test uses primary references only."
+}
