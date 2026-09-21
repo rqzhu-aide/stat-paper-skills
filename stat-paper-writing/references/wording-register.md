@@ -1,131 +1,79 @@
 # Statistical Wording and Register
 
-## Contents
-
-- [Purpose and register](#purpose)
-- [Sentence-level audit](#sentence-level-audit)
-- [Agency and property ownership](#check-agency-and-property-ownership)
-- [Software-manual prose](#diagnose-software-manual-prose)
-- [Generic or machine-smoothed prose](#repair-generic-or-machine-smoothed-prose)
-- [Implementation language](#keep-implementation-language-in-its-proper-place)
-- [Tone and claim calibration](#check-tone-and-claim-calibration)
-- [Final validation](#typography-and-final-validation)
-
 ## Purpose
 
-Use this guide for local sentence or paragraph polishing when terminology, evidence verbs, tone, or disciplinary register is the main issue. The preferred register is statistical machine learning, mathematics, and the relevant domain science. Preserve legitimate implementation language when the text actually describes code, software, hardware, or reproduction instructions.
+Use for terminology, evidence verbs, tone, and disciplinary register. Preserve literal implementation language where software or reproduction is the subject.
 
-The goal is not to make every sentence more formal. Name each object and claim in language that matches its mathematical type, statistical role, and scientific interpretation. For manuscript-wide terminology normalization or conventional-name questions, use [terminology-audit.md](terminology-audit.md).
+Match wording to mathematical type, statistical role, and scientific interpretation without merely increasing formality. For manuscript-wide normalization or conventional names, use [terminology-audit.md](terminology-audit.md). For difficult specialist rewriting or a high-risk claim edit, consult [polishing-examples.md](polishing-examples.md).
 
 ## Establish the register
 
-Use three complementary vocabularies.
+Choose terms for the work they do in the passage.
 
-### Statistical machine learning
+- **Specialist term or unnecessary label:** retain nuisance function, oracle estimator, or neural-network layer when the distinction matters. Explain unfamiliar objects by definition and role. A new "bridge" or "engine" adds little when the relation can be stated directly. Preserve supplied contribution names without using them instead of explanation.
+- **Statistical conclusion or proof operation:** replacement, coupling, and linearization can name proof steps precisely. Around a main result, explain which distributions are approximated, which covariance estimator is consistent, or which error is negligible, with the relevant norm, regime, and conditioning. A proof label alone does not supply that conclusion.
+- **Relation or metaphor:** prefer the actual relation, such as bounds, minimizes, converges to, or depends on. Retain conventional metaphors when clear. Follow [support-and-author-decisions.md](support-and-author-decisions.md) when an interpretation would add scientific content.
+- **Domain meaning:** name the population, variables, design, scientific quantity, and uncertainty in the application field's vocabulary. Keep statistical, computational, and empirical interpretations distinct.
 
-Prefer terms that identify the inferential object or source of error, such as:
+These choices depend on the paper and passage. They do not prescribe an algorithm-first order or a list of banned phrases.
 
-- population target, estimand, conditional distribution, risk, loss, empirical criterion, estimating equation, estimator, regularization, approximation, residual, nuisance function, oracle quantity, feasible procedure, sampling variability, Monte Carlo error, and held-out evaluation;
-- training sample, validation sample, feature map, neural-network layer, and optimization iterate when these are the actual objects under study;
-- finite-sample, population, asymptotic, computational, and empirical statements with their scopes kept distinct.
+## Targeted disciplinary calibration
 
-### Mathematics
+Calibrate explanation to research readers: what is established, why direct reuse does not cover this setting, which supplied insight addresses the obstacle, and what changes. Keep needed definitions; skip unnecessary explanation of familiar identities. An identity can still expose the central difficulty.
 
-Prefer exact verbs and relations: define, assume, imply, equal, bound, minimize, converge, identify, preserve, approximate, integrate, condition on, and depend on. State quantifiers, object types, and logical scope when they matter.
-
-Avoid replacing a precise relation with a metaphor such as "drives," "powers," "unlocks," "bridges," "engine," or "machinery." A conventional metaphor may remain when the surrounding text immediately states its mathematical meaning.
-
-### Domain science
-
-Name the population, measured variables, intervention or exposure, outcome, sampling design, scientific quantity, and uncertainty in vocabulary familiar to the application field. Interpret results only to the extent supported by the design. Avoid product, deployment, or workflow narratives when the scientific question concerns estimation, prediction, association, or decision-making.
-
-## Sentence-level audit
-
-For each sentence:
-
-1. Identify its job: definition, assumption, construction, formal claim, empirical observation, interpretation, limitation, transition, or implementation detail.
-2. Identify the type of every central noun: target, data object, distribution, function, estimator, criterion, operator, theorem, numerical approximation, scientific variable, or software object.
-3. Check whether the principal verb states the actual relation.
-4. Replace any term whose register conflicts with the sentence's job or the object's type.
-5. Preserve qualifiers that determine scope, including population, empirical, oracle, feasible, approximate, conditional, pointwise, uniform, finite-sample, and asymptotic.
-6. Check the revision against surrounding notation and terminology.
-
-If the correct replacement would change the estimand, formal statement, algorithm, empirical claim, or scientific interpretation, stop and flag it for author review.
+Use supplied or verified comparisons first. When a consequential register or comparison question remains, inspect only the relevant passages in one or two related papers, including recent work that changes the comparison. Retain source locations and reuse the notes across sections. Routine local edits need no search. If relevant passages are inaccessible, make a conservative choice and note uncertainty only where consequential. Do not invent an advance, import unsupported claims, copy prose, imitate authors, or impose a repeated paragraph template.
 
 ## Check agency and property ownership
 
 Natural wording must preserve who acts and which object has a statistical property.
 
-- Attribute bias, variance, consistency, and sampling instability to the estimator, estimator sequence, procedure, or sampling law that has the property. Attribute realized estimation error to the realized estimate. Do not transfer either type of property automatically to the estimand.
-- Distinguish the estimand, the estimator as a random rule, its realized estimate, and the realized error of that estimate.
-- Name the procedure or analyst action when observations are used to fit, select, tune, or construct an object. Data do not perform those actions by themselves.
-- Do not describe storage, printing, display, or repository status as a statistical property. Name the errors, coefficients, fitted sequence, benchmark, or other scientific object instead.
-- In a simulation, identify a true parameter or oracle value as known because the data-generating mechanism supplies it. Do not extend that status to a real-data analysis.
+- Attribute bias, variance, consistency, and sampling instability to the estimator, sequence, procedure, or law with that property; attribute realized error to the estimate. Distinguish both from the estimand, which may be random or data-adaptive under the stated conditioning.
+- Specify sampling, algorithmic, or Monte Carlo randomness when ambiguous. Preserve what is conditioned on or held fixed.
+- Name the procedure or analyst that fits, selects, tunes, or constructs an object; data do not act by themselves.
+- Name the scientific object rather than treating storage, printing, display, or repository status as a statistical property.
+- A simulated true parameter or oracle value is known from the data-generating mechanism; do not extend that status to real-data analysis.
 
-Conventional shorthand such as "the data suggest" or "the model predicts" may remain when the agency and statistical meaning are unambiguous. Respect the stated conditioning regime: an estimand may itself be random or data-adaptive.
+Conventional shorthand such as "the data suggest" or "the model predicts" may remain when the agency and statistical meaning are unambiguous.
 
 ## Diagnose software-manual prose
 
-Treat the following as context-sensitive warning signs when they describe statistical or mathematical objects:
+Ask what the words denote before replacing them:
 
-| Warning sign | Ask | Prefer when applicable |
-|---|---|---|
-| pipeline or workflow | Is this an estimation procedure, analysis sequence, or data-processing protocol? | procedure, estimation procedure, analysis, or exact sequence |
-| module, component, or layer | What mathematical object is meant? | estimator, penalty, transformation, model term, proof step, or neural-network layer when literal |
-| input and output | Are these observed data, arguments, estimates, predictions, or returned software objects? | name the exact data or mathematical object |
-| instantiate, configure, enable, or run | What operation is performed? | define, set, select, fit, estimate, evaluate, compute, or apply |
-| backend, interface, entry point, or mode | Is this software architecture or a statistical choice? | omit it or name the estimator, implementation, tuning rule, or analysis setting |
-| feed, pass, route, or push | What mathematical map or statistical operation occurs? | evaluate, map, transform, condition, integrate, optimize, or use |
-| engine, machinery, bridge, or stack | What mechanism or dependency is asserted? | representation, argument, construction, collection, or the exact relation |
-| ground truth | Is the reference exact, simulated, estimated, or numerically approximated? | true parameter, data-generating value, oracle quantity, reference value, or Monte Carlo benchmark |
-| generalization metric | Which population or held-out criterion is used? | risk, held-out loss, prediction error, calibration error, or the exact metric |
-| fixture, checked-in object, or hidden check | Is this example data, an archived artifact, or a validation calculation? | name the data, artifact, calculation, or omit the internal state |
-| algorithm, numerical, fitting, or function contract | Is this a definition, fitting procedure, calculation rule, or convention? | state the steps, formula, or convention directly |
-| production code, package, or pipeline | Is deployment relevant, or is this the implementation used in the study? | implementation, analysis code, fitted procedure, or literal deployment description |
-| stored or checked reference, stored result, or printed coefficient | What statistical object is represented? | reference value, benchmark, estimate, prediction error, coefficient, or fitted path |
-| population-standardize | Which centering and scaling quantities are used, and where are they estimated? | state the centering and scaling formula and its data source |
+| Warning sign | Contextual decision |
+|---|---|
+| pipeline, module, interface, or layer | Retain literal software architecture or neural-network terminology. For statistical objects, name the procedure, estimator, transformation, or model term. |
+| input, output, feed, or pass | Identify the data, estimates, predictions, or returned software objects and the operation relating them. |
+| instantiate, configure, enable, or run | State the operation, such as define, select, fit, or compute, unless software execution is the subject. |
+| ground truth | Distinguish exact or simulated truth, oracle values, estimated references, and numerical or Monte Carlo benchmarks. |
+| generalization metric | Name the population or held-out criterion: risk, prediction error, calibration error, or another exact metric. |
+| fixture, checked reference, stored result, or printed coefficient | Name the data, benchmark, estimate, or validation calculation. Retain storage or repository status only when relevant. |
+| algorithm or fitting contract | State the definition, fitting steps, formula, or convention directly unless a software contract is meant. |
+| population-standardize | State the centering and scaling formula and where its quantities are estimated. |
 
-These terms are not categorically forbidden. Keep them when they literally describe software, a neural-network architecture, or an established field term. Treat lexical warnings only as candidates for contextual review. A term can be correct in an API name, software paper, reproduction appendix, deployment study, or established technical phrase.
-
-## Repair generic or machine-smoothed prose
-
-Fluent prose can remain statistically empty. Review passages that repeatedly:
-
-- announce sections or recap claims without advancing the argument;
-- use abstract containers such as framework, paradigm, mechanism, or landscape where the exact target, estimator, result, or comparison should appear;
-- rotate synonyms for one object;
-- use interchangeable significance, robustness, or generality language without naming the evidence and scope;
-- repeat one paragraph skeleton across different scientific jobs;
-- replace a logical dependency with generic transitions.
-
-Repair the content, not the surface signature. Recover the exact object, relation, evidence, and boundary. Remove metacommentary that contributes no scientific content. Do not add specificity the manuscript does not support, and do not standardize every paragraph into the same cadence.
+Retain literal software descriptions, API names, and established field terms, including in software papers, reproduction appendices, and deployment studies.
 
 ## Keep implementation language in its proper place
 
-In the main text, describe the statistical construction, information used, returned estimator, governing dimensions, and stated validity conditions.
+Connect algorithm inputs and outputs to the statistical construction, information used, returned estimator, governing dimensions, and stated validity conditions. Reserve imperative steps for pseudocode or explicit reproduction instructions.
 
-In an algorithm, name inputs and outputs precisely, but connect them to the statistical objects already defined. Use imperative steps only inside pseudocode or explicit reproduction instructions.
+Keep implementation choices affecting the estimator or interpretation visible where needed. Place software versions, function arguments, storage, hardware, and file organization according to their importance and venue requirements, often in the supplement. They do not replace the mathematical description.
 
-In an appendix or supplement, retain software versions, function arguments, storage choices, hardware, stopping rules, and file organization when needed for reproduction. Do not let these details replace the mathematical description.
-
-When a convention changes the estimator, target, comparison, or reproducibility, state the operation directly. Relevant examples include when a split is made, which observations determine centering or scaling, the loss and penalty normalization, tie-breaking, matrix orientation, and consequential randomization.
+State conventions affecting the estimator, target, comparison, or reproducibility directly: split timing, observations used for centering or scaling, loss and penalty normalization, tie-breaking, matrix orientation, and consequential randomization.
 
 ## Check tone and claim calibration
 
-Revise language that is:
+Replace promotional or vague claims such as "powerful," "works well," "is robust," and "captures uncertainty" with their supplied object, criterion, evidence, and boundary. Do not invent specificity. Remove defensive reviewer-facing commentary. Avoid both "guarantees" for an empirical pattern and needless hedging around a stated identity. Evidence-level choices follow [polishing-protocol.md](polishing-protocol.md); proof prose also uses [theoretical-proofs.md](theoretical-proofs.md).
 
-- promotional, such as "powerful," "seamless," "state-of-the-art," or "unlocks," unless a precise comparison supports it;
-- defensive or reviewer-facing, such as "we emphasize that this is not a limitation";
-- vague about evidence, such as "works well," "is robust," or "captures uncertainty" without a defined criterion and scope;
-- stronger than the result, such as "guarantees" for an empirical pattern or "validates" for an illustrative application;
-- weaker than needed because of excessive hedging around a stated identity or theorem.
+Write in the paper's authorial voice. "The supplied studies" or "the source files report" describes editing; identify the actual studies and evidence instead. Keep unresolved provenance in an author note and wherever it limits a manuscript claim. Inspect retained preambles and labels around protected displays too: preserving mathematics does not freeze its explanation.
 
-Use only alternatives supported by the manuscript or author-supplied material: proves, establishes under the stated assumptions, suggests in the reported settings, is consistent with, improves the specified criterion, or remains unresolved. Do not upgrade a statement to **proves** or **establishes** merely because it appears as a theorem or has a proof. For proof prose, load [theoretical-proofs.md](theoretical-proofs.md) rather than inferring whether a proof is complete.
+## Mathematics and citations in prose
 
-## Typography and final validation
+Keep short, routine expressions inline when readable. Display central definitions, relations needing visual inspection, and long expressions that would obstruct a sentence. Number equations needed for reference or required by the venue; retain supplied labels and references during revision. Introduce notation when it earns its cost through precision or reuse. Explain a derivation's decisive steps without displaying every elementary manipulation or paraphrasing every line. Give displays prominence in proportion to their role in the argument.
+
+Place a citation beside the claim or clause it supports, especially when a sentence combines prior work with the present contribution. Use narrative attribution when an author's contribution is the subject and parenthetical attribution when the statistical claim is the subject, following the venue's citation system. Avoid a paragraph-end citation whose scope is unclear.
+
+Citation density should follow intellectual dependence. Related-work synthesis may need several sources; a new derivation may need none. Attribute borrowed definitions, results, procedures, comparator implementations, data, and external interpretations at their substantive use, with renewed attribution after substantial separation when needed for clarity. Avoid both missing credit and repetitive citations for an already clear attribution. Use verified or supplied sources only; do not invent references to meet a frequency target.
+
+## Typography
 
 Preserve the manuscript's or stated venue's punctuation and typographic conventions, including supplied U+2013 and U+2014 characters. Correct malformed punctuation, but do not impose the assistant's output house style on manuscript text unless requested.
-
-Compare source and revision for changes in object type, logical direction, scope, evidence level, uncertainty, numerical values, citations, labels, and cross-references. If the supplied format can be compiled or rendered, inspect the affected passage. Otherwise state the validation limit.
-
-As a final pass, ask of every generic or software-oriented noun: who acts, on what statistical object, by what operation, with what evidence, and under what scope? Retain the term only when it is literal, defined, and useful.

@@ -632,6 +632,7 @@ def initialize_audit(args: argparse.Namespace) -> dict[str, Any]:
         "order_override": bool(args.focused_pass),
         "focused_passes": list(args.focused_pass),
         "source_ids": [f"SRC-{index:03d}" for index in range(1, len(sources) + 1)],
+        "report_detail": getattr(args, "report_detail", "concise"),
     }
 
     source_records: list[dict[str, Any]] = []
@@ -782,9 +783,18 @@ def validate_manifest(manifest: Any, audit_root: Path) -> list[Issue]:
                 "order_override",
                 "focused_passes",
                 "source_ids",
-            },
+            } | ({"report_detail"} if "report_detail" in scope else set()),
             "$.scope",
             issues,
+        )
+    if "report_detail" in scope and scope["report_detail"] not in (
+        "concise", "detailed"
+    ):
+        add_issue(
+            issues,
+            "MANIFEST_REPORT_DETAIL",
+            "$.scope.report_detail",
+            "report_detail must be concise or detailed.",
         )
     if scope.get("mode") != "Full":
         add_issue(issues, "MANIFEST_MODE", "$.scope.mode", "Harness mode must be Full.")
@@ -1177,6 +1187,7 @@ def validate_stage(
     final: bool,
     location_root: str = "$.closure",
     expected_phase: str | None = None,
+    allow_failed: bool = False,
 ) -> None:
     location = f"{location_root}.{stage}"
     if not isinstance(value, dict):
@@ -1224,7 +1235,9 @@ def validate_stage(
             f"{location}.evidence",
             "Record an artifact result or substantive reason.",
         )
-    if status == "failed":
+    if status == "failed" and not (
+        allow_failed and phase in ("audit", "baseline")
+    ):
         add_issue(
             issues,
             f"CLOSURE_{stage.upper()}_FAILED",
@@ -1651,6 +1664,9 @@ def validate_state(
         if action == "audit-and-revise"
         else None
     )
+    allow_failed = action == "audit" or (
+        action == "audit-and-revise" and not final and applied is None
+    )
     validate_stage(
         closure.get("compile"),
         "compile",
@@ -1658,6 +1674,7 @@ def validate_state(
         issues,
         final,
         expected_phase=expected_phase,
+        allow_failed=allow_failed,
     )
     validate_stage(
         closure.get("render"),
@@ -1666,6 +1683,7 @@ def validate_state(
         issues,
         final,
         expected_phase=expected_phase,
+        allow_failed=allow_failed,
     )
 
     if not isinstance(edits, dict):
@@ -1801,63 +1819,6 @@ def validate_state(
                 "Audit-only scope must not bind an edit artifact.",
             )
     return issues
-
-
-def question_is_self_contained(question: str) -> bool:
-    if not question.endswith("?"):
-        return False
-    words = re.findall(r"[A-Za-z0-9_\\]+", question)
-    if len(words) < 8:
-        return False
-    request_frame = re.compile(
-        r"(?i)^\s*(?:can|could|would|will|should|may|might|must|do|does|did|"
-        r"is|are|was|were)\s+(?:the\s+authors?\s+)?(?:please\s+)?"
-        r"(?:clarify|confirm|resolve|check|verify|explain|state|show|justify|"
-        r"specify|identify|describe|indicate|discuss|determine)\b"
-    )
-    explicit_antecedent = re.compile(
-        r"(?i)\b(?:the|a|an|each|every|either|neither|both|all|some|any|"
-        r"these|those)\s+(?!authors?\b)[A-Za-z0-9_\\-]+\b|"
-        r"\b(?:theorem|lemma|proposition|corollary|equation|figure|table|"
-        r"section|appendix|algorithm)\s+[A-Za-z0-9_.\\-]+\b"
-    )
-    for pronoun in re.finditer(r"(?i)\b(?:it|them)\b", question):
-        prefix = request_frame.sub("", question[: pronoun.start()], count=1)
-        if explicit_antecedent.search(prefix) is None:
-            return False
-    if re.search(
-        r"(?i)\b(?:this|that|these|those)\s+"
-        r"(?:is|are|was|were|should|would|could|can|will|may|might|must|"
-        r"do|does|did|has|have|had|be|been|need|needs|require|requires|"
-        r"mean|means|refer|refers|apply|applies|change|changes|affect|affects|"
-        r"concern|concerns|represent|represents|denote|denotes|use|uses|"
-        r"include|includes|exclude|excludes|remain|remains|hold|holds|"
-        r"follow|follows|conflict|conflicts|differ|differs|fail|fails|"
-        r"work|works|occur|occurs|happen|happens)\b",
-        question,
-    ):
-        return False
-    if re.search(
-        r"(?i)\b(?:this|that|these|those)\b(?=\s*(?:[?.,;:]|"
-        r"\b(?:in|under|over|for|with|without|from|to|before|after|during|"
-        r"within|outside|now|here|there|instead|again|as)\b))",
-        question,
-    ):
-        return False
-    if re.search(
-        r"(?i)\b(?:this|that|these|those)\s+"
-        r"(?:issue|point|choice|matter|claim|statement|problem|question|case|thing)s?\b",
-        question,
-    ):
-        return False
-    ambiguous = re.fullmatch(
-        r"(?i)(?:can|could|would|will|should|is|are|was|were|do|does|did)\s+"
-        r"(?:the\s+authors?\s+)?(?:clarify|confirm|resolve|check|verify)?\s*"
-        r"(?:this|that|it|these|those|them)"
-        r"(?:\s+(?:issue|point|choice|matter|claim|statement))?\?",
-        question.strip(),
-    )
-    return ambiguous is None
 
 
 def source_record_map(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -2205,12 +2166,12 @@ def validate_findings(
                     f"{location}.unverified_dependency",
                     "A finding requiring author input must state an unverified dependency.",
                 )
-            if not is_nonempty_string(question) or not question_is_self_contained(question):
+            if not is_nonempty_string(question):
                 add_issue(
                     issues,
                     "FINDING_AUTHOR_QUESTION",
                     f"{location}.author_question",
-                    "A finding requiring author input must include a self-contained question ending in ?.",
+                    "A finding requiring author input must include the question needed to resolve the dependency.",
                 )
             if safe is not False:
                 add_issue(
@@ -2640,6 +2601,7 @@ def validate_diagnosis_ready(
             issues,
             True,
             expected_phase="baseline",
+            allow_failed=True,
         )
         validate_stage(
             closure.get("render"),
@@ -2648,6 +2610,7 @@ def validate_diagnosis_ready(
             issues,
             True,
             expected_phase="baseline",
+            allow_failed=True,
         )
         edits = closure.get("edits")
         if not isinstance(edits, dict) or any(
@@ -2732,6 +2695,7 @@ def validate_diagnosis_freeze(
             True,
             "$.baseline",
             expected_phase="baseline",
+            allow_failed=True,
         )
         validate_stage(
             baseline.get("render"),
@@ -2741,6 +2705,7 @@ def validate_diagnosis_freeze(
             True,
             "$.baseline",
             expected_phase="baseline",
+            allow_failed=True,
         )
         closure = state.get("closure")
         edits = closure.get("edits") if isinstance(closure, dict) else None
@@ -2853,6 +2818,8 @@ def render_report(
     findings: dict[str, Any],
 ) -> bytes:
     scope = manifest["scope"]
+    # Earlier manifests omit this field and retain their historical report layout.
+    detailed = scope.get("report_detail", "detailed") == "detailed"
     selected_passes = scope["focused_passes"] or [
         item["tag"]
         for item in manifest["pass_plan"]
@@ -2864,9 +2831,9 @@ def render_report(
         "## Audit scope",
         "",
         f"- Action: {scope['action']}",
-        f"- Plan: {scope['plan_kind']}",
+        *([f"- Plan: {scope['plan_kind']}"] if detailed else []),
         f"- Focus: {display_text(scope['focus'])}",
-        "- Selected evaluative passes: " + ", ".join(selected_passes),
+        *(["- Selected evaluative passes: " + ", ".join(selected_passes)] if detailed else []),
         "",
         "## Assessment boundary",
         "",
@@ -2987,7 +2954,7 @@ def render_report(
             )
             lines.append(f"- {contribution}: {anchors}")
         lines.append("")
-    else:
+    elif detailed or ledger["status"] != "not_needed":
         lines.extend(
             [
                 "## Contribution ledger",
@@ -3007,17 +2974,18 @@ def render_report(
                 ]
             )
 
-    lines.extend(["## Pass coverage", ""])
-    for record in state["passes"]:
-        if record["status"] == "completed":
-            detail = record["checkpoint"]
-        elif record["status"] == "not_required":
-            detail = f"not required: {record['reason']}"
-        else:
-            detail = record["status"]
-        lines.append(
-            f"- {record['tag']}: {record['kind']}: {display_text(detail)}"
-        )
+    if detailed:
+        lines.extend(["## Pass coverage", ""])
+        for record in state["passes"]:
+            if record["status"] == "completed":
+                detail = record["checkpoint"]
+            elif record["status"] == "not_required":
+                detail = f"not required: {record['reason']}"
+            else:
+                detail = record["status"]
+            lines.append(
+                f"- {record['tag']}: {record['kind']}: {display_text(detail)}"
+            )
     lines.extend(
         [
             "",
@@ -3371,6 +3339,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="audit",
     )
     init.add_argument("--focus")
+    init.add_argument(
+        "--report-detail",
+        choices=["concise", "detailed"],
+        default="concise",
+        help="Persist concise reporting, or include procedural detail when requested.",
+    )
     init.add_argument(
         "--focused-pass",
         action="append",

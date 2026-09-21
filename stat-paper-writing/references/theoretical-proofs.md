@@ -4,14 +4,11 @@
 
 Make the supplied proof exposition navigable and document how the manuscript says the result follows, where assumptions enter, and how named intermediate statements depend on one another.
 
-This is a presentation-only review. Preserve hypotheses, quantifiers, domains, conclusions, equations, proof steps, stochastic orders, and logical direction. Do not certify validity, completeness, or correctness. Do not add a missing mathematical justification. If clearer exposition would require changing mathematical content, identify the exact conflict and leave it for author judgment.
+This is a presentation-only review. Preserve hypotheses, quantifiers, domains, conclusions, equations, proof steps, stochastic orders, and logical direction. Do not certify validity, completeness, or correctness or add a missing mathematical justification. If exposition depends on unresolved mathematical content, use [support-and-author-decisions.md](support-and-author-decisions.md).
 
 ## Start with a declared dependency map
 
-For a proof section or appendix, record:
-
-| Result | Stated direct dependencies | Stated main device | Assumptions cited |
-|---|---|---|---|
+For a substantial proof section or appendix, map the results, stated direct dependencies, main devices, and assumptions where this helps maintain the argument. Compact notes suffice; use a table only when useful.
 
 Use only dependencies stated in the manuscript or unambiguous from its labels and cross-references. Do not infer a missing dependency from subject-matter expectations.
 
@@ -27,6 +24,8 @@ Begin a substantial proof with the manuscript's stated:
 4. step described as the main difficulty.
 
 The roadmap should explain strategy without asserting that the argument is valid or repeating the theorem.
+
+When supplied literature establishes part of the argument, identify that inherited step briefly and concentrate on the obstruction the present proof addresses, such as a changed regime, dependence structure, remainder scale, or uniformity requirement. Explain the supplied structural step addressing it; a list of familiar proof tools is insufficient. Name or cite those tools without reteaching them. Do not infer novelty from a new proof or invent the step connecting a tool to the conclusion.
 
 ## Proof body
 

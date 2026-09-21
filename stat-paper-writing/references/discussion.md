@@ -17,7 +17,7 @@ Look for:
 
 ## Core architecture
 
-Use these functions:
+Select the functions needed for this paper's ending, at a depth proportional to what remains to be explained. They are not seven required paragraphs; a theoretical paper may need only a short closing passage, while a substantive application may need more interpretation.
 
 1. **Main understanding:** State the central statistical lesson, not only the method name.
 2. **Practical capability:** Explain what analysis, decision, or computation is now possible according to the supplied material.
@@ -43,6 +43,8 @@ State direction only when supplied: conservative, anti-conservative, unstable, u
 ## Future work
 
 For each extension, state what new ingredient the manuscript identifies as required. Avoid saying only that the method could be extended to more models or data.
+
+End on the most consequential supported implication or unresolved question. Do not append a generic impact claim, a second abstract, or a list of speculative extensions merely to lengthen the discussion.
 
 ## Review checklist
 

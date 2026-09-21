@@ -1,175 +1,57 @@
 # Claim-Preserving Prose Polishing
 
-## Contents
+## Scope and meaning
 
-- [Scope and risk](#1-set-the-scope-and-risk)
-- [Meaning lock](#2-build-a-meaning-lock)
-- [Revision passes](#3-revise-in-passes)
-- [Statistical prose mechanics](#4-statistical-prose-mechanics)
-- [Mathematics and displays](#5-integrate-mathematics-and-displays)
-- [Claim-preservation comparison](#6-compare-source-and-revision)
-- [Delivery](#7-deliver-the-edit)
+Distinguish a light polish of grammar and local clarity, substantive polishing of paragraph architecture and explanation, and structural revision of sections. Work within the requested scope. Perform checks privately and return or apply the improved text; an ordinary polish needs no audit report or approval for a supported edit.
 
-## 1. Set the scope and risk
+Before rewriting, identify the passage's job, claim, mathematical objects, evidence level, and boundary. Protect:
 
-Identify whether the task is:
-
-- **Light polish:** grammar, local clarity, concision, and idiom without reordering the argument.
-- **Substantive polish:** paragraph architecture, explanation order, terminology, and transitions while preserving the scientific claim.
-- **Structural revision:** section-level reordering or reconstruction. Use the relevant section reference and do not describe this as copyediting.
-
-Polish or revision authorizes editing within supplied support. Perform the checks privately and return or apply the improved manuscript text rather than an audit report. Do not add audit labels or ask about a safe edit. If one span is unsafe, continue with other safe in-scope edits and list only the unresolved input.
-
-Treat theorem statements, assumptions, definitions, estimands, numerical conclusions, causal interpretations, and novelty claims as high-risk prose. Inspect their dependencies before editing.
-
-## 2. Build a meaning lock
-
-Before rewriting, record the sentence or paragraph's:
-
-- communicative job;
-- central claim;
-- mathematical objects and their types;
-- evidence level: proved, cited, observed, simulated, heuristic, or conjectured;
-- scope and boundary;
-- protected tokens and relations.
-
-Protect:
-
-- equations, symbols, subscripts, and superscripts;
-- negation and logical direction;
-- quantifiers such as all, some, uniformly, and with high probability;
-- conditioning sets and randomness;
+- equations, symbols, indices, macros, labels, and cross-references;
+- negation, logical direction, quantifiers, conditioning, and sources of randomness;
 - finite-sample, asymptotic, oracle, feasible, empirical, and computational scope;
-- uncertainty, modality, and causal status;
-- numerical values, units, citations, labels, and cross-references.
+- uncertainty, modality, causal status, and novelty claims;
+- numerical values, units, and citations.
 
-Literal form is part of this protection. Unless notation normalization is explicitly authorized, preserve the exact source token or macro rather than substituting a mathematically equivalent typographic form.
+Preserve scientific content while changing explanation order, headings, sentence subjects, and paragraph boundaries as authorized. Inspect dependencies of formal statements, assumptions, estimands, numerical conclusions, and causal interpretations before editing. Exact mathematical tokens remain unchanged unless notation normalization is requested.
 
-If a clearer sentence would require changing one of these items, leave that span unchanged and request author judgment rather than hiding the change inside a polish. Continue with safe edits elsewhere.
+For conflicting representations, uncertain equivalence, missing support, or a proposed substantive correction, use [support-and-author-decisions.md](support-and-author-decisions.md), the detailed action rule. Continue supported edits elsewhere. Do not hide a scientific change inside a polish.
 
-An explicitly unsupported promotional or evidentiary qualifier is different from a protected scientific object or conclusion. In a bounded polishing request, remove such a qualifier when its removal leaves a complete supported sentence and does not alter an estimand, causal interpretation, formal statement, numerical finding, or algorithm. Disclose the removal. Do not retain an unsupported guarantee in clean prose merely because establishing it would require additional evidence.
+## Revise at the needed scale
 
-Do not remove a substantive relation, such as independence, causality, a quantifier, or an implication, merely because another supplied representation omits it. Treat that as a documentary conflict unless supplied evidence or author confirmation identifies the controlling representation. After an authorized removal, add a concise Material change: note stating that the relation was not explicitly documented in the controlling supplied representation.
+For paper-level work, follow [manuscript-workflow.md](manuscript-workflow.md) to read and plan, work focused sections, and reconcile. For a local edit, use only the checks relevant to that passage; no fixed sequence of separate passes is required.
 
-## 3. Revise in passes
+## Prose core for drafting and revision
 
-Revise from fine to coarse after the diagnostic checks. A later paragraph-level move must not override a protected local distinction.
+For drafting, apply this subsection; the revision-specific checks elsewhere in this guide need not be loaded solely to draft a section.
 
-### Pass A: Sentence structure
+**Sentence and cohesion.** Unpack stacked nouns into the relation among named objects. Keep subjects near their verbs and antecedents unambiguous. Start from the dependency created by the previous sentence and place new information where it receives emphasis. Use stable terms, especially for oracle versus feasible, population versus empirical, and exact versus approximate objects. Transitions should express a substantive connection rather than announce another section.
 
-- Give each sentence one controlling assertion, with subordinate clauses serving that assertion.
-- Repair unclear pronouns and demonstratives such as "this" when several antecedents are possible.
-- Shorten long subject-verb separations.
-- Replace stacked nouns with explicit relations when the stack is hard to parse.
-- Convert nominalizations to verbs when the action matters, but retain standard mathematical nouns.
-- Remove throat-clearing phrases and repeated summaries.
-- Combine choppy fragments when they answer one question.
-- Split a sentence when its logical scope becomes ambiguous, not merely because it is long.
+**Paragraph development.** Introduce the reader's question, claim, or obstacle before dense detail and notation at its use. Let the paragraph develop that purpose. Combine fragments answering one question and split overloaded reasoning at a change of purpose. Sustained comparisons may need substantial space; transitions may be brief. Use no word quota or repeated paragraph skeleton. Remove repeated openings and summaries without erasing necessary qualifications.
 
-### Pass B: Economy and register
+**Economy and register.** Remove language that changes neither meaning nor navigation. Preserve a professional authorial voice and already clear sentences. For specialist terminology, evidence verbs, tone, or software-manual register, use [wording-register.md](wording-register.md).
 
-Remove words that do not change meaning, evidence, or navigation. Prefer precise statistical and mathematical verbs. Read [wording-register.md](wording-register.md) only when terminology, tone, evidence verbs, or software-manual register are in scope.
+## Statistical prose mechanics
 
-Do not erase a distinctive but professional authorial voice. Do not rewrite an already clear sentence only to make it resemble a generic journal style.
+**Definitions.** Explain why an object is needed and keep its mathematical type clear. A definition does not itself imply existence, uniqueness, identification, or estimability.
 
-### Pass C: Cohesion and emphasis
+**Assumptions.** Preserve who assumes what, under which law or regime, and for which result. Explain the supplied restriction instead of relying on unsupported descriptions such as mild or standard. Do not add an editor-proposed assumption to make the prose work.
 
-- Keep one canonical term for each object.
-- Start a sentence from the dependency created by the previous sentence.
-- Put the main new information where it receives emphasis, usually near the end.
-- Use explicit contrasts for oracle versus feasible, population versus empirical, and exact versus approximate objects.
-- Make transitions state intellectual dependency rather than announce the next section.
+**Evidence level.** Preserve the manuscript's attributed status: a proved result under stated assumptions, a numerical result in reported settings, an empirical pattern that suggests a conclusion, or an unproved mechanism that motivates it. A theorem environment or attached proof does not justify changing states or claims to proves or establishes. Likewise, preserve qualifications such as may, can, typically, and under Assumption 2 unless a supported substantive correction is authorized.
 
-### Pass D: Paragraph information order
+For proof prose, including a local polish, use [theoretical-proofs.md](theoretical-proofs.md) for the proof-ending boundary. This is exposition work, not a proof-completeness judgment.
 
-Place the reader's question, claim, or obstacle before dense detail. Move from familiar context to the new object. Keep the grammatical subject close to the main verb. Introduce notation when it becomes useful rather than far in advance.
+**Comparisons.** Name the metric, comparison basis, information available, and scope. Replace outperforms with the reported advantage when it is not uniform across settings or criteria.
 
-Use paragraph order such as:
+**Limitations.** Place a restriction beside the claim it qualifies. Repeat it when a distant passage could otherwise mislead, using a short reference where sufficient. Consolidate caveats without making a headline unconditional or concealing a theory-to-implementation gap.
 
-question -> claim -> support -> interpretation -> boundary
+## Mathematics and displays
 
-Do not impose this pattern mechanically. Retain the existing order when it already makes the dependency clear.
-## 4. Statistical prose mechanics
+Introduce a display with its purpose and explain its consequence or mechanism, rather than paraphrasing every symbol. Preserve punctuation and grammatical integration. Check whether respectively, conditional, marginal, uniform, and independent match the displayed relation. Any authorized notation change must propagate consistently.
 
-### Definitions
+## Compare and deliver
 
-State why the object is needed before or immediately after defining it. Keep the mathematical type clear. Do not allow a definition to imply existence, uniqueness, identification, or estimability unless established.
+Compare source and revision for the protected content above, including the relationships among symbols, conditioning, convergence modes, constants, and theorem references. Check that supplied citation support still matches its clause, values and units agree, and terminology remains consistent across affected captions, algorithms, and supplements.
 
-### Assumptions
+Watch particularly for changes from some to all, pointwise to uniform, association to effect, oracle to feasible, approximate to exact, observed to established, can to guarantees, or one setting to general settings. These are changes of scientific force, not stylistic alternatives.
 
-Preserve who assumes what, under which probability law or regime, and for which result. Replace "mild" or "standard" with an interpretation when those descriptions are not justified.
-
-When an assumption, identification condition, or causal interpretation is missing or merely proposed by the editor, load [support-and-author-decisions.md](support-and-author-decisions.md). Do not insert the condition or return unsupported clean prose.
-
-### Results
-
-Use a precise verb only when the manuscript's stated result or author-supplied material supports that evidence level:
-
-- preserve **proves** or **establishes under the stated assumptions** in theorem-result exposition when the manuscript assigns that status to the formal result; treat it as attributed manuscript status, not an independent proof-completeness judgment;
-- use **shows in the reported settings** for a supplied numerical result;
-- use **suggests** or **is consistent with** for a supplied empirical pattern;
-- use **conjectures** or **motivates** for a mechanism presented as unproved.
-
-Do not upgrade **states**, **claims**, or **asserts** to **proves** or **establishes** merely because the text contains a theorem environment or a proof. Do not change "may," "can," "typically," or "under Assumption 2" without documentary support for the stronger statement.
-
-For any proof prose, including a one-sentence polish, load [theoretical-proofs.md](theoretical-proofs.md) and follow its proof-ending boundary. Recommend an explicit `$stat-paper-proofcheck` invocation only when the user asks for a formal correctness or completeness audit; do not start it implicitly.
-
-### Comparisons
-
-Name the metric, comparison basis, information available, and scope. Replace "outperforms" with the exact reported advantage when performance is not uniform across settings or criteria.
-
-### Limitations
-
-Attach the limitation to the claim it qualifies. State what fails or becomes uncertain. Avoid generic limitation paragraphs that leave the headline claim apparently unconditional.
-
-## 5. Integrate mathematics and displays
-
-- Introduce a display with its purpose, not merely "we have."
-- Explain the consequence or mechanism after a display rather than paraphrasing every symbol.
-- Preserve equation punctuation and grammatical integration.
-- Do not change notation to improve prose unless the change is authorized and propagated consistently.
-- Check whether words such as respectively, conditional, marginal, uniform, and independent match the displayed relation.
-
-## 6. Compare source and revision
-
-After editing, compare the source and revision at three levels.
-
-### Claim level
-
-Confirm that the target, direction, scope, evidence level, boundary, and novelty claim are unchanged unless a substantive revision was requested.
-
-### Mathematical level
-
-Confirm that symbols, indices, quantifiers, conditioning, probability statements, convergence modes, constants, and theorem references retain their relationships.
-
-### Documentary level
-
-Confirm that citations still support the sentence they follow; labels and cross-references still point to the intended objects; numerical values and units are unchanged; and terminology matches captions, algorithms, appendices, and supplements.
-
-Treat these changes as warning signs requiring explicit justification:
-
-- not to no longer, or the reverse;
-- some to all;
-- pointwise to uniform;
-- association to effect;
-- oracle to estimator;
-- approximate to exact;
-- observed to established;
-- can to guarantees;
-- one setting to general settings.
-
-## 7. Deliver the edit
-
-For a local polish, provide or apply the revised text directly. The meaning-lock and diagnostic checks remain private. Mention only substantive choices or unresolved scientific ambiguities.
-
-For a longer edit, summarize:
-
-- sections changed;
-- principal improvements to argument or prose;
-- any terminology normalized;
-- any statements left unchanged because revision required author judgment;
-- validation performed.
-
-Do not produce an exhaustive style log unless requested. Preserve a reviewable diff and make surgical changes.
-
-If a high-risk edit remains ambiguous, consult [polishing-examples.md](polishing-examples.md) for compact calibration patterns. Do not load the examples for routine edits.
+For a local edit, deliver the text directly. For a longer revision, summarize the principal changes and validation, with unresolved input and any authorized substantive correction stated separately. Keep a reviewable diff and avoid an exhaustive style log. For a difficult specialist or claim-preservation choice, consult [polishing-examples.md](polishing-examples.md); routine edits need no examples file.

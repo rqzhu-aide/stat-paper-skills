@@ -18,6 +18,8 @@ Choose the smallest audit that can answer the request:
 - **Section audit:** inspect the requested section and the dependencies needed to understand it.
 - **Full audit:** inspect the complete supplied manuscript using the default order below.
 
+Coverage and tracking are separate. A full audit uses the complete diagnostic scope without requiring saved JSON or snapshots. Use [full-audit-operations.md](full-audit-operations.md) only when the user requests a persistent, resumable, or reproducible audit record. Otherwise keep compact working notes and report consequential findings.
+
 Honor an explicit user request for a different focus or order. A focused request may skip unrelated passes, but begin with enough neutral reading to understand the requested scope. For an explicit paper-level focus, move after orientation only through the requested coarse passes. Do not add intermediate passes unless one is indispensable to answer the request, and state that dependency if it is used.
 
 Treat "focus only" or an instruction to ignore other checks as a strict scope contract. For contribution-and-narrative-only work, use `orientation -> contribution ledger when useful -> narrative`. Use the supplied scope directly and do not perform or report separate atomic, local, section, or cross-section passes.
@@ -85,11 +87,11 @@ After the fine, local, and section passes, compare across the manuscript:
 
 The main text should contain the motivation, central objects, formal conclusions, primary evidence, and main boundary needed to stand alone. Use [appendix-architecture.md](appendix-architecture.md) to map omitted detail to support, remove orphan material, and check both directions of cross-reference.
 
-## 7. Build the contribution-to-support ledger when needed
+## 7. Map contributions to support when needed
 
-If several contributions compete or their hierarchy or support remains unclear after Pass 6, load [argument-architecture.md](argument-architecture.md) and build its six-column ledger.
+If several contributions compete or their hierarchy or support remains unclear after Pass 6, load [argument-architecture.md](argument-architecture.md) and map the supplied contributions to their support. Use a table only when it helps; ordinary feedback has no fixed columns.
 
-Follow [argument-architecture.md](argument-architecture.md) for contribution identity, hierarchy, support cells, author decisions, and the exact ledger. The ledger organizes evidence already gathered; it does not establish proof validity, empirical correctness, novelty, or a preferred rank. CONTRIBUTION_LEDGER remains evaluative rather than a second orientation.
+Follow that guide for scientific identity and editorial emphasis. A contribution map organizes gathered evidence; it does not establish proof validity, empirical correctness, or novelty. For tracked records, exact ledger fields belong to [full-audit-data-contract.md](full-audit-data-contract.md). CONTRIBUTION_LEDGER remains evaluative rather than a second orientation.
 
 ## 8. Perform the evaluative reader walkthrough
 
@@ -119,6 +121,7 @@ Reconstruct the supplied chain `target -> gap -> central route -> method object 
 - Does each main section advance the same paper-level account?
 - Does the literature positioning establish intellectual debt and the claimed distinction without weakening supplied prior work?
 - Do section order, transitions, evidence, discussion, and supplement support the same narrative spine?
+- Do section proportions, paragraph rhythm, citation distribution, and mathematical/display density serve the article's purpose and venue constraints? Use rendered evidence for page-level findings; distinguish submission format from publisher layout.
 
 Use [argument-architecture.md](argument-architecture.md) for deliberate restructuring. If two spines remain plausible, retain the version requiring fewer unsupported promises and fewer concepts introduced before purpose.
 
@@ -126,7 +129,7 @@ Coarse findings are often more interpretive than atomic findings. Separate the v
 
 ## 10. Revise and run the closure loop
 
-If revision was requested, apply the smallest authorized repairs. Make unambiguous atomic and local corrections before section, cross-section, or paper-level changes. Do not resolve a structural or scientific choice without author support.
+If revision was requested, apply the smallest authorized repairs. Make unambiguous atomic and local corrections before section, cross-section, or paper-level changes. Authorized restructuring may reorder supplied contributions without further approval; preserve explicit author priorities and ask when a choice changes a scientific claim or resolves competing scientific intentions.
 
 After revision:
 
@@ -135,8 +138,8 @@ After revision:
 3. recheck affected local, section, cross-section, and paper-level contracts;
 4. compile or render when possible and inspect affected output.
 
-This return to fine checks is validation after editing, not a change to the default fine-to-coarse diagnostic order. Record every finding disposition plus phase-specific compile, render, and diff closure under [reporting-and-validation.md](reporting-and-validation.md).
+This return to fine checks validates the edit. Report substantive changes and unresolved findings under [reporting-and-validation.md](reporting-and-validation.md). Only tracked audit-and-revise requires diagnosis freezing, per-finding dispositions, and bound compile, render, and diff records.
 
 ## Audit output
 
-Use [reporting-and-validation.md](reporting-and-validation.md) as the sole finding, priority, remedy, provenance, and finalization contract. Do not narrate neutral orientation unless the user requests an audit trail. Do not rewrite the manuscript unless revision was requested.
+Use [reporting-and-validation.md](reporting-and-validation.md) for concise feedback and the route to tracked records. Do not narrate neutral orientation unless the user requests an audit trail. Do not rewrite the manuscript unless revision was requested.

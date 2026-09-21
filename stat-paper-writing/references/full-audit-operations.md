@@ -1,6 +1,6 @@
-# Full Writing Audit Operations
+# Tracked Writing Audit Operations
 
-Use this file only for a Full manuscript presentation audit. The shared finding and delivery rules remain in [reporting-and-validation.md](reporting-and-validation.md); exact JSON fields remain in [full-audit-data-contract.md](full-audit-data-contract.md).
+Use this file only when the user requests a persistent, resumable, or reproducible writing audit record. Whole-manuscript coverage alone does not require this package. Shared delivery rules remain in [reporting-and-validation.md](reporting-and-validation.md); exact JSON fields remain in [full-audit-data-contract.md](full-audit-data-contract.md).
 
 ## Workspace
 
@@ -11,6 +11,8 @@ For a new audit:
     python "SKILL_DIR/scripts/writer_audit.py" init --audit-root "AUDIT_DIR" --skill-root "SKILL_DIR" --source "MAIN" --source "SUPPLEMENT" --action audit
 
 Use `--action audit-and-revise` only when revision is authorized. Repeated `--focused-pass` values require an explicit `--focus`. Neutral orientation is always retained; omitted diagnostic passes are not silently inserted.
+
+Reports default to `--report-detail concise`, with findings and validation but no routine pass log or unnecessary contribution ledger. Use `--report-detail detailed` at initialization when the user requests the procedural audit trail. This choice is bound in the manifest and reused by publication and resume; do not change it by editing the manifest. Existing audits retain their snapshotted protocol and reporting behavior.
 
 Common text formats are detected by suffix. Use `--source-kind "SOURCE=KIND"`, where KIND is text, pdf, image, or artifact, only when detection is wrong. PDF snapshots bind a verified page count; if automatic inspection is unavailable, supply `--pdf-page-count "SOURCE=N"` from a trusted page count.
 
@@ -49,7 +51,7 @@ Load [full-audit-data-contract.md](full-audit-data-contract.md) only when editin
 
 Before finalization, resolve every pending semantic field while retaining contract-required or permitted nulls. Use line anchors for text, page anchors for PDFs, and artifact locators for other supplied files. Do not paste the manuscript into findings; source hashes plus exact anchors provide traceability.
 
-Resolve `contribution_ledger` as included, not_needed, or unavailable. Use not_needed with a reason when it was skipped or would not clarify the narrative. Use unavailable with a reason and a finding requiring author input, encoded with canonical priority `Blocking`, when supplied contribution identities or hierarchy are insufficient. Included rows follow [argument-architecture.md](argument-architecture.md), use a positive integer, `Co-primary`, or `Unclear` rank, and have supplied identity anchors. Editorial candidate ranks remain outside the factual ledger.
+Resolve `contribution_ledger` as included, not_needed, or unavailable. Use not_needed with a reason when it was skipped or would not clarify the narrative. Use unavailable with a reason and an author-input finding, encoded as `Blocking`, when a needed contribution identity is missing. An unspecified rank can be `Unclear` and does not itself prevent inclusion. Included rows use the exact cells in the data contract and supplied identity anchors; editorial ordering follows [argument-architecture.md](argument-architecture.md) and remains distinct from factual author-stated rank.
 
 ## Compile, render, and diff closure
 
@@ -69,7 +71,9 @@ After edits:
 4. compile or render when a suitable toolchain is available and inspect the affected output;
 5. record a reviewable diff or explain why no diff applies.
 
-A failed compile or render keeps the audit nonfinal. A not-run or unavailable check needs a substantive reason. Applied edits require post_edit compile and render records plus a hash-bound diff artifact. With no applied edit, retain the frozen baseline records.
+A recorded baseline compile or render failure does not prevent diagnosis freezing. An audit-only report may finalize with the failure disclosed. Neither action establishes a healthy manuscript. A not-run or unavailable check needs a substantive reason; never relabel a failure to bypass validation.
+
+For audit-and-revise finalization, failed compile or render records remain blocking, including a failed baseline retained when no edit was made. Applied edits require fresh post_edit compile and render records plus a hash-bound diff artifact. Preserve the original baseline in the freeze. Report an applied repair with failed validation as such; do not claim successful completion.
 
 Resolve every frozen finding after the freeze. Mark Material and Local findings applied or unapplied with a reason. Findings requiring author input, encoded with canonical priority `Blocking`, may remain unresolved with a reason. Dispositions must cover the frozen findings exactly, and the final report exposes each outcome. A safe finding with an unexplained no-op is nonfinal.
 

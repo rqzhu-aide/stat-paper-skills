@@ -6,7 +6,7 @@ This is the canonical protocol for quick and section-level author-side presentat
 
 This protocol checks presentation and documentary consistency. It does not validate proof steps, theorem truth, assumption sufficiency, rates, external sources, code equivalence, numerical results, novelty, merit, or publication suitability.
 
-Do not initialize the full-audit harness for a quick or section audit.
+Ordinary quick and section audits do not initialize the tracking package. If the user explicitly requests a persistent audit record for a bounded scope, use the focused tracking route in [full-audit-operations.md](full-audit-operations.md); tracking must not expand the requested coverage.
 
 ## Set the bounded scope
 
@@ -105,6 +105,6 @@ Load one section guide when a consequential or coverage-sensitive question needs
 
 Do not rewrite unless revision was requested. For combined audit and revision, record the findings before applying supported edits.
 
-Use [reporting-and-validation.md](reporting-and-validation.md) for finding fields, priorities, remedy matching, author questions, and validation. Report consequential findings rather than a pass log unless the user asks for one. State the bounded assessment scope once.
+Use [reporting-and-validation.md](reporting-and-validation.md) for concise findings and validation. Report the location, problem, reader consequence, and proposed correction or missing input. Omit routine pass logs unless requested and state the bounded assessment scope once.
 
 After an authorized repair, repeat only the affected atomic, formal-object, local, and section checks. Compile or render when possible and inspect the affected output; otherwise state the limitation.

@@ -50,13 +50,19 @@ Do not infer that a comparison is fair or unfair from missing details alone. Mar
 
 Match stated metrics to claims. Report uncertainty summaries when supplied and note their absence when it materially limits interpretation. Report runtime with available hardware, stopping rule, memory, and statistical-quality information.
 
-Prefer tables when exact summaries are primary and figures when patterns are primary. Captions should name the estimand, setting, uncertainty display, and graphical encoding.
+Prefer tables when exact summaries are primary and figures when patterns are primary. Use both for the same evidence only when they serve complementary questions.
+
+Group figure panels by the comparison the reader must make. Keep method encodings and comparable scales consistent, explain necessary scale changes, and check labels and line distinctions at the intended print size, including without color. Do not let decorative elements compete with the reported evidence.
+
+In tables, group related comparisons, state units, align numerical columns, and use precision justified by the supplied results. Explain abbreviations, missing entries, and consequential calculation conventions in notes. Reduce needless width and repeated labels; follow the venue's rules for table lines and headings.
+
+Captions should decode the estimand, setting, panels, uncertainty, and encodings without requiring a search through the text. Define reported uncertainty and replication details where needed; do not supply missing values. Introduce each display near its first substantive use, subject to submission placement rules. Let body prose explain the scientific comparison instead of reproducing the caption or every cell and curve.
 
 ## Real-data applications
 
 State whether the manuscript presents the application as an illustration, predictive evaluation, estimation problem, decision analysis, or scientific investigation. Report supplied data provenance, eligibility rules, preprocessing, missingness, information-leakage safeguards, uncertainty, and consequential analyst choices.
 
-When claiming practical or scientific value, state only an interpretation, analytical choice, scientific conclusion, or action that supplied material reports to differ from a justified baseline. If none is supplied, do not infer the application's role or relabel it as illustrative. Remove an unsupported qualifier only under the bounded-polishing rule in the main skill. If no supported clean wording remains, report **Unverified dependency:** and ask the author to identify the intended role and supporting evidence. Use illustrative language in clean manuscript prose only when the supplied material identifies the application as illustrative.
+When claiming practical or scientific value, state only an interpretation, analytical choice, scientific conclusion, or action that supplied material reports to differ from a justified baseline. If none is supplied, do not infer the application's role or relabel it as illustrative. For an unsupported qualifier, follow the bounded-polishing rule in [support-and-author-decisions.md](support-and-author-decisions.md). If no supported clean wording remains, identify the unresolved claim and ask the author for the intended role and supporting evidence. Use illustrative language in clean manuscript prose only when the supplied material identifies the application as illustrative.
 
 When truth is unavailable, do not present agreement in one observed data set as accuracy validation. Interpret differences in practical units, state what the design is said to identify, and separate predictive or associational evidence from causal conclusions.
 
@@ -66,13 +72,7 @@ If the application role remains unresolved, load [support-and-author-decisions.m
 
 ## Results paragraphs
 
-Use this order:
-
-1. question addressed by the display;
-2. principal observed pattern;
-3. practical magnitude and supplied uncertainty;
-4. stated connection to the method or formal result;
-5. exception, missing uncertainty, or failure mode.
+Organize a results passage around its question and principal observed pattern, with practical magnitude, supplied uncertainty, and the stated connection to the method or formal result. Place material exceptions or failure modes beside the claims they qualify. These functions may span several paragraphs or displays; do not repeat the same five-part paragraph for every comparison.
 
 Separate observations from explanations. Avoid narrating one method at a time. If only summary means are supplied, report the comparison descriptively and do not add significance, uniformity, or robustness claims.
 

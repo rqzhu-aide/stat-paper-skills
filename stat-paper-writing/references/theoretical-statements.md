@@ -22,16 +22,11 @@ Determine its declared job before editing:
 
 Do not describe a computational limit as statistical consistency.
 
-## Preflight paragraph
+## Orient the reader
 
-Before a central result, state:
+Before an unfamiliar central result, explain its question, main assumptions, and statistical conclusion at the intended research level. When a comparison is supplied, identify what object, regime, or guarantee changes and why it matters. Clarify paper-specific notation and restrictions without reteaching familiar definitions. Draw on preceding development rather than repeating a preamble for every result.
 
-1. the question it is said to answer;
-2. why that question matters for the method;
-3. the described role of the main assumptions;
-4. the written conclusion in ordinary statistical language.
-
-Do not begin an unfamiliar result with a dense block of notation.
+A short corollary may need only a transition; a central theorem may need substantial setup. Introduce analytical objects when their role in the question is clear. A theory-led paper may need this setup before any algorithm; do not impose construction-first exposition on it.
 
 ## Statement construction
 
@@ -55,19 +50,21 @@ Use the manuscript's supplied account to distinguish:
 - **computational:** is said to ensure an optimization or approximation can be obtained;
 - **proof-dependent regularity:** appears only in the supplied formal development.
 
-Do not determine that a role is mathematically correct or that an assumption is necessary. Check that labels, scopes, and described roles are consistent across the statement and surrounding prose. Do not call assumptions mild, standard, or verifiable without supplied support.
+Explain an operative comparison or restriction, not merely the names of symbols in a condition. An equivalent restatement may use supplied definitions and regimes under [support-and-author-decisions.md](support-and-author-decisions.md); it does not establish necessity or sufficiency. Keep labels, scopes, and declared roles consistent. Do not call assumptions mild, standard, or verifiable without supplied support.
 
-If surrounding prose asserts a relation that the displayed statement does not explicitly document, treat the difference as a documentary conflict. Do not choose the display as authoritative or remove the relation unless supplied evidence or author confirmation identifies the controlling representation. After an authorized correction, name the changed relation and its documentary basis; do not claim that omission from the display proves the relation is false or not implied.
+Where the supplied comparison permits, distinguish inherited conditions from strengthened, modified, or paper-specific restrictions, cite their provenance, and explain their roles. A wider regime for one parameter does not establish that the full assumption set is weaker.
+
+For conflicting prose and formal statements, follow the documentary-conflict rule in [support-and-author-decisions.md](support-and-author-decisions.md).
 
 ## Post-result interpretation
 
-Use three moves:
+Across the surrounding passage, provide the interpretation needed to understand the result:
 
-1. **Translation:** Explain the written conclusion without restating the display.
+1. **Translation:** State the statistical conclusion, naming the object and error or property established. Proof-operation labels such as replacement or transfer may belong in a proof roadmap; explain the underlying approximation or bound before relying on that shorthand.
 2. **Consequence:** State what estimator, design choice, or next result the manuscript says it enables.
-3. **Boundary:** State what the written result does not establish.
+3. **Boundary:** State the material scope limits of the written result.
 
-Make declared theorem dependencies visible. Move technical intermediate statements to the proof appendix when their role is documentary and the main result remains understandable.
+These functions need not form a separate paragraph after every result. Avoid translating a display twice or repeating a locally clear boundary. Make declared dependencies visible. Move technical intermediates and secondary variants to the appendix when that clarifies the main result; keep its governing conditions identifiable in the main text.
 
 ## Review checklist
 
@@ -76,5 +73,5 @@ Make declared theorem dependencies visible. Move technical intermediate statemen
 - Is the target finite-sample, asymptotic, conditional, pointwise, uniform, or computational?
 - Does surrounding prose refer to the same oracle or feasible object as the statement?
 - Does the stated relation to prior results agree with the manuscript and supplied sources?
-- Does the interpretation include both consequence and boundary?
+- Are the consequence and material boundary clear in the surrounding passage?
 - Are any questions that require mathematical validation or external source support marked **Unverified dependency**?

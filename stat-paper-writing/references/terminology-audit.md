@@ -1,104 +1,55 @@
 # Manuscript Terminology Audit
 
-## Contents
+## Scope and provenance
 
-- [Purpose and scope](#purpose-and-scope)
-- [Terminology provenance](#record-terminology-provenance)
-- [Terminology ledger](#build-the-terminology-ledger)
-- [Conventional and author-defined names](#audit-technical-names)
-- [Manuscript-wide consistency](#audit-the-full-manuscript)
-- [Audit output](#report-the-audit)
+Use for cross-section naming, conventionality, and attribution. A local wording repair uses [wording-register.md](wording-register.md). This editorial audit checks precision, supplied support, and consistency; it does not independently certify disciplinary usage or novelty.
 
-## Purpose and scope
+When conventionality or attribution matters, distinguish:
 
-Use this guide for cross-section terminology normalization, conventional-name questions, and manuscript-wide consistency. For a local wording repair that does not affect attribution or multiple sections, use [wording-register.md](wording-register.md) instead.
+- **Manuscript-supported:** the complete name appears in supplied source text, citation excerpts, or identified manuscript material.
+- **Externally confirmed in supplied task evidence:** authoritative-source verification of the complete phrase was already supplied and recorded.
+- **Unverified dependency:** the supplied material does not establish a conventionality or attribution claim needed by the intended wording.
 
-The audit is editorial. It checks whether names are precise, supported by the material actually supplied, and used consistently. It does not establish novelty or independently certify disciplinary usage.
+Familiar component words or model memory do not confirm the complete phrase. Absence from a limited supplied search does not establish that a name is nonstandard. A transparent descriptive label can be a supported local repair without claiming conventionality. State the shared boundary once: independent confirmation was not performed unless recorded task evidence establishes otherwise.
 
-## Record terminology provenance
+## One working record when useful
 
-Treat the conventionality of a technical name as a source-dependent claim. When a name is introduced, changed, or materially affects attribution or positioning, assign one provenance status:
+Use one private record for consequential naming decisions and cross-section variants, with the fields the task needs:
 
-- **Manuscript-supported:** the name is used by a supplied citation excerpt, source text, or clearly identified manuscript source.
-- **Externally confirmed in supplied task evidence:** authoritative-source verification was already supplied for the complete phrase, with the supporting sources and result recorded.
-- **Unverified dependency:** the supplied material does not establish conventionality when a conventionality or attribution claim must remain.
+| Object and mathematical type | Current name and symbol | Proposed name and acceptable variants | Supplied source anchor and provenance | Action |
+|---|---|---|---|---|
 
-This skill does not conduct independent source verification. Do not infer external confirmation from memory, familiar component words, or one manuscript-local phrase. Absence from a supplied limited search does not establish that a term is nonstandard. Without recorded authoritative verification, do not imply confirmation. If no conventionality or attribution claim is needed, a supported transparent descriptive label may be a Local repair; state that independent confirmation was not performed.
+Do not create a vocabulary inventory when the affected terms are already clear. Provenance and editorial quality are distinct: a supported name can be unclear, and a clear description need not be conventional.
 
-For consequential naming decisions, record internally:
-
-| Object | Mathematical type | Current name | Proposed canonical name | Provenance | Supplied support | Action |
-|---|---|---|---|---|---|---|
-
-Keep provenance separate from the editorial decision. A term can be source-supported but still unclear in context, and a clear descriptive phrase can be useful without being conventional terminology.
-
-## Build the terminology ledger
-
-For a multi-section audit, record:
-
-| Object | Mathematical type | Canonical term | Symbol | Acceptable local variant | Variants to revise |
-|---|---|---|---|---|---|
-
-Assign one canonical term to each central object. Permit a local variant only when the section changes the object's role or level, such as population risk versus empirical risk, oracle estimator versus feasible estimator, or scientific outcome versus coded response.
-
-When supplied material assigns oracle, feasible, or other role labels to distinct objects, name each supplied role explicitly in the revision. A construction detail, such as use of the true nuisance function or cross-fitted estimates, does not replace an explicit role label when the task is to normalize those names.
-
-Do not force distinct objects to share one term for verbal consistency. Do not give one object several names for stylistic variety. Preserve distinctions among:
+Preserve object-specific names and supplied roles. A collective label may supplement them. A detail such as use of a true nuisance function does not replace an explicit oracle label when the task is to normalize that distinction. Do not rename distinct objects identically or vary one object's name for style. Preserve:
 
 - estimand, estimator, realized estimate, and estimation error;
 - population, oracle, feasible, empirical, and numerical objects;
-- optimization objective, optimizer, and returned estimator;
+- objective, optimizer, and returned estimator;
 - exact identity, approximation, algorithm, and finite implementation;
 - association, prediction, identification, and causal effect.
 
-## Audit technical names
+## Technical names
 
-For a standard or previously studied object:
+Recover conventional names from supplied sources where available. A modifier should identify a supported, mathematically consequential variant; put manuscript-specific roles such as benchmark, initialization, or proof device in a separate clause when clearer.
 
-1. Recover the conventional name from supplied source material when available.
-2. When supplied material gives different conventional names to distinct objects, preserve each object-specific name. Use a collective label only in addition to those names, never instead of them.
-3. Use a modifier as part of the name only when it identifies a mathematically consequential variant and the supplied material supports that usage.
-4. State manuscript-specific roles such as theoretical reference, benchmark, comparator, initialization, proof role, or sensitivity analysis in a separate clause.
-5. If conventionality is unverified, use a transparent descriptive noun phrase without implying recognized terminology and flag any attribution-sensitive choice.
-6. Reserve a newly coined name for an object that the authors intentionally define and name. Introduce it explicitly and use it consistently without implying conventional usage.
+For a compound name, check support for the whole phrase and whether its modifiers describe the construction or merely its local role. Reserve coined names for objects the authors intentionally define. Introduce them explicitly without implying established usage. Do not infer publication gaps or novelty from naming decisions.
 
-Before retaining a compound label, ask whether the complete phrase is supported rather than only its components, whether each modifier distinguishes the mathematical construction rather than its role in this paper, and whether separating the object name from the local role would be clearer.
+## Check the requested manuscript scope
 
-Do not use a terminology audit to infer a publication gap or a novelty claim. Calibrate contribution wording only to the manuscript and source material supplied for the task.
+Reconcile names across the abstract, methods, statements, proofs, numerical results, captions, discussion, and supplement as applicable. Pay particular attention to:
 
-## Audit the full manuscript
+- supported attribution and explicit introduction of author-defined names;
+- separation of scientific variables from software fields in the main argument;
+- finite Monte Carlo benchmarks versus exact truth;
+- expected performance, realized performance, and estimates of expectation;
+- empirical diagnostics versus stated theoretical guarantees;
+- sampling and identification conditions on domain interpretations.
 
-Check every canonical term in:
+Preserve equations, numerical values, labels, citations, and cross-references. After editing, search for superseded variants and read each central equation with its surrounding explanation.
 
-- title, abstract, keywords, and introduction;
-- method, algorithms, assumptions, theorem and lemma statements, and proof exposition;
-- simulations, applications, captions, legends, tables, and footnotes;
-- discussion, appendices, supplementary files, and notation tables.
+## Report
 
-Check especially that:
+Use [reporting-and-validation.md](reporting-and-validation.md) for concise findings. Separate observed naming conflicts from inferred ambiguity and unresolved attribution. Follow [support-and-author-decisions.md](support-and-author-decisions.md) for consequential scientific choices.
 
-- retained conventionality or attribution claims have recorded support or are marked **Unverified dependency**;
-- author-defined names are explicitly introduced and consistently used;
-- manuscript-local role descriptors have not been fused into established names;
-- population, oracle, feasible, empirical, and numerical objects remain distinct;
-- scientific variables are not renamed as software fields or data columns in the main argument;
-- a finite Monte Carlo benchmark is not called exact truth;
-- expected performance, realized performance, and a Monte Carlo estimate of expected performance remain distinct;
-- an empirical diagnostic is not called a theorem-backed guarantee;
-- implementation terminology does not migrate into mathematical statements;
-- domain interpretation remains conditional on the stated sampling and identification assumptions;
-- terminology changes preserve labels, citations, numerical values, equations, and cross-references.
-
-Search for rejected variants after editing. Read visible prose without code, metadata, or equations, then reread each central equation with the sentence immediately before and after it.
-
-## Report the audit
-
-Apply the evidence states in [support-and-author-decisions.md](support-and-author-decisions.md) and the audit fields in [reporting-and-validation.md](reporting-and-validation.md):
-
-- use **Observed evidence** for a visible naming or consistency conflict;
-- use **Inferred consequence** for a reader-facing ambiguity supported by manuscript evidence;
-- use **Unverified dependency** when unsupported conventionality, attribution, or source support is load-bearing to the intended wording.
-
-Separate safe replacements from decisions that require author input or additional source support. Whenever a terminology provenance note uses Manuscript-supported, state in the same or immediately following sentence that independent confirmation was not performed. Do not call the name conventional, standard, established, accepted, or field-recognized on manuscript support alone. Report only terminology issues that affect meaning, attribution, consistency, or journal-ready presentation. Do not produce an exhaustive vocabulary list unless requested.
-
-When a supplied source identifier or citation key supports a naming replacement, retain that exact anchor in the revised wording or provenance note. Do not reduce a traceable source link to an anonymous supplied excerpt.
+Keep the exact source identifier or citation key supporting each naming replacement; do not turn a traceable source into an anonymous excerpt. State issue-specific uncertainty beside its finding, without repeating the shared verification boundary. Manuscript support alone does not justify calling a name conventional, standard, or field-recognized. Report only changes affecting meaning, attribution, consistency, or presentation, unless an exhaustive inventory was requested.

@@ -1,73 +1,25 @@
 # Audit Reporting and Validation
 
-## Purpose
+## Ordinary feedback
 
-Use this contract to report any writing audit or close an authorized revision. It owns priorities, remedies, author questions, safe-repair status, provenance, deterministic full-audit publication, and final validation.
+Report consequential findings by reader impact, independently of inspection order. For each, give the location, observed problem, reader consequence, and proposed correction or missing input. Prose is sufficient; do not require IDs, field labels, remedy enums, or repair-status flags. Use **Material**, **Local**, or **Author input required** when the distinction helps the reader act.
 
-It does not assess proof validity, source truth, code behavior, numerical correctness, novelty, or scientific merit.
+Keep visible manuscript evidence distinct from inferred consequences and unresolved scientific choices. Do not describe an unsupported interpretation as an established error. A needed author question should name the unresolved object or relation and the decision required; clarity has no minimum word count. Follow [support-and-author-decisions.md](support-and-author-decisions.md) when the distinction affects an edit.
 
-## Finding contract
+State the assessment boundary once, including any material unavailable source or rendering. Do not repeat routine verification disclaimers under every finding. If no consequential issue remains after the requested scope was examined, say so; an empty report alone does not establish coverage.
 
-Report only consequential findings by default. Inspection order and reporting order are distinct: inspect in the required order, then report by consequence unless the user requests a pass log.
+Use [argument-architecture.md](argument-architecture.md) for contribution identity and editorial emphasis. Include a contribution map only when it materially clarifies the narrative or is requested. Private plans have no fixed column contract.
 
-Use only these user-facing priorities:
+Do not rewrite unless revision was requested. For audit and revision, record findings before applying supported repairs. Ordinary local and whole-manuscript reviews do not initialize the tracking package or freeze a diagnosis.
 
-- **Author input required:** a safe repair requires an author decision, missing context, source support, mathematical or numerical verification, or confirmation of the intended formal object.
-- **Material:** the issue substantially affects interpretation, documentary consistency, or paper-level presentation, but the supplied record supports a repair now.
-- **Local:** the supplied record supports a bounded presentation repair now.
+## Tracked records
 
-For Full audit compatibility, encode **Author input required** as the canonical JSON priority value `Blocking`. The harness renders the user-facing label. Do not use `Blocking` as the displayed priority in prose reports.
+When a persistent, resumable, or reproducible audit record is requested, use [full-audit-operations.md](full-audit-operations.md). Load [full-audit-data-contract.md](full-audit-data-contract.md) only when authoring canonical records or preparing freeze/publication. It owns exact finding fields, priorities, remedy matching, contribution columns, and evidence bindings. These serialization requirements do not apply to ordinary feedback.
 
-For each prioritized finding, record:
+The default tracked report also omits routine pass logs and an unnecessary contribution ledger. Request detailed reporting at initialization when the user wants the procedural record displayed. Keep observations, unresolved questions, edit dispositions, and validation failures visible in either format. Tracking establishes what was reviewed and recorded, not scientific correctness.
 
-- stable finding ID for a full audit;
-- priority and concise title;
-- exact location or source anchor;
-- **Observed evidence:** with the literal manuscript fact or recurring pattern;
-- **Inferred consequence:** for every Author input required or Material finding, and for a Local finding when the requested contract asks for a consequence for every finding;
-- **Unverified dependency:** whenever the issue cannot be resolved from supplied material;
-- a direct, self-contained author question when an Unverified dependency concerns an intended author choice;
-- revision direction;
-- remedy type;
-- **Safe repair available now:** yes or no.
+## Delivery after revision
 
-Use safe_prose_edit for wording, safe_presentation_edit for supported structural or documentary changes, author_decision for intended-content choices, and additional_support for missing evidence or context.
+Compare protected mathematics and documentary tokens; recheck affected dependencies and inspect compiled or rendered output when possible. Report substantive changes, unresolved decisions, and material validation limitations. Distinguish supplied validation from work actually performed.
 
-Apply these relations exactly:
-
-- Every Unverified dependency is Author input required, includes an Inferred consequence and self-contained author question, and has no safe repair now.
-- Every Author input required finding contains an Unverified dependency.
-- Material and Local findings contain no unresolved dependency and have a supported repair now.
-- A safe bounded repair is Local unless its reader-facing effect is genuinely nonlocal.
-- Do not present an Inferred consequence as direct manuscript evidence or an Unverified dependency as an established error.
-
-Keep each author question locally self-contained. Repeat the unresolved object or relation rather than using a bare this, that, it, these, or them when more than one dependency could be in scope.
-
-If no consequential findings remain after the required scope is complete, state that result explicitly together with the assessment boundary. An empty report is not evidence of completion.
-
-## Contribution reporting
-
-Use [argument-architecture.md](argument-architecture.md) as the sole owner of contribution identity, hierarchy, and ledger columns. Do not create a contribution row for an unnamed contribution. Include the ledger only when it materially clarifies the narrative or the user requests it.
-
-## Quick and section audits
-
-Do not initialize the full-audit harness. A compact report may use prose rather than a table, but preserve the finding contract above.
-
-State the assessment boundary once. Do not repeat under every finding that proof validity, source verification, code behavior, or numerical correctness was outside scope.
-
-Do not rewrite the manuscript unless revision was requested. For combined audit and revision, record findings before edits. Freeze only a Full audit through its harness.
-
-## Full audits
-
-For a Full audit, also load [full-audit-operations.md](full-audit-operations.md). It owns workspace setup, pass state, freeze, closure, deterministic publication, and interruption recovery. Keep those operations out of quick and section audit context.
-
-## Final response closure
-
-Before returning any writing result:
-
-- keep Unicode U+2013 and U+2014 out of assistant-authored commentary and the canonical prose fields classified as assistant-authored by the full-audit data contract;
-- preserve either character in supplied or revised manuscript text, stated venue typography, source-derived observed evidence, locators, contribution-ledger cells, and supplied metadata;
-- preserve exact mathematical and documentary tokens;
-- state compile or render limitations when relevant;
-- distinguish supplied or attributed validation from work actually performed;
-- never claim mathematical, source, code, numerical, novelty, or scientific validation that this skill did not perform.
+Keep U+2013 and U+2014 out of assistant-authored commentary and canonical audit prose. Preserve source typography and literal evidence, including supplied manuscript text, locators, and contribution cells. Never claim proof, source, code, numerical, novelty, or scientific validation from this writing audit.

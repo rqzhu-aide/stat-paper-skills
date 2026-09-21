@@ -1,14 +1,16 @@
-# Full-Audit Data Contract
+# Tracked Audit Data Contract
 
 ## Purpose
 
-Use only when editing canonical full-audit JSON. It gives the exact shapes and statuses accepted by the snapshotted harness. Do not load for initialization, orientation, status, or a completed report.
+Use only when editing canonical tracked-audit JSON. It gives the exact shapes and statuses accepted by the snapshotted harness. Do not load for ordinary feedback, initialization, orientation, status, or a completed report.
 
 ## File ownership
 
 The initializer owns AUDIT_MANIFEST.json, ORIGIN.json, inputs/, and protocol/; do not edit them. The author may update AUDIT_STATE.json and FINDINGS.json and place bound evidence or diffs only under artifacts/. The harness owns DIAGNOSIS_FREEZE.json, FINAL_REPORT.md, and FINALIZATION.json; create them only through freeze or check. Never hand-edit them.
 
 Do not change JSON keys, schema_version, bindings, pass tags, kinds, requirements, or order. Use JSON null, true, and false, not strings.
+
+The initializer binds the report-detail choice, concise or detailed, in manifest scope. Resume and publication reuse that value. Do not edit the manifest or migrate older audit snapshots by hand.
 
 ## AUDIT_STATE.json
 
@@ -61,7 +63,7 @@ The compile and render records each have exactly:
       "artifact": null
     }
 
-Allowed compile statuses are passed, failed, not_run, and unavailable. Allowed render statuses are inspected, failed, not_run, and unavailable. Every resolved status needs substantive evidence; failed prevents finalization.
+Allowed compile statuses are passed, failed, not_run, and unavailable. Allowed render statuses are inspected, failed, not_run, and unavailable. Every resolved status needs substantive evidence. A recorded failure is permitted during baseline diagnosis freeze and audit-only completion. Audit-and-revise finalization rejects failed records, including an unrepaired baseline. Preserve failure evidence instead of relabeling it unavailable.
 
 Use phase audit for an audit-only run. For audit-and-revise, use baseline through the diagnosis freeze. If any manuscript edit is applied, replace both records with post_edit evidence before finalization. If no edit is applied, retain the bound baseline records.
 
@@ -193,13 +195,18 @@ IDs must be unique and match F- followed by three to nine digits. Every finding 
 
 Allowed remedy_type values are safe_prose_edit, safe_presentation_edit, author_decision, and additional_support.
 
-Apply the field relations from [reporting-and-validation.md](reporting-and-validation.md):
+These exact relations apply to tracked records only. Use safe_prose_edit for wording, safe_presentation_edit for supported structural or documentary changes, author_decision for intended-content choices, and additional_support for missing evidence or context. A bounded repair is Local unless its reader-facing effect is nonlocal.
 
-- Blocking requires inferred_consequence, unverified_dependency, a self-contained author_question ending in ?, safe_repair_available false, and author_decision or additional_support. The question needs at least eight words, must name the unresolved object or choice, and cannot substitute bare this, that, it, these, those, or them.
+- Blocking requires inferred_consequence, unverified_dependency, a nonempty author_question, safe_repair_available false, and author_decision or additional_support. Write a direct question identifying the unresolved object or choice. The validator checks presence, not linguistic adequacy or a minimum length.
 - Material requires inferred_consequence, null dependency and question, safe_repair_available true, and a safe edit remedy.
 - Local requires null dependency and question, safe_repair_available true, and a safe edit remedy; consequence may be null unless requested for every finding.
 
 ### Contribution ledger
+
+Use [argument-architecture.md](argument-architecture.md) for scientific identity, editorial hierarchy, and supplied support. This contract owns the serialized columns; ordinary plans need no fixed ledger.
+
+| Rank | Contribution | Method object or construction | Formal support | Empirical support | Boundary |
+|---|---|---|---|---|---|
 
 contribution_ledger has exactly:
 

@@ -10,17 +10,30 @@ verification. The skills can be used independently or in sequence.
 
 | Skill | Version |
 |---|---|
-| `stat-paper-writing` | v1.2 |
+| `stat-paper-writing` | v1.5.1 |
 | `stat-paper-reviewer` | v1.2 |
 | `stat-paper-proofcheck` | v2.0.0 |
 
 ## stat-paper-writing
 
-Drafts, restructures, and polishes manuscript text while preserving the
-author's claims, notation, evidence, citations, and mathematical meaning. Use
-it for writing and revision, not referee judgment or proof validation.
+Use this skill for drafting, restructuring, polishing, notation cleanup, and main-text or supplement coordination. Example: `Use $stat-paper-writing to revise this methods section while preserving every mathematical claim.`
 
-Usage: `Use $stat-paper-writing to revise this methods section without changing its mathematical claims.`
+For complete papers, v1.5.1 reads and plans around the reader's understanding,
+writes focused sections, then reconciles the argument and rendered presentation.
+It transforms research-note prose while preserving scientific claims, uses
+targeted disciplinary examples when needed, and keeps local edits lightweight.
+Drafting uses the existing sentence and paragraph guidance; methods accounts
+are checked for a reconstructible procedure at the intended research level.
+It explains the research obstacle and supplied structural insight without
+routine background instruction. Whole-manuscript reviews use concise feedback;
+persistent audit records are optional and use the existing tracking helper.
+Tracked reports default to concise output; request `--report-detail detailed`
+at initialization for a procedural audit trail.
+
+The proofcheck and writing helpers and tests require Python 3.10 or newer from
+a shared installation. The writing audit uses `pypdf` or `PyPDF2` for automatic
+PDF page counts, or accepts `--pdf-page-count "SOURCE=N"` from a trusted count.
+Run its checks with `python -m unittest discover -s stat-paper-writing/tests`.
 
 ## stat-paper-reviewer
 
@@ -138,16 +151,6 @@ commit, tag, or distributed release has been created.
 
 The proofcheck and writing helpers and tests require Python 3.10 or later.
 The reviewer helper and tests also require Python 3.10 or later.
-
-For Full writing audits with PDF sources, install `pypdf` (preferred) or
-`PyPDF2`. If neither reader is available, or automatic page inspection fails,
-supply a trusted count with `--pdf-page-count "SOURCE=N"`.
-
-Run the writing skill tests from the repository root:
-
-```text
-python -m unittest discover -s stat-paper-writing/tests
-```
 
 Run the reviewer skill tests from the repository root:
 

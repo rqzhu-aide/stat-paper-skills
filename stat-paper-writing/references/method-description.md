@@ -18,23 +18,17 @@ Look for:
 
 ## Core architecture
 
-Use the following order when applicable:
+Let the reader reconstruct the procedure: its target and available information, the elementary prediction or estimate, aggregation or adjustment, and the returned result. Explain the supplied reason for the construction as its components become necessary. Introduce notation at its substantive use.
 
-1. **Target:** Define the estimand, prediction, decision, or output.
-2. **Available information:** State the data, fitted objects, nuisance estimates, and randomness used.
-3. **Oracle or baseline:** Give the exact or familiar construction that clarifies the goal.
-4. **Obstacle:** Explain why the manuscript says the oracle or baseline is unavailable or inadequate.
-5. **Construction:** Introduce the minimum new object that addresses the stated obstacle.
-6. **Formula or algorithm:** State the feasible procedure.
-7. **Interpretation:** Explain the role, sign, units, and stated effect of each component.
-8. **Operation:** State tuning, complexity, invariances, safeguards, and failure conditions supplied by the manuscript.
-9. **Boundary:** Clarify what is described as exact, approximate, heuristic, or optional.
+Choose the entry point by explanatory need. The concrete procedure may explain the idea; the closest existing method or an oracle representation may expose the obstacle. Explain why an inherited construction needs modification or a different analysis when supplied, without routine textbook setup. Do not open with a complete-sample average, generic functional, or proof decomposition merely because later analysis depends on it. In a theory-led paper, early analytical setup can be essential. Honor the author's chosen architecture.
 
-Where useful, retain two distinct interpretations of a central construction only when both are already present in the manuscript or supplied by the author, such as statistical plus geometric, probabilistic, computational, or decision-level. Do not invent a second interpretation, force multiple interpretations, or replace a precise mechanism with analogy. If an unsupplied interpretation might help, present it as an explicit proposal outside clean manuscript prose and request author confirmation.
+Use a formula, algorithm, or short identity where it answers the current question. A result identifying what the estimator targets may belong here; detailed regularity regimes and proof devices usually belong with their analysis. Distinguish a broadly implemented procedure from a restricted version used in theory.
+
+Explain the role, normalization, tuning, and stated effect of components without inventing a mechanism. For uncertain equivalence or interpretation, use [support-and-author-decisions.md](support-and-author-decisions.md). Do not force multiple interpretations or an analogy when the construction is already clear.
 
 ## Move from local to global
 
-Define one observation-level, query-level, or pair-level object before stacking or aggregating it. Explain how local rules differ before introducing a matrix or global functional.
+Define a local object before stacking or aggregating it. After relocating a formula, recheck first-use symbols and the retained explanation in its new context; unchanged mathematics does not make its introduction self-contained.
 
 ## Distinguish layers
 
@@ -48,28 +42,27 @@ Use separate notation and prose for:
 - asymptotic approximation;
 - finite-computation implementation.
 
-State which formal result the manuscript associates with each layer. Describe information flow when the manuscript uses sample splitting, cross-fitting, withheld outcomes, reused fitted objects, or algorithmic randomness. Do not infer an unstated validity guarantee.
+Make clear which object a stated guarantee concerns when that connection becomes relevant. Describe sample splitting, cross-fitting, reused fitted objects, and randomization where they affect construction or scope. Do not infer an unstated guarantee or insert a formal-result reminder after every component.
 
-When supplied material explicitly classifies paired objects as oracle and feasible, state both classifications directly before discussing how the objects are constructed or used. A true-nuisance definition or cross-fitted construction supports the supplied classification, but does not replace its explicit role name.
+Preserve supplied oracle and feasible classifications and make them explicit where the objects are introduced or compared. Labels should clarify their definitions and information requirements, not displace the construction. Do not infer empirical use from a role label alone.
 
 ## Algorithms
 
-Before pseudocode, state inputs, outputs, target, and stored quantities. Present steps in execution order. Afterward, report supplied complexity, initialization, stopping, numerical safeguards, and failure conditions.
+Establish what the algorithm computes before extensive tuning or stabilization details. State its data, arguments, returned object, and steps in execution order. Explain supplied initialization, numerical choices, complexity, and stopping behavior when they affect the estimator, interpretation, or reproducibility at the requested level.
 
-Keep the statistical construction in the main text. Put software-specific indexing, storage, and extensive safeguards in the appendix.
+Keep the statistical construction in the main text; place software indexing, storage, and lengthy safeguards in the appendix. Preserve choices that affect the estimator or interpretation in the main account, even if their full recipe appears later.
 
 Compare formulas, pseudocode, and prose for the same named inputs, operations, tuning choices, and returned object. This is a documentary consistency check, not a determination that code implements the estimator.
 
-When these representations conflict, or when a claimed computational property is not established by supplied artifacts, load [support-and-author-decisions.md](support-and-author-decisions.md). Do not infer authority, code equivalence, exactness, convergence, complexity, or the returned object from formality or convention.
+For conflicting representations, missing consequential implementation details, or unsupported computational claims, use [support-and-author-decisions.md](support-and-author-decisions.md). Code equivalence, exactness, convergence, and complexity cannot be inferred from conventional wording.
 
 ## Review checklist
 
-- What is the target?
-- What information is observed and reused?
-- What is newly fitted or randomized?
-- Is the stated role of every term and normalization clear?
+- In a methods paper, can the intended reader trace the data through the elementary prediction or estimate and its aggregation or adjustment to the returned result by the end of Method and Implementation, without extracting the construction from Theory or the supplement? A named standard procedure may suffice for this audience; a generic kernel or functional does not replace a supplied construction. Retain the theory-led entry point when it serves the paper's purpose.
+- Are the target, observed and reused information, and fitted or randomized objects clear?
+- Does each term or analytical representation arrive with a reason to use it?
 - Which choices are described as necessary and which as convenient?
 - Do the formula, pseudocode, and prose name the same inputs, operations, outputs, and tuning choices?
 - What happens in a stated boundary or limiting regime?
-- Are cost and failure conditions explicit?
+- Are supplied cost and failure conditions clear where needed for the requested account?
 - Are claims about uninspected code behavior marked **Unverified dependency**?

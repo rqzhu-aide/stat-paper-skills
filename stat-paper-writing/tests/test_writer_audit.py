@@ -64,6 +64,7 @@ class WriterAuditTests(unittest.TestCase):
         source_kind: list[str] | None = None,
         pdf_page_count: list[str] | None = None,
         focus: str | None = "test audit scope",
+        report_detail: str = "concise",
     ) -> dict:
         audit_root = audit_root or self.audit
         args = argparse.Namespace(
@@ -75,6 +76,7 @@ class WriterAuditTests(unittest.TestCase):
             focused_pass=focused or [],
             source_kind=source_kind or [],
             pdf_page_count=pdf_page_count or [],
+            report_detail=report_detail,
         )
         return writer_audit.initialize_audit(args)
 
@@ -955,6 +957,7 @@ class WriterAuditTests(unittest.TestCase):
             action="audit",
             focused=selected,
             focus="abstract and introduction positioning",
+            report_detail="detailed",
         )
         self.complete_diagnosis(focused, contribution="not_needed")
         report = writer_audit.render_report(
@@ -1201,6 +1204,110 @@ class WriterAuditTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("FINDING_PRIORITY", issue_codes(result))
 
+    def record_failed_checks(self, audit: Path, phase: str) -> dict:
+        state = read_json(audit / writer_audit.STATE_NAME)
+        for stage in ("compile", "render"):
+            artifact = audit / "artifacts" / f"{phase}-{stage}.log"
+            artifact.write_text(f"{stage} failed: broken manuscript fixture\n", encoding="utf-8")
+            state["closure"][stage] = {
+                "phase": phase,
+                "status": "failed",
+                "evidence": f"The {phase} {stage} failed on the broken manuscript fixture.",
+                "artifact": {
+                    "path": artifact.relative_to(audit).as_posix(),
+                    "sha256": writer_audit.sha256_file(artifact),
+                },
+            }
+        write_json(audit / writer_audit.STATE_NAME, state)
+        return state
+
+    def test_audit_only_can_publish_failed_checks_with_evidence_intact(self) -> None:
+        self.complete_diagnosis()
+        failed_state = self.record_failed_checks(self.audit, "audit")
+        result, code = self.check(publish=True)
+        self.assertEqual(code, 0, result)
+        self.assertTrue(result["final"])
+        self.assertEqual(read_json(self.audit / writer_audit.STATE_NAME), failed_state)
+        report = (self.audit / writer_audit.REPORT_NAME).read_text(encoding="utf-8")
+        self.assertIn("Compile [audit]: failed:", report)
+        self.assertIn("Render [audit]: failed:", report)
+        result, code = self.status()
+        self.assertEqual(code, 0, result)
+        self.assertTrue(result["final"])
+
+    def test_failed_baseline_can_freeze_then_repair_without_losing_evidence(self) -> None:
+        audit = self.base / "baseline failure repair"
+        self.initialize(audit, action="audit-and-revise")
+        self.complete_diagnosis(audit, [self.finding("F-001", "Local")])
+        failed_state = self.record_failed_checks(audit, "baseline")
+        result, code = self.freeze(audit)
+        self.assertEqual(code, 0, result)
+        freeze_bytes = (audit / writer_audit.DIAGNOSIS_FREEZE_NAME).read_bytes()
+        baseline = json.loads(freeze_bytes)["baseline"]
+        for stage in ("compile", "render"):
+            self.assertEqual(baseline[stage], failed_state["closure"][stage])
+        result, code = self.status(audit)
+        self.assertEqual(code, 0, result)
+        self.assertFalse(result["final"])
+
+        self.finish_revision(audit, applied=True)
+        state = read_json(audit / writer_audit.STATE_NAME)
+        for stage, status in (("compile", "passed"), ("render", "inspected")):
+            artifact = audit / "artifacts" / f"post-edit-{stage}.log"
+            artifact.write_text(f"post-edit {stage} succeeded\n", encoding="utf-8")
+            state["closure"][stage] = {
+                "phase": "post_edit",
+                "status": status,
+                "evidence": f"The repaired manuscript {stage} check succeeded.",
+                "artifact": {
+                    "path": artifact.relative_to(audit).as_posix(),
+                    "sha256": writer_audit.sha256_file(artifact),
+                },
+            }
+        write_json(audit / writer_audit.STATE_NAME, state)
+        result, code = self.check(audit, publish=True)
+        self.assertEqual(code, 0, result)
+        self.assertTrue(result["final"])
+        self.assertEqual((audit / writer_audit.DIAGNOSIS_FREEZE_NAME).read_bytes(), freeze_bytes)
+        result, code = self.status(audit)
+        self.assertEqual(code, 0, result)
+        self.assertTrue(result["final"])
+
+        (audit / baseline["compile"]["artifact"]["path"]).write_text("altered baseline evidence\n", encoding="utf-8")
+        result, code = self.status(audit)
+        self.assertEqual(code, 1)
+        self.assertIn("ARTIFACT_DRIFT", issue_codes(result))
+
+    def test_failed_checks_still_need_evidence_and_post_edit_failures_block(self) -> None:
+        audit = self.base / "failed revision validation"
+        self.initialize(audit, action="audit-and-revise")
+        self.complete_diagnosis(audit, [self.finding("F-001", "Local")])
+        state = self.record_failed_checks(audit, "baseline")
+        state["closure"]["compile"]["evidence"] = ""
+        write_json(audit / writer_audit.STATE_NAME, state)
+        result, code = self.freeze(audit)
+        self.assertEqual(code, 1)
+        self.assertIn("CLOSURE_EVIDENCE", issue_codes(result))
+
+        self.record_failed_checks(audit, "baseline")
+        result, code = self.freeze(audit)
+        self.assertEqual(code, 0, result)
+        self.finish_revision(audit, applied=False)
+        result, code = self.check(audit, publish=True)
+        self.assertEqual(code, 1)
+        self.assertIn("CLOSURE_COMPILE_FAILED", issue_codes(result))
+        self.assertIn("CLOSURE_RENDER_FAILED", issue_codes(result))
+        self.assertFalse((audit / writer_audit.REPORT_NAME).exists())
+
+        self.finish_revision(audit, applied=True)
+        self.record_failed_checks(audit, "post_edit")
+        result, code = self.check(audit, publish=True)
+        self.assertEqual(code, 1)
+        self.assertIn("CLOSURE_COMPILE_FAILED", issue_codes(result))
+        self.assertIn("CLOSURE_RENDER_FAILED", issue_codes(result))
+        self.assertFalse(result["final"])
+        self.assertFalse((audit / writer_audit.FINALIZATION_NAME).exists())
+
     def test_priority_display_labels_cover_canonical_priorities(self) -> None:
         self.assertEqual(
             set(writer_audit.PRIORITY_DISPLAY_LABELS),
@@ -1212,64 +1319,36 @@ class WriterAuditTests(unittest.TestCase):
         )
         self.assertNotIn("Blocking", writer_audit.PRIORITY_DISPLAY_LABELS.values())
 
-    def test_blocking_question_rejects_bare_deictic_reference(self) -> None:
+    def test_author_question_requires_presence_without_linguistic_formulas(self) -> None:
         for question in [
-            "Which estimator should replace this in the reported application section now?",
-            "Which estimator should replace that in the reported application section now?",
+            "Should Theorem 2 assume independent observations?",
+            "Please specify whether Theorem 2 assumes independent observations.",
+            "Must it be independent of the training sample, as in Assumption 2?",
         ]:
             with self.subTest(question=question):
-                self.assertFalse(writer_audit.question_is_self_contained(question))
-        for question in [
-            "Should this estimator replace the oracle estimator in the application section?",
-            "Could the authors confirm that the estimator was fitted in the application?",
-        ]:
-            with self.subTest(question=question):
-                self.assertTrue(writer_audit.question_is_self_contained(question))
-        self.assertFalse(
-            writer_audit.question_is_self_contained(
-                "Could the authors explain why that remains unresolved in the application?"
-            )
-        )
-        self.assertTrue(
-            writer_audit.question_is_self_contained(
-                "Which theorem shows that the estimator converges under the stated assumptions?"
-            )
-        )
-        self.assertFalse(
-            writer_audit.question_is_self_contained(
-                "Could the authors explain why it should change under the stated assumptions?"
-            )
-        )
-        self.assertFalse(
-            writer_audit.question_is_self_contained(
-                "Could the authors explain it under the stated assumptions in Section 3?"
-            )
-        )
-        self.assertTrue(
-            writer_audit.question_is_self_contained(
-                "Does the estimator T_n remain valid when it is used under Assumption 2?"
-            )
-        )
-        finding = self.finding("F-001", "Blocking")
-        finding["author_question"] = (
-            "Could the authors clarify whether this should be changed in the paper?"
-        )
-        self.complete_diagnosis(
-            findings_records=[finding],
-            contribution="unavailable",
-        )
-        result, code = self.check(publish=True)
-        self.assertEqual(code, 1)
-        self.assertFalse(result["final"])
-        self.assertIn("FINDING_AUTHOR_QUESTION", issue_codes(result))
+                finding = self.finding("F-001", "Blocking")
+                finding["author_question"] = question
+                self.complete_diagnosis(findings_records=[finding])
+                result, code = self.check()
+                self.assertEqual(code, 0, result)
+
+        for missing in (None, "", "   ", False, []):
+            with self.subTest(missing=missing):
+                finding = self.finding("F-001", "Blocking")
+                finding["author_question"] = missing
+                self.complete_diagnosis(findings_records=[finding])
+                result, code = self.check(publish=True)
+                self.assertEqual(code, 1)
+                self.assertFalse(result["final"])
+                self.assertIn("FINDING_AUTHOR_QUESTION", issue_codes(result))
 
         findings = read_json(self.audit / writer_audit.FINDINGS_NAME)
-        findings["findings"][0]["author_question"] = (
-            "Which named estimator did the authors use for the reported application?"
-        )
+        del findings["findings"][0]["author_question"]
         write_json(self.audit / writer_audit.FINDINGS_NAME, findings)
         result, code = self.check()
-        self.assertEqual(code, 0, result)
+        self.assertEqual(code, 1)
+        self.assertIn("FIELD_MISSING", issue_codes(result))
+        self.assertIn("FINDING_AUTHOR_QUESTION", issue_codes(result))
 
     def test_line_page_and_artifact_anchor_contracts(self) -> None:
         pdf = self.sources / "paper.pdf"
@@ -1401,6 +1480,79 @@ class WriterAuditTests(unittest.TestCase):
         self.assertIn("Identity anchors:", report)
         self.assertIn("SRC-001 line 2", report)
         self.assertIn("Compile [audit]:", report)
+
+    def test_report_detail_persists_through_publication_and_snapshot_resume(self) -> None:
+        for detail in ("concise", "detailed"):
+            with self.subTest(detail=detail):
+                audit = self.base / f"report-{detail}"
+                args = writer_audit.build_parser().parse_args([
+                    "init", "--audit-root", str(audit), "--source", str(self.source),
+                    "--skill-root", str(ROOT), "--report-detail", detail,
+                ])
+                writer_audit.initialize_audit(args)
+                self.complete_diagnosis(audit, [self.finding("F-001", "Material")])
+                manifest = read_json(audit / writer_audit.MANIFEST_NAME)
+                self.assertEqual(manifest["scope"]["report_detail"], detail)
+                result, code = self.check(audit, publish=True)
+                self.assertEqual(code, 0, result)
+                report_bytes = (audit / writer_audit.REPORT_NAME).read_bytes()
+                report = report_bytes.decode("utf-8")
+                self.assertIn("F-001", report)
+                self.assertIn("Observed evidence:", report)
+                self.assertIn("Inferred consequence:", report)
+                self.assertIn("Revision direction:", report)
+                self.assertIn("## Validation", report)
+                self.assertEqual("## Pass coverage" in report, detail == "detailed")
+                self.assertEqual("Selected evaluative passes:" in report, detail == "detailed")
+                self.assertEqual("## Contribution ledger" in report, detail == "detailed")
+                self.assertEqual("Status: not_needed" in report, detail == "detailed")
+
+                resumed = self.base / f"resumed-{detail}"
+                shutil.copytree(audit, resumed)
+                snapshot_script = resumed / writer_audit.protocol_snapshot_path("scripts/writer_audit.py")
+                for command in ("status", "check"):
+                    argv = [sys.executable, str(snapshot_script), command, "--audit-root", str(resumed), "--json"]
+                    if command == "check":
+                        argv.append("--publish")
+                    completed = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8")
+                    self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+                    result = json.loads(completed.stdout)
+                    self.assertTrue(result["final"])
+                self.assertEqual((resumed / writer_audit.REPORT_NAME).read_bytes(), report_bytes)
+
+                manifest["scope"]["report_detail"] = "detailed" if detail == "concise" else "concise"
+                write_json(audit / writer_audit.MANIFEST_NAME, manifest)
+                result, code = self.status(audit)
+                self.assertEqual(code, 1)
+                self.assertFalse(result["final"])
+
+    def test_new_reports_default_to_concise_and_legacy_manifests_stay_detailed(self) -> None:
+        args = writer_audit.build_parser().parse_args([
+            "init", "--audit-root", str(self.base / "parser default"),
+            "--source", str(self.source),
+        ])
+        self.assertEqual(args.report_detail, "concise")
+        self.complete_diagnosis()
+        manifest = read_json(self.audit / writer_audit.MANIFEST_NAME)
+        self.assertEqual(manifest["scope"].pop("report_detail"), "concise")
+        manifest["semantic_binding_sha256"] = writer_audit.semantic_binding(manifest)
+        self.assertEqual(writer_audit.validate_manifest(manifest, self.audit), [])
+        report = writer_audit.render_report(
+            manifest,
+            read_json(self.audit / writer_audit.STATE_NAME),
+            read_json(self.audit / writer_audit.FINDINGS_NAME),
+        ).decode("utf-8")
+        self.assertIn("## Pass coverage", report)
+        self.assertIn("Status: not_needed", report)
+
+    def test_unknown_report_detail_is_rejected(self) -> None:
+        manifest = read_json(self.audit / writer_audit.MANIFEST_NAME)
+        for invalid in (None, "verbose", {}, []):
+            with self.subTest(detail=invalid):
+                manifest["scope"]["report_detail"] = invalid
+                manifest["semantic_binding_sha256"] = writer_audit.semantic_binding(manifest)
+                issues = writer_audit.validate_manifest(manifest, self.audit)
+                self.assertIn("MANIFEST_REPORT_DETAIL", {issue.code for issue in issues})
 
     def test_canonical_authored_report_fields_reject_controls(self) -> None:
         self.complete_diagnosis(findings_records=[self.finding("F-001", "Local")])
