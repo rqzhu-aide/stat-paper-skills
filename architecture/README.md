@@ -10,6 +10,6 @@ This folder describes the current `stat-proof-check` implementation. The skill's
 | [`tests/new_format`](../tests/new_format) | Shared-core behavior and packaging checks |
 | [`tools`](../tools) | Bundle builder and proof-check installer |
 
-The companion [Proof Graphify repository](https://github.com/rqzhu-aide/proof-graphify) owns its skill and architecture. Its local checkout is nested at `proof-graphify/` for cross-package development and is ignored by this repository. The two repositories have separate Git histories and remotes.
+The companion [Proof Graphify repository](https://github.com/rqzhu-aide/proof-graphify) owns its skill and architecture. Its local checkout is a sibling at `../proof-graphify/` for cross-package development. The two repositories have separate Git histories and remotes.
 
 Completed plans, audits, and old architecture versions are retained in the local `archived/` folder, outside skill discovery and Git. They are historical evidence, not current implementation instructions.

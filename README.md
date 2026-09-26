@@ -14,20 +14,21 @@ Use `$stat-write-style`, `$stat-paper-review`, `$stat-proof-write`, or `$stat-pr
 ## Repositories and folders
 
 ```text
-stat-paper-skills/                 this repository
-  stat-write-style/               skill
-  stat-paper-review/              skill
-  stat-proof-write/               skill
-  stat-proof-check/               skill
-  shared/paper_core/              maintained common backend
-  architecture/                  current proof-check architecture
-  tests/new_format/              shared backend and package tests
-  tools/                         bundle builder and installer
-  proof-graphify/                separate Git checkout, ignored here
-  archived/                      local historical material, ignored here
+stat-paper-skills/                 local grouping folder
+  stat-paper-skills/              this Git repository
+    stat-write-style/             skill
+    stat-paper-review/            skill
+    stat-proof-write/             skill
+    stat-proof-check/             skill
+    shared/paper_core/            maintained common backend
+    architecture/                current proof-check architecture
+    tests/new_format/            shared backend and package tests
+    tools/                       bundle builder and installer
+    archived/                    local historical material, ignored by Git
+  proof-graphify/                 separate Git repository and skill
 ```
 
-This repository maps to [stat-paper-skills](https://github.com/rqzhu-aide/stat-paper-skills). The nested, ignored `proof-graphify/` checkout maps to its own [proof-graphify repository](https://github.com/rqzhu-aide/proof-graphify), which owns that skill and its `architecture/` folder. Keep the two Git histories and remotes separate. The nested checkout supports cross-package development; installed skills do not require it.
+This repository maps to [stat-paper-skills](https://github.com/rqzhu-aide/stat-paper-skills). The sibling `../proof-graphify/` checkout maps to its own [proof-graphify repository](https://github.com/rqzhu-aide/proof-graphify), which owns that skill and its `architecture/` folder. The two repositories have separate Git histories and remotes. The sibling checkout supports cross-package development; installed skills do not require it.
 
 The current [proof-check architecture](architecture/README.md) describes the shared backend and audit workflow. Proof Graphify's [architecture](https://github.com/rqzhu-aide/proof-graphify/tree/main/architecture) describes its selective overview and reader. Completed revision plans, audits, receipts, and superseded designs are kept in the local `archived/` folder, outside the remote and skill discovery.
 
@@ -53,14 +54,14 @@ The installer checks the bundle, stages the package, and verifies each installed
 
 [`shared/paper_core`](shared/paper_core) is the maintained source of the common SQLite backend. [`tools/build_paper_core_bundles.py`](tools/build_paper_core_bundles.py) builds byte-identical, self-contained bundles for `stat-proof-check` and the separate Proof Graphify checkout. Do not edit a generated bundle by hand.
 
-For cross-package development, check out Proof Graphify at `proof-graphify/` and run:
+For cross-package development, check out Proof Graphify at `../proof-graphify/` and run:
 
 ```text
 python -B tools/build_paper_core_bundles.py --check
 python -B -m unittest discover -s tests/new_format
 python -B -m unittest discover -s stat-proof-check/tests
 python -B -m unittest discover -s tools -p test_install_proofcheck.py
-python -B -m unittest discover -s proof-graphify/tests
+python -B -m unittest discover -s ../proof-graphify/tests
 ```
 
 The backend and package checks assess software behavior. A complete mathematical audit and live browser review require separate evidence. The two repositories can move together without requiring either installed skill to import runtime code from the other checkout.
