@@ -72,7 +72,7 @@ class SkillStructureTests(unittest.TestCase):
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
         skill_version = re.search(r'(?m)^  version: "([^"]+)"$', skill)
         readme_version = re.search(
-            r"(?m)^\| `stat-paper-reviewer` \| v([^ |]+) \|$",
+            r"(?m)^\| `stat-paper-reviewer` \| v([^ |]+) \|(?: [^|\n]+ \|)?$",
             readme,
         )
         self.assertIsNotNone(skill_version)
@@ -83,7 +83,7 @@ class SkillStructureTests(unittest.TestCase):
     def test_runtime_metadata_covers_reviewer_tests(self) -> None:
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn(
-            "The reviewer helper and tests also require Python 3.10 or later.",
+            "The reviewer helper and tests also require Python 3.10 or later",
             readme,
         )
         self.assertIn(

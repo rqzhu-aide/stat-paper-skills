@@ -1,7 +1,7 @@
 ---
 name: stat-paper-writing
 metadata:
-  version: "1.5.1"
+  version: "1.6.1"
 description: Author-side drafting, restructuring, polishing, and presentation-audit for statistics, machine learning, econometrics, biostatistics, causal inference, and computational statistics manuscripts. Use for exposition, argument order, English, notation, terminology, register, supplied citations and cross-references, and main/supplement coordination. In mixed requests, use only for explicit writing or revision, never referee judgment. It does not validate proofs, sources, code, numerical results, novelty, or publication suitability.
 ---
 
@@ -25,7 +25,7 @@ Read the requested scope and its dependencies before editing. Reuse a compact so
 |---|---|
 | Draft a section | One section guide below and the short [prose core](references/polishing-protocol.md#prose-core-for-drafting-and-revision), read once and reused |
 | Draft or structurally revise a complete paper | [manuscript-workflow.md](references/manuscript-workflow.md): read and plan, work focused sections, reconcile |
-| Prose or structural revision | [polishing-protocol.md](references/polishing-protocol.md); add [wording-register.md](references/wording-register.md) for substantive logic, terminology, or register work |
+| Prose, paragraph, mathematical presentation, or structural revision | [polishing-protocol.md](references/polishing-protocol.md); add [wording-register.md](references/wording-register.md) for substantive logic, terminology, or register work |
 | Proof prose revision | Polishing protocol and [theoretical-proofs.md](references/theoretical-proofs.md), even for a local edit |
 | Local terminology, tone, or evidence verbs | [wording-register.md](references/wording-register.md) |
 | Quick or section presentation audit | [quick-section-audit.md](references/quick-section-audit.md), then [reporting-and-validation.md](references/reporting-and-validation.md) |
@@ -43,11 +43,11 @@ Read the requested scope and its dependencies before editing. Reuse a compact so
 | Discussion and limitations | [discussion.md](references/discussion.md) |
 | Appendix and supplement | [appendix-architecture.md](references/appendix-architecture.md) |
 
-Use one active section guide; add another only for a distinct job. Local polish needs a section guide only when its job affects the edit. Add argument architecture for paper-level abstract or introduction positioning.
+Use one section guide per distinct job; substantive method revision needs the method guide. Local polish uses section guidance only when relevant. Add argument architecture for paper-level abstract or introduction positioning.
 
 Load the support guide for missing or proposed assumptions, sparse support, conflicting representations, causal or identification claims, changed claim strength or citation scope, construction-to-theorem justifications, or unresolved scientific choices. Ordinary equivalent editing does not require that extra read.
 
-Use [style-modes.md](references/style-modes.md) only for an unresolved choice of order or explanatory depth, and [polishing-examples.md](references/polishing-examples.md) for difficult disciplinary phrasing or claim-preservation choices. Reuse read guidance and plans; reopen changed spans and dependencies. Do not load references for completeness or script source merely to run it.
+Use [style-modes.md](references/style-modes.md) only for an unresolved choice of order or explanatory depth, and [polishing-examples.md](references/polishing-examples.md) for difficult comparison, mathematical presentation, disciplinary phrasing, or claim-preservation choices. Reuse read guidance and plans; reopen changed spans and dependencies. Do not load references for completeness or script source merely to run it.
 
 ## Tracking is optional
 

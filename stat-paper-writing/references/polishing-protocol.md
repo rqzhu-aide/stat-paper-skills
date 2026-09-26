@@ -2,33 +2,37 @@
 
 ## Scope and meaning
 
-Distinguish a light polish of grammar and local clarity, substantive polishing of paragraph architecture and explanation, and structural revision of sections. Work within the requested scope. Perform checks privately and return or apply the improved text; an ordinary polish needs no audit report or approval for a supported edit.
+Distinguish light polish, substantive paragraph development, and section restructuring. Work within scope, check privately, and apply supported edits directly; ordinary polishing needs no audit report.
 
 Before rewriting, identify the passage's job, claim, mathematical objects, evidence level, and boundary. Protect:
 
-- equations, symbols, indices, macros, labels, and cross-references;
+- mathematical expressions, symbols, indices, macros, labels, and cross-references;
 - negation, logical direction, quantifiers, conditioning, and sources of randomness;
 - finite-sample, asymptotic, oracle, feasible, empirical, and computational scope;
 - uncertainty, modality, causal status, and novelty claims;
 - numerical values, units, and citations.
 
-Preserve scientific content while changing explanation order, headings, sentence subjects, and paragraph boundaries as authorized. Inspect dependencies of formal statements, assumptions, estimands, numerical conclusions, and causal interpretations before editing. Exact mathematical tokens remain unchanged unless notation normalization is requested.
+Preserve scientific content while changing authorized explanation order, headings, and sentence subjects. Inspect affected scientific dependencies. Mathematical presentation follows the prose core; notation normalization requires authorization.
 
-For conflicting representations, uncertain equivalence, missing support, or a proposed substantive correction, use [support-and-author-decisions.md](support-and-author-decisions.md), the detailed action rule. Continue supported edits elsewhere. Do not hide a scientific change inside a polish.
+For conflicts, uncertain equivalence, missing support, or substantive corrections, use [support-and-author-decisions.md](support-and-author-decisions.md). Continue supported edits elsewhere; do not hide scientific changes inside a polish.
 
 ## Revise at the needed scale
 
-For paper-level work, follow [manuscript-workflow.md](manuscript-workflow.md) to read and plan, work focused sections, and reconcile. For a local edit, use only the checks relevant to that passage; no fixed sequence of separate passes is required.
+Paper-level work follows [manuscript-workflow.md](manuscript-workflow.md). Local edits use relevant checks without a fixed sequence of separate passes.
 
 ## Prose core for drafting and revision
 
-For drafting, apply this subsection; the revision-specific checks elsewhere in this guide need not be loaded solely to draft a section.
+For drafting, read this subsection; revision-specific checks elsewhere in this guide are unnecessary.
 
-**Sentence and cohesion.** Unpack stacked nouns into the relation among named objects. Keep subjects near their verbs and antecedents unambiguous. Start from the dependency created by the previous sentence and place new information where it receives emphasis. Use stable terms, especially for oracle versus feasible, population versus empirical, and exact versus approximate objects. Transitions should express a substantive connection rather than announce another section.
+**Sentence and cohesion.** Unpack stacked nouns into relations among named objects. Keep subjects near verbs and antecedents unambiguous. Build on preceding sentences with appropriate emphasis. Use stable terms for distinct statistical objects and substantive transitions between topics.
 
-**Paragraph development.** Introduce the reader's question, claim, or obstacle before dense detail and notation at its use. Let the paragraph develop that purpose. Combine fragments answering one question and split overloaded reasoning at a change of purpose. Sustained comparisons may need substantial space; transitions may be brief. Use no word quota or repeated paragraph skeleton. Remove repeated openings and summaries without erasing necessary qualifications.
+**Paragraph development.** Develop one question, claim, or obstacle through the explanation, comparison, and mathematical detail it needs. Combine fragments doing the same intellectual work; split at a change of purpose. A paragraph can contain a display and continue afterward. Watch for chains of tiny lead-ins, displays, and isolated follow-ups: integrate the thought instead of adding padding. Sustained comparisons may need space; transitions may be brief. Use no length quota or repeated paragraph skeleton. Remove repeated openings and summaries without erasing qualifications.
 
-**Economy and register.** Remove language that changes neither meaning nor navigation. Preserve a professional authorial voice and already clear sentences. For specialist terminology, evidence verbs, tone, or software-manual register, use [wording-register.md](wording-register.md).
+**Mathematical prominence.** Keep routine notation, short conditions, substitutions, and incidental identities inline when readable. Display central definitions and results, expressions needing visual comparison, or mathematics that would obstruct a sentence; a short central equation can deserve a display. Integrate displays grammatically and explain their role without paraphrasing every symbol. An isolated "Define," "Thus," or "where" may signal fragmentation, not a forbidden word.
+
+**Presentation and preservation.** Within the requested scope, change paragraph breaks, display delimiters, environments, and surrounding prose while preserving mathematical expressions, conditions, scope, protected macros, labels, and reference targets. Respect explicit formatting constraints. Retain referenced displays when they serve navigation or emphasis, and preserve venue numbering requirements. Do not silently drop labels to move a formula inline or normalize mathematical tokens without authorization.
+
+**Attribution and economy.** Credit inherited ideas at substantive use; explain their relationship to the present argument where consequential. Use supported comparisons, not a citation quota. Remove language that changes neither meaning nor navigation. Preserve authorial voice and clear sentences; use [wording-register.md](wording-register.md) for specialist terminology, evidence verbs, or register choices.
 
 ## Statistical prose mechanics
 
@@ -44,14 +48,10 @@ For proof prose, including a local polish, use [theoretical-proofs.md](theoretic
 
 **Limitations.** Place a restriction beside the claim it qualifies. Repeat it when a distant passage could otherwise mislead, using a short reference where sufficient. Consolidate caveats without making a headline unconditional or concealing a theory-to-implementation gap.
 
-## Mathematics and displays
-
-Introduce a display with its purpose and explain its consequence or mechanism, rather than paraphrasing every symbol. Preserve punctuation and grammatical integration. Check whether respectively, conditional, marginal, uniform, and independent match the displayed relation. Any authorized notation change must propagate consistently.
-
 ## Compare and deliver
 
-Compare source and revision for the protected content above, including the relationships among symbols, conditioning, convergence modes, constants, and theorem references. Check that supplied citation support still matches its clause, values and units agree, and terminology remains consistent across affected captions, algorithms, and supplements.
+Compare source and revision for protected content, including symbol relationships, conditioning, convergence modes, constants, and theorem references. Check that prose matches the displayed relation, citation support still matches its clause, values and units agree, and terminology remains consistent across affected captions, algorithms, and supplements. Propagate any authorized notation change consistently.
 
 Watch particularly for changes from some to all, pointwise to uniform, association to effect, oracle to feasible, approximate to exact, observed to established, can to guarantees, or one setting to general settings. These are changes of scientific force, not stylistic alternatives.
 
-For a local edit, deliver the text directly. For a longer revision, summarize the principal changes and validation, with unresolved input and any authorized substantive correction stated separately. Keep a reviewable diff and avoid an exhaustive style log. For a difficult specialist or claim-preservation choice, consult [polishing-examples.md](polishing-examples.md); routine edits need no examples file.
+Deliver local edits directly. For longer revisions, summarize principal changes, validation, unresolved input, and substantive corrections. Keep a reviewable diff, not an exhaustive style log. Consult [polishing-examples.md](polishing-examples.md) for difficult choices; routine edits need no examples file.

@@ -1,6 +1,54 @@
 # Compact Polishing Examples
 
-Use these conditional examples for difficult specialist rewriting or a high-risk edit. Preserve the manuscript's assumptions, symbols, and evidence.
+Use these conditional examples for difficult comparisons, mathematical presentation, specialist rewriting, or high-risk edits. Preserve the manuscript's assumptions, symbols, and evidence.
+
+## Develop a method's relationship to prior work
+
+Synthetic supplied facts: for fixed $\lambda>0$, Source A fits linear regression by minimizing squared error plus $\lambda\sum_j\beta_j^2$. The current construction uses the same squared-error loss, with fixed, prespecified scales $s_j>0$ and penalty $\lambda\sum_j\beta_j^2/s_j^2$. The stated purpose is to penalize coefficients relative to those scales. No prediction improvement or optimal choice of scales is established. Source A is a fictional teaching reference.
+
+Underdeveloped draft:
+
+> We use penalized least squares (Source A). Let $s_j>0$. The penalty is $\lambda\sum_j\beta_j^2/s_j^2$. The scales are prespecified.
+
+Developed passage:
+
+> Source A applies a common quadratic penalty to the regression coefficients. We retain its squared-error loss and express the penalty relative to prespecified coefficient scales $s_j>0$, giving $\lambda\sum_j\beta_j^2/s_j^2$. A larger scale reduces that coefficient's penalty weight. This modification lets the penalty reflect the supplied scales while leaving the data-fitting criterion unchanged.
+
+The revision explains inheritance, modification, and the supplied reason together. The comparison follows directly from the stipulated penalties; it claims neither novelty nor better prediction. In a real manuscript, use the actual source and supported relationship rather than this paragraph's wording.
+
+## Integrate incidental mathematics and retain a central display
+
+The following synthetic passage defines a reported mean. Its short labeled equation is cited later, so its display has a navigation role.
+
+Fragmented source:
+
+```latex
+We observe $Y_1,\ldots,Y_n$.
+
+Put
+\[
+S_n=\sum_{i=1}^nY_i.
+\]
+
+Then
+\begin{equation}\label{eq:reported-mean}
+\widehat\theta_n=S_n/n.
+\end{equation}
+
+Equation~\eqref{eq:reported-mean} defines the reported mean.
+```
+
+Integrated revision:
+
+```latex
+For observations $Y_1,\ldots,Y_n$, write $S_n=\sum_{i=1}^nY_i$.
+The reported mean is
+\begin{equation}\label{eq:reported-mean}
+\widehat\theta_n=S_n/n.
+\end{equation}
+```
+
+Both mathematical expressions remain intact, with the label available for later references. Routine notation moves into the explanation; the central referenced definition keeps its prominence. No longer paragraph or added statistical claim is needed.
 
 ## Preserve theorem scope
 

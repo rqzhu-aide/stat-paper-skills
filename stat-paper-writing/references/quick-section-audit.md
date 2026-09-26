@@ -79,8 +79,8 @@ Inspect only the affected local material for:
 
 - definitions before use and purpose before unfamiliar notation;
 - sentence meaning, agency, logical direction, claim strength, and statistical register;
-- integration and punctuation of mathematics and displays;
-- the controlling question and information order of each paragraph;
+- grammatical integration and appropriate prominence of inline mathematics and displays;
+- the controlling question, development, and information order of paragraphs, including fragmented prose/display sequences;
 - cohesion and the intellectual reason for local transitions;
 - rhetorical shortcuts, software-manual wording, generic promotion, and unsupported interpretation.
 
@@ -94,6 +94,7 @@ Check whether:
 
 - objects appear after their purpose and before their use;
 - methods distinguish target, oracle or baseline, exact or plug-in object, obstacle, feasible construction, information flow, operation, tuning, failure behavior, and boundary;
+- consequential method choices explain their supported relationship to inherited ideas, with attribution at substantive use;
 - formal results answer a stated question and receive interpretation without proof machinery;
 - proof exposition has a declared dependency map and navigable roadmap;
 - numerical sections organize settings and displays around supplied claims and report the applicable target or truth, competitors, tuning, oracle inputs, replication count, uncertainty, timing, and failure handling;

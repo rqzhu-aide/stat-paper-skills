@@ -2,7 +2,7 @@
 
 ## Job of the section
 
-Explain what is constructed, why each component is needed, what information it uses, and how the described procedure relates to the statistical target.
+Explain the construction, its target and information, and the intellectual choices connecting it to relevant prior work.
 
 ## Diagnose the current draft
 
@@ -14,13 +14,18 @@ Look for:
 - optional choices presented as mathematical necessities;
 - algorithm steps mixed with conceptual derivation;
 - no interpretation of normalization, tuning, or dependence control;
+- inherited constructions cited without explaining consequential adaptations;
 - computational claims without dimensions, stopping rules, or failure states.
 
 ## Core architecture
 
-Let the reader reconstruct the procedure: its target and available information, the elementary prediction or estimate, aggregation or adjustment, and the returned result. Explain the supplied reason for the construction as its components become necessary. Introduce notation at its substantive use.
+Let the reader reconstruct the target, available information, elementary prediction or estimate, aggregation or adjustment, and returned result. Explain the supplied rationale as components become necessary; introduce notation at substantive use.
 
-Choose the entry point by explanatory need. The concrete procedure may explain the idea; the closest existing method or an oracle representation may expose the obstacle. Explain why an inherited construction needs modification or a different analysis when supplied, without routine textbook setup. Do not open with a complete-sample average, generic functional, or proof decomposition merely because later analysis depends on it. In a theory-led paper, early analytical setup can be essential. Honor the author's chosen architecture.
+Choose the entry point by explanatory need: the procedure, closest method, or oracle representation. Analytical dependencies alone do not justify opening with a generic functional or proof decomposition. Retain useful early setup in theory-led papers and honor the author's architecture.
+
+At consequential choices, explain the inherited idea, what is retained or changed, the supplied reason, and supported consequence or tradeoff. Distinguish changes to target, information, assumptions, estimator, computation, and guarantee. A changed setting does not establish earlier-method failure. Develop relationships where they explain the construction or analysis, without a repeated template or second literature survey. Attribute reuse without inventing novelty.
+
+Use supplied source passages first; unresolved consequential comparisons use [targeted source reading](wording-register.md#targeted-disciplinary-calibration). Bibliography entries alone cannot substantiate comparisons. When support or design rationale is missing, continue supported writing and identify material missing information separately; do not invent necessity, superiority, or optimality.
 
 Use a formula, algorithm, or short identity where it answers the current question. A result identifying what the estimator targets may belong here; detailed regularity regimes and proof devices usually belong with their analysis. Distinguish a broadly implemented procedure from a restricted version used in theory.
 
@@ -44,23 +49,24 @@ Use separate notation and prose for:
 
 Make clear which object a stated guarantee concerns when that connection becomes relevant. Describe sample splitting, cross-fitting, reused fitted objects, and randomization where they affect construction or scope. Do not infer an unstated guarantee or insert a formal-result reminder after every component.
 
-Preserve supplied oracle and feasible classifications and make them explicit where the objects are introduced or compared. Labels should clarify their definitions and information requirements, not displace the construction. Do not infer empirical use from a role label alone.
+Make supplied oracle and feasible classifications explicit at introduction or comparison. Labels clarify definitions and information requirements; they do not replace the construction or establish empirical use.
 
 ## Algorithms
 
-Establish what the algorithm computes before extensive tuning or stabilization details. State its data, arguments, returned object, and steps in execution order. Explain supplied initialization, numerical choices, complexity, and stopping behavior when they affect the estimator, interpretation, or reproducibility at the requested level.
+State the algorithm's data, arguments, returned object, and execution order. Explain supplied initialization, tuning, stabilization, complexity, and stopping behavior when consequential for the estimator, interpretation, or requested reproducibility.
 
 Keep the statistical construction in the main text; place software indexing, storage, and lengthy safeguards in the appendix. Preserve choices that affect the estimator or interpretation in the main account, even if their full recipe appears later.
 
-Compare formulas, pseudocode, and prose for the same named inputs, operations, tuning choices, and returned object. This is a documentary consistency check, not a determination that code implements the estimator.
+Compare formulas, pseudocode, and prose for matching inputs, operations, tuning, and returned object. This checks documentary consistency, not code equivalence.
 
-For conflicting representations, missing consequential implementation details, or unsupported computational claims, use [support-and-author-decisions.md](support-and-author-decisions.md). Code equivalence, exactness, convergence, and complexity cannot be inferred from conventional wording.
+For conflicts, consequential missing details, or unsupported computational claims, use [support-and-author-decisions.md](support-and-author-decisions.md). Conventional wording cannot establish code equivalence, exactness, convergence, or complexity.
 
 ## Review checklist
 
-- In a methods paper, can the intended reader trace the data through the elementary prediction or estimate and its aggregation or adjustment to the returned result by the end of Method and Implementation, without extracting the construction from Theory or the supplement? A named standard procedure may suffice for this audience; a generic kernel or functional does not replace a supplied construction. Retain the theory-led entry point when it serves the paper's purpose.
+- By the end of Method and Implementation, can the intended reader trace data through the elementary estimate and aggregation to the returned result? A named standard procedure may suffice; a generic functional cannot replace a supplied construction. Retain useful theory-led organization.
 - Are the target, observed and reused information, and fitted or randomized objects clear?
 - Does each term or analytical representation arrive with a reason to use it?
+- Can the reader identify what is inherited, what changes, and the supported reason where that relationship matters to the method?
 - Which choices are described as necessary and which as convenient?
 - Do the formula, pseudocode, and prose name the same inputs, operations, outputs, and tuning choices?
 - What happens in a stated boundary or limiting regime?

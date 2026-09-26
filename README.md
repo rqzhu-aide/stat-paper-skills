@@ -10,22 +10,22 @@ verification. The skills can be used independently or in sequence.
 
 | Skill | Version |
 |---|---|
-| `stat-paper-writing` | v1.5.1 |
-| `stat-paper-reviewer` | v1.2 |
+| `stat-paper-writing` | v1.6.1 |
+| `stat-paper-reviewer` | v1.2.1 |
 | `stat-paper-proofcheck` | v2.0.0 |
 
 ## stat-paper-writing
 
 Use this skill for drafting, restructuring, polishing, notation cleanup, and main-text or supplement coordination. Example: `Use $stat-paper-writing to revise this methods section while preserving every mathematical claim.`
 
-For complete papers, v1.5.1 reads and plans around the reader's understanding,
+For complete papers, v1.6.1 reads and plans around the reader's understanding,
 writes focused sections, then reconciles the argument and rendered presentation.
 It transforms research-note prose while preserving scientific claims, uses
 targeted disciplinary examples when needed, and keeps local edits lightweight.
-Drafting uses the existing sentence and paragraph guidance; methods accounts
-are checked for a reconstructible procedure at the intended research level.
-It explains the research obstacle and supplied structural insight without
-routine background instruction. Whole-manuscript reviews use concise feedback;
+Drafting and revision share guidance on developed paragraphs, inline mathematics,
+and purposeful displays while preserving mathematical content and references.
+Methods explain supported relationships to inherited ideas at consequential
+construction choices. Whole-manuscript reviews use concise feedback;
 persistent audit records are optional and use the existing tracking helper.
 Tracked reports default to concise output; request `--report-detail detailed`
 at initialization for a procedural audit trail.
@@ -37,12 +37,9 @@ Run its checks with `python -m unittest discover -s stat-paper-writing/tests`.
 
 ## stat-paper-reviewer
 
-Reviews a manuscript as a critical first-time reader, focusing on contribution,
-methodology, theory, evidence, interpretation, novelty, and likely reviewer
-concerns. It diagnoses problems and recommends priorities without rewriting the
-paper.
+Use this skill for referee reports, pre-submission diagnosis, novelty or citation checks, assumption scrutiny, and likely reviewer objections. Example: `Use $stat-paper-reviewer to review this manuscript as a critical statistical referee.`
 
-Usage: `Use $stat-paper-reviewer to review this manuscript and identify the most important issues.`
+Its review reports may include edit specifications, but it does not draft or edit manuscript text. The reviewer helper and tests also require Python 3.10 or later from a shared installation. Run its checks with `python -m unittest discover -s stat-paper-reviewer/tests`.
 
 ## stat-paper-proofcheck
 

@@ -15,7 +15,7 @@ An edit specification states what must change, where, why it matters to the pape
 
 ## Default integrated review
 
-Use this structure for a full manuscript review:
+Use these components for a full manuscript review. The report should present the scientific judgment and its evidence, not reproduce the internal reading trace or search log. Combine components when they concern the same finding, and keep a review of partial material proportionate to what can be assessed.
 
 1. **Review setup**
    - review scope and material reviewed;
@@ -24,38 +24,29 @@ Use this structure for a full manuscript review:
 2. **Overall assessment**
    - concise verdict;
    - strongest defensible aspect, if one is visible;
-   - principal obstacle to a convincing paper.
+   - principal obstacle to a convincing paper and whether the central claim is supported in the reviewed scope.
 3. **Category scorecard**
    - the default four categories from [scoring-rubric.md](scoring-rubric.md), plus any requested dimensions, each with an integer 1-10 score when assessable and `N/A` otherwise;
-   - support status, brief basis, and limiting issue per row, then a one-or-two-sentence verdict per category.
-4. **Main strengths**
+   - support status, brief basis, and limiting issue per row; add a category verdict below the table only when it explains a distinction the row cannot convey.
+4. **Literature comparison, when assessed**
+   - state the exact novelty claim and compare it with the closest verified work, identifying which was already cited and which was found independently; if no close work was found, state that result within the search boundary;
+   - state what the inspected content supports, the material overlap or distinction, and why that distinction matters for the paper's claimed contribution;
+   - give verification and discovery/citation status, source links or identifiers, and the search boundary near the conclusion; use a compact table or a few sentences rather than a search log.
+5. **Main strengths**
    - up to three manuscript-specific strengths supported by the reviewed material;
    - do not count an important topic, an ambitious aim, the mere presence of paper components, stated intentions, or conditional future coherence as a strength;
    - omit this section when no defensible strength is visible in the reviewed scope.
-5. **Priority findings**
+6. **Priority findings**
    - Critical and Major findings first;
    - Moderate findings only when consequential;
-   - Minor findings only when they retain a concrete reviewer-facing consequence.
-6. **First-reader sequence findings, when consequential**
-   - earliest unresolved or delayed reader problem;
-   - where later text resolves it, if applicable;
-   - effect on the argument encountered in order.
-7. **Patterned-prose alarm, when requested or when the reporting threshold is met**
-   - bounded classification;
-   - representative locations and evidence classes;
-   - consequence for statistical meaning or claim traceability;
-   - explicit statement that prose does not establish authorship.
-8. **Novelty and citation evidence, when assessed**
-   - manuscript citations checked;
-   - closest external publications found;
-   - each decisive publication labeled as cited by the manuscript or found independently and uncited;
-   - verified distinction and remaining search boundary.
-9. **Likely reviewer objections, when they add new framing**
-   - concise objections not already expressed by the findings.
-10. **Assessment boundary and unresolved verification**
+   - Minor findings only when they retain a concrete reviewer-facing consequence;
+   - include consequential first-reader failures and any reportable patterned-prose concern as findings, with their required evidence and scope;
+   - group repeated symptoms of one scientific problem into one finding, and refer to the literature comparison rather than repeating it;
+   - add a separate likely-objections note only if requested and it contributes a distinct concern.
+7. **Assessment boundary and unresolved verification**
    - missing materials;
-   - novelty, proof, citation, or implementation claims not verified.
-11. **Revision sequence**
+   - novelty, proof, citation, or implementation claims not verified; if no external comparison was possible, state that substantive novelty is unassessed here.
+8. **Revision sequence**
    - ordered actions referring to existing finding labels;
    - distinguish rewrites from new scientific work;
    - end the integrated report here.
@@ -86,6 +77,7 @@ For a request limited to one section or concern, return:
 5. unassessed dependencies.
 
 Do not force a paper-level verdict from a partial excerpt.
+For a novelty-focused request, include the closest verified work, its substantive overlap or distinction, and the search boundary within the findings.
 
 For a focused AI-writing request, classify only the reviewed scope. If the evidence is too short or narrow, use "not assessable." For an assessable case below the reporting threshold, use the single public label **No reportable pattern**. After emitting it once, delete every later occurrence of `reportable pattern` or `reportable recurrent pattern`, including negated forms. Express the bounded consequence without another classification phrase, and do not claim that AI use was ruled out.
 
@@ -96,10 +88,11 @@ Organize around action:
 1. submit now or revise first;
 2. strongest reviewer-facing asset;
 3. main acceptance risks;
-4. changes possible by rewriting or reorganization;
-5. changes requiring new analysis, theory, evidence, or verification;
-6. optional venue-positioning note;
-7. recommended revision order, which ends the memo.
+4. a concise comparison with the closest literature and its search boundary when novelty is assessed;
+5. changes possible by rewriting or reorganization;
+6. changes requiring new analysis, theory, evidence, or verification;
+7. optional venue-positioning note;
+8. recommended revision order, which ends the memo.
 
 Include the default category scorecard from [scoring-rubric.md](scoring-rubric.md) after the submit-or-revise judgment, and apply that rubric to any additionally requested scores. If the user requests outcome probabilities, state that they are judgmental rather than calibrated forecasts and explain the evidence behind them.
 
@@ -129,7 +122,7 @@ Use this compact pattern for substantive findings:
 - **Edit specification:** what must change, its intended effect, and any dependency.
 - **Remedy type:** rewrite, reanalysis, new evidence, new theory, verification, or author decision.
 
-Use paragraphs instead of this template when the review remains equally precise. The overall assessment may summarize the principal concern once; keep its full evidence and diagnosis in one finding and refer back to that finding elsewhere.
+Use a compact evidence, consequence, and action paragraph instead of every template field as a separate bullet when the review remains equally precise. The overall assessment may summarize the principal concern once; keep its full evidence and diagnosis in one finding and refer back to that finding elsewhere.
 
 For a material patterned-prose alarm, use the title "Recurrent patterned prose weakens claim traceability." Give two to four representative locations and follow [ai-writing-alarm.md](ai-writing-alarm.md). Do not title the finding "AI-written prose."
 

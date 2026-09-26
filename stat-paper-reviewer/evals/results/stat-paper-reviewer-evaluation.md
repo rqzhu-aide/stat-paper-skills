@@ -1,5 +1,7 @@
 # Evaluation: `stat-paper-reviewer` skill
 
+**Historical evaluation.** This report assessed an earlier revision and is retained as a record, not as guidance for the current skill. Its statements that the default scale was 1-5, every full review required a run bundle, and no eval set existed have been superseded. The current [skill definition](../../SKILL.md), [scoring rubric](../../references/scoring-rubric.md), [run protocol](../../references/run-portability.md), and [eval cases](../evals.json) govern those points.
+
 **Date:** 2026-08-30
 **Scope:** All 16 files in `stat-paper-reviewer/` (SKILL.md, 9 references, 2 scripts, 2 test files, agents/openai.yaml, LICENSE). I ran the bundled test suite (19/19 pass on Python 3.11), smoke-tested both CLIs, and measured the token footprint of every load path.
 **Benchmark:** Your stated intent, a structured review report covering (1) novelty, (2) theory, (3) computation, (4) writing, each scored 1-10.

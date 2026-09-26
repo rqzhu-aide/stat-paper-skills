@@ -4,7 +4,7 @@
 
 Treat each score as an ordinal reviewer judgment, not a measurement, acceptance probability, or substitute for the evidence-based diagnosis.
 
-Every full or pre-submission review ends with the default category scorecard below. Score additional dimensions, alternative scales, or venue rubrics only when the user requests them.
+Every full or pre-submission review includes the default category scorecard below. Score additional dimensions, alternative scales, or venue rubrics only when the user requests them.
 
 A defined rubric supplied by the user or a named venue governs the additional rubric-specific table and any rubric-specific overall score; it does not replace the default scorecard in a full or pre-submission review. Keep the tables separate when their dimensions or scales differ, and do not blend, average, or silently translate their scores. For a focused review that is not full or pre-submission, use only the requested rubric and the relevant dimensions. A defined rubric specifies dimensions and scale anchors and, for an overall score, weights or a decision rule. A request for decimals, missing-as-zero treatment, or a simple average is an output preference, not a defined rubric, and cannot override the evidence safeguards below.
 
@@ -18,10 +18,11 @@ Score these four categories on the 1-10 scale below, assigning an integer only w
 |---|---|---|
 | Novelty | Does the claimed contribution survive the combination test and the documented external comparison? | [novelty-verification.md](novelty-verification.md) |
 | Theory | Do the assumptions, formal results, plausibility screen, and interpretation align with the claims? | [review-framework.md](review-framework.md) sections 2 and 3 |
-| Computation and evidence | Is the method computationally correct and practical, and do the experiments support the claims against suitable alternatives in representative settings? | [review-framework.md](review-framework.md) sections 2 and 4 |
+| Computation and evidence | Does the described computation implement the stated method at the level shown and support its claimed practical scale, and do the experiments support the claims against suitable alternatives in representative settings? | [review-framework.md](review-framework.md) sections 2 and 4 |
 | Writing and presentation | Can a critical reader recover the claim chain, and is the manuscript professionally edited? | [review-framework.md](review-framework.md) section 5 and [ai-writing-alarm.md](ai-writing-alarm.md) |
 
 Scoring the novelty category requires the external comparison in [novelty-verification.md](novelty-verification.md); perform it whenever a search route in [academic-search-operations.md](academic-search-operations.md) is available. When no external search was possible, mark novelty `N/A`, comment only on positioning clarity, and state why.
+If an unresolved detail in a close comparator could reverse the novelty judgment, mark novelty `N/A` even when a search was performed. A limited search can support a provisional numeric score only when the inspected comparison still supports a bounded judgment.
 
 When the user requests finer or additional dimensions, report them the same way and keep them consistent with their parent category: contribution identity and literature-supported novelty belong to novelty; statistical validity and method-theory coherence to theory; evidence, reproducibility, and computational practicality to computation and evidence; reviewer readability and patterned prose to writing and presentation. Interpretation and relevance, broad significance, and venue fit are separate optional dimensions scored only on request.
 
@@ -37,10 +38,10 @@ Use integer scores only, anchored in bands:
 
 Within a band, use the lower number when the limiting issue sits closer to the band below and the higher number otherwise. Do not use decimals. Missing material in a partial review is `N/A`, never zero or automatically a low score.
 
-When the user requests a numeric scale from (a) to (b) without supplying anchors, first assign the supported default score (sin{1,ldots,10}), then map it by
-[
-t=a+rac{s-1}{9}(b-a).
-]
+When the user requests a numeric scale from \(a\) to \(b\) without supplying anchors, first assign the supported default score \(s \in \{1,\ldots,10\}\), then map it by
+\[
+t=a+\frac{s-1}{9}(b-a).
+\]
 State the mapping and rounding rule once, round only the final mapped value to the precision supported by the requested scale, and preserve `N/A` as `N/A`. Do not use this conversion for a supplied or verified rubric that already defines its own anchors.
 
 ## Evidence and consistency
@@ -74,6 +75,6 @@ Place the scorecard immediately after the overall assessment. State once, direct
 | Category | Score | Support status | Brief basis | Limiting issue |
 |---|---:|---|---|---|
 
-Follow the table with a one-or-two-sentence verdict per category, then a short qualitative synthesis rather than a restatement of every finding. For a focused review, show only the categories or dimensions relevant to the request.
+The table carries the category verdicts. Add a sentence below it only when a material distinction cannot be conveyed in a row, then give a short qualitative synthesis rather than restating every finding. For a focused review, show only the categories or dimensions relevant to the request.
 
-When an additional user-supplied or venue rubric is requested in a full or pre-submission review, place its separate table after the default category verdicts. Label its source, scale, and aggregation rule, and state any mapping used for overlapping dimensions.
+When an additional user-supplied or venue rubric is requested in a full or pre-submission review, place its separate table after the default scorecard and any explanatory sentence. Label its source, scale, and aggregation rule, and state any mapping used for overlapping dimensions.

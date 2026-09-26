@@ -8,7 +8,7 @@ This guide audits reporting and presentation. It does not recompute or certify n
 
 ## Start from claims
 
-Create a claim-evidence map before revising settings:
+Reuse the paper plan to connect claims to evidence before revising settings. When several comparisons are difficult to track, a compact map can help:
 
 | Claim | Reported comparison or truth | Metric | Stress or boundary setting |
 |---|---|---|---|

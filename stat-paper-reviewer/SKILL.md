@@ -1,7 +1,7 @@
 ---
 name: stat-paper-reviewer
 metadata:
-  version: "1.2"
+  version: "1.2.1"
 description: "Review statistics, machine learning, econometrics, biostatistics, causal inference, and theory-and-methods manuscripts as a critical first-time reader. Use for referee reports, pre-submission readiness, novelty or citation assessment, category or venue scoring, assumptions, theorems, methods, empirical evidence, computation, broad significance, patterned prose, and prioritized reviewer diagnoses. Full reviews include a four-category 1-10 scorecard. For review combined with revision, provide diagnosis and edit specifications only, never manuscript prose. Verify literature-based novelty when in scope, never infer AI authorship, and treat theorem review as plausibility screening rather than proof validation."
 ---
 
@@ -15,7 +15,7 @@ This workflow produces evaluative judgment only: diagnoses, prioritized findings
 
 Read first as a new reader in manuscript order. Do not let a later explanation erase an earlier failure of motivation, definition, or logical preparation.
 
-A full or pre-submission review ends with the four-category scorecard in [scoring-rubric.md](references/scoring-rubric.md): novelty, theory, computation and evidence, and writing, each scored 1-10 or `N/A`. That rubric's evidence, `N/A`, and noncompensation rules are mandatory whatever output format is requested. Score other dimensions, scales, or venues only when the user asks. Do not assign acceptance probabilities, and do not simulate multiple reviewer identities by default.
+A full or pre-submission review includes the four-category scorecard in [scoring-rubric.md](references/scoring-rubric.md): novelty, theory, computation and evidence, and writing, each scored 1-10 or `N/A`. That rubric's evidence, `N/A`, and noncompensation rules are mandatory whatever output format is requested. Score other dimensions, scales, or venues only when the user asks. Do not assign acceptance probabilities, and do not simulate multiple reviewer identities by default.
 
 For literature verification, follow [academic-search-operations.md](references/academic-search-operations.md), using available scholarly databases, official records, and full text. If no scholarly search interface is available and an OpenAlex API key is configured, use the bundled `scripts/academic_search.py`, resolved from this loaded `SKILL.md`'s directory rather than the working directory, then verify decisive records against persistent identifiers or publisher sources.
 

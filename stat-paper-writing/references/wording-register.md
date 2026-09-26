@@ -15,13 +15,13 @@ Choose terms for the work they do in the passage.
 - **Relation or metaphor:** prefer the actual relation, such as bounds, minimizes, converges to, or depends on. Retain conventional metaphors when clear. Follow [support-and-author-decisions.md](support-and-author-decisions.md) when an interpretation would add scientific content.
 - **Domain meaning:** name the population, variables, design, scientific quantity, and uncertainty in the application field's vocabulary. Keep statistical, computational, and empirical interpretations distinct.
 
-These choices depend on the paper and passage. They do not prescribe an algorithm-first order or a list of banned phrases.
+These choices prescribe neither algorithm-first order nor banned phrases.
 
 ## Targeted disciplinary calibration
 
-Calibrate explanation to research readers: what is established, why direct reuse does not cover this setting, which supplied insight addresses the obstacle, and what changes. Keep needed definitions; skip unnecessary explanation of familiar identities. An identity can still expose the central difficulty.
+Calibrate explanation to research readers: what is established, what is retained or changed for this setting, and why. Keep needed definitions; skip unnecessary explanation of familiar identities. An identity can still expose the central difficulty.
 
-Use supplied or verified comparisons first. When a consequential register or comparison question remains, inspect only the relevant passages in one or two related papers, including recent work that changes the comparison. Retain source locations and reuse the notes across sections. Routine local edits need no search. If relevant passages are inaccessible, make a conservative choice and note uncertainty only where consequential. Do not invent an advance, import unsupported claims, copy prose, imitate authors, or impose a repeated paragraph template.
+Use supplied or verified comparisons first. For a consequential unresolved register or comparison question, inspect directly relevant primary-source passages within the requested scope, including recent work when it changes the comparison. Retain locations and reuse notes. A bibliography entry or remembered reputation is insufficient support. This reading supports exposition, not proof validation or a comprehensive novelty judgment. Routine local edits need no search. If sources are inaccessible, continue supported writing and identify material missing support. Do not invent an advance, copy prose, or imitate authors.
 
 ## Check agency and property ownership
 
@@ -68,7 +68,7 @@ Write in the paper's authorial voice. "The supplied studies" or "the source file
 
 ## Mathematics and citations in prose
 
-Keep short, routine expressions inline when readable. Display central definitions, relations needing visual inspection, and long expressions that would obstruct a sentence. Number equations needed for reference or required by the venue; retain supplied labels and references during revision. Introduce notation when it earns its cost through precision or reuse. Explain a derivation's decisive steps without displaying every elementary manipulation or paraphrasing every line. Give displays prominence in proportion to their role in the argument.
+For inline/display choices and presentation authority, use the [prose core](polishing-protocol.md#prose-core-for-drafting-and-revision). Introduce notation when it earns its cost through precision or reuse; explain decisive derivation steps without narrating every elementary manipulation.
 
 Place a citation beside the claim or clause it supports, especially when a sentence combines prior work with the present contribution. Use narrative attribution when an author's contribution is the subject and parenthetical attribution when the statistical claim is the subject, following the venue's citation system. Avoid a paragraph-end citation whose scope is unclear.
 

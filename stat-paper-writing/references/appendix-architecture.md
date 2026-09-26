@@ -39,7 +39,7 @@ Do not use page pressure alone as the criterion. Compress prose and remove dupli
 
 ## Build a claim-to-support map
 
-Create a table before restructuring:
+Reuse the paper plan's claim-to-support links. Create a table only when it clarifies complex restructuring:
 
 | Main-text claim | Support type | Main-text content retained | Appendix item | Dependencies |
 |---|---|---|---|---|
@@ -69,7 +69,7 @@ This module is edited for presentation and documentary consistency only. Do not 
 
 ### Opening map
 
-Begin with:
+For a substantial proof module, orient the reader using the relevant items below; reuse an existing map:
 
 - a list of main results addressed;
 - a dependency graph or compact table using manuscript-declared dependencies;
