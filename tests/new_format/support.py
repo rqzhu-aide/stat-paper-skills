@@ -20,11 +20,11 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 SHARED = REPO / "shared"
 CORE = SHARED / "paper_core"
-PROOFCHECK = REPO / "stat-paper-proofcheck"
-OVERVIEW = REPO / "archify-proofs-overview"
+PROOFCHECK = REPO / "stat-proof-check"
+OVERVIEW = REPO / "proof-graphify"
 REFERENCE_AUDIT = PROOFCHECK / "assets" / "reference-audit" / "proofcheck-audit"
 OVERVIEW_EXAMPLE = OVERVIEW / "examples" / "representer-theorem"
-HANDOFF = REPO / "architecture-proofcheck" / "handoff"
+HANDOFF = REPO / "tests" / "new_format" / "fixtures" / "legacy-handoff"
 TOOLS = REPO / "tools"
 
 if str(SHARED) not in sys.path:
@@ -252,7 +252,7 @@ class Fixture:
                     self.group_edit("grp_thm", "arg_thm", "itm_thm", "anc_thm_proof"),
                     edit("create", "uses", "use_lem_thm", {
                         "from": R("items", "itm_lem"), "to": R("items", "itm_thm"), "type": "dependency",
-                        "group_id": "grp_thm", "reason": "applied as stated", "needed_form": None,
+                        "group_id": "grp_thm", "reason": "applied as stated", "needed_form": {"form":"verbatim", "text":"Lemma 1 text"},
                         "substitutions": [], "evidence_refs": ["anc_thm_proof"], "regime": None,
                         "uncertainty": None})])
         return self._once("structure", go)
@@ -284,6 +284,27 @@ class Fixture:
 
         def go():
             with self.open() as db:
+                # Synthetic model judgments still come from the test. The new
+                # contract explicitly records exact targets and full boundaries.
+                if db.head('target_specs', 'tgt_lem') is None:
+                    packet = self.packet(db, *self.ITEMS, mode='primary')
+                    sources.review_sources(db, batch=self.batch([edit('create','source_reviews','srv_boundaries',{
+                        'source_refs':[self.pin(db,'sources',self.source_id)],
+                        'anchor_refs':[self.pin(db,'anchors',f'anc_{name}_proof') for name in ('lem','thm')],
+                        'purpose':'proof_boundary','decision':'accepted',
+                        'rationale':'Synthetic fixture identifies complete written proofs.', 'reviewer':'fixture'})],packet['packet_id']))
+                    exact_edits=[]
+                    for name in ('lem','thm'):
+                        exact_edits.extend([
+                            edit('create','target_specs',f'tgt_{name}',{
+                                'target':R('items',f'itm_{name}'), 'statement_ref':self.pin(db,'items',f'itm_{name}'),
+                                'statement':None,'scope_id':None,'evidence_refs':[f'anc_{name}'],
+                                'state':'registered','fidelity_ref':None}),
+                            edit('create','proof_boundaries',f'bnd_{name}',{
+                                'target':R('items',f'itm_{name}'),'argument_ids':[f'arg_{name}'],
+                                'anchor_refs':[self.pin(db,'anchors',f'anc_{name}_proof')],
+                                'source_review_ref':self.pin(db,'source_reviews','srv_boundaries'),'state':'complete'})])
+                    self.apply(db,exact_edits,*self.ITEMS,mode='primary')
                 self.apply(db, [edit("create", "audits", audit_id, {
                     "paper_id": self.paper_id, "mode": mode, "targets": list(self.ITEM_REFS), "exclusions": [],
                     "protocol_version": "item-audit/1", "independent_required": independent_required,
@@ -332,6 +353,11 @@ class Fixture:
                         "note": "statement matches the source", "evidence_refs": [anchor]})
                     for oid, iid, anchor in (("obs_lem", "itm_lem", "anc_lem"), ("obs_thm", "itm_thm", "anc_thm"))],
                     packet["packet_id"]))
+                packet = self.packet(db, *self.ITEMS, mode='primary')
+                review.compare(db,batch=self.batch([edit('create','observations',f'obs_exact_{name}',{
+                    'target':R('target_specs',f'tgt_{name}'),'result':'matched','reviewer':'primary-1',
+                    'note':'The pinned exact text and its applicable setup were examined.',
+                    'evidence_refs':[f'anc_{name}'],'context_kind':'exact_target'}) for name in ('lem','thm')],packet['packet_id']))
         return self._once("primary", go)
 
     def independent_round(self, db, item_id, argument_id, anchor, *, judgment_target=None, reviewer="checker-A"):
@@ -421,6 +447,6 @@ class TempCase(unittest.TestCase):
         return target
 
 
-__all__ = ["CLI_ENV", "CORE", "Fixture", "GLOBAL_TASKS", "HANDOFF", "OVERVIEW", "OVERVIEW_EXAMPLE", "PAPER_TEX",
-           "PROOFCHECK", "R", "REFERENCE_AUDIT", "REPO", "SHARED", "TOOLS", "TempCase", "edit", "locator",
-           "node_available", "rmtree_force", "run_cli", "run_wrapper", "sha", "write_json"]
+__all__ = ["CLI_ENV", "CORE", "Fixture", "GLOBAL_TASKS", "HANDOFF", "OVERVIEW", "OVERVIEW_EXAMPLE",
+           "PAPER_TEX", "PROOFCHECK", "R", "REFERENCE_AUDIT", "REPO", "SHARED", "TOOLS", "TempCase", "edit",
+           "locator", "node_available", "rmtree_force", "run_cli", "run_wrapper", "sha", "write_json"]

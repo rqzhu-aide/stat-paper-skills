@@ -23,7 +23,7 @@ from pathlib import Path
 
 from support import R, TempCase, edit, node_available
 
-from paper_core import (CONTRACT_NAME, CONTRACT_VERSION, CORE_VERSION, PROJECTION_VERSION, STORAGE_FORMAT,
+from paper_core import (CONTRACT_NAME, CONTRACT_VERSION, CORE_VERSION, DEFAULT_FEATURES, PROJECTION_VERSION, STORAGE_FORMAT,
                         SUPPORTED_FEATURES, acceptance, packets, projection, publish, queries, review,
                         sources, storage)
 from paper_core.errors import InvalidRequest
@@ -31,7 +31,7 @@ from paper_core.errors import InvalidRequest
 # The documented result surface of status(); a query that grows or loses a key breaks its callers.
 STATUS_KEYS = {"revision", "head_revision", "storage", "paper", "counts", "sources", "audit", "audits",
                "mode", "process_complete", "progress", "obligations", "assessments", "independent",
-               "findings", "source_limits", "published_revision", "publications", "context", "problems"}
+               "findings", "source_limits", "published_revision", "publications", "context", "problems", "factual_summary"}
 CHANGES_KEYS = {"since", "revision", "total", "limit", "offset", "returned", "next_offset", "records",
                 "source_context", "affected_checks"}
 VALIDATE_KEYS = {"revision", "ok", "records", "errors", "warnings", "stale_bindings", "projection_problems",
@@ -41,21 +41,21 @@ PUBLIC_ASSESSMENT_KEYS = {"state", "label", "explanation", "check_refs", "findin
 CONTEXT_KEYS = {"source_context_digest", "judgments_in_older_context"}
 
 # Stage values verified against the real API by the manual validation pass (support.Fixture).
-STRUCTURE_COUNTS = {"anchors": 4, "arguments": 2, "groups": 2, "items": 2, "papers": 1, "scopes": 1,
+STRUCTURE_COUNTS = {"anchors": 4, "application_details": 1, "arguments": 2, "groups": 2, "items": 2, "papers": 1, "scopes": 1,
                     "sources": 1, "uses": 1}
-COMPLETE_COUNTS = {"anchors": 4, "arguments": 2, "audits": 1, "checks": 7, "coverage": 2, "groups": 2, "identity_maps": 2,
-                   "items": 2, "observations": 2, "papers": 1, "qualifications": 1, "reconciliations": 2,
-                   "responses": 2, "scopes": 1, "sources": 1, "uses": 1}
+COMPLETE_COUNTS = {"anchors": 4, "application_details": 1, "arguments": 2, "audits": 1, "checks": 7, "coverage": 2, "groups": 2, "identity_maps": 2,
+                   "items": 2, "observations": 4, "papers": 1, "proof_boundaries": 2, "qualifications": 1, "reconciliations": 2,
+                   "responses": 2, "scopes": 1, "source_reviews": 1, "sources": 1, "target_specs": 2, "uses": 1}
 PROGRESS_OVERVIEW = {"process_complete": False, "required_obligations": 0, "completed_current_obligations": 0,
                      "draft_checks": 0, "major_results": 0, "source_unbound_items": 0}
-PROGRESS_AFTER_AUDIT = {"process_complete": False, "required_obligations": 11,
+PROGRESS_AFTER_AUDIT = {"process_complete": False, "required_obligations": 13,
                         "completed_current_obligations": 0, "draft_checks": 0, "major_results": 2,
                         "source_unbound_items": 0}
-PROGRESS_AFTER_PRIMARY = {"process_complete": False, "required_obligations": 11,
-                          "completed_current_obligations": 7, "draft_checks": 0, "major_results": 2,
+PROGRESS_AFTER_PRIMARY = {"process_complete": False, "required_obligations": 13,
+                          "completed_current_obligations": 9, "draft_checks": 0, "major_results": 2,
                           "source_unbound_items": 0}
-PROGRESS_AFTER_COMPLETE = {"process_complete": True, "required_obligations": 11,
-                           "completed_current_obligations": 11, "draft_checks": 0, "major_results": 2,
+PROGRESS_AFTER_COMPLETE = {"process_complete": True, "required_obligations": 13,
+                           "completed_current_obligations": 13, "draft_checks": 0, "major_results": 2,
                            "source_unbound_items": 0}
 EMPTY_FINDINGS = {"open": [], "resolved": [], "superseded": [], "refs": []}
 ASSESSED_KEYS = {"arguments:arg_lem", "arguments:arg_thm", "audits:aud_1", "groups:grp_lem", "groups:grp_thm",
@@ -64,7 +64,7 @@ SKIPPED_PROJECTION = "projection skipped because the snapshot has contract viola
 PRIMARY_CHECK_IDS = ["chk_app", "chk_comp_lem", "chk_comp_thm", "chk_der_lem", "chk_der_thm"]
 # validate_snapshot scans every bound collection, so the compared statement is stale too; changes() scans
 # only checks.
-STALE_AFTER_LEMMA_EDIT = sorted(PRIMARY_CHECK_IDS + ["obs_lem"])
+STALE_AFTER_LEMMA_EDIT = sorted(PRIMARY_CHECK_IDS + ["obs_lem", "obs_exact_lem"])
 ISO_UTC = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$"
 SHA256_HEX = r"^[0-9a-f]{64}$"
 
@@ -208,7 +208,7 @@ class StatusTests(QueryCase):
         self.assertEqual(storage_block["projection_version"], PROJECTION_VERSION)
         self.assertEqual(storage_block["metadata"]["storage_format"], str(STORAGE_FORMAT))
         self.assertEqual(storage_block["metadata"]["contract_version"], str(CONTRACT_VERSION))
-        self.assertEqual(json.loads(storage_block["metadata"]["features"]), list(SUPPORTED_FEATURES))
+        self.assertEqual(json.loads(storage_block["metadata"]["features"]), list(DEFAULT_FEATURES))
         self.assertEqual(storage_block["metadata"]["protocol_version"], "item-audit/1")
 
     def test_status_paper_block_carries_the_live_paper_record(self):
@@ -267,7 +267,7 @@ class StatusTests(QueryCase):
                                            "targets": [R("items", "itm_lem"), R("items", "itm_thm")],
                                            "independent_required": True})
         self.assertEqual(result["progress"], PROGRESS_AFTER_AUDIT)
-        self.assertEqual(len(result["obligations"]["required"]), 11)
+        self.assertEqual(len(result["obligations"]["required"]), 13)
         self.assertEqual(result["obligations"]["unsatisfied"], result["obligations"]["required"])
         self.assertEqual(result["obligations"]["required"], sorted(result["obligations"]["required"]))
         self.assertTrue(all(oid.startswith("obl_") for oid in result["obligations"]["required"]))
@@ -324,7 +324,7 @@ class StatusTests(QueryCase):
             report = queries.validate_snapshot(db)
         self.assertIs(blocked["process_complete"], False)
         self.assertIs(blocked["progress"]["process_complete"], False)
-        self.assertEqual(blocked["progress"]["completed_current_obligations"], 11)
+        self.assertEqual(blocked["progress"]["completed_current_obligations"], 13)
         self.assertEqual(blocked["obligations"]["unsatisfied"], [])
         self.assertEqual(blocked["source_limits"], [{"collection": "source_issues", "id": "iss_1",
                                                      "version": 1}])
@@ -477,25 +477,26 @@ class StatusTests(QueryCase):
         self.assertEqual(past["publications"], [])
         self.assertIsNone(past["published_revision"])
 
-    # REGRESSION: judgment_freshness used to read the stored context digest off the
-    # {"packet_id", "bindings"} wrapper Database.binding() returns instead of off the binding itself,
-    # so context_changed could never become True and judgments_in_older_context was stuck at zero for
-    # every database. The digest is now read from the same unwrapped binding binding_changes gets.
+    # Consumed source records, rather than every source in the paper, determine
+    # whether a judgment was made in an older source context.
     def test_status_counts_judgments_bound_in_an_older_source_context(self):
         """Re-capturing the source must leave the five primary judgments counted as made in an older context."""
         fixture = self.fixture()
         fixture.primary()
         with fixture.open(write=False) as db:
-            bound_digest = db.binding("checks", "chk_comp_lem", 1)["bindings"]["source_context_digest"]
+            binding = db.binding("checks", "chk_comp_lem", 1)["bindings"]
+            source_bindings = [entry for entry in binding["records"] if entry["ref"]["collection"] == "sources"]
+            before_context = queries.status(db)["context"]["source_context_digest"]
         paper_tex = fixture.source_root / "paper.tex"
         paper_tex.write_text(paper_tex.read_text(encoding="utf-8") + "% appended\n", encoding="utf-8")
         with fixture.open() as db:
             sources.capture_sources(db, files=["paper.tex"])
         with fixture.open(write=False) as db:
             result = queries.status(db)
-        # premise: the judgments really were bound under a digest that is no longer current
-        self.assertRegex(bound_digest, SHA256_HEX)
-        self.assertNotEqual(result["context"]["source_context_digest"], bound_digest)
+        self.assertIsNone(binding["source_context_digest"])
+        self.assertEqual(len(source_bindings), 1)
+        self.assertRegex(source_bindings[0]["digest"], SHA256_HEX)
+        self.assertNotEqual(result["context"]["source_context_digest"], before_context)
         self.assertEqual(result["context"]["judgments_in_older_context"], len(PRIMARY_CHECK_IDS))
 
 
@@ -776,7 +777,7 @@ class ValidateSnapshotTests(QueryCase):
         self.assertIs(result["ok"], True)
         self.assertEqual(result["errors"], [])
         self.assertEqual(result["warnings"],
-                         ["6 bound records have stale bindings (their judgments read as stale)"])
+                         ["7 bound records have stale bindings (their judgments read as stale)"])
         self.assertEqual(sorted(entry["ref"]["id"] for entry in result["stale_bindings"]),
                          STALE_AFTER_LEMMA_EDIT)
         entry = next(e for e in result["stale_bindings"] if e["ref"]["id"] == "chk_comp_lem")
@@ -837,11 +838,11 @@ class ValidateSnapshotTests(QueryCase):
         fixture.complete()
         with fixture.open(write=False) as db:
             head = db.max_revision()
-            broken = dict(db.head("uses", "use_lem_thm").body, group_id="grp_missing")
-        result = self.corrupt(fixture, "dangling.db", [body_sql("uses", "use_lem_thm", 1, broken)])
+            broken = dict(db.head("application_details", "use_lem_thm").body, group_id="grp_missing")
+        result = self.corrupt(fixture, "dangling.db", [body_sql("application_details", "use_lem_thm", 1, broken)])
         self.assertIs(result["ok"], False)
         self.assertEqual(result["errors"],
-                         [f"uses:use_lem_thm@1 /group_id: no live groups record grp_missing at revision {head}"])
+                         [f"application_details:use_lem_thm@1 /group_id: no live groups record grp_missing at revision {head}"])
         self.assertIn(SKIPPED_PROJECTION, result["warnings"])
         self.assertEqual(result["projection_problems"], [])
 

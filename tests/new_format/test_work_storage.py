@@ -251,23 +251,48 @@ class WorkStorageTests(TempCase):
 
 class MigrationTests(TempCase):
     def legacy(self):
-        """Construct a real packet-1/native-2 fixture using the previous DDL and APIs."""
-        ddl = storage.SCHEMA_PATH.read_text(encoding="utf-8")
+        """Materialize genuine native-2 tables and inline legacy use bodies."""
+        with mock.patch.object(packets, "PACKET_VERSION", 1):
+            fixture = self.fixture().structure()
+        ddl = (support.HANDOFF / "schema.sql").read_text(encoding="utf-8")
         start, end = ddl.index("-- The operational intake index"), ddl.index("CREATE TABLE publications (")
         ddl = (ddl[:start] + ddl[end:]).replace("('storage_format', '3')", "('storage_format', '2')")
         ddl = ddl.replace("packet_version IN (1, 2)", "packet_version = 1")
-        path = self.path("legacy-schema.sql")
-        path.write_text(ddl, encoding="utf-8")
-        oldmeta = dict(storage.INIT_METADATA, packet_version="1", projection_version="1",
-                       features=json.dumps(["records/3", "packets/1", "audits/1", "independent-review/1", "projection/1"]))
-        with mock.patch.object(storage, "SCHEMA_PATH", path), mock.patch.object(storage, "INIT_METADATA", oldmeta), \
-             mock.patch.object(storage, "STORAGE_FORMATS_WRITABLE", (2, 3)), mock.patch.object(packets, "PACKET_VERSION", 1):
-            return self.fixture().structure()
+        path = self.path("legacy-native2.db")
+        prior = sqlite3.connect(path)
+        try:
+            prior.executescript(ddl)
+            prior.execute("PRAGMA foreign_keys=OFF")
+            prior.execute("ATTACH DATABASE ? AS seeded", (str(fixture.path),))
+            for table, in prior.execute("SELECT name FROM sqlite_master WHERE type='table' AND name!='metadata'").fetchall():
+                where = " WHERE collection != 'application_details'" if table in ("record_versions", "record_heads", "record_facets") else ""
+                if table in ("record_refs", "evidence_bindings"):
+                    where = " WHERE owner_collection != 'application_details'"
+                if table == "record_versions":
+                    for row in prior.execute("SELECT * FROM seeded.record_versions" + where).fetchall():
+                        values = list(row)
+                        if values[0] == "uses" and values[5] is not None:
+                            body = json.loads(values[5])
+                            body.update(group_id="grp_thm", needed_form={"form": "synopsis", "text": "A bound on a_n"}, substitutions=[])
+                            values[5], values[6] = canonical_bytes(body).decode(), digest(body)
+                        prior.execute("INSERT INTO record_versions VALUES (?,?,?,?,?,?,?)", values)
+                else:
+                    prior.execute(f"INSERT INTO {table} SELECT * FROM seeded.{table}{where}")
+            prior.execute("INSERT INTO record_refs VALUES ('uses','use_lem_thm',1,'/group_id','groups','grp_thm',NULL)")
+            prior.execute("INSERT OR IGNORE INTO metadata SELECT * FROM seeded.metadata WHERE key!='generation'")
+            prior.execute("UPDATE metadata SET value='1' WHERE key IN ('packet_version','projection_version')")
+            prior.execute("UPDATE metadata SET value=? WHERE key='features'", (json.dumps(["records/3", "packets/1", "audits/1", "independent-review/1", "projection/1"]),))
+            prior.commit()
+        finally:
+            prior.close()
+        fixture.path = path
+        return fixture
 
     def test_native2_reads_and_exports_actual_format_but_cannot_be_opened_for_write(self):
         fx = self.legacy()
         with storage.Database(fx.path) as db:
             self.assertEqual(export_import.export_snapshot(db)["storage_format"], 2)
+            self.assertEqual(export_import.export_snapshot(db)["contract_version"], 3)
             self.assertEqual(db.work_submissions(), [])
             self.assertIsNone(db.work_submission("req_none"))
         with self.assertRaises(IncompatibleError) as caught:
@@ -285,9 +310,12 @@ class MigrationTests(TempCase):
         result = storage.migrate_database(fx.path, backup=backup)
         self.assertTrue(result["migrated"])
         with storage.Database(fx.path, write=True) as updated:
-            self.assertEqual(updated.metadata["storage_format"], "3")
-            self.assertEqual(updated.all_versions(), records)
-            self.assertEqual([dict(row) for row in updated.conn.execute("SELECT * FROM commits ORDER BY revision")], commits)
+            self.assertEqual(updated.metadata["storage_format"], "4")
+            self.assertNotIn("work-context-extension/1", json.loads(updated.metadata["features"]))
+            self.assertEqual([r for r in updated.all_versions() if r.revision <= records[-1].revision], records)
+            self.assertNotIn("group_id", updated.head("uses", "use_lem_thm").body)
+            self.assertEqual(updated.head("application_details", "use_lem_thm").body["group_id"], "grp_thm")
+            self.assertEqual([dict(row) for row in updated.conn.execute("SELECT * FROM commits WHERE revision<=? ORDER BY revision", (commits[-1]["revision"],))], commits)
             self.assertEqual([dict(row) for row in updated.conn.execute("SELECT * FROM packets ORDER BY packet_id")], packet_rows)
             self.assertTrue(all(row["packet_version"] == 1 for row in packet_rows))
             self.assertEqual({sha: updated.get_blob(sha) for sha in updated.blob_hashes()}, blobs)

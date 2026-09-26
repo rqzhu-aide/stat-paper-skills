@@ -18,7 +18,7 @@ import unittest
 
 import support
 from support import CORE, HANDOFF, Fixture, R, TempCase, edit
-from paper_core import (CONTRACT_VERSION, CORE_VERSION, LEGACY_OVERVIEW_FORMAT, PACKET_VERSION,
+from paper_core import (CONTRACT_VERSION, CORE_VERSION, DEFAULT_FEATURES, LEGACY_OVERVIEW_FORMAT, PACKET_VERSION,
                         PROJECTION_VERSION, PROTOCOL_VERSION, STORAGE_FORMAT, SUPPORTED_FEATURES,
                         acceptance, packets, storage)
 from paper_core.canonical import digest
@@ -26,6 +26,7 @@ from paper_core.errors import ConflictError, IncompatibleError, InvalidRequest, 
 
 METADATA_KEYS = ["contract_version", "core_version", "created_at", "features", "packet_version",
                  "projection_version", "protocol_version", "storage_format"]
+METADATA_KEYS = sorted(METADATA_KEYS + ["generation"])
 TIMESTAMP = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$"
 
 
@@ -42,6 +43,7 @@ def structure_log(fixture: Fixture) -> list:
             (3, "anchors", "anc_lem_proof", 1),
             (3, "anchors", "anc_thm", 1),
             (3, "anchors", "anc_thm_proof", 1),
+            (4, "application_details", "use_lem_thm", 1),
             (4, "arguments", "arg_lem", 1),
             (4, "arguments", "arg_thm", 1),
             (4, "groups", "grp_lem", 1),
@@ -196,24 +198,24 @@ class InitializeTests(StorageCase):
                          [{"collection": "papers", "id": info["paper_id"], "version": 1, "op": "create"}])
 
     def test_a_fresh_database_records_this_core_s_format_contract_and_features(self):
-        """Initialization stamps storage format 3, contract 3, and exactly this core's feature list."""
+        """Initialization requires the default features, not unused optional capabilities."""
         info = storage.initialize(self.work / "fresh.db", source_root=self.source_dir(), title="Fresh paper")
         self.assertEqual(info["revision"], 1)
         with storage.Database(self.work / "fresh.db") as db:
             self.assertEqual(sorted(db.metadata), METADATA_KEYS)
-            self.assertEqual(db.metadata["storage_format"], "3")
-            self.assertEqual(db.metadata["contract_version"], "3")
+            self.assertEqual(db.metadata["storage_format"], "4")
+            self.assertEqual(db.metadata["contract_version"], "4")
             self.assertEqual(db.metadata["protocol_version"], "item-audit/1")
             self.assertEqual(db.metadata["packet_version"], "2")
             self.assertEqual(db.metadata["projection_version"], "2")
             self.assertEqual(db.metadata["core_version"], CORE_VERSION)
             features = json.loads(db.metadata["features"])
-            self.assertEqual(features, list(SUPPORTED_FEATURES))
+            self.assertEqual(features, list(DEFAULT_FEATURES))
             self.assertEqual(features[0], "records/3")
             self.assertIn("independent-review/1", features)
             self.assertRegex(db.metadata["created_at"], TIMESTAMP)
         # the literals above are the on-disk format; they must keep agreeing with the constants the core ships
-        self.assertEqual((STORAGE_FORMAT, CONTRACT_VERSION, PACKET_VERSION, PROJECTION_VERSION), (3, 3, 2, 2))
+        self.assertEqual((STORAGE_FORMAT, CONTRACT_VERSION, PACKET_VERSION, PROJECTION_VERSION), (4, 4, 2, 2))
         self.assertEqual(PROTOCOL_VERSION, "item-audit/1")
 
     def test_the_only_record_is_the_paper_with_the_resolved_source_root(self):
@@ -404,8 +406,8 @@ class CompatibilityTests(StorageCase):
             self.assertEqual(sorted(rows), METADATA_KEYS)
             self.assertEqual(db.check_compatibility(), rows)
             self.assertEqual(db.metadata, rows)
-            self.assertEqual(db.metadata["storage_format"], "3")
-            self.assertEqual(db.metadata["contract_version"], "3")
+            self.assertEqual(db.metadata["storage_format"], "4")
+            self.assertEqual(db.metadata["contract_version"], "4")
 
     def test_check_compatibility_re_reads_while_the_open_time_mapping_stays_frozen(self):
         """db.metadata is the snapshot taken at open; check_compatibility goes back to the table."""
@@ -421,12 +423,12 @@ class CompatibilityTests(StorageCase):
     def test_a_future_storage_format_is_rejected_and_names_the_readable_formats(self):
         """Recording storage_format 4 makes the open fail with INCOMPATIBLE naming the formats this core reads."""
         fixture = self.structured()
-        broken = self.broken_copy(fixture, "storage_format", "4", "future_format")
+        broken = self.broken_copy(fixture, "storage_format", "5", "future_format")
         with self.assertRaises(IncompatibleError) as caught:
             storage.Database(broken)
         self.assertEqual(caught.exception.code, "INCOMPATIBLE")
-        self.assertIn("unsupported storage_format '4'", str(caught.exception))
-        self.assertIn("this core reads [2, 3]", str(caught.exception))
+        self.assertIn("unsupported storage_format '5'", str(caught.exception))
+        self.assertIn("this core reads [2, 3, 4]", str(caught.exception))
 
     def test_an_older_storage_format_is_rejected_as_well(self):
         """Formats 2 and 3 are readable, so format 1 is refused rather than silently upgraded."""
@@ -501,10 +503,10 @@ class CompatibilityTests(StorageCase):
     def test_breaking_a_copy_leaves_the_original_database_openable(self):
         """The tampering used by these tests is confined to the copy; the source database still opens fully."""
         fixture = self.structured()
-        self.broken_copy(fixture, "storage_format", "3", "isolated")
+        self.broken_copy(fixture, "storage_format", "4", "isolated")
         self.stripped_copy(fixture, "storage_format", "isolated_stripped")
         with fixture.open(write=False) as db:
-            self.assertEqual(db.metadata["storage_format"], "3")
+            self.assertEqual(db.metadata["storage_format"], "4")
             self.assertEqual([(r.collection, r.id, r.version) for r in db.heads()], structure_heads(fixture))
 
 
@@ -619,8 +621,8 @@ class HistoryTests(StorageCase):
                                  len(db.versions_since(revision, limit=1000, offset=0)),
                                  f"mismatch at revision {revision}")
             self.assertEqual(db.count_versions_since(0), len(db.all_versions()))
-            self.assertEqual(db.count_versions_since(0), 16)
-            self.assertEqual(db.count_versions_since(1), 15)
+            self.assertEqual(db.count_versions_since(0), 17)
+            self.assertEqual(db.count_versions_since(1), 16)
             self.assertEqual(db.count_versions_since(base), 2)
             self.assertEqual(db.count_versions_since(third), 0)
             self.assertEqual(db.count_versions_since(third + 1000), 0)
@@ -669,8 +671,6 @@ class ReferenceTests(StorageCase):
                 {"field_path": "/evidence_refs/0", "target_collection": "anchors",
                  "target_id": "anc_thm_proof", "target_version": None},
                 {"field_path": "/from", "target_collection": "items", "target_id": "itm_lem",
-                 "target_version": None},
-                {"field_path": "/group_id", "target_collection": "groups", "target_id": "grp_thm",
                  "target_version": None},
                 {"field_path": "/to", "target_collection": "items", "target_id": "itm_thm",
                  "target_version": None}])
@@ -728,7 +728,8 @@ class ReferenceTests(StorageCase):
             self.assertEqual([(r["owner_id"], r["owner_version"]) for r in referrers],
                              [("arg_lem", 1), ("grp_lem", 1), ("use_lem_thm", 2)])
             self.assertEqual([row["field_path"] for row in db.refs_from("uses", "use_lem_thm", 1)],
-                             ["/evidence_refs/0", "/from", "/group_id", "/to"])
+                             ["/evidence_refs/0", "/from", "/to"])
+            self.assertIn("/group_id", [row["field_path"] for row in db.refs_from("application_details", "use_lem_thm", 1)])
 
     def test_live_referrers_drops_a_referrer_once_it_is_retired(self):
         """Retiring the edge removes it from the target's live referrers even though its rows stay in history."""
@@ -1034,7 +1035,7 @@ class MaintenanceTests(StorageCase):
         with storage.Database(destination) as copy:
             self.assertEqual(copy.max_revision(), revision)
             self.assertEqual([(r.collection, r.id, r.version) for r in copy.heads()], expected_heads)
-            self.assertEqual(copy.metadata["storage_format"], "3")
+            self.assertEqual(copy.metadata["storage_format"], "4")
             self.assertEqual(copy.integrity(), {"foreign_key_violations": [], "integrity": ["ok"]})
             self.assertEqual(storage.paper_record(copy).id, fixture.paper_id)
 
@@ -1436,9 +1437,11 @@ class NormativeDdlTests(unittest.TestCase):
         self.assertTrue(self.SHIPPED.is_file(), self.SHIPPED)
         self.assertGreater(self.NORMATIVE.stat().st_size, 1000)
 
-    def test_the_executed_ddl_is_byte_identical_to_the_owning_document(self):
-        """A storage change has to be made in the normative DDL, not only in the shipped copy."""
-        self.assertEqual(self.SHIPPED.read_bytes(), self.NORMATIVE.read_bytes())
+    def test_prior_handoff_ddl_remains_a_real_supported_migration_baseline(self):
+        """The historical handoff remains schema 3; maintained SQL now owns schema 4."""
+        self.assertIn("('storage_format', '3')", self.NORMATIVE.read_text(encoding="utf-8"))
+        self.assertIn("('storage_format', '4')", self.SHIPPED.read_text(encoding="utf-8"))
+        self.assertIn("CREATE VIEW proof_applications", self.SHIPPED.read_text(encoding="utf-8"))
 
     def test_the_shipped_ddl_really_is_what_builds_a_database(self):
         """Pins the comparison to the executed file: every object it declares exists in a new database."""

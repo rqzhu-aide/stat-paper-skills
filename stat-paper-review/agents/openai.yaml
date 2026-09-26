@@ -1,0 +1,6 @@
+interface:
+  display_name: "Stat Paper Review"
+  short_description: "Critical review of statistical research papers"
+  default_prompt: "Use $stat-paper-review to assess this manuscript as a critical first-time reviewer and provide prioritized, evidence-backed findings without rewriting it."
+policy:
+  allow_implicit_invocation: false

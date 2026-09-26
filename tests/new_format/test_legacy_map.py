@@ -1,4 +1,4 @@
-"""``legacy-map.json`` is checked against the two test suites it classifies (implementation-handoff 9).
+"""``legacy-map.json`` is checked against the proofcheck suite it classifies.
 
 Section 9 asks for one mapping file whose entries are ``{old_test, treatment, new_test, reason}`` with
 ``treatment`` in ``legacy_only``, ``ported`` or ``shared``, and for tests affected by a changed shared
@@ -17,22 +17,21 @@ import unittest
 from support import PROOFCHECK, REPO
 
 MAP_PATH = REPO / "tests" / "new_format" / "legacy-map.json"
-OVERVIEW_TESTS = REPO / "archify-proofs-overview" / "tests"
 PROOFCHECK_TESTS = PROOFCHECK / "tests"
 TREATMENTS = ("legacy_only", "ported", "shared")
 ENTRY_KEYS = {"old_test", "treatment", "new_test", "reason"}
 
 #: The four ports handoff section 9 names explicitly, and the behaviour each one carries over.
 NAMED_PORTS = {
-    "stat-paper-proofcheck/tests/test_challenge_evidence.py": "blinding and original responses",
-    "stat-paper-proofcheck/tests/test_statement_support.py": "restricted repairs",
-    "stat-paper-proofcheck/tests/test_semantic_reuse.py": "changed prerequisites",
-    "stat-paper-proofcheck/tests/test_transaction_publication.py": "failed publication",
+    "stat-proof-check/tests/test_challenge_evidence.py": "blinding and original responses",
+    "stat-proof-check/tests/test_statement_support.py": "restricted repairs",
+    "stat-proof-check/tests/test_semantic_reuse.py": "changed prerequisites",
+    "stat-proof-check/tests/test_transaction_publication.py": "failed publication",
 }
 #: The two files handoff section 9 names as legacy-only representation.
 NAMED_LEGACY_ONLY = (
-    "stat-paper-proofcheck/tests/test_proofcheck.py",
-    "stat-paper-proofcheck/tests/test_primary_renewal.py",
+    "stat-proof-check/tests/test_proofcheck.py",
+    "stat-proof-check/tests/test_primary_renewal.py",
 )
 
 
@@ -42,9 +41,9 @@ def _load() -> dict:
 
 
 def _suite_paths() -> set:
-    """Every legacy test module in both packages, as a repository-relative POSIX path."""
+    """Every legacy proofcheck test module, as a repository-relative POSIX path."""
     found = set()
-    for folder in (PROOFCHECK_TESTS, OVERVIEW_TESTS):
+    for folder in (PROOFCHECK_TESTS,):
         for path in folder.glob("test_*.py"):
             found.add(path.relative_to(REPO).as_posix())
     return found
@@ -85,7 +84,7 @@ class FileShape(unittest.TestCase):
 
 
 class Coverage(unittest.TestCase):
-    """The classification covers both suites exactly once, with no invented and no missing file."""
+    """The classification covers proofcheck exactly once, with no invented or missing file."""
 
     def test_every_legacy_test_module_is_classified(self):
         """Exhaustive classification: a newly added legacy test must be classified before it lands."""
@@ -108,8 +107,7 @@ class Coverage(unittest.TestCase):
     def test_the_legacy_suites_are_not_empty(self):
         """Guards the coverage assertions above: an empty glob would make them vacuous."""
         paths = _suite_paths()
-        self.assertGreater(len([p for p in paths if p.startswith("stat-paper-proofcheck/")]), 30)
-        self.assertGreater(len([p for p in paths if p.startswith("archify-proofs-overview/")]), 5)
+        self.assertGreater(len([p for p in paths if p.startswith("stat-proof-check/")]), 30)
 
 
 class References(unittest.TestCase):

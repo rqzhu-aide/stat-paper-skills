@@ -34,6 +34,7 @@ PUBLICATION_RECEIPT_KEYS = RENDER_ONLY_RECEIPT_KEYS | {"kind", "output_path", "p
 # disappears from the renderer would otherwise weaken every publication without failing anything.
 REPRESENTATION_CHECKS = ["projection_script", "render_input_script", "archify_shell", "dag_nodes", "dag_edges", "no_index_articles",
                          "detail_elements", "detail_sections", "section_record_refs", "section_obligation_ids",
+                         "canonical_record_templates", "contextual_reader_overviews", "visible_report_state", "visible_assessments", "visible_applications", "visible_graph_states", "assessment_styles", "visible_scope",
                          "summary_counts", "process_complete", "summary_findings", "summary_source_limits", "summary_limitations",
                          "search_input", "no_external_requests"]
 GEOMETRY_CHECKS = ["finite_node_geometry", "node_clipping", "node_overlaps", "finite_route_geometry",
@@ -41,7 +42,8 @@ GEOMETRY_CHECKS = ["finite_node_geometry", "node_clipping", "node_overlaps", "fi
 SELFTEST_CHECKS = ["hash:assets/archify/template.html", "hash:assets/archify/utils.mjs",
                    "hash:assets/archify/i18n.mjs", "hash:assets/archify/LICENSE",
                    "hash:assets/archify/JetBrainsMono-OFL.txt", "render:dag_small.json",
-                   "render:index_fallback.json", "render:long_math.json", "fail:cycle_dag.json"]
+                   "render:index_fallback.json", "render:long_math.json", "fail:cycle_dag.json",
+                   "render:cyclic", "render:cyclic-dense", "reader:pinned-context-and-tampering", "reader:missing-strategy"]
 ISO_INSTANT = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$"
 SHA256_HEX = r"^[0-9a-f]{64}$"
 # The page embeds the projection and the render input as JSON. Assertions about what a reader can
@@ -88,7 +90,8 @@ class PublicationCase(TempCase):
         fixed = ["items:itm_lem:1", "items:itm_thm:1", "groups:grp_lem:1", "groups:grp_thm:1",
                  "uses:use_lem_thm:1", "scopes:scp_plain:1", "reconciliations:rec_lem:1",
                  "reconciliations:rec_thm:1", "checks:chk_comp_lem:1", "checks:chk_comp_thm:1",
-                 "checks:chk_der_lem:1", "checks:chk_der_thm:1", "checks:chk_app:1"]
+                 "checks:chk_der_lem:1", "checks:chk_der_thm:1", "checks:chk_app:1",
+                 "application_details:use_lem_thm:1", "source_reviews:srv_boundaries:1"]
         return set(fixed) | {f"checks:{cid}:1" for cid in fixture.independent_checks.values()}
 
 
@@ -185,7 +188,7 @@ class DisplayFragmentTests(PublicationCase):
     def test_the_documented_fragment_fields_are_the_only_ones_offered(self):
         """FRAGMENT_FIELDS is the published contract between the core and the renderer."""
         self.assertEqual(("statement", "reason", "needed_form", "rationale", "conditions", "reasoning",
-                          "description"), publish.FRAGMENT_FIELDS)
+                          "description", "proof_idea", "regime", "uncertainty", "impact_reason"), publish.FRAGMENT_FIELDS)
 
     def test_fragments_are_keyed_by_pinned_ref_and_skip_records_without_prose(self):
         """Keys are collection:id:version and only the documented text-bearing records appear."""
@@ -196,7 +199,8 @@ class DisplayFragmentTests(PublicationCase):
         keys = {f"{e['ref']['collection']}:{e['ref']['id']}:{e['ref']['version']}" for e in projection["records"]}
         self.assertEqual(self.fragment_keys(fixture), set(fragments))
         without_prose = {key.split(":")[0] for key in keys - set(fragments)}
-        self.assertEqual({"anchors", "arguments", "audits", "coverage", "observations", "responses", "sources"}, without_prose)
+        self.assertEqual({"anchors", "arguments", "audits", "coverage", "observations", "responses", "sources",
+                          "target_specs", "proof_boundaries"}, without_prose)
         self.assertEqual({"statement_html": "Lemma 1 text"}, fragments["items:itm_lem:1"])
         self.assertEqual({"reason_html": "applied as stated"}, fragments["uses:use_lem_thm:1"])
         self.assertEqual({"rationale_html": "one step"}, fragments["groups:grp_lem:1"])
@@ -433,9 +437,9 @@ class MechanicalAcceptanceTests(PublicationCase):
              f"connection {connection} shows ('itm_lem', 'itm_thm', 'amber')"),
             ('data-proof-count="nodes.green">2<', 'data-proof-count="nodes.green">3<',
              "count nodes.green shows '3', projection has 2"),
-            ('data-proof-count="progress.required_obligations">11<',
+            ('data-proof-count="progress.required_obligations">13<',
              'data-proof-count="progress.required_obligations">10<',
-             "count progress.required_obligations shows '10', projection has 11"),
+             "count progress.required_obligations shows '10', projection has 13"),
             ('data-proof-process-complete="true"', 'data-proof-process-complete="false"',
              "process completion marker shows ['false']"),
         ]
@@ -704,7 +708,7 @@ class ReleaseCommandTests(PublicationCase):
         self.assertEqual(str(output), payload["directory"])
         self.assertIs(True, payload["process_complete"])
         self.assertEqual({"ok": True, "warnings": []}, payload["validation"])
-        self.assertEqual(("proofcheck-records/3", CORE_VERSION, "aud_1"),
+        self.assertEqual(("proofcheck-records/4", CORE_VERSION, "aud_1"),
                          (payload["contract"], payload["core_version"], payload["audit_id"]))
         report = (output / "report.html").read_bytes()
         self.assertEqual(hashlib.sha256(report).hexdigest(), payload["publication"]["artifact_sha256"])
@@ -727,7 +731,7 @@ class ReleaseCommandTests(PublicationCase):
         output = self.work / "release"
         payload, _ = run_cli("release", fixture.path, "--audit", "aud_1", "--out", output)
         export = json.loads((output / "export.json").read_text(encoding="utf-8"))
-        self.assertEqual((3, 3, payload["revision"], payload["paper_id"]),
+        self.assertEqual((4, 4, payload["revision"], payload["paper_id"]),
                          (export["contract_version"], export["storage_format"], export["revision"],
                           export["paper_id"]))
         self.assertEqual(CORE_VERSION, export["provenance"]["core_version"])

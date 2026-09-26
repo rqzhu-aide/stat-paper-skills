@@ -36,7 +36,8 @@ LEAF_COMMANDS = {
     "init", "attach", "migrate-overview", "source capture", "source anchor", "source review", "ids", "get",
     "apply", "compare", "review submit", "review map", "review reconcile", "qualification record", "changes",
     "status", "validate", "checkpoint", "release", "export", "backup", "import-legacy", "telemetry record",
-    "telemetry summary", "version", "migrate", "work list", "work prepare", "work submit", "work inspect"}
+    "telemetry summary", "version", "migrate", "work list", "work prepare", "work submit", "work inspect",
+    "template", "review mapping-template", "work extend"}
 NO_DATABASE_COMMANDS = {"ids", "version"}
 TELEMETRY_COMMANDS = {"telemetry record", "telemetry summary"}
 TOP_LEVEL_COMMANDS = {name.split(" ")[0] for name in LEAF_COMMANDS}
@@ -132,9 +133,29 @@ class _CliPaper:
         step["validate_overview"], _ = run_cli("validate", self.db)
         step["qualification"], _ = run_cli("qualification", "record", self.db, "--receipt",
                                            self.json_file("qual.json", _qualification_receipt(self.request_id())))
+        review_id = "srv_boundaries"
+        source_review = edit("create", "source_reviews", review_id, {
+            "purpose": "proof_boundary", "source_refs": [self.pin("sources", self.source_id)],
+            "anchor_refs": [self.pin("anchors", "anc_lem_proof"), self.pin("anchors", "anc_thm_proof")],
+            "decision": "accepted", "reviewer": "coordinator", "rationale": "Synthetic complete proof boundary fixture."})
+        primary, _ = self.get(*ITEMS, name="pkt_boundary_review.json")
+        step["boundary_review"], _ = run_cli("source", "review", self.db, "--request",
+            self.json_file("boundary-review.json", self.batch([source_review], primary["packet_id"])))
         primary, _ = self.get(*ITEMS, name="pkt_audit.json")
+        exact_records = []
+        for name in ("lem", "thm"):
+            exact_records.extend([
+                edit("create", "target_specs", "tgt_" + name, {
+                    "target": R("items", "itm_" + name), "statement_ref": self.pin("items", "itm_" + name),
+                    "statement": None, "scope_id": None, "evidence_refs": ["anc_" + name],
+                    "state": "registered", "fidelity_ref": None}),
+                edit("create", "proof_boundaries", "bnd_" + name, {
+                    "target": R("items", "itm_" + name), "argument_ids": ["arg_" + name],
+                    "anchor_refs": [self.pin("anchors", "anc_" + name + "_proof")],
+                    "source_review_ref": {"collection": "source_reviews", "id": review_id, "version": 1},
+                    "state": "complete"})])
         step["audit"], _ = run_cli("apply", self.db, "--batch", self.json_file("audit.json", self.batch(
-            [edit("create", "audits", AUDIT, _audit_body(self.paper_id))], primary["packet_id"])))
+            [edit("create", "audits", AUDIT, _audit_body(self.paper_id)), *exact_records], primary["packet_id"])))
         primary, check_packet = self.get(*ITEMS, name="pkt_checks.json")
         anchor_lengths = {r["ref"]["id"]: len(r["body"]["excerpt"]) for r in check_packet["records"]
                           if r["ref"]["collection"] == "anchors"}
@@ -236,7 +257,8 @@ def _structure_edits() -> list:
         group("grp_thm", "arg_thm", "itm_thm", "anc_thm_proof"),
         edit("create", "uses", "use_lem_thm", {
             "from": R("items", "itm_lem"), "to": R("items", "itm_thm"), "type": "dependency",
-            "group_id": "grp_thm", "reason": "applied as stated", "needed_form": None, "substitutions": [],
+            "group_id": "grp_thm", "reason": "applied as stated",
+            "needed_form": {"form": "verbatim", "text": "Lemma 1 text"}, "substitutions": [],
             "evidence_refs": ["anc_thm_proof"], "regime": None, "uncertainty": None})]
 
 
@@ -281,9 +303,12 @@ def _check_edits() -> list:
 
 def _observation_edits() -> list:
     return [edit("create", "observations", oid, {
-        "target": R("items", iid), "result": "matched", "reviewer": "primary-1",
+        "target": R(collection, iid), "result": "matched", "reviewer": "primary-1",
         "note": "statement matches the source", "evidence_refs": [anchor]})
-        for oid, iid, anchor in (("obs_lem", "itm_lem", "anc_lem"), ("obs_thm", "itm_thm", "anc_thm"))]
+        for oid, collection, iid, anchor in (("obs_lem", "items", "itm_lem", "anc_lem"),
+            ("obs_thm", "items", "itm_thm", "anc_thm"),
+            ("obs_exact_lem", "target_specs", "tgt_lem", "anc_lem"),
+            ("obs_exact_thm", "target_specs", "tgt_thm", "anc_thm"))]
 
 
 BUILT: _CliPaper = None
@@ -324,13 +349,13 @@ class BuiltCase(TempCase):
 class TestVersionCommand(TempCase):
 
     def test_version_reports_the_core_and_contract_identity(self):
-        """version names core 2.0.0, storage format 3 and contract proofcheck-records/3."""
+        """version names core 2.3.0, storage format 4 and contract proofcheck-records/4."""
         payload, _ = run_cli("version")
         self.assertEqual(payload["command"], "version")
-        self.assertEqual(payload["core_version"], "2.0.0")
-        self.assertEqual(payload["storage_format"], 3)
-        self.assertEqual(payload["contract_version"], 3)
-        self.assertEqual(payload["contract"], "proofcheck-records/3")
+        self.assertEqual(payload["core_version"], "2.3.0")
+        self.assertEqual(payload["storage_format"], 4)
+        self.assertEqual(payload["contract_version"], 4)
+        self.assertEqual(payload["contract"], "proofcheck-records/4")
         self.assertEqual(payload["packet_version"], 2)
         self.assertEqual(payload["projection_version"], 2)
         self.assertEqual(payload["python"], ".".join(str(p) for p in sys.version_info[:3]))
@@ -572,9 +597,10 @@ class TestBuildReceipts(BuiltCase):
         self.assertEqual(step["anchors"]["receipt"]["revision"], 3)
         self.assertEqual(step["structure"]["revision"], 4)
         self.assertEqual(step["qualification"]["revision"], 5)
-        self.assertEqual(step["audit"]["revision"], 6)
-        self.assertEqual(step["checks"]["revision"], 7)
-        self.assertEqual(step["compare"]["revision"], 8)
+        self.assertEqual(step["boundary_review"]["receipt"]["revision"], 6)
+        self.assertEqual(step["audit"]["revision"], 7)
+        self.assertEqual(step["checks"]["revision"], 8)
+        self.assertEqual(step["compare"]["revision"], 9)
 
     def test_source_capture_registers_the_listed_file(self):
         """source capture returns one source revision for the single listed relative path."""
@@ -592,13 +618,14 @@ class TestBuildReceipts(BuiltCase):
                           "anc_thm": "label_match", "anc_thm_proof": "exact_lines"})
 
     def test_apply_reports_every_created_record_in_its_receipt(self):
-        """The structure batch creates the eight records it names, each at version 1."""
+        """The eight input records normalize to nine canonical records at version 1."""
         changed = BUILT.steps["structure"]["receipt"]["changed"]
         self.assertEqual([(c["collection"], c["id"], c["op"], c["version"]) for c in changed], [
             ("items", "itm_lem", "create", 1), ("items", "itm_thm", "create", 1),
             ("scopes", "scp_plain", "create", 1), ("arguments", "arg_lem", "create", 1),
             ("arguments", "arg_thm", "create", 1), ("groups", "grp_lem", "create", 1),
-            ("groups", "grp_thm", "create", 1), ("uses", "use_lem_thm", "create", 1)])
+            ("groups", "grp_thm", "create", 1), ("uses", "use_lem_thm", "create", 1),
+            ("application_details", "use_lem_thm", "create", 1)])
 
     def test_an_independent_packet_carries_no_checks(self):
         """The blinded packet a worker receives contains no primary judgments."""
@@ -651,8 +678,8 @@ class TestStatusAndValidate(BuiltCase):
         self.assertEqual(status["paper"]["id"], BUILT.paper_id)
         storage_block = dict(status["storage"])
         self.assertIsInstance(storage_block.pop("metadata"), dict)
-        self.assertEqual(storage_block, {"storage_format": 3, "contract_version": 3,
-                                         "contract": "proofcheck-records/3", "core_version": "2.0.0",
+        self.assertEqual(storage_block, {"storage_format": 4, "contract_version": 4,
+                                         "contract": "proofcheck-records/4", "core_version": "2.3.0",
                                          "projection_version": 2})
 
     def test_an_incomplete_assessment_is_a_successful_status_query(self):
@@ -663,8 +690,8 @@ class TestStatusAndValidate(BuiltCase):
         self.assertEqual(status["mode"], "focused")
         self.assertEqual(status["audit"]["id"], AUDIT)
         self.assertIs(status["audit"]["independent_required"], True)
-        self.assertEqual(status["progress"]["required_obligations"], 11)
-        self.assertEqual(status["progress"]["completed_current_obligations"], 7)
+        self.assertEqual(status["progress"]["required_obligations"], 13)
+        self.assertEqual(status["progress"]["completed_current_obligations"], 9)
         self.assertEqual(len(status["obligations"]["unsatisfied"]), 4)
         self.assertTrue(all(o.startswith("obl_") for o in status["obligations"]["unsatisfied"]))
         self.assertEqual({key: value["state"] for key, value in status["assessments"].items()
@@ -681,10 +708,10 @@ class TestStatusAndValidate(BuiltCase):
         status = BUILT.steps["status_complete"]
         self.assertIs(status["process_complete"], True)
         self.assertEqual(status["obligations"]["unsatisfied"], [])
-        self.assertEqual(len(status["obligations"]["required"]), 11)
-        self.assertEqual(status["progress"], {"completed_current_obligations": 11, "draft_checks": 0,
+        self.assertEqual(len(status["obligations"]["required"]), 13)
+        self.assertEqual(status["progress"], {"completed_current_obligations": 13, "draft_checks": 0,
                                               "major_results": 2, "process_complete": True,
-                                              "required_obligations": 11, "source_unbound_items": 0})
+                                              "required_obligations": 13, "source_unbound_items": 0})
         self.assertEqual(set(status["independent"].values()), {"complete"})
         self.assertEqual(status["problems"], [])
         self.assertEqual(status["source_limits"], [])
@@ -871,9 +898,9 @@ class TestPublication(BuiltCase):
         payload, stderr = run_cli("release", db, "--audit", AUDIT, "--out", out)
         self.assertEqual(payload["command"], "release")
         self.assertIs(payload["process_complete"], True)
-        self.assertEqual(payload["core_version"], "2.0.0")
-        self.assertEqual(payload["storage_format"], 3)
-        self.assertEqual(payload["contract"], "proofcheck-records/3")
+        self.assertEqual(payload["core_version"], "2.3.0")
+        self.assertEqual(payload["storage_format"], 4)
+        self.assertEqual(payload["contract"], "proofcheck-records/4")
         self.assertEqual(payload["audit_id"], AUDIT)
         self.assertEqual(payload["paper_id"], BUILT.paper_id)
         self.assertEqual(payload["publication"]["kind"], "release")
@@ -888,7 +915,7 @@ class TestPublication(BuiltCase):
         exported = json.loads((out / "export.json").read_text(encoding="utf-8"))
         self.assertEqual(exported["revision"], payload["revision"])
         self.assertEqual(exported["paper_id"], BUILT.paper_id)
-        self.assertEqual(exported["storage_format"], 3)
+        self.assertEqual(exported["storage_format"], 4)
         self.assertEqual(stderr, "")
         status, _ = run_cli("status", db)
         self.assertEqual(status["published_revision"], payload["revision"])
@@ -1122,7 +1149,7 @@ class TestChangesExportBackup(BuiltCase):
         self.assertIn("0..", payload["error"]["message"])
 
     def test_export_writes_a_portable_snapshot(self):
-        """export --history writes the complete contract-3 snapshot plus its version history."""
+        """export --history writes the complete contract-4 snapshot plus its version history."""
         out = self.path("export.json")
         payload, _ = run_cli("export", BUILT.snapshots["complete"], "--out", out, "--history")
         self.assertEqual(payload["command"], "export")
@@ -1133,8 +1160,8 @@ class TestChangesExportBackup(BuiltCase):
         exported = json.loads(out.read_text(encoding="utf-8"))
         self.assertEqual(exported["revision"], payload["revision"])
         self.assertEqual(exported["paper_id"], BUILT.paper_id)
-        self.assertEqual(exported["storage_format"], 3)
-        self.assertEqual(exported["contract_version"], 3)
+        self.assertEqual(exported["storage_format"], 4)
+        self.assertEqual(exported["contract_version"], 4)
 
     def test_export_of_an_earlier_snapshot_reports_that_revision(self):
         """--snapshot exports the historical revision rather than the head."""
@@ -1262,7 +1289,7 @@ class TestTelemetry(BuiltCase):
         details = [event["details"] for event in summary["event_list"]]
         self.assertEqual({d["command"] for d in details}, {"status", "changes"})
         self.assertTrue(all(d["exit_code"] == 0 and d["outcome"] == "ok" for d in details), details)
-        self.assertTrue(all(d["core_version"] == "2.0.0" for d in details), details)
+        self.assertTrue(all(d["core_version"] == "2.3.0" for d in details), details)
 
     def test_a_failed_command_records_its_exit_code_and_error_code(self):
         """The telemetry event of a refused command carries outcome error and the error code."""
@@ -1324,7 +1351,7 @@ class TestLegacyOverview(TempCase):
         import paper_database
 
         target = self.path("legacy.db")
-        paper_database.init_database(target, OVERVIEW_EXAMPLE / "overview.json", source_root=OVERVIEW_EXAMPLE)
+        paper_database._native_init_database(target, OVERVIEW_EXAMPLE / "overview.json", source_root=OVERVIEW_EXAMPLE)
         return target
 
     def test_opening_a_legacy_overview_exits_four(self):
@@ -1349,7 +1376,7 @@ class TestLegacyOverview(TempCase):
         self.assertEqual(status["mode"], "overview")
         self.assertEqual(status["counts"]["items"], 6)
         self.assertEqual(status["counts"]["uses"], 11)
-        self.assertEqual(status["storage"]["storage_format"], 3)
+        self.assertEqual(status["storage"]["storage_format"], 4)
         validated, _ = run_cli("validate", db)
         self.assertIs(validated["ok"], True)
 
@@ -1393,7 +1420,7 @@ class TestImportLegacy(TempCase):
         self.assertEqual(status["audit"]["mode"], "triage")
         self.assertIs(status["process_complete"], False)
         self.assertEqual({state["state"] for key, state in status["assessments"].items()
-                          if key.startswith("items:")}, {"red"})
+                          if key.startswith("items:")}, {"gray"})
         validated, _ = run_cli("validate", self.db)
         self.assertIs(validated["ok"], True)
 

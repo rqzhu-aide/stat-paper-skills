@@ -66,6 +66,7 @@ LEMMA_GUARDS = [
     ("incoming_uses", "items", "itm_lem"),
     ("parts_of_item", "items", "itm_lem"),
     ("scopes_in_argument", "arguments", "arg_lem"),
+    ("target_specs_for_target", "items", "itm_lem"),
     ("uses_in_group", "groups", "grp_lem"),
 ]
 THEOREM_GUARDS = [
@@ -76,6 +77,8 @@ THEOREM_GUARDS = [
     ("incoming_uses", "items", "itm_thm"),
     ("parts_of_item", "items", "itm_thm"),
     ("scopes_in_argument", "arguments", "arg_thm"),
+    ("target_specs_for_target", "items", "itm_lem"),
+    ("target_specs_for_target", "items", "itm_thm"),
     ("uses_in_group", "groups", "grp_thm"),
 ]
 # A reconcile packet over both results: both result closures plus the adjudicable targets themselves.
@@ -99,6 +102,8 @@ RECONCILE_GUARDS = [
     ("parts_of_item", "items", "itm_thm"),
     ("scopes_in_argument", "arguments", "arg_lem"),
     ("scopes_in_argument", "arguments", "arg_thm"),
+    ("target_specs_for_target", "items", "itm_lem"),
+    ("target_specs_for_target", "items", "itm_thm"),
     ("uses_in_group", "groups", "grp_lem"),
     ("uses_in_group", "groups", "grp_thm"),
 ]
@@ -110,27 +115,34 @@ LEMMA_CHECK_BINDING_RELATIONS = [
     ("incoming_uses", "items", "itm_lem"),
     ("parts_of_item", "items", "itm_lem"),
     ("scopes_in_argument", "arguments", "arg_lem"),
+    ("target_specs_for_target", "items", "itm_lem"),
     ("uses_in_group", "groups", "grp_lem"),
 ]
 LEMMA_CHECK_BINDING_RECORDS = [
     ("anchors", "anc_lem", 1, "statement"),
     ("anchors", "anc_lem_proof", 1, "proof"),
+    ("anchors", "anc_lem_proof", 1, "source"),
     ("arguments", "arg_lem", 1, "proof"),
     ("coverage", "cov_lem", 1, "coverage"),
     ("groups", "grp_lem", 1, "inference"),
     ("items", "itm_lem", 1, "statement"),
+    ("proof_boundaries", "bnd_lem", 1, "coverage"),
     ("scopes", "scp_plain", 1, "scope"),
+    ("source_reviews", "srv_boundaries", 1, "source"),
+    ("target_specs", "tgt_lem", 1, "statement"),
 ]
 # assessment.derive_assessment progress for the finished fixture, and after one late independent reading.
-COMPLETE_PROGRESS = {"process_complete": True, "required_obligations": 11, "completed_current_obligations": 11,
+COMPLETE_PROGRESS = {"process_complete": True, "required_obligations": 13, "completed_current_obligations": 13,
                      "draft_checks": 0, "major_results": 2, "source_unbound_items": 0}
-REOPENED_PROGRESS = {"process_complete": False, "required_obligations": 11, "completed_current_obligations": 10,
+REOPENED_PROGRESS = {"process_complete": False, "required_obligations": 13, "completed_current_obligations": 12,
                      "draft_checks": 0, "major_results": 2, "source_unbound_items": 0}
-DRAFT_PROGRESS = {"process_complete": True, "required_obligations": 11, "completed_current_obligations": 11,
+DRAFT_PROGRESS = {"process_complete": True, "required_obligations": 13, "completed_current_obligations": 13,
                   "draft_checks": 1, "major_results": 2, "source_unbound_items": 0}
 # A primary packet's write scope for one result, minus the captured source (whose id is content addressed).
 LEMMA_WRITE_SCOPE = [("anchors", "anc_lem"), ("anchors", "anc_lem_proof"), ("arguments", "arg_lem"),
-                     ("audits", "aud_1"), ("groups", "grp_lem"), ("items", "itm_lem"), ("scopes", "scp_plain")]
+                     ("audits", "aud_1"), ("groups", "grp_lem"), ("items", "itm_lem"),
+                     ("proof_boundaries", "bnd_lem"), ("scopes", "scp_plain"),
+                     ("source_reviews", "srv_boundaries"), ("target_specs", "tgt_lem")]
 
 
 # -- body builders ---------------------------------------------------------------------------------
@@ -553,8 +565,13 @@ class OutgoingConsumerTests(RaceCase):
                                 for entry in binding_before["bindings"]["relations"]),
                          LEMMA_CHECK_BINDING_RELATIONS)
         self.assertEqual(sorted((entry["ref"]["collection"], entry["ref"]["id"], entry["ref"]["version"],
-                                 entry["facet"]) for entry in binding_before["bindings"]["records"]),
+                                 entry["facet"]) for entry in binding_before["bindings"]["records"]
+                         if entry["ref"]["collection"] != "sources"),
                          LEMMA_CHECK_BINDING_RECORDS)
+        source_bindings = [entry for entry in binding_before["bindings"]["records"]
+                           if entry["ref"]["collection"] == "sources"]
+        self.assertEqual([(entry["ref"], entry["facet"]) for entry in source_bindings],
+                         [(dict(db.heads("sources")[0].ref, version=1), "source")])
         self.assertEqual(relation_members(db.conn, "incoming_uses", R("items", "itm_lem")), [])
         self.assertEqual(relation_members(db.conn, "incoming_uses", R("items", "itm_thm")),
                          [("uses", "use_lem_thm", 1)])

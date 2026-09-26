@@ -4,7 +4,7 @@ from __future__ import annotations
 from unittest import mock
 
 from support import R, TempCase, edit, locator
-from paper_core import assessment, controller, packets, review, sources
+from paper_core import assessment, controller, review, sources
 from paper_core.canonical import canonical_bytes
 from paper_core.errors import ConflictError
 
@@ -16,15 +16,14 @@ class WorkOriginBindingTests(TempCase):
         self.db = self.fx.open()
         self.addCleanup(self.db.close)
 
-    def pending(self, *, work_origin=True, version=2):
+    def pending(self, *, work_origin=True):
         if work_origin:
             prepared = controller.prepare_work(self.db, audit_id="aud_1", mode="independent",
                                                 focus=R("items", "itm_lem"))
             self.assertTrue(prepared["prepared"], prepared)
             packet = prepared["packet"]
         else:
-            with mock.patch.object(packets, "PACKET_VERSION", version):
-                packet = self.fx.packet(self.db, "items:itm_lem", mode="independent")
+            packet = self.fx.packet(self.db, "items:itm_lem", mode="independent")
         worker = {"packet_id": packet["packet_id"], "covered_targets": [R("items", "itm_lem")],
             "coverage_note": "Read the source proof", "exposure_report": {"status": "none_known", "note": ""},
             "judgments": [{"target": {"source_anchor_id": "anc_lem_proof", "description": "The proof argument"},
@@ -47,9 +46,20 @@ class WorkOriginBindingTests(TempCase):
                    "reviewer": "coordinator"}
         return request
 
-    def mapped(self, **kwargs):
+    def mapped(self, *, historical_binding=False, **kwargs):
         request = self.pending(**kwargs)
-        mapped = review.map_response(self.db, mapping=request)
+        if historical_binding:
+            # Freeze the historical stored shape explicitly. Merely changing a
+            # current packet's version would still produce contract-4 bindings.
+            insert = self.db.insert_binding
+            def insert_historical(collection, identifier, version, packet_id, binding):
+                original_shape = dict(binding)
+                original_shape.pop("semantic_memberships", None)
+                return insert(collection, identifier, version, packet_id, original_shape)
+            with mock.patch.object(self.db, "insert_binding", side_effect=insert_historical):
+                mapped = review.map_response(self.db, mapping=request)
+        else:
+            mapped = review.map_response(self.db, mapping=request)
         self.assertEqual("accepted", mapped["state"])
         check_id = mapped["checks"][0]["check_id"]
         self.assertEqual("current", self.freshness(check_id)["freshness"])
@@ -103,14 +113,14 @@ class WorkOriginBindingTests(TempCase):
         self.assertEqual("needs_review", changed["freshness"])
         self.assertTrue(any(r["ref"]["id"] == "anc_lem_proof" for r in changed["changes"]["records"]))
 
-    def test_generic_version_two_origin_keeps_strict_membership_behavior(self):
+    def test_current_generic_origin_uses_semantic_memberships(self):
         check_id = self.mapped(work_origin=False)
-        self.assertNotIn("semantic_memberships", self.db.binding("checks", check_id, 1)["bindings"])
+        self.assertIn("semantic_memberships", self.db.binding("checks", check_id, 1)["bindings"])
         self.coverage_progress()
-        self.assertEqual("needs_review", self.freshness(check_id)["freshness"])
+        self.assertEqual("current", self.freshness(check_id)["freshness"])
 
-    def test_historical_packet_one_origin_keeps_strict_membership_behavior(self):
-        check_id = self.mapped(work_origin=False, version=1)
+    def test_stored_historical_binding_keeps_strict_membership_behavior(self):
+        check_id = self.mapped(work_origin=False, historical_binding=True)
         self.assertNotIn("semantic_memberships", self.db.binding("checks", check_id, 1)["bindings"])
         self.coverage_progress()
         self.assertEqual("needs_review", self.freshness(check_id)["freshness"])

@@ -61,7 +61,7 @@ class ControllerTests(unittest.TestCase):
                          {"source_fidelity", "derivation", "composition"})
         result = self.submit(self.envelope(packet), self.completed(packet))
         self.assertEqual(result["state"], "accepted", result)
-        self.assertEqual(len(result["receipt"]["changed"]), 4)
+        self.assertEqual(len(result["receipt"]["changed"]), 5)
         next_work = controller.derive_work(self.db, audit_id=self.fx.audit_id, focus=R("items", "itm_lem"))
         self.assertTrue(all(t["state"] == "satisfied" for t in next_work["tasks"] if t["required"]),
                         next_work["tasks"])
@@ -89,12 +89,16 @@ class ControllerTests(unittest.TestCase):
         group = self.db.head("groups", "grp_thm")
         supplier_use = dict(self.db.head("uses", "use_lem_thm").body)
         supplier_use["from"] = R("items", "itm_extra")
+        supplier_application = dict(self.db.head("application_details", "use_lem_thm").body,
+                                    use_id="use_extra_thm",
+                                    needed_form={"form": "verbatim", "text": "Assumption 2 text"})
         self.fx.apply(self.db, [extra,
             edit("create", "scopes", "scp_thm", {"argument_id": "arg_thm", "parent_id": None,
                 "assumptions": [R("items", "itm_extra")], "binders": [], "conditions": [], "evidence_refs": []}),
             edit("replace", "arguments", "arg_thm", {**argument.body, "scope_id": "scp_thm"}, argument.version),
             edit("replace", "groups", "grp_thm", {**group.body, "scope_id": "scp_thm"}, group.version),
-            edit("create", "uses", "use_extra_thm", supplier_use)], mode="primary")
+            edit("create", "uses", "use_extra_thm", supplier_use),
+            edit("create", "application_details", "use_extra_thm", supplier_application)], mode="primary")
         context = self.fx.packet(self.db, "items:itm_extra", mode="primary")
         review.compare(self.db, batch=self.fx.batch([edit("create", "observations", "obs_extra", {
             "target": R("items", "itm_extra"), "result": "matched", "reviewer": "primary-1",
@@ -102,7 +106,8 @@ class ControllerTests(unittest.TestCase):
         packet = self.prepare("itm_thm")
         tasks = packet["manifest"]["work"]["tasks"]
         self.assertEqual(sorted(t["kind"] for t in tasks),
-                         ["application", "application", "composition", "derivation", "source_fidelity"])
+                         ["application", "application", "composition", "derivation",
+                          "source_fidelity", "source_fidelity"])
         worker = copy.deepcopy(packet["scaffold"])
         for row in worker["results"]:
             if row["type"] == "source_fidelity":
@@ -117,8 +122,8 @@ class ControllerTests(unittest.TestCase):
             "existing_check_refs": [], "replaces": None, "note": "Explicit joint coverage"}]
         saved = self.submit(self.envelope(packet), worker)
         self.assertEqual(saved["state"], "accepted", saved)
-        self.assertEqual(len(saved["record_map"]), 5)
-        self.assertEqual(len(saved["receipt"]["changed"]), 6)
+        self.assertEqual(len(saved["record_map"]), 6)
+        self.assertEqual(len(saved["receipt"]["changed"]), 7)
 
     def test_wrong_task_cannot_use_context_supplier(self):
         packet = self.prepare()
@@ -222,13 +227,28 @@ class ControllerTests(unittest.TestCase):
         info = controller.inspect_work(self.db, packet_id=packet["packet_id"])
         out = Path(self.tmp.name) / "output"
         paths = controller.write_artifacts(self.db, info, out)
-        self.assertEqual(len(paths), 3)
+        self.assertEqual(set(paths), {"worker-packet.json", "coordinator-manifest.json",
+                                      "response-scaffold.json", "worker-guidance.json",
+                                      "coordinator-guidance.json"})
         self.assertEqual(controller.write_artifacts(self.db, info, out), paths)
         (out / "worker-packet.json").write_text("different")
         with self.assertRaises(InvalidRequest):
             controller.write_artifacts(self.db, info, out)
         history = controller.inspect_work(self.db, audit_id=self.fx.audit_id)
         self.assertTrue(any(row["id"] == packet["packet_id"] for row in history["entries"]))
+
+    def test_reconciliation_guidance_reuses_preparation_assessment(self):
+        from paper_core import assessment
+        from paper_core import work
+        fx = Fixture(Path(self.tmp.name) / "reconcile").independent()
+        with fx.open() as db:
+            with patch.object(work, "derive_full", wraps=assessment.derive_full) as calculate, \
+                    patch.object(assessment, "derive_full", side_effect=AssertionError("duplicate assessment")):
+                prepared = controller.prepare_work(db, audit_id=fx.audit_id, mode="reconcile",
+                                                   focus=R("items", "itm_lem"))
+            self.assertTrue(prepared["prepared"], prepared)
+            self.assertEqual(calculate.call_count, 1)
+            self.assertTrue(prepared["coordinator_guidance"]["reconciliation_candidates"])
 
     def test_input_limits_and_empty_response(self):
         self.assertFalse(controller.submit_work(self.db, envelope_bytes=b"x" * 65537,

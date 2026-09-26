@@ -1,0 +1,6 @@
+interface:
+  display_name: "Stat Write Style"
+  short_description: "Draft and revise statistical research papers"
+  default_prompt: "Use $stat-write-style to draft, revise, or audit the presentation of this manuscript while preserving its supplied scientific claims."
+policy:
+  allow_implicit_invocation: false

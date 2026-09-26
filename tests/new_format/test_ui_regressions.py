@@ -20,9 +20,11 @@ class HiddenProofTests(TempCase):
             hidden.update(kind="intermediate_result", label="Hidden bound", caption="Hidden bound",
                           owner_id="itm_thm")
             use = copy.deepcopy(db.head("uses", "use_lem_thm").body)
-            use.update(to=R("items", "itm_hidden"), group_id="grp_hidden")
+            use.update(to=R("items", "itm_hidden"), group_id="grp_hidden",
+                       needed_form=db.head("items", "itm_lem").body["statement"], substitutions=[])
             internal = copy.deepcopy(use)
-            internal.update({"from": R("items", "itm_hidden"), "to": R("items", "itm_thm"), "group_id": "grp_thm"})
+            internal.update({"from": R("items", "itm_hidden"), "to": R("items", "itm_thm"), "group_id": "grp_thm",
+                             "needed_form": hidden["statement"]})
             fixture.apply(db, [edit("create", "items", "itm_hidden", hidden),
                 fixture.argument_edit("arg_hidden", "itm_hidden", "grp_hidden", "anc_thm_proof"),
                 fixture.group_edit("grp_hidden", "arg_hidden", "itm_hidden", "anc_thm_proof"),

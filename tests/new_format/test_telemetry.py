@@ -33,7 +33,8 @@ DB_COMMANDS = frozenset({
     "apply", "attach", "backup", "changes", "checkpoint", "compare", "export", "get", "init",
     "migrate-overview", "qualification record", "release", "review map", "review reconcile",
     "review submit", "source anchor", "source capture", "source review", "status", "telemetry record",
-    "telemetry summary", "validate", "migrate", "work list", "work prepare", "work submit", "work inspect"})
+    "telemetry summary", "validate", "migrate", "work list", "work prepare", "work submit", "work inspect",
+    "template", "review mapping-template", "work extend"})
 NO_DB_COMMANDS = frozenset({"ids", "import-legacy", "version"})
 
 

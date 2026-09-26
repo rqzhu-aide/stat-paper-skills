@@ -1,13 +1,15 @@
-/resources/
-/examples/
 /.agents/
 /.codex/
 /archived/
-/archify-proofs-overview/
+/proof-graphify/
 /tmp/
-/architecture-proofcheck/archived/pre-item-graph-2026-09-12/
-/architecture-proofcheck/controller-implementation-2026-09-15/input-manifest.json
-/architecture-proofcheck/controller-implementation-2026-09-15/pilot-evidence.zip
+/output/
+/stat-paper-review/evals/results/
 
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/

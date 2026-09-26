@@ -7,6 +7,8 @@ write, the exact error codes they raise, and the fact that a rejected command wr
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import support
 from support import R, edit, locator, sha
@@ -753,9 +755,25 @@ class AnchorResolution(support.TempCase):
         resolved = sources.resolve_anchor(db, by_path["figure.pdf"], locator(page=2))
         self.assertEqual(resolved["method"], "reviewed_page")
         self.assertEqual(resolved["locator"], {"start_line": None, "end_line": None, "page": 2, "label": None})
-        self.assertEqual(resolved["limitation"],
-                         "reviewed page: PDF text extraction is approximate and reviewed by a person")
+        self.assertIn("figure.pdf, physical PDF page 2", resolved["limitation"])
+        self.assertIn("compare important formulas", resolved["limitation"])
+        self.assertNotIn("reviewed by a person", resolved["limitation"])
         self.assertEqual(resolved["excerpt_sha256"], sha(resolved["excerpt"].encode("utf-8")))
+
+    def test_damaged_pdf_text_retains_the_source_and_reports_unrecovered_glyphs(self):
+        db, by_path = self.alt_source()
+        source = by_path['figure.pdf']
+        raw = db.get_blob(source.body['blob_sha256'])
+        page = Mock(extract_text=Mock(return_value='x\x00y\x10z\n\r\t'))
+        with patch.object(sources, 'PdfReader', return_value=SimpleNamespace(pages=[page])):
+            resolved = sources.resolve_anchor(db, source, locator(page=1))
+        self.assertEqual(resolved['excerpt'], 'x\ufffdy\ufffdz\n\r\t')
+        self.assertEqual(resolved['excerpt_sha256'], sha(resolved['excerpt'].encode('utf-8')))
+        self.assertIn('2 unsupported control character(s)', resolved['limitation'])
+        self.assertIn('figure.pdf, physical PDF page 1', resolved['limitation'])
+        self.assertNotIn('reviewed by a person', resolved['limitation'])
+        self.assertEqual(db.get_blob(source.body['blob_sha256']), raw)
+        self.assertEqual(db.heads('source_reviews'), [])
 
     @unittest.skipIf(NO_PYPDF, "pypdf is not installed, so the page count cannot be read")
     def test_a_page_past_the_end_of_the_pdf_is_rejected(self):
@@ -821,8 +839,9 @@ class AnchorCommand(support.TempCase):
             self.assertEqual(result["anchors"][0]["method"], "reviewed_page")
             stored = db.head("anchors", "anc_page").body
             self.assertEqual(stored["locator"], {"start_line": None, "end_line": None, "page": 1, "label": None})
-            self.assertEqual(stored["limitation"],
-                             "reviewed page: PDF text extraction is approximate and reviewed by a person")
+            self.assertIn("figure.pdf, physical PDF page 1", stored["limitation"])
+            self.assertIn("compare important formulas", stored["limitation"])
+            self.assertNotIn("reviewed by a person", stored["limitation"])
 
     def test_recreating_a_live_anchor_needs_an_expected_version(self):
         """Re-creating an existing anchor is refused with the version the caller must pass."""
@@ -915,7 +934,7 @@ class AnchorCommand(support.TempCase):
             revision = db.max_revision()
             cases = [
                 (dict(anchor_request(packet["packet_id"], "req_v", []), contract_version=2),
-                 ["/contract_version: must equal 3"]),
+                 ["/contract_version: supported request contract versions are 3 and 4"]),
                 (anchor_request(packet["packet_id"], "req_half", [
                     anchor_entry("anc_x", fx.source_id, locator(start=5))]),
                  ["/anchors/0/locator: start_line and end_line must appear together"]),
@@ -1092,7 +1111,7 @@ class SourceReviewAndLimits(support.TempCase):
             with self.assertRaises(InvalidRequest) as caught:
                 sources.review_sources(db, batch=batch)
             self.assertEqual(str(caught.exception), "invalid edit envelope")
-            self.assertEqual(caught.exception.records, ["/contract_version: must equal 3"])
+            self.assertEqual(caught.exception.records, ["/contract_version: supported request contract versions are 3 and 4"])
             self.assertEqual(db.max_revision(), revision)
 
     def test_a_source_review_must_pin_the_live_source_and_anchor_versions(self):

@@ -28,11 +28,11 @@ EXAMPLE_RECORDS = [
     ("items", "itm_event_a"), ("items", "itm_event_b"), ("items", "itm_joint"), ("items", "itm_target"),
     ("arguments", "arg_joint"), ("arguments", "arg_target"),
     ("groups", "grp_joint"), ("groups", "grp_target"),
-    ("uses", "use_a_joint"), ("uses", "use_b_joint"), ("uses", "use_joint_target")]
+    ("uses", "use_a_joint"), ("uses", "use_b_joint"), ("uses", "use_joint_target"),
+    ("application_details", "use_a_joint"), ("application_details", "use_b_joint"), ("application_details", "use_joint_target")]
 
 # The items schema in field order; a body carrying only "kind" must report each of the rest as missing.
-ITEM_FIELDS_AFTER_KIND = ("label", "caption", "statement", "passages", "aliases", "uncertainty", "origin",
-                          "owner_id", "scope_id")
+ITEM_FIELDS_AFTER_KIND = ("label", "caption", "statement", "passages", "aliases", "uncertainty")
 
 
 # -- body builders ---------------------------------------------------------------------------------
@@ -50,7 +50,7 @@ def item_body(kind, label, **overrides):
 
 def use_body(**overrides):
     body = {"from": R("items", "itm_lem"), "to": R("items", "itm_thm"), "type": "dependency",
-            "group_id": "grp_thm", "reason": "applied as stated", "needed_form": None,
+            "group_id": "grp_thm", "reason": "applied as stated", "needed_form": {"form":"verbatim","text":"Lemma 1 text"},
             "substitutions": [], "evidence_refs": [], "regime": None, "uncertainty": None}
     body.update(overrides)
     return body
@@ -355,7 +355,7 @@ class EnvelopeShapeTests(AcceptanceCase):
     def test_an_unknown_collection_is_refused(self):
         """The envelope only admits the twenty-two contract-3 collections, named in the error."""
         fixture, db = self.build("structure")
-        self.assertEqual(len(COLLECTIONS), 22)
+        self.assertEqual(len(COLLECTIONS), 27)
         error = self.refuse_batch(fixture, db, "INVALID_REQUEST",
                                   [edit("create", "widgets", "wid_1", {})], *fixture.ITEMS)
         self.assertEqual(error.message, "invalid edit envelope")
@@ -382,7 +382,7 @@ class EnvelopeShapeTests(AcceptanceCase):
         packet = fixture.packet(db, *fixture.ITEMS)
         error = self.refuse(db, "INVALID_REQUEST", lambda: acceptance.apply_batch(db, {
             "contract_version": 2, "request_id": "req_cv", "packet_id": packet["packet_id"], "edits": []}))
-        self.assertEqual(error.records, ["/contract_version: must equal 3"])
+        self.assertEqual(error.records, ["/contract_version: supported request contract versions are 3 and 4"])
 
     def test_a_batch_without_a_packet_id_is_refused(self):
         """packet_id is a required, non-null envelope field."""
@@ -619,8 +619,9 @@ class PlanningTests(AcceptanceCase):
         receipt = fixture.apply(db, [
             {"op": "retire", "collection": "uses", "id": "use_lem_thm", "expected_version": 1,
              "reason": "restructuring"}], *fixture.ITEMS)
-        self.assertEqual(receipt["changed"], [{"collection": "uses", "id": "use_lem_thm", "version": 2,
-                                               "op": "retire", "reason": "restructuring"}])
+        self.assertEqual(receipt["changed"], [{"collection": c, "id": "use_lem_thm", "version": 2,
+                                               "op": "retire", "reason": "restructuring"}
+                                              for c in ('uses','application_details')])
         head = db.head("uses", "use_lem_thm")
         self.assertEqual(head.version, 2)
         self.assertTrue(head.retired)
@@ -636,11 +637,10 @@ class PlanningTests(AcceptanceCase):
                             "expected_version": 1, "reason": "restructuring"}], *fixture.ITEMS)
         recreated = self.refuse_batch(fixture, db, "INVALID_REQUEST",
                                       [edit("create", "uses", "use_lem_thm", use_body())], *fixture.ITEMS)
-        self.assertEqual(recreated.records,
-                         ["edits/0: uses:use_lem_thm was retired; identifiers are never reused"])
+        self.assertIn("edits/0: uses:use_lem_thm was retired; identifiers are never reused", recreated.records)
         replaced = self.refuse_batch(fixture, db, "INVALID_REQUEST",
                                      [edit("replace", "uses", "use_lem_thm", use_body(), 2)], *fixture.ITEMS)
-        self.assertEqual(replaced.records, ["edits/0: uses:use_lem_thm is retired"])
+        self.assertIn("edits/0: uses:use_lem_thm is retired", replaced.records)
         self.assertTrue(db.head("uses", "use_lem_thm").retired)
 
     def test_retiring_a_referenced_record_is_refused(self):
@@ -649,9 +649,9 @@ class PlanningTests(AcceptanceCase):
         error = self.refuse_batch(fixture, db, "INVALID_BATCH", [
             {"op": "retire", "collection": "groups", "id": "grp_thm", "expected_version": 1,
              "reason": "restructuring"}], *fixture.ITEMS)
-        self.assertEqual(error.records, [
-            "edits/0 groups:grp_thm: still referenced by live records "
-            "(arguments:arg_thm/final_group_id, uses:use_lem_thm/group_id)"])
+        self.assertTrue(any('still referenced by live records' in message and
+                            'application_details:use_lem_thm/group_id' in message and
+                            'arguments:arg_thm/final_group_id' in message for message in error.records))
         self.assertFalse(db.head("groups", "grp_thm").retired)
 
 
@@ -689,9 +689,8 @@ class ReferenceIntegrityTests(AcceptanceCase):
         error = self.refuse_batch(fixture, db, "INVALID_BATCH", [
             edit("replace", "uses", "use_lem_thm", use_body(group_id="grp_extra"), use.version)],
             *fixture.ITEMS)
-        self.assertEqual(error.records,
-                         ["edits/0 uses:use_lem_thm /group_id: no live groups record grp_extra"])
-        self.assertEqual(db.head("uses", "use_lem_thm").body["group_id"], "grp_thm")
+        self.assertTrue(any('application_details:use_lem_thm /group_id: no live groups record grp_extra' in message for message in error.records))
+        self.assertEqual(db.head("application_details", "use_lem_thm").body["group_id"], "grp_thm")
 
     def test_a_pinned_reference_at_a_missing_version_is_refused(self):
         """A pinned reference must name a version the target record actually has."""
@@ -721,7 +720,8 @@ class ReferenceIntegrityTests(AcceptanceCase):
         receipt = fixture.apply(db, [edit("create", "uses", "use_twin", use_body(reason="restated"))],
                                 *fixture.ITEMS)
         self.assertEqual(receipt["changed"],
-                         [{"collection": "uses", "id": "use_twin", "version": 1, "op": "create"}])
+                         [{"collection": c, "id": "use_twin", "version": 1, "op": "create"}
+                          for c in ('uses','application_details')])
 
     def test_an_accepted_batch_indexes_its_references(self):
         """A created record's references become index rows keyed by JSON pointer."""
@@ -1002,10 +1002,14 @@ class ContractHelperTests(unittest.TestCase):
             ["/start_line: expected integer", "/end_line: expected integer"])
 
     def test_an_edit_matching_no_envelope_shape_is_rejected(self):
-        """An edit whose key set matches no envelope is reported as shapeless."""
-        self.assertEqual(contract.validate_shape(contract.BATCH, {
-            "contract_version": 3, "request_id": "r", "packet_id": "p", "edits": [{"op": "create"}]}),
-            ["/edits/0: object does not match any allowed shape"])
+        """A rejected edit identifies its actual keys and the expected envelope shapes."""
+        errors = contract.validate_shape(contract.BATCH, {
+            "contract_version": 3, "request_id": "r", "packet_id": "p", "edits": [{"op": "create"}]})
+        self.assertEqual(len(errors), 1)
+        self.assertTrue(errors[0].startswith("/edits/0: object does not match any allowed shape; expected one of "))
+        self.assertIn("'collection', 'expected_version', 'id', 'op'", errors[0])
+        self.assertIn("got object keys ['op']", errors[0])
+        self.assertIn("keep required nullable fields present", errors[0])
 
     def test_the_retire_envelope_is_a_recognised_shape(self):
         """op, collection, id, expected_version and reason is the whole retire envelope."""
@@ -1030,7 +1034,7 @@ class ExampleBatchReplayTests(AcceptanceCase):
         self.assertEqual(batch["contract_version"], 3)
         self.assertEqual(batch["packet_id"], "pkt_example")
         self.assertEqual(batch["request_id"], "req_example")
-        self.assertEqual([(e["collection"], e["id"]) for e in batch["edits"]], EXAMPLE_RECORDS)
+        self.assertEqual([(e["collection"], e["id"]) for e in batch["edits"]], EXAMPLE_RECORDS[:12])
         self.assertEqual({e["op"] for e in batch["edits"]}, {"create"})
         self.assertEqual({e["expected_version"] for e in batch["edits"]}, {None})
         return batch
@@ -1061,7 +1065,7 @@ class ExampleBatchReplayTests(AcceptanceCase):
         fixture, db = self.build(name="bare")
         batch = self.rewrite(fixture, db, self.load_example())
         receipt = acceptance.apply_batch(db, batch)
-        self.assertEqual(len(receipt["changed"]), 12)
+        self.assertEqual(len(receipt["changed"]), 15)
         self.assertEqual(db.head("items", "itm_target").body["label"], "Example target")
 
     def test_every_example_record_lands_under_its_fixture_identifier(self):
@@ -1090,8 +1094,6 @@ class ExampleBatchReplayTests(AcceptanceCase):
         self.assertEqual(db.refs_from("uses", "use_joint_target", 1), [
             {"field_path": "/from", "target_collection": "items", "target_id": "itm_joint",
              "target_version": None},
-            {"field_path": "/group_id", "target_collection": "groups", "target_id": "grp_target",
-             "target_version": None},
             {"field_path": "/to", "target_collection": "items", "target_id": "itm_target",
              "target_version": None}])
 
@@ -1104,7 +1106,7 @@ class ExampleBatchReplayTests(AcceptanceCase):
         self.assertEqual(error.message, "batch rejected")
         self.assertEqual(error.records, [
             f"edits/{index}: {collection}:{record_id} already exists at version 1"
-            for index, (collection, record_id) in enumerate(EXAMPLE_RECORDS)])
+            for index, (collection, record_id) in enumerate(EXAMPLE_RECORDS[:12])])
 
 
 if __name__ == "__main__":

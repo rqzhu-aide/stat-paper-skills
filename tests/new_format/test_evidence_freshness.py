@@ -7,6 +7,7 @@ import support
 from support import R, TempCase, edit, locator
 
 from paper_core import acceptance, assessment, sources
+from paper_core.refs import facet_digests
 
 
 class ConsumedEvidenceTests(TempCase):
@@ -19,6 +20,19 @@ class ConsumedEvidenceTests(TempCase):
                                              db.head("checks", check_id), superseded=False)
 
     def check(self, db):
+        # These tests intentionally revise setup before commissioning a new
+        # check. Normalize the exact target to that setup, as an author must.
+        updates=[]
+        for spec in db.heads('target_specs'):
+            pin=spec.body['statement_ref']
+            if pin:
+                current=db.head(pin['collection'],pin['id'])
+                prior=db.version(pin['collection'],pin['id'],pin['version'])
+                if facet_digests(current.collection,current.body)['statement'] != facet_digests(prior.collection,prior.body)['statement']:
+                    updates.append(edit('replace','target_specs',spec.id,
+                        dict(spec.body,statement_ref=current.pinned,scope_id=current.body.get('scope_id')),spec.version))
+        if updates:
+            self.fx.apply(db,updates)
         packet = self.fx.packet(db, "items:itm_thm", mode="primary")
         acceptance.apply_batch(db, self.fx.batch(
             [self.fx.check_edit("chk_evidence", R("uses", "use_lem_thm"), "application")], packet["packet_id"]))

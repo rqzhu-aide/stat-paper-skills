@@ -21,7 +21,7 @@ class CoverageGateTests(TempCase):
         self.assertFalse(result["progress"]["process_complete"])
         self.assertTrue(any("proof coverage" in p for p in result["problems"]))
         # No missing reasoning is being confused with this separate coverage gate.
-        self.assertEqual(result["progress"]["completed_current_obligations"], 11)
+        self.assertEqual(result["progress"]["completed_current_obligations"], 13)
 
     def test_zero_coverage_cannot_complete_or_release_but_can_render(self):
         fixture = self.complete_with_coverage(lambda rows: [])
@@ -68,7 +68,7 @@ class CoverageGateTests(TempCase):
         with fixture.open(write=False) as db:
             result = derive_assessment(db, audit_id=fixture.audit_id)
         self.assertTrue(result["progress"]["process_complete"])
-        self.assertEqual(result["progress"]["required_obligations"], 11)
+        self.assertEqual(result["progress"]["required_obligations"], 13)
 
     def test_entire_structural_passage_does_not_invent_a_check(self):
         def structural(rows):

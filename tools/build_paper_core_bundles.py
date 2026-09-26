@@ -1,8 +1,8 @@
 """Generate identical ``scripts/paper_core/`` bundles inside both skill packages (implementation-handoff 8).
 
 The single maintained source is ``shared/paper_core/``. This builder copies it (without caches or
-byte-compiled files) into ``stat-paper-proofcheck/scripts/paper_core/`` and
-``archify-proofs-overview/scripts/paper_core/``, writes ``bundle-manifest.json`` into each copy, and then
+byte-compiled files) into ``stat-proof-check/scripts/paper_core/`` and
+``proof-graphify/scripts/paper_core/``, writes ``bundle-manifest.json`` into each copy, and then
 verifies that both bundles are byte-identical. Generated bundles are never edited by hand.
 
 Commands::
@@ -28,12 +28,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "shared" / "paper_core"
 PACKAGES = {
-    "stat-paper-proofcheck": ROOT / "stat-paper-proofcheck",
-    "archify-proofs-overview": ROOT / "archify-proofs-overview",
+    "stat-proof-check": ROOT / "stat-proof-check",
+    "proof-graphify": ROOT / "proof-graphify",
 }
 REPOSITORIES = {
     "stat-paper-skills": ROOT,
-    "archify-proofs-overview": ROOT / "archify-proofs-overview",
+    "proof-graphify": ROOT / "proof-graphify",
 }
 WRAPPER = Path("scripts") / "paper_audit.py"
 BUNDLE_DIR = Path("scripts") / "paper_core"

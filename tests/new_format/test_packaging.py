@@ -32,8 +32,8 @@ from paper_core import (CONTRACT_NAME, CONTRACT_VERSION, CORE_VERSION, LEGACY_OV
                         SUPPORTED_FEATURES, bundle)
 
 # -- known-good release state ----------------------------------------------------------------------
-BUNDLE_FILE_COUNT = 40
-PACKAGES = {"stat-paper-proofcheck": PROOFCHECK, "archify-proofs-overview": OVERVIEW}
+BUNDLE_FILE_COUNT = 45
+PACKAGES = {"stat-proof-check": PROOFCHECK, "proof-graphify": OVERVIEW}
 BUILDER = TOOLS / "build_paper_core_bundles.py"
 MANIFEST_KEYS = {"bundle", "contract", "contract_version", "core_version", "file_count", "files",
                  "legacy_overview_format", "packet_version", "projection_version", "protocol_version",
@@ -279,15 +279,15 @@ class ManifestTests(unittest.TestCase):
         manifest = bundle.build_manifest(SOURCE_FILES)
         self.assertEqual({key: manifest[key] for key in RELEASE_CONSTANTS}, {
             "bundle": "paper_core",
-            "core_version": "2.0.0",
-            "storage_formats_readable": [2, 3],
-            "storage_formats_writable": [3],
-            "contract_version": 3,
-            "contract": "proofcheck-records/3",
+            "core_version": "2.3.0",
+            "storage_formats_readable": [2, 3, 4],
+            "storage_formats_writable": [4],
+            "contract_version": 4,
+            "contract": "proofcheck-records/4",
             "packet_version": 2,
             "projection_version": 2,
             "protocol_version": "item-audit/1",
-            "supported_features": ["records/3", "packets/1", "packets/2", "work-submissions/1", "audits/1", "independent-review/1", "projection/1", "projection/2"],
+            "supported_features": ["records/3", "packets/1", "packets/2", "work-submissions/1", "audits/1", "independent-review/1", "projection/1", "projection/2", "overview-bridge/1", "sql-superset/1", "records/4", "route-review/1", "work-context-extension/1"],
             "legacy_overview_format": "archify-paper-database-1",
         })
 
@@ -361,7 +361,7 @@ class ShippedBundleTests(unittest.TestCase):
                          [[], [], []])
 
     def test_each_shipped_bundle_verifies_clean(self):
-        """Both packages ship 38 files plus a manifest that verifies against the repository source."""
+        """Both packages ship the expected files and a manifest matching the maintained source."""
         for name, package in PACKAGES.items():
             with self.subTest(package=name):
                 root = shipped(package)
@@ -509,7 +509,7 @@ class BundleVerificationTests(TempCase):
     def test_verify_bundle_tolerates_byte_compiled_caches_beside_an_installed_bundle(self):
         """Running an installed package writes caches; they must not make it look tampered with."""
         root = copy_shipped_bundle(self.path("copy"))
-        (root / "__pycache__").mkdir()
+        (root / "__pycache__").mkdir(exist_ok=True)
         (root / "__pycache__" / "ids.cpython-314.pyc").write_bytes(b"\x00\x01")
         (root / "stale.pyc").write_bytes(b"\x00")
         verification = bundle.verify_bundle(root)
@@ -553,17 +553,17 @@ class InstalledPackageTests(TempCase):
         cls.roots = {name: install_package(package, cls.install_home / name)
                      for name, package in PACKAGES.items()}
 
-    def mutable_install(self, name="stat-paper-proofcheck") -> Path:
+    def mutable_install(self, name="stat-proof-check") -> Path:
         target = self.path("install") / name
         shutil.copytree(self.roots[name], target)
         return target
 
     def assert_healthy_report(self, payload):
         self.assertEqual(payload["command"], "version")
-        self.assertEqual(payload["core_version"], "2.0.0")
-        self.assertEqual(payload["storage_format"], 3)
-        self.assertEqual(payload["contract_version"], 3)
-        self.assertEqual(payload["contract"], "proofcheck-records/3")
+        self.assertEqual(payload["core_version"], "2.3.0")
+        self.assertEqual(payload["storage_format"], 4)
+        self.assertEqual(payload["contract_version"], 4)
+        self.assertEqual(payload["contract"], "proofcheck-records/4")
         self.assertEqual(payload["packet_version"], 2)
         self.assertEqual(payload["projection_version"], 2)
         report = payload["bundle"]
@@ -575,21 +575,21 @@ class InstalledPackageTests(TempCase):
         self.assertEqual([report["missing"], report["unexpected"], report["changed"]], [[], [], []])
 
     def test_proofcheck_package_runs_from_its_own_install_root(self):
-        """The audit skill's installed wrapper reports core 2.0.0 and an intact 38-file bundle."""
-        payload, stderr = run_wrapper(self.roots["stat-paper-proofcheck"], "version")
+        """The audit skill's installed wrapper reports the current core and an intact bundle."""
+        payload, stderr = run_wrapper(self.roots["stat-proof-check"], "version")
         self.assertEqual(stderr, "")
         self.assert_healthy_report(payload)
 
     def test_overview_package_runs_from_its_own_install_root(self):
         """The overview skill's installed wrapper reports the same core and bundle, independently."""
-        payload, stderr = run_wrapper(self.roots["archify-proofs-overview"], "version")
+        payload, stderr = run_wrapper(self.roots["proof-graphify"], "version")
         self.assertEqual(stderr, "")
         self.assert_healthy_report(payload)
 
     def test_both_installed_packages_report_the_same_source_identity(self):
         """A coordinated release: the two installs are indistinguishable at the core boundary."""
-        first, _ = run_wrapper(self.roots["stat-paper-proofcheck"], "version")
-        second, _ = run_wrapper(self.roots["archify-proofs-overview"], "version")
+        first, _ = run_wrapper(self.roots["stat-proof-check"], "version")
+        second, _ = run_wrapper(self.roots["proof-graphify"], "version")
         self.assertEqual(first["bundle"], second["bundle"])
         self.assertEqual(first["bundle"]["source_identity"], SOURCE_IDENTITY)
         self.assertEqual({key: first[key] for key in ("core_version", "storage_format", "contract")},
@@ -598,21 +598,21 @@ class InstalledPackageTests(TempCase):
     def test_installed_wrapper_imports_the_core_beside_it_not_the_repository_one(self):
         """The core the wrapper runs is the adjacent copy: its constants, not shared/paper_core's.
 
-        Only the install copy's ``__init__.py`` is edited. The repository still says 2.0.0, so a
+        Only the install copy's ``__init__.py`` is edited. The repository still says 2.3.0, so a
         wrapper that reached back into the repository - or into a sibling skill - could not report
         9.9.9 here.
         """
         root = self.mutable_install()
         init = shipped(root) / "__init__.py"
         source = init.read_text(encoding="utf-8")
-        self.assertIn('CORE_VERSION = "2.0.0"', source)
-        init.write_text(source.replace('CORE_VERSION = "2.0.0"', 'CORE_VERSION = "9.9.9"'),
+        self.assertIn('CORE_VERSION = "2.3.0"', source)
+        init.write_text(source.replace('CORE_VERSION = "2.3.0"', 'CORE_VERSION = "9.9.9"'),
                         encoding="utf-8", newline="\n")
         payload, _ = run_wrapper(root, "version")
         self.assertEqual(payload["core_version"], "9.9.9")
         self.assertEqual(payload["bundle"]["changed"], ["__init__.py"])
         self.assertIs(payload["bundle"]["constants_match"], False)
-        self.assertEqual(CORE_VERSION, "2.0.0")  # the repository source is untouched
+        self.assertEqual(CORE_VERSION, "2.3.0")  # the repository source is untouched
         self.assertIs(bundle.verify_bundle(shipped(PROOFCHECK))["ok"], True)
 
     def test_installed_wrapper_verifies_the_copy_it_imported_not_the_repository(self):
@@ -623,7 +623,7 @@ class InstalledPackageTests(TempCase):
         self.assertIs(payload["bundle"]["ok"], False)
         self.assertEqual(payload["bundle"]["missing"], ["renderer/fixtures/dag_small.json"])
         self.assertIs(bundle.verify_bundle(shipped(PROOFCHECK))["ok"], True)
-        pristine, _ = run_wrapper(self.roots["stat-paper-proofcheck"], "version")
+        pristine, _ = run_wrapper(self.roots["stat-proof-check"], "version")
         self.assertIs(pristine["bundle"]["ok"], True)
 
     def test_installed_wrapper_has_no_repository_or_sibling_fallback(self):
@@ -643,7 +643,7 @@ class InstalledPackageTests(TempCase):
                           encoding="utf-8", newline="\n")
         payload, stderr = run_wrapper(root, "version")
         self.assertEqual(stderr, "")
-        self.assertEqual(payload["core_version"], "2.0.0")
+        self.assertEqual(payload["core_version"], "2.3.0")
         self.assertIs(payload["bundle"]["ok"], True)
 
     def test_installed_package_ships_the_wrapper_and_bundle_it_needs(self):
@@ -698,12 +698,12 @@ class BuilderTests(TempCase):
 
     def test_check_can_be_limited_to_one_package(self):
         """--package narrows the report to that package without touching the other."""
-        proc = run_builder("--check", "--package", "archify-proofs-overview")
+        proc = run_builder("--check", "--package", "proof-graphify")
         result = json.loads(proc.stdout)
-        self.assertEqual(sorted(result["bundles"]), ["archify-proofs-overview"])
-        self.assertEqual(sorted(result["wrappers"]), ["archify-proofs-overview"])
+        self.assertEqual(sorted(result["bundles"]), ["proof-graphify"])
+        self.assertEqual(sorted(result["wrappers"]), ["proof-graphify"])
         self.assertIs(result["ok"], True)
-        self.assertIs(result["bundles"]["archify-proofs-overview"]["matches_source"], True)
+        self.assertIs(result["bundles"]["proof-graphify"]["matches_source"], True)
         self.assertEqual(result["source_identity"], SOURCE_IDENTITY)
 
     def test_check_rejects_an_unknown_package_name(self):

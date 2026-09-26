@@ -1,170 +1,68 @@
-# Statistical Paper Skills
+# Statistical paper skills
 
-## Overview
+This repository maintains four skills for statistical and machine-learning papers. Each is used only when the user explicitly invokes it by name.
 
-This collection provides three complementary skills for statistics, machine
-learning, econometrics, biostatistics, and related research papers. Use
-`stat-paper-writing` for author-side writing, `stat-paper-reviewer` for
-critical manuscript evaluation, and `stat-paper-proofcheck` for rigorous proof
-verification. The skills can be used independently or in sequence.
+| Skill | Version | Main use |
+|---|---|---|
+| `stat-write-style` | v1.6.1 | Draft and revise manuscript exposition and presentation |
+| `stat-paper-review` | v1.2.1 | Give a critical, evidence-backed manuscript review |
+| `stat-proof-write` | v0.3.1 | Draft or clarify a mathematical proof |
+| `stat-proof-check` | v2.3.0 | Audit written mathematical arguments without silently repairing them |
 
-| Skill | Version |
-|---|---|
-| `stat-paper-writing` | v1.6.1 |
-| `stat-paper-reviewer` | v1.2.1 |
-| `stat-paper-proofcheck` | v2.0.0 |
+Use `$stat-write-style`, `$stat-paper-review`, `$stat-proof-write`, or `$stat-proof-check` to invoke the corresponding skill. Their `agents/openai.yaml` files disable implicit invocation. Proof writing and proof checking are separate tasks: drafting a proof does not provide an independent audit.
 
-## stat-paper-writing
-
-Use this skill for drafting, restructuring, polishing, notation cleanup, and main-text or supplement coordination. Example: `Use $stat-paper-writing to revise this methods section while preserving every mathematical claim.`
-
-For complete papers, v1.6.1 reads and plans around the reader's understanding,
-writes focused sections, then reconciles the argument and rendered presentation.
-It transforms research-note prose while preserving scientific claims, uses
-targeted disciplinary examples when needed, and keeps local edits lightweight.
-Drafting and revision share guidance on developed paragraphs, inline mathematics,
-and purposeful displays while preserving mathematical content and references.
-Methods explain supported relationships to inherited ideas at consequential
-construction choices. Whole-manuscript reviews use concise feedback;
-persistent audit records are optional and use the existing tracking helper.
-Tracked reports default to concise output; request `--report-detail detailed`
-at initialization for a procedural audit trail.
-
-The proofcheck and writing helpers and tests require Python 3.10 or newer from
-a shared installation. The writing audit uses `pypdf` or `PyPDF2` for automatic
-PDF page counts, or accepts `--pdf-page-count "SOURCE=N"` from a trusted count.
-Run its checks with `python -m unittest discover -s stat-paper-writing/tests`.
-
-## stat-paper-reviewer
-
-Use this skill for referee reports, pre-submission diagnosis, novelty or citation checks, assumption scrutiny, and likely reviewer objections. Example: `Use $stat-paper-reviewer to review this manuscript as a critical statistical referee.`
-
-Its review reports may include edit specifications, but it does not draft or edit manuscript text. The reviewer helper and tests also require Python 3.10 or later from a shared installation. Run its checks with `python -m unittest discover -s stat-paper-reviewer/tests`.
-
-## stat-paper-proofcheck
-
-Use this skill by name for a rigorous, non-formal proof audit. Version 2.0 registers
-source-linked proof items and dependencies in a local database. The coordinator builds and
-refines the graph and makes scientific decisions. A small controller prepares bounded batches,
-validates structured responses, saves progress and recovers interrupted work.
-
-The Archify reader shows major results and exposes intermediate reasoning and recorded checks
-through their connections. Local argument validity, upstream support and statement truth remain
-separate. Existing v1.5 audit folders retain their legacy workflow until explicitly imported.
-
-Example: `Use $stat-paper-proofcheck to audit this theorem and its dependency closure.`
-Start with the [database workflow](stat-paper-proofcheck/references/database-audit.md) and
-[coordinator instructions](stat-paper-proofcheck/references/controller-workflow.md).
-The [v2.0 release record](architecture-proofcheck/release-v2.0.md) contains validation evidence
-and remaining browser and large-paper evaluation limits.
-
-### Install locally in Codex
-
-Use a shared Python 3.10 or newer installation. For offline typeset LaTeX in
-HTML reports, install `latex2mathml` once into that same interpreter. For example,
-with shared Python 3.14 on Windows:
-
-```powershell
-py -3.14 -m pip install --user latex2mathml
-```
-
-The scripts-folder PATH warning from pip does not affect proofcheck: it imports
-the package through Python. Source inspection and validation use the standard
-library; PDF preparation additionally needs a shared PDF reader/rendering tool.
-A missing math converter produces an explicit limitation rather than a hidden
-download. Full audits also need independent model contexts and can take
-substantial time; they are non-formal reviews, not proof-assistant certificates.
-
-Keep the sole Codex installation at `~/.codex/skills/stat-paper-proofcheck`.
-From a validated repository
-release, use the small [installation helper](tools/install_proofcheck.py) with
-the same shared interpreter used for the audit:
-
-```powershell
-py -3.14 -B ./tools/install_proofcheck.py --source ./stat-paper-proofcheck
-if ($LASTEXITCODE -ne 0) { throw 'Installation did not complete; read its diagnostic.' }
-```
-
-Add `--upgrade` for an intentional replacement. The helper checks for duplicates
-in `~/.agents/skills` and `~/.claude/skills`, validates the bundled reference,
-excludes `tests/`, `evals/`, bytecode, and development caches, and stages the
-runtime package. Tests and release evaluations stay in the repository. An
-upgrade preserves the previous folder under `~/.codex/skill-backups`, outside
-skill discovery. It then checks every runtime file hash and the installed
-reference's FINAL/current/usable delivery. It does not merge versions or remove
-other installations. If duplicates exist, preserve and relocate the identified
-copies before retrying. `--user-root` selects a temporary user directory for a
-safe installation exercise; normally omit it.
-
-Invoke `$stat-paper-proofcheck` by name in the next turn; if discovery has not
-refreshed, restart Codex. The runtime and packages remain shared. `doctor`
-reports typesetting availability early; missing `latex2mathml` keeps explicit
-LaTeX fallback and does not install a package automatically.
-
-For source preparation and supported proof layouts, see the
-[source-layout guidance](stat-paper-proofcheck/references/source-layout-diagnostics.md).
-A source-selection warning needs review before mathematical checking; a clean
-parser result does not certify that every proof is present or correct.
-
-### Validate the v2.0 database workflow
-
-The shared core is maintained in `shared/paper_core` and shipped identically in both skills.
-For a clean development checkout, clone the companion repository at its matching release tag:
+## Repositories and folders
 
 ```text
-git clone --branch v2.0 https://github.com/rqzhu-aide/archify-proofs-overview.git archify-proofs-overview
+stat-paper-skills/                 this repository
+  stat-write-style/               skill
+  stat-paper-review/              skill
+  stat-proof-write/               skill
+  stat-proof-check/               skill
+  shared/paper_core/              maintained common backend
+  architecture/                  current proof-check architecture
+  tests/new_format/              shared backend and package tests
+  tools/                         bundle builder and installer
+  proof-graphify/                separate Git checkout, ignored here
+  archived/                      local historical material, ignored here
+```
+
+This repository maps to [stat-paper-skills](https://github.com/rqzhu-aide/stat-paper-skills). The nested, ignored `proof-graphify/` checkout maps to its own [proof-graphify repository](https://github.com/rqzhu-aide/proof-graphify), which owns that skill and its `architecture/` folder. Keep the two Git histories and remotes separate. The nested checkout supports cross-package development; installed skills do not require it.
+
+The current [proof-check architecture](architecture/README.md) describes the shared backend and audit workflow. Proof Graphify's [architecture](https://github.com/rqzhu-aide/proof-graphify/tree/main/architecture) describes its selective overview and reader. Completed revision plans, audits, receipts, and superseded designs are kept in the local `archived/` folder, outside the remote and skill discovery.
+
+## Skill use and installation
+
+`stat-write-style` covers author-side drafting, restructuring, polishing, notation, and main/supplement coordination. Example: `Use $stat-write-style to revise this methods section while preserving its scientific claims.` The proofcheck and writing helpers and tests require Python 3.10 or newer from a shared installation. The writing audit uses `pypdf` or `PyPDF2` for automatic page counts, or accepts `--pdf-page-count "SOURCE=N"` from a trusted count. Run its checks with `python -m unittest discover -s stat-write-style/tests`.
+
+`stat-paper-review` provides referee-style diagnosis and edit specifications without rewriting the manuscript. Example: `Use $stat-paper-review to review this paper as a critical statistical reader.` The reviewer helper and tests also require Python 3.10 or later from a shared installation. Run its checks with `python -m unittest discover -s stat-paper-review/tests`.
+
+`stat-proof-write` develops readable proofs with explicit derivations and local mathematical justification. Example: `Use $stat-proof-write to expand this compressed argument.` It does not replace proof checking or general manuscript editing.
+
+`stat-proof-check` performs a scoped, non-formal audit of exact claims, substantive inferences, dependencies, and written proof coverage. Example: `Use $stat-proof-check to audit this theorem and its prerequisite arguments.` Start with the [database workflow](stat-proof-check/references/database-audit.md). The legacy v1.5 workflow remains available for existing audit folders and retains its original protocol identifiers.
+
+Install the first three skills from their source folders under a user-wide skill root such as `~/.agents/skills/`. The proof-check package includes a bundled backend and has a validated [installer](tools/install_proofcheck.py):
+
+```powershell
+python -B tools/install_proofcheck.py --source stat-proof-check --target agents --target claude
+```
+
+The installer checks the bundle, stages the package, and verifies each installed copy. Old skill names must be moved outside skill discovery first. The proof-check Claude installation also needs `"stat-proof-check": "user-invocable-only"` under `skillOverrides`. Use a shared Python installation; do not create a project-local environment. Optional offline LaTeX conversion uses a shared `latex2mathml` installation. If the new names are not visible immediately, refresh skill discovery or restart Codex.
+
+## Backend and validation
+
+[`shared/paper_core`](shared/paper_core) is the maintained source of the common SQLite backend. [`tools/build_paper_core_bundles.py`](tools/build_paper_core_bundles.py) builds byte-identical, self-contained bundles for `stat-proof-check` and the separate Proof Graphify checkout. Do not edit a generated bundle by hand.
+
+For cross-package development, check out Proof Graphify at `proof-graphify/` and run:
+
+```text
 python -B tools/build_paper_core_bundles.py --check
 python -B -m unittest discover -s tests/new_format
-python -B -m unittest discover -s archify-proofs-overview/tests
+python -B -m unittest discover -s stat-proof-check/tests
 python -B -m unittest discover -s tools -p test_install_proofcheck.py
+python -B -m unittest discover -s proof-graphify/tests
 ```
 
-Use the shared Python and Node installations. The separate companion checkout is needed for
-cross-package development checks; each installed skill contains its own complete runtime.
+The backend and package checks assess software behavior. A complete mathematical audit and live browser review require separate evidence. The two repositories can move together without requiring either installed skill to import runtime code from the other checkout.
 
-### Preparing a versioned release
-
-Select repository release contents deliberately: the `stat-paper-proofcheck`
-source (including scripts, references, templates, tests, evaluation resources,
-and current bundled reference evidence), this guide and installer, active architecture
-documents, and the acceptance receipts/logs supporting that version. Leave bulk
-temporary paper runs, `before-skill` snapshots, copied working trees, bytecode,
-and development caches out of ordinary distribution. The local `archived/`
-folder is ignored by Git and is outside the installed skill. It holds retired
-example presentations and preserved pre-cleanup snapshots. The current reference
-retains historical records required to authenticate its reviewed evidence.
-
-Review selected paths and sizes before staging; do not stage the entire working
-tree with `git add -A`. For selected sealed evidence, retain `-text` attributes
-so Git does not normalize authenticated bytes. The current package reference
-already has that rule in [.gitattributes](.gitattributes); extend it only to
-additional selected sealed artifacts. Run the package suite and current
-reference delivery check on the exact release tree, then exercise installation.
-When a release is actually committed, record its commit alongside the existing
-content identities in the release receipt. Local acceptance does not imply a
-commit, tag, or distributed release has been created.
-
-## Runtime and tests
-
-The proofcheck and writing helpers and tests require Python 3.10 or later.
-The reviewer helper and tests also require Python 3.10 or later.
-
-Run the reviewer skill tests from the repository root:
-
-```text
-python -m unittest discover -s stat-paper-reviewer/tests
-```
-
-Run the proofcheck skill tests from the repository root:
-
-```text
-python -m unittest discover -s stat-paper-proofcheck/tests -p "test_*.py"
-```
-
-The reviewer behavioral cases are defined in
-`stat-paper-reviewer/evals/evals.json`. Historical single-run evaluation
-artifacts are retained under `stat-paper-reviewer/evals/results/` as
-exploratory evidence only. For a release benchmark, run at least three
-independent repetitions per configuration and record the executor and grader
-models, repository commit, protocol digest, and any literature-search evidence.
-The deterministic test command above does not run that behavioral benchmark.
+[MIT license](LICENSE)

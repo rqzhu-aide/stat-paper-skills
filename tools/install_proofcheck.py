@@ -1,4 +1,4 @@
-"""Install the validated proofcheck runtime in the selected user's Codex root."""
+"""Install the validated proofcheck runtime in selected user-wide skill roots."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -15,9 +16,11 @@ import uuid
 from datetime import datetime, timezone
 
 
-SKILL_NAME = "stat-paper-proofcheck"
+SKILL_NAME = "stat-proof-check"
+LEGACY_SKILL_NAME = "stat-paper-proofcheck"
 CACHES = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".git"}
 DEVELOPMENT_ROOTS = {"tests", "evals"}
+SURFACES = ("agents", "claude")
 
 
 def excluded(path: Path, *, runtime: bool = False) -> bool:
@@ -45,6 +48,23 @@ def files(root: Path) -> dict[str, str]:
 
 
 def delivery(package: Path) -> dict:
+    # Current database packages validate their own runtime. Legacy audit
+    # finalization is a different claim and must not be renewed by installation.
+    entry = package / "scripts/paper_audit.py"
+    if entry.exists() or (package / "scripts/paper_core").exists():
+        run = subprocess.run([sys.executable, "-X", "utf8", "-B", str(entry), "version"],
+                             cwd=package, capture_output=True, text=True, encoding="utf-8")
+        if run.returncode:
+            raise ValueError(f"Database runtime failed at {package}:\n{run.stdout}\n{run.stderr}")
+        result = json.loads(run.stdout)
+        bundle = result.get("bundle", {})
+        version = re.search(r'^  version:\s*[\"\']?([^\s\"\']+)',
+                            (package / "SKILL.md").read_text(encoding="utf-8"), re.MULTILINE)
+        if (result.get("command") != "version" or bundle.get("present") is not True
+                or bundle.get("ok") is not True or bundle.get("constants_match") is not True
+                or version is None or result.get("core_version") != version.group(1)):
+            raise ValueError(f"Database runtime or skill version is inconsistent: {result}")
+        return result
     command = [sys.executable, "-X", "utf8", "-B",
                str(package / "scripts/proofcheck.py"), "delivery-check", "--root",
                str(package / "assets/reference-audit/proofcheck-audit")]
@@ -65,20 +85,26 @@ def confined(path: Path, parent: Path) -> None:
         raise ValueError(f"Installation path escapes the selected directory: {path}")
 
 
-def install(source: Path, user_root: Path, upgrade: bool = False) -> dict:
+def install(source: Path, user_root: Path, upgrade: bool = False, *,
+            surface: str = "agents", allow_duplicates: bool = False) -> dict:
+    if surface not in SURFACES:
+        raise ValueError(f"Unknown installation surface: {surface}")
     source, user_root = source.resolve(), user_root.resolve()
     if user_root == source or user_root.is_relative_to(source):
         raise ValueError("The selected user root must be outside the source package.")
-    codex = user_root / ".codex"
-    target = codex / "skills" / SKILL_NAME
-    for path in (codex, target.parent, target):
+    skill_root = user_root / f".{surface}"
+    target = skill_root / "skills" / SKILL_NAME
+    for path in (skill_root, target.parent, target):
         if path.is_symlink():
             raise ValueError(f"Installation links are not supported: {path}")
         confined(path, user_root)
-    duplicates = [user_root / root / "skills" / SKILL_NAME
-                  for root in (".agents", ".claude")]
+    # The old name must leave skill discovery before the renamed skill is installed.
+    duplicates = [
+        user_root / f".{surface_name}" / "skills" / LEGACY_SKILL_NAME
+        for surface_name in (*SURFACES, "codex")
+    ] + [user_root / ".codex" / "skills" / SKILL_NAME]
     found = [str(path) for path in duplicates if os.path.lexists(path)]
-    if found:
+    if found and not allow_duplicates:
         raise ValueError("Other discoverable copies exist; preserve and relocate them first: "
                          + ", ".join(found))
     if target.exists() and not upgrade:
@@ -90,8 +116,8 @@ def install(source: Path, user_root: Path, upgrade: bool = False) -> dict:
     expected = {name: digest for name, digest in source_before.items()
                 if not excluded(Path(name), runtime=True)}
     source_delivery = delivery(source)
-    codex.mkdir(parents=True, exist_ok=True)
-    stage_parent = Path(tempfile.mkdtemp(prefix="proofcheck-install-", dir=codex))
+    skill_root.mkdir(parents=True, exist_ok=True)
+    stage_parent = Path(tempfile.mkdtemp(prefix="proofcheck-install-", dir=skill_root))
     stage = stage_parent / SKILL_NAME
     backup = None
     published = False
@@ -105,14 +131,14 @@ def install(source: Path, user_root: Path, upgrade: bool = False) -> dict:
         if files(source) != source_before or files(stage) != expected:
             raise ValueError("Package changed during validation; installation was not replaced.")
         target.parent.mkdir(parents=True, exist_ok=True)
-        confined(target, codex.resolve())
+        confined(target, skill_root.resolve())
         if previous is not None:
             if not target.exists() or files(target) != previous:
                 raise ValueError("Installation changed during preparation; retry from current state.")
-            backup_candidate = codex / "skill-backups" / SKILL_NAME / (
+            backup_candidate = skill_root / "skill-backups" / SKILL_NAME / (
                 datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8])
             backup_candidate.parent.mkdir(parents=True, exist_ok=True)
-            confined(backup_candidate, codex.resolve())
+            confined(backup_candidate, skill_root.resolve())
             target.rename(backup_candidate)
             backup = backup_candidate
         elif os.path.lexists(target):
@@ -123,6 +149,7 @@ def install(source: Path, user_root: Path, upgrade: bool = False) -> dict:
         if files(target) != expected:
             raise ValueError("Installed files differ from the validated package.")
         return {"installed": str(target), "backup": str(backup) if backup else None,
+                "surface": surface, "duplicates_explicitly_allowed": allow_duplicates,
                 "runtime_files_match": True, "files": expected,
                 "excluded_top_level_directories": sorted(DEVELOPMENT_ROOTS),
                 "source_non_bytecode_file_count": len(source_before),
@@ -132,10 +159,10 @@ def install(source: Path, user_root: Path, upgrade: bool = False) -> dict:
     except Exception:
         if published:
             # Retain a failed candidate outside skill discovery for diagnosis.
-            confined(target, codex.resolve())
+            confined(target, skill_root.resolve())
             target.rename(stage)
         if backup is not None:
-            confined(backup, codex.resolve())
+            confined(backup, skill_root.resolve())
             backup.rename(target)
         raise
     finally:
@@ -151,10 +178,17 @@ def main() -> int:
     parser.add_argument("--user-root", type=Path, default=Path.home(),
                         help="Selected user's home directory; override for a temporary exercise")
     parser.add_argument("--upgrade", action="store_true",
-                        help="Preserve an existing Codex copy outside discovery, then replace it")
+                        help="Preserve each existing copy outside discovery, then replace it")
+    parser.add_argument("--target", choices=SURFACES, action="append",
+                        help="Explicit user-wide destination; repeat for multiple copies. "
+                             "Defaults to both Agents and Claude.")
     args = parser.parse_args()
     try:
-        print(json.dumps(install(args.source, args.user_root, args.upgrade), indent=2))
+        # Each destination has its own validated staging area and rollback,
+        # with an immediate receipt if a later destination fails.
+        for surface in dict.fromkeys(args.target or SURFACES):
+            print(json.dumps(install(args.source, args.user_root, args.upgrade,
+                                     surface=surface), indent=2), flush=True)
     except (ValueError, OSError, json.JSONDecodeError) as error:
         print(str(error), file=sys.stderr)
         return 1

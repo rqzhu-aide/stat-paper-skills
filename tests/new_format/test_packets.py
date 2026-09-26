@@ -1,7 +1,7 @@
 """Packets: the mode allowlist, blinding, context extension, and packet staleness.
 
 Covers ``shared/paper_core/packets.py`` and the blinding rules of
-``architecture-proofcheck/handoff/checker-protocol.md``: an independent worker receives source
+the independent review contract: an independent worker receives source
 material only, a primary worker receives the assessment, an extension widens what may be read
 without widening what may be written, and a packet pins the revision it was cut at.
 """
@@ -21,16 +21,19 @@ from paper_core.refs import membership_digest
 # The collections a packet may carry, written out here so that widening an allowlist in the core
 # cannot silently widen the expectation too.
 STRUCTURAL_COLLECTIONS = ("papers", "items", "parts", "scopes", "arguments", "groups", "uses", "coverage",
-                          "anchors", "sources", "source_issues", "source_reviews")
+                          "anchors", "sources", "source_issues", "source_reviews", "target_specs",
+                          "application_details", "proof_boundaries", "connection_refinements", "overview_selections")
 ASSESSMENT_COLLECTIONS = ("audits", "checks", "findings", "identity_maps", "observations", "qualifications",
                           "reconciliations", "repairs", "responses", "reuse_decisions")
 # What each mode actually assembles for one item of the standard fixture at the complete() stage.
 MODE_COLLECTIONS = {
-    "author": ["anchors", "arguments", "coverage", "groups", "items", "scopes", "sources"],
+    "author": ["anchors", "arguments", "coverage", "groups", "items", "proof_boundaries", "scopes",
+               "source_reviews", "sources", "target_specs"],
     "primary": ["anchors", "arguments", "audits", "checks", "coverage", "groups", "items", "observations",
-                "qualifications", "reconciliations", "scopes", "sources"],
+                "proof_boundaries", "qualifications", "reconciliations", "scopes", "source_reviews", "sources", "target_specs"],
     "reconcile": ["anchors", "arguments", "audits", "checks", "coverage", "groups", "identity_maps", "items", "observations",
-                  "qualifications", "reconciliations", "responses", "scopes", "sources"],
+                  "proof_boundaries", "qualifications", "reconciliations", "responses", "scopes", "source_reviews",
+                  "sources", "target_specs"],
     "independent": ["anchors", "items", "sources"],
 }
 
@@ -225,7 +228,8 @@ class PacketAllowlistTests(TempCase):
         self.fx.complete()
         with self.fx.open() as db:
             packet = packets.get_packet(db, targets=[R("papers", self.fx.paper_id)], mode="author")
-            self.assertEqual(["anchors", "arguments", "coverage", "groups", "items", "papers", "scopes", "sources", "uses"],
+            self.assertEqual(["anchors", "application_details", "arguments", "coverage", "groups", "items", "papers",
+                              "proof_boundaries", "scopes", "source_reviews", "sources", "target_specs", "uses"],
                              collections_of(packet))
             self.assertEqual(["itm_lem", "itm_thm"], ids_in(packet, "items"))
             self.assertEqual(["arg_lem", "arg_thm"], ids_in(packet, "arguments"))
@@ -312,9 +316,10 @@ class BlindingTests(TempCase):
             self.assertEqual({"responses", "identity_maps"},
                              {collection for collection, _ in refs_in(reconcile) - refs_in(primary)})
             self.assertEqual(2, len(ids_in(reconcile, "responses")), "one preserved response per independent round")
-            self.assertEqual({"anchors", "sources", "responses"},
+            self.assertEqual({"anchors", "sources", "responses", "source_reviews"},
                              {collection for collection, _ in scope_of(reconcile)})
-            self.assertEqual({"anchors", "sources", "items", "arguments", "coverage", "groups", "scopes", "audits"},
+            self.assertEqual({"anchors", "sources", "items", "arguments", "coverage", "groups", "scopes", "audits",
+                              "proof_boundaries", "target_specs", "source_reviews"},
                              {collection for collection, _ in scope_of(primary)})
 
     def test_a_completed_or_independent_check_is_outside_the_primary_write_scope(self):
@@ -331,12 +336,15 @@ class BlindingTests(TempCase):
             self.assertEqual(["chk_draft"], sorted(i for c, i in scope_of(after) if c == "checks"))
 
     def test_a_blinded_packet_keeps_source_definitions_and_drops_reconstructed_parts(self):
-        """Source definitions anywhere in the paper are included; non-source parts are listed as omitted."""
+        """Applicable source setup is included; non-source parts are listed as omitted."""
         self.fx.audit()
         with self.fx.open() as db:
             self.fx.apply(db, [item_edit("itm_def", "definition", "Definition 1", "anc_lem"),
                                part_edit("prt_src", "itm_lem", "Part (a)", "anc_lem"),
                                part_edit("prt_recon", "itm_lem", "Part (b)", "anc_lem", origin="reconstruction")])
+            scope = db.head("scopes", "scp_plain")
+            self.fx.apply(db, [edit("replace", "scopes", scope.id,
+                dict(scope.body, assumptions=[R("items", "itm_def")]), scope.version)])
             packet = packets.get_packet(db, targets=[R("items", "itm_lem")], mode="independent")
             self.assertEqual(["itm_def", "itm_lem"], ids_in(packet, "items"))
             self.assertEqual(["prt_src"], ids_in(packet, "parts"))

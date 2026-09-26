@@ -34,6 +34,7 @@ from support import (CLI_ENV, GLOBAL_TASKS, PAPER_TEX, PROOFCHECK, Fixture, R, T
 from paper_core import storage
 
 AUDIT = "aud_1"
+SLICE_TEX = PAPER_TEX.replace(r"\begin{document}", r"\begin{document} Assume throughout that $(a_n)$ is nondecreasing.")
 # The three statements the audit is responsible for. itm_asm -- the hidden claim -- is a target in
 # its own right precisely so that it cannot stay invisible (step 3 below).
 TARGETS = ("items:itm_lem", "items:itm_thm", "items:itm_asm")
@@ -69,9 +70,10 @@ def _item_edit(iid, kind, label, passages, *, origin="source", owner=None):
 
 
 def _use_edit(uid, source, target, group_id, reason, anchor):
+    statements = {"itm_lem": "Lemma 1 text", "itm_hidden": "Bounded and monotone text", "itm_asm": "Monotonicity text"}
     return edit("create", "uses", uid, {
         "from": R("items", source), "to": R("items", target), "type": "dependency", "group_id": group_id,
-        "reason": reason, "needed_form": None, "substitutions": [], "evidence_refs": [anchor],
+        "reason": reason, "needed_form": {"form": "verbatim", "text": statements[source]}, "substitutions": [], "evidence_refs": [anchor],
         "regime": None, "uncertainty": None})
 
 
@@ -121,7 +123,7 @@ class _SlicePaper:
         self.root = Path(root)
         self.source_root = self.root / "src"
         self.source_root.mkdir(parents=True, exist_ok=True)
-        (self.source_root / "paper.tex").write_text(PAPER_TEX, encoding="utf-8", newline="\n")
+        (self.source_root / "paper.tex").write_text(SLICE_TEX, encoding="utf-8", newline="\n")
         self.db = self.root / "paper.db"
         self.stages = {}
         self.state = {}
@@ -178,10 +180,10 @@ class _SlicePaper:
         self._capture()
         self._structure()
         self._audit()
+        self._compare()
         self._primary()
         self._draft()
         self._resume()
-        self._compare()
         self._independent()
         self._reconcile()
         self._report()
@@ -212,16 +214,24 @@ class _SlicePaper:
                  "locator": locator(label="thm:b")},
                 {"id": "anc_thm_proof", "expected_version": None, "source_id": self.source_id,
                  "locator": locator(start=14, end=16)},
-                # The clause the theorem's proof leans on without ever stating it as a hypothesis.
+                # The standing assumption the theorem's proof relies on.
                 {"id": "anc_mono", "expected_version": None, "source_id": self.source_id,
-                 "locator": locator(start=15, end=15)}]}))
+                 "locator": locator(start=4, end=4)}]}))
         self.log["anchor"] = anchored
         self.snapshot("anchored")
+        packet = self.packet("boundary_review", f"papers:{self.paper_id}")
+        self.log["boundary_review"], _ = run_cli("source", "review", self.db, "--request",
+            self.json_file("boundary_review.json", {"contract_version": 4, "request_id": self.request_id(),
+                "packet_id": packet["packet_id"], "edits": [edit("create", "source_reviews", "srv_boundary", {
+                    "source_refs": [{"collection": "sources", "id": self.source_id, "version": 1}],
+                    "anchor_refs": [{"collection": "anchors", "id": f"anc_{name}_proof", "version": 1} for name in ("lem", "thm")],
+                    "purpose": "proof_boundary", "decision": "accepted", "rationale": "Read both full proof environments and their continuations.",
+                    "reviewer": "coordinator"})]}))
 
     def _structure(self):
         # STEPS 2-4 -- the mathematical shape. itm_hidden is the JOINT INFERENCE's conclusion: it
         # follows from boundedness and monotonicity together, so grp_joint carries two uses.
-        # itm_asm is the HIDDEN CLAIM, promoted from an unstated aside to an audited assumption.
+        # itm_asm promotes the standing monotonicity assumption into an explicit audited premise.
         # use_lem_thm and use_hidden_thm are two distinct APPLICATIONS of two suppliers inside the
         # theorem's own group, so a check on one cannot stand in for the other.
         packet = self.packet("structure", f"papers:{self.paper_id}")
@@ -232,8 +242,9 @@ class _SlicePaper:
                        [{"role": "statement", "anchor_id": "anc_mono"}]),
             _item_edit("itm_hidden", "intermediate_result", "Bounded and monotone", [],
                        origin="reconstruction", owner="itm_thm"),
-            edit("create", "scopes", "scp_plain", {"argument_id": None, "parent_id": None, "assumptions": [],
-                                                   "binders": [], "conditions": [], "evidence_refs": []}),
+            edit("create", "scopes", "scp_plain", {"argument_id": None, "parent_id": None,
+                                                   "assumptions": [R("items", "itm_asm")],
+                                                   "binders": [], "conditions": [], "evidence_refs": ["anc_mono"]}),
             Fixture.argument_edit("arg_lem", "itm_lem", "grp_lem", "anc_lem_proof"),
             Fixture.argument_edit("arg_thm", "itm_thm", "grp_thm", "anc_thm_proof"),
             Fixture.group_edit("grp_lem", "arg_lem", "itm_lem", "anc_lem_proof"),
@@ -244,7 +255,16 @@ class _SlicePaper:
             _use_edit("use_hidden_thm", "itm_hidden", "itm_thm", "grp_thm", "the hidden claim closes the theorem",
                       "anc_thm_proof"),
             _use_edit("use_lem_hidden", "itm_lem", "itm_hidden", "grp_joint", "boundedness premise", "anc_lem"),
-            _use_edit("use_asm_hidden", "itm_asm", "itm_hidden", "grp_joint", "monotonicity premise", "anc_mono")])
+            _use_edit("use_asm_hidden", "itm_asm", "itm_hidden", "grp_joint", "monotonicity premise", "anc_mono"),
+            *[edit("create", "target_specs", f"tgt_{name}", {
+                "target": R("items", f"itm_{name}"), "statement_ref": {"collection": "items", "id": f"itm_{name}", "version": 1},
+                "statement": None, "scope_id": "scp_plain", "evidence_refs": anchors,
+                "state": "registered", "fidelity_ref": None})
+              for name, anchors in (("lem", ["anc_lem"]), ("thm", ["anc_thm"]), ("asm", ["anc_mono"]), ("hidden", []))],
+            *[edit("create", "proof_boundaries", f"bnd_{name}", {"target": R("items", f"itm_{name}"),
+                "argument_ids": [f"arg_{name}"], "anchor_refs": [{"collection": "anchors", "id": f"anc_{name}_proof", "version": 1}],
+                "source_review_ref": {"collection": "source_reviews", "id": "srv_boundary", "version": 1}, "state": "complete"})
+              for name in ("lem", "thm")]])
         self.snapshot("structured")
         self.export("structured")
 
@@ -335,7 +355,10 @@ class _SlicePaper:
                 "target": R("items", iid), "result": "matched", "reviewer": "primary-1",
                 "note": "statement matches the source", "evidence_refs": [anchor]})
                 for oid, iid, anchor in (("obs_lem", "itm_lem", "anc_lem"), ("obs_thm", "itm_thm", "anc_thm"),
-                                         ("obs_asm", "itm_asm", "anc_mono"))]})
+                                         ("obs_asm", "itm_asm", "anc_mono"))]
+            + [edit("create", "observations", f"obs_exact_{name}", {"target": R("target_specs", f"tgt_{name}"),
+                "result": "matched", "reviewer": "primary-1", "note": "The exact form and standing setup match the source.",
+                "evidence_refs": list(dict.fromkeys([anchor, "anc_mono"]))}) for name, anchor in (("lem", "anc_lem"), ("thm", "anc_thm"), ("asm", "anc_mono"))]})
         payload, _ = run_cli("compare", self.db, "--batch", batch)
         self.log["compare"] = payload
         self.snapshot("compared")
@@ -504,7 +527,7 @@ class TestVerticalSlice(SliceCase):
         # 1. SOURCE CAPTURE -- the paper's bytes are in the database and the statements point into them.
         captured = BUILT.log["capture"]
         self.assertEqual([entry["path"] for entry in captured["sources"]], ["paper.tex"])
-        self.assertEqual(captured["sources"][0]["blob_sha256"], sha(PAPER_TEX.encode("utf-8")))
+        self.assertEqual(captured["sources"][0]["blob_sha256"], sha(SLICE_TEX.encode("utf-8")))
         self.assertEqual([anchor["id"] for anchor in BUILT.log["anchor"]["anchors"]],
                          ["anc_lem", "anc_lem_proof", "anc_thm", "anc_thm_proof", "anc_mono"])
         self.assertEqual({anchor["source_id"] for anchor in BUILT.log["anchor"]["anchors"]}, {BUILT.source_id})
@@ -514,10 +537,11 @@ class TestVerticalSlice(SliceCase):
         joint = _record(export, "groups", "grp_joint")
         self.assertEqual(joint["body"]["conclusion"], R("items", "itm_hidden"))
         premises = sorted(row["body"]["from"]["id"] for row in export["records"]
-                          if row["collection"] == "uses" and row["body"]["group_id"] == "grp_joint")
+                          if row["collection"] == "uses" and
+                          _record(export, "application_details", row["id"])["body"]["group_id"] == "grp_joint")
         self.assertEqual(premises, ["itm_asm", "itm_lem"])
 
-        # 3. A HIDDEN CLAIM -- the unstated monotonicity hypothesis is an audited item of its own.
+        # 3. A HIDDEN CLAIM -- the standing monotonicity hypothesis is an audited item of its own.
         assumption = _record(export, "items", "itm_asm")
         self.assertEqual(assumption["body"]["kind"], "assumption")
         self.assertEqual([p["anchor_id"] for p in assumption["body"]["passages"]], ["anc_mono"])
@@ -624,7 +648,7 @@ class TestSourceCapture(SliceCase):
     def test_capture_stores_the_file_under_its_own_digest(self):
         """The captured source records the real bytes of paper.tex, not a re-typed copy."""
         captured = BUILT.log["capture"]
-        self.assertEqual(captured["sources"][0]["blob_sha256"], sha(PAPER_TEX.encode("utf-8")))
+        self.assertEqual(captured["sources"][0]["blob_sha256"], sha(SLICE_TEX.encode("utf-8")))
         self.assertEqual(captured["sources"][0]["version"], 1)
         self.assertIs(captured["sources"][0]["changed"], True)
         self.assertEqual(captured["sources"][0]["media_type"], "tex")
@@ -637,11 +661,11 @@ class TestSourceCapture(SliceCase):
 
     def test_anchors_point_at_the_captured_lines_they_claim(self):
         """Each anchor's excerpt digest is the digest of the source lines its locator names."""
-        lines = PAPER_TEX.split("\n")
+        lines = SLICE_TEX.split("\n")
         anchors = {anchor["id"]: anchor for anchor in BUILT.log["anchor"]["anchors"]}
-        self.assertEqual(anchors["anc_mono"]["locator"]["start_line"], 15)
-        self.assertEqual(anchors["anc_mono"]["locator"]["end_line"], 15)
-        self.assertEqual(anchors["anc_mono"]["excerpt_sha256"], sha(lines[14].encode("utf-8")))
+        self.assertEqual(anchors["anc_mono"]["locator"]["start_line"], 4)
+        self.assertEqual(anchors["anc_mono"]["locator"]["end_line"], 4)
+        self.assertEqual(anchors["anc_mono"]["excerpt_sha256"], sha(lines[3].encode("utf-8")))
         self.assertEqual(anchors["anc_lem"]["method"], "label_match")
         self.assertEqual(anchors["anc_lem"]["excerpt_sha256"], sha("\n".join(lines[4:7]).encode("utf-8")))
         self.assertEqual({anchor["source_version"] for anchor in anchors.values()}, {1})
@@ -655,7 +679,7 @@ class TestSourceCapture(SliceCase):
         self.assertIs(payload["changed"], False)
         self.assertIsNone(payload["receipt"])
         self.assertEqual(payload["sources"][0]["version"], 1)
-        self.assertEqual(payload["sources"][0]["blob_sha256"], sha(PAPER_TEX.encode("utf-8")))
+        self.assertEqual(payload["sources"][0]["blob_sha256"], sha(SLICE_TEX.encode("utf-8")))
         self.assertEqual(self.head_revision(db), before)
         self.assertEqual(self.changed_since(db, before)["total"], 0)
         self.assertEqual(BUILT.state["audited"]["progress"]["source_unbound_items"], 0)
@@ -733,7 +757,7 @@ class TestHiddenClaim(SliceCase):
     def test_the_hidden_claim_is_wired_into_the_theorem_it_supports(self):
         """The assumption reaches the theorem through the joint step, not by sitting unused beside it."""
         export = BUILT.log["export:structured"]
-        self.assertEqual(_record(export, "uses", "use_asm_hidden")["body"]["group_id"], "grp_joint")
+        self.assertEqual(_record(export, "application_details", "use_asm_hidden")["body"]["group_id"], "grp_joint")
         self.assertEqual(_record(export, "groups", "grp_joint")["body"]["argument_id"], "arg_thm")
         self.assertEqual(_record(export, "arguments", "arg_thm")["body"]["target"], R("items", "itm_thm"))
 
@@ -838,13 +862,16 @@ class TestIndependentResponse(SliceCase):
         """The blinded packet holds the statements, their anchors and the source -- and nothing judged."""
         for item_id, expected in (("itm_lem", ["anchors:anc_lem", "anchors:anc_lem_proof", "anchors:anc_mono",
                                                "items:itm_asm", "items:itm_lem"]),
-                                  ("itm_thm", ["anchors:anc_mono", "anchors:anc_thm", "anchors:anc_thm_proof",
-                                               "items:itm_asm", "items:itm_thm"])):
+                                  ("itm_thm", ["anchors:anc_lem", "anchors:anc_mono", "anchors:anc_thm", "anchors:anc_thm_proof",
+                                               "items:itm_asm", "items:itm_lem", "items:itm_thm"])):
             packet = BUILT.log[f"packet:independent_{item_id}"]
             self.assertEqual(packet["mode"], "independent")
             self.assertEqual(_keys(packet["read_set"]), sorted(expected + [f"sources:{BUILT.source_id}"]))
             self.assertEqual(_keys(record["ref"] for record in packet["records"]),
                              sorted(expected + [f"sources:{BUILT.source_id}"]))
+            if item_id == "itm_thm":
+                # Invoking the lemma supplies its statement, not its unborrowed proof.
+                self.assertNotIn("anchors:anc_lem_proof", _keys(packet["read_set"]))
             self.assertEqual(packet["write_scope"], [])
             # The one membership guard a blinded packet may carry is the part list of the target item.
             # Any other relation would let the worker infer primary work from a conflict (handoff 6).
@@ -1003,7 +1030,9 @@ class TestConcurrentEdits(SliceCase):
                          (BUILT.concurrency_base, BUILT.concurrency_base))
         self.assertIn("items:itm_lem", _keys(first["write_scope"]))
         self.assertIn("items:itm_asm", _keys(second["write_scope"]))
-        self.assertNotIn("items:itm_asm", _keys(first["write_scope"]))
+        # The explicit standing assumption is part of the lemma's setup, while
+        # the two actual edits still address distinct records.
+        self.assertIn("items:itm_asm", _keys(first["write_scope"]))
         self.assertNotIn("items:itm_lem", _keys(second["write_scope"]))
         self.assertEqual(BUILT.log["harmless_a"]["receipt"]["changed"],
                          [{"collection": "items", "id": "itm_lem", "op": "replace", "version": 2}])
@@ -1278,7 +1307,7 @@ class TestExitCodes(SliceCase):
             connection.close()
         payload, _ = run_cli("status", db, "--audit", AUDIT, expect=4)
         self.assertEqual(payload["error"]["code"], "INCOMPATIBLE")
-        self.assertEqual(payload["error"]["message"], "unsupported storage_format '99'; this core reads [2, 3]")
+        self.assertEqual(payload["error"]["message"], "unsupported storage_format '99'; this core reads [2, 3, 4]")
 
     def test_a_missing_source_exits_five_and_writes_nothing(self):
         """Capturing a file that is not there is a source problem, and no source record is created."""

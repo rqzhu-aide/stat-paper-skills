@@ -24,17 +24,17 @@ from paper_core.canonical import compact_json
 from paper_core.errors import InvalidRequest
 
 # Stage progress blocks and counts verified against the real API by the manual validation pass.
-PROGRESS_AFTER_PRIMARY = {"process_complete": False, "required_obligations": 11,
-                          "completed_current_obligations": 7, "draft_checks": 0, "major_results": 2,
+PROGRESS_AFTER_PRIMARY = {"process_complete": False, "required_obligations": 13,
+                          "completed_current_obligations": 9, "draft_checks": 0, "major_results": 2,
                           "source_unbound_items": 0}
-PROGRESS_AFTER_COMPLETE = {"process_complete": True, "required_obligations": 11,
-                           "completed_current_obligations": 11, "draft_checks": 0, "major_results": 2,
+PROGRESS_AFTER_COMPLETE = {"process_complete": True, "required_obligations": 13,
+                           "completed_current_obligations": 13, "draft_checks": 0, "major_results": 2,
                            "source_unbound_items": 0}
 PROGRESS_OVERVIEW = {"process_complete": False, "required_obligations": 0,
                      "completed_current_obligations": 0, "draft_checks": 0, "major_results": 0,
                      "source_unbound_items": 0}
-COUNTS_AFTER_COMPLETE = {"nodes": 2, "connections": 1, "records": 29, "obligations": 14, "details": 3,
-                         "locations": 28}
+COUNTS_AFTER_COMPLETE = {"nodes": 2, "connections": 1, "records": 37, "obligations": 16, "details": 3,
+                         "locations": 36}
 PUBLIC_ASSESSMENT_KEYS = {"state", "label", "explanation", "check_refs", "finding_refs",
                           "missing_obligation_ids", "independent_review"}
 # The reader links to a connection by this id, so it is pinned as a literal, not recomputed here.
@@ -152,7 +152,7 @@ class ProjectionContractTests(ProjectionCase):
         self.assertEqual(proj["projection_version"], PROJECTION_VERSION)
         self.assertEqual(PROJECTION_VERSION, 2)
         self.assertEqual(proj["snapshot_revision"], head)
-        self.assertEqual(head, 13)
+        self.assertEqual(head, 16)
         self.assertEqual(proj["audit_id"], "aud_1")
 
     def test_project_returns_a_report_whose_counts_describe_the_projection(self):
@@ -189,7 +189,7 @@ class ProjectionContractTests(ProjectionCase):
         proj = self.projected("complete")
         self.assertEqual(proj["summary"]["progress"], PROGRESS_AFTER_COMPLETE)
         self.assertEqual(sorted(proj["summary"]),
-                         ["findings", "limitations", "progress", "published_revision", "scope", "source_limits"])
+                         ["factual", "findings", "limitations", "progress", "published_revision", "scope", "source_limits"])
 
     def test_summary_scope_mirrors_the_audit_targets_without_pinning_versions(self):
         """summary.scope repeats the audit mode and targets as unpinned refs the reader can follow."""
@@ -306,7 +306,7 @@ class ProjectionGraphTests(ProjectionCase):
                 self.assertEqual(node["assessment"]["independent_review"], "complete")
                 self.assertEqual(node["assessment"]["missing_obligation_ids"], [])
                 self.assertEqual(node["assessment"]["finding_refs"], [])
-                self.assertEqual(set(node["assessment"]), PUBLIC_ASSESSMENT_KEYS)
+                self.assertEqual(set(node["assessment"]), PUBLIC_ASSESSMENT_KEYS | {"availability", "local_state", "local_label"})
 
     def test_the_single_dependency_use_becomes_one_edge_naming_both_endpoints(self):
         """One recorded use from the lemma to the theorem is exactly one connection lemma -> theorem."""
@@ -380,7 +380,7 @@ class ProjectionGraphTests(ProjectionCase):
         proof_records = sorted(key for key in carried if key[0] in projection.PROOF_RECORD_COLLECTIONS)
         self.assertEqual(proof_records, sorted(key for key in located
                                                if key[0] in projection.PROOF_RECORD_COLLECTIONS))
-        self.assertEqual(len(proof_records), 10)
+        self.assertEqual(len(proof_records), 15)
         self.assertEqual(report["problems"], [])
 
     def test_every_record_body_is_carried_once_under_its_pinned_version(self):
@@ -420,7 +420,8 @@ class ProjectionGraphTests(ProjectionCase):
         self.assertEqual(sorted(proj["details"]), sorted(keys))
         for key, detail in proj["details"].items():
             with self.subTest(detail=key):
-                self.assertEqual(sorted(detail), ["record_refs", "sections"])
+                self.assertEqual(sorted(detail), (["reader"] if key.startswith("item:") else []) +
+                                 ["record_refs", "sections"])
                 order = [projection.SECTION_ORDER.index(section["kind"]) for section in detail["sections"]]
                 self.assertEqual(order, sorted(order))
                 for section in detail["sections"]:
@@ -431,9 +432,11 @@ class ProjectionGraphTests(ProjectionCase):
         self.assertEqual([section["kind"] for section in lemma["sections"]],
                          ["statement", "premises", "composition", "coverage", "sources", "review"])
         statement = lemma["sections"][0]
-        self.assertEqual(statement["record_refs"], [{"collection": "items", "id": "itm_lem", "version": 1}])
+        self.assertEqual(statement["record_refs"], [{"collection": "items", "id": "itm_lem", "version": 1},
+                         {"collection": "target_specs", "id": "tgt_lem", "version": 1},
+                         {"collection": "observations", "id": "obs_exact_lem", "version": 1}])
         self.assertEqual(statement["title"], "Statement")
-        self.assertIsNone(statement["note"])
+        self.assertEqual(statement["note"], "Exact audited targets identify the mathematical form and scope examined.")
 
     def test_detail_record_refs_are_the_union_of_its_section_refs_in_section_order(self):
         """The flat record_refs list a renderer iterates matches the sections, deduplicated and ordered."""
@@ -455,8 +458,8 @@ class ProjectionGraphTests(ProjectionCase):
         proj = self.projected("complete")
         self.assertEqual(proj["layout"], {"mode": "dag", "reasons": []})
 
-    def test_a_cycle_between_majors_falls_back_to_the_index_layout_and_keeps_every_use(self):
-        """A back edge makes the diagram undrawable; the layout says index and names the cycle path."""
+    def test_a_cycle_between_majors_remains_a_diagram_and_keeps_every_use(self):
+        """A back edge selects cycle routing and preserves every connection identity and direction."""
         fixture = self.staged("primary")
         with fixture.open() as db:
             fixture.apply(db, [edit("create", "uses", "use_thm_lem", {
@@ -466,10 +469,11 @@ class ProjectionGraphTests(ProjectionCase):
                 *fixture.ITEMS, mode="primary")
         with fixture.open(write=False) as db:
             proj = projection.build_projection(db, audit_id="aud_1")
-        self.assertEqual(proj["layout"]["mode"], "index")
+        self.assertEqual(proj["layout"]["mode"], "cyclic")
         self.assertEqual(len(proj["layout"]["reasons"]), 2)
         self.assertIn("itm_lem to itm_thm to itm_lem", proj["layout"]["reasons"][0])
         self.assertIn("every recorded use is kept", proj["layout"]["reasons"][1])
+        self.assertIn("assessment is unchanged", proj["layout"]["reasons"][1])
         self.assertEqual([(c["from"], c["to"]) for c in proj["connections"]],
                          [("itm_lem", "itm_thm"), ("itm_thm", "itm_lem")])
         self.assertEqual([c["id"] for c in proj["connections"]],
@@ -501,11 +505,11 @@ class ProjectionScopeTests(ProjectionCase):
         self.assertTrue(set(first_checks) >= {"chk_app", "chk_comp_lem", "chk_comp_thm", "chk_der_lem",
                                               "chk_der_thm"})
         self.assertEqual({o["target"]["id"] for o in second["obligations"]},
-                         {"aud_2", "itm_lem", "arg_lem", "grp_lem"})
+                         {"aud_2", "itm_lem", "arg_lem", "grp_lem", "tgt_lem"})
         self.assertEqual(second["summary"]["scope"]["target_refs"], [{"collection": "items", "id": "itm_lem"}])
         self.assertEqual(second["summary"]["progress"],
-                         {"process_complete": False, "required_obligations": 3,
-                          "completed_current_obligations": 1, "draft_checks": 0, "major_results": 1,
+                         {"process_complete": False, "required_obligations": 4,
+                          "completed_current_obligations": 2, "draft_checks": 0, "major_results": 1,
                           "source_unbound_items": 0})
 
     def test_a_neighbour_outside_the_audit_scope_is_drawn_as_outside_scope(self):
@@ -529,7 +533,7 @@ class ProjectionScopeTests(ProjectionCase):
         note = [s["note"] for s in proj["details"]["item:itm_thm"]["sections"] if s["kind"] == "statement"]
         self.assertEqual(note, ["Outside the audit scope; shown as a neighbor of an audited result."])
         in_scope = [s["note"] for s in proj["details"]["item:itm_lem"]["sections"] if s["kind"] == "statement"]
-        self.assertEqual(in_scope, [None])
+        self.assertEqual(in_scope, ["Exact audited targets identify the mathematical form and scope examined."])
 
     def test_overview_projection_has_no_audit_and_derives_no_obligations(self):
         """Without audit_id the projection is the structural overview: every major item, no assessment."""
@@ -635,7 +639,7 @@ class ProjectionIncompleteProcessTests(ProjectionCase):
                 self.assertEqual(node["assessment"]["missing_obligation_ids"], raw["missing_obligation_ids"])
                 # assessment.reduce already emits exactly the public field set, so a new internal field
                 # appearing here is a signal that public_assessment must learn to strip it.
-                self.assertEqual(set(raw), PUBLIC_ASSESSMENT_KEYS)
+                self.assertEqual(set(raw), PUBLIC_ASSESSMENT_KEYS | {"availability", "local_state", "local_label"})
                 self.assertEqual(node["assessment"]["finding_refs"], [r["id"] for r in raw["finding_refs"]])
 
     def test_satisfied_obligations_carry_the_checks_that_discharged_them(self):

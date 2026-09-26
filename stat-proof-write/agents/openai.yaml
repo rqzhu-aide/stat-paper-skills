@@ -1,0 +1,6 @@
+interface:
+  display_name: "Stat Proof Write"
+  short_description: "Draft clear proofs for statistical research"
+  default_prompt: "Use $stat-proof-write to draft or revise this proof with explicit derivations and clear mathematical explanations."
+policy:
+  allow_implicit_invocation: false

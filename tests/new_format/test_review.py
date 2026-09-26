@@ -1,7 +1,7 @@
 """Independent review: qualification receipts, submission, judgment mapping, reconcile, compare.
 
 Covers ``shared/paper_core/review.py`` and the intake promises of
-``architecture-proofcheck/handoff/record-contract.md`` section 5.1: a qualification receipt carries its
+the review record contract: a qualification receipt carries its
 own evidence and is refused when a blob does not hash to what it claims; the worker's response bytes are
 preserved verbatim before anything is derived from them and stay verbatim after the coordinator maps it;
 a judgment that names a record in the packet resolves at submission while a SourceTarget or an
@@ -21,7 +21,7 @@ from unittest import mock
 
 from support import Fixture, R, TempCase, edit, locator, run_cli, sha, write_json
 
-from paper_core import packets, review, sources
+from paper_core import controller, packets, review, sources
 from paper_core.errors import ConflictError, InvalidRequest
 
 EVIDENCE = b"calibration transcript for checker-B"
@@ -874,7 +874,13 @@ class MapResponseTests(TempCase):
         with self.fx.open() as db:
             self.fx.apply(db, [Fixture.item_edit("itm_definition", "definition", "Definition 1",
                                                  "anc_lem", "anc_lem_proof")])
-            result, raw = self.pending_submission(db)
+            prepared = controller.prepare_work(db, audit_id="aud_1", mode="independent", focus=R("items", "itm_lem"))
+            extended = packets.extend_work_assignment(db, packet_id=prepared["packet_id"], request={
+                "source_refs": [db.head("items", "itm_definition").pinned],
+                "reason": "The reviewer requested this auxiliary source definition."})
+            worker = worker_response(extended["packet_id"], [judgment(source_target("anc_lem_proof", "The lemma proof"))])
+            raw = json.dumps(worker).encode("utf-8")
+            result = review.submit_review(db, submission=submission(self.fx, extended["packet_id"]), response_bytes=raw)
             packet = packets.get_packet(db, targets=[R("items", "itm_lem")], mode="primary")
             self.assertNotIn(("items", "itm_definition"),
                              {(r["collection"], r["id"]) for r in packet["read_set"]})
@@ -930,8 +936,8 @@ class MapResponseTests(TempCase):
             self.assertEqual(caught.exception.code, "RESPONSE_SCOPE")
             self.assertEqual(db.max_revision(), before)
 
-    def test_accepted_response_cannot_be_remapped(self):
-        """Mapping closes when the response is accepted; a further mapping is refused."""
+    def test_accepted_response_cannot_repeat_the_same_exact_mapping(self):
+        """Routine reuse may add a target but never duplicate the same mapping."""
         with self.fx.open() as db:
             result, _ = self.pending_submission(db)
             review.map_response(db, mapping=mapping_request(
@@ -942,8 +948,7 @@ class MapResponseTests(TempCase):
             with self.assertRaises(InvalidRequest) as caught:
                 review.map_response(db, mapping=mapping_request(
                     self.fx, packet_id, result["response_id"], [entry(0, R("arguments", "arg_lem"))]))
-            self.assertEqual(caught.exception.code, "RESPONSE_ACCEPTED")
-            self.assertIn("mapping is closed", caught.exception.message)
+            self.assertTrue(any("already maps to this exact target" in row for row in caught.exception.records))
             self.assertEqual(db.max_revision(), before)
 
     def test_mapping_needs_a_coordinator_packet(self):
@@ -1072,14 +1077,14 @@ class ReconcileTests(TempCase):
             self.assertEqual(caught.exception.code, "PACKET_UNKNOWN")
             self.assertEqual(db.max_revision(), before)
 
-    def test_reconcile_envelope_must_declare_contract_version_three(self):
+    def test_reconcile_envelope_must_declare_a_supported_contract_version(self):
         """The batch envelope is validated before anything reaches acceptance."""
         with self.fx.open() as db:
             with self.assertRaises(InvalidRequest) as caught:
                 review.reconcile(db, batch={"contract_version": 2, "request_id": "req_old",
                                             "packet_id": "pkt_x", "edits": []})
             self.assertEqual(caught.exception.message, "invalid edit envelope")
-            self.assertIn("/contract_version: must equal 3", caught.exception.records)
+            self.assertIn("/contract_version: supported request contract versions are 3 and 4", caught.exception.records)
 
     def test_recorded_reconciliation_cannot_be_replaced(self):
         """A reconciliation is immutable once created; a later rationale needs a new record."""

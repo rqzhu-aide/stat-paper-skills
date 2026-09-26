@@ -1,6 +1,0 @@
-{
-  "archive": "pilot-evidence.zip",
-  "sha256": "2372ff40e9ec9da3ad61ed510296444a29aca7afcacbcca9c2774ddb6c0a65e4",
-  "bytes": 9572480,
-  "purpose": "Frozen evaluation, two recovery continuations, preserved source/response bytes, and command receipts. Historical absolute source paths remain recorded; this is evidence, not an installed skill or portable database migration."
-}

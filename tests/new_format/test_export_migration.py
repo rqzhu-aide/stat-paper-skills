@@ -27,7 +27,11 @@ from paper_core.errors import IncompatibleError, InvalidRequest
 LEGACY_OVERVIEW_FORMAT = "archify-paper-database-1"
 
 # Counts of the shipped legacy fixtures, verified against the files by the manual validation pass.
-OVERVIEW_COUNTS = {"sources": 1, "anchors": 21, "items": 6, "uses": 11, "observations": 17}
+OVERVIEW_COUNTS = {"sources": 1, "anchors": 21, "items": 6, "uses": 11, "groups": 0, "observations": 17}
+# migrate_overview preserves observation created_at/input_snapshot/carried_from inside each note and
+# reports that practice once; every legacy observation carries created_at and input_snapshot.
+OBSERVATION_NOTE_LIMITATION = ("legacy observation fields created_at, input_snapshot and carried_from have no "
+                               "contract-3 home; each observation preserves them in its note")
 LEGACY_AUDIT_COUNTS = {"anchors": 4, "items": 2, "uses": 1, "audits": 1, "scopes": 1, "qualifications": 1,
                        "arguments": 2, "checks": 4, "responses": 2, "findings": 1, "identity_maps": 1}
 
@@ -37,7 +41,7 @@ LEGACY_AUDIT_SAMPLE_FILES = ("AUDIT_MANIFEST.json", "audit/04_local_checks/lem-g
 
 
 def legacy_overview_runtime():
-    """The archify-proofs-overview runtime, imported only to build a legacy database to migrate."""
+    """The proof-graphify runtime, imported only to build a legacy database to migrate."""
     scripts = str(OVERVIEW / "scripts")
     if scripts not in sys.path:
         # appended, never inserted: that folder ships its own paper_core that must not shadow shared/
@@ -147,14 +151,14 @@ class ExportSnapshotTest(TempCase):
         snapshot = export_import.export_snapshot(db)
         self.assertEqual(sorted(snapshot), ["bindings", "blobs", "contract_version", "paper_id",
                                             "provenance", "records", "revision", "storage_format"])
-        self.assertEqual(snapshot["contract_version"], 3)
-        self.assertEqual(snapshot["storage_format"], 3)
+        self.assertEqual(snapshot["contract_version"], 4)
+        self.assertEqual(snapshot["storage_format"], 4)
         self.assertEqual(snapshot["revision"], top)
         self.assertEqual(snapshot["paper_id"], self.fx.paper_id)
         self.assertEqual(snapshot["records"], plain_envelopes(db.records_at(top, include_retired=True)))
         self.assertEqual(sorted(snapshot["provenance"]),
                          ["core_version", "projection_version", "source_identity"])
-        self.assertEqual(snapshot["provenance"]["core_version"], "2.0.0")
+        self.assertEqual(snapshot["provenance"]["core_version"], "2.3.0")
         self.assertEqual(snapshot["provenance"]["projection_version"], 2)
         self.assertNotIn("missing_blobs", snapshot["provenance"])
 
@@ -247,17 +251,18 @@ class ExportSnapshotTest(TempCase):
         self.assertEqual({(b["ref"]["collection"], b["ref"]["id"], b["ref"]["version"])
                           for b in snapshot["bindings"]}, expected)
         self.assertEqual({collection for collection, _, _ in expected},
-                         {"checks", "observations", "reconciliations"})
+                         {"checks", "observations", "reconciliations", "source_reviews"})
         for binding in snapshot["bindings"]:
             ref = binding["ref"]
             stored = db.binding(ref["collection"], ref["id"], ref["version"])
             self.assertEqual(binding["packet_id"], stored["packet_id"])
             self.assertEqual(binding["bindings"], stored["bindings"])
-            self.assertEqual(sorted(binding["bindings"]),
+            self.assertEqual(sorted(set(binding["bindings"]) - {"semantic_memberships"}),
                              ["packet_id", "records", "relations", "source_context_digest"])
+            if "semantic_memberships" in binding["bindings"]:
+                self.assertIsInstance(binding["bindings"]["semantic_memberships"], list)
             self.assertEqual(binding["bindings"]["packet_id"], binding["packet_id"])
-            self.assertEqual(binding["bindings"]["source_context_digest"],
-                             packets.source_context_digest(db))
+            self.assertIsNone(binding["bindings"]["source_context_digest"])
 
     def test_binding_of_the_lemma_observation_pins_its_whole_read_context(self):
         """obs_lem is bound to both lemma anchors and both lemma facets, plus the parts_of_item relation."""
@@ -271,7 +276,8 @@ class ExportSnapshotTest(TempCase):
                                    ("anchors", "anc_lem_proof", 1, "source"),
                                    ("anchors", "anc_lem_proof", 1, "statement"),
                                    ("items", "itm_lem", 1, "proof"),
-                                   ("items", "itm_lem", 1, "statement")])
+                                   ("items", "itm_lem", 1, "statement"),
+                                   ("sources", self.fx.source_id, 1, "source")])
         self.assertEqual(relations, [("parts_of_item", "items", "itm_lem")])
         digests = {entry["digest"] for entry in binding["bindings"]["records"]}
         self.assertEqual(len(digests), len(records))
@@ -492,14 +498,19 @@ class ExportTombstoneTest(TempCase):
         records, relations = binding_shape(self.live_binding["bindings"])
         self.assertEqual(records, [("anchors", "anc_lem", 1, "statement"),
                                    ("anchors", "anc_lem_proof", 1, "proof"),
+                                   ("anchors", "anc_lem_proof", 1, "source"),
                                    ("arguments", "arg_lem", 1, "proof"),
                                    ("coverage", "cov_lem", 1, "coverage"),
                                    ("groups", "grp_lem", 1, "inference"),
                                    ("items", "itm_lem", 1, "statement"),
-                                   ("scopes", "scp_plain", 1, "scope")])
+                                   ("proof_boundaries", "bnd_lem", 1, "coverage"),
+                                   ("scopes", "scp_plain", 1, "scope"),
+                                   ("source_reviews", "srv_boundaries", 1, "source"),
+                                   ("sources", self.fx.source_id, 1, "source"),
+                                   ("target_specs", "tgt_lem", 1, "statement")])
         self.assertEqual([name for name, _, _ in relations],
                          ["coverage_in_argument", "groups_in_argument", "incoming_uses",
-                          "parts_of_item", "scopes_in_argument", "uses_in_group"])
+                          "parts_of_item", "scopes_in_argument", "target_specs_for_target", "uses_in_group"])
         with storage.Database(self.fx.path) as db:
             head = export_import.export_snapshot(db)
             early = export_import.export_snapshot(db, revision=self.live_revision)
@@ -550,7 +561,7 @@ class OverviewMigrationTest(TempCase):
         self.legacy_json = json.loads((self.example / "overview.json").read_text(encoding="utf-8-sig"))
         self.legacy_path = self.work / "legacy" / "overview.db"
         self.legacy_path.parent.mkdir(parents=True)
-        self.info = legacy_overview_runtime().init_database(
+        self.info = legacy_overview_runtime()._native_init_database(
             self.legacy_path, self.example / "overview.json", source_root=self.example)
         self.original = self.legacy_path.read_bytes()
         self.backup_path = self.work / "legacy" / "overview.backup.db"
@@ -589,13 +600,13 @@ class OverviewMigrationTest(TempCase):
                                             "snapshot_id": self.info["snapshot_id"],
                                             "snapshots": 1, "builds": 0})
         self.assertEqual(result["database"], str(self.legacy_path))
-        # the rebuild stages a .migrating- file and renames it: nothing else may survive in the folder
+        # The transactional cutover removes its temporary conversion file.
         self.assertEqual(sorted(path.name for path in self.legacy_path.parent.iterdir()),
                          ["overview.backup.db", "overview.db"])
         with storage.Database(self.legacy_path) as db:
             metadata = db.check_compatibility()
-            self.assertEqual(metadata["storage_format"], "3")
-            self.assertEqual(metadata["contract_version"], "3")
+            self.assertEqual(metadata["storage_format"], "4")
+            self.assertEqual(metadata["contract_version"], "4")
             self.assertEqual(result["revision"], db.max_revision())
             self.assertEqual(result["paper_id"], storage.paper_record(db).id)
             self.assertEqual(sorted(item.id for item in db.heads("items")),
@@ -667,7 +678,10 @@ class OverviewMigrationTest(TempCase):
             self.assertEqual(body["target"]["id"], legacy[oid]["target"]["id"])
             self.assertEqual(body["result"], legacy[oid]["result"])
             self.assertEqual(body["reviewer"], legacy[oid]["reviewer"])
-            self.assertEqual(body["note"], legacy[oid]["note"])
+            # created_at and input_snapshot have no contract-3 field; the note carries them
+            expected_note = (f"[legacy created_at {legacy[oid]['created_at']}] "
+                             f"[legacy input_snapshot {legacy[oid]['input_snapshot']}] {legacy[oid]['note']}")
+            self.assertEqual(body["note"], expected_note.strip())
             pool = live_uses if body["target"]["collection"] == "uses" else live_items
             self.assertIn(body["target"]["id"], pool)
 
@@ -684,7 +698,7 @@ class OverviewMigrationTest(TempCase):
             self.assertEqual(len(body["entries"]), expected_entries)
             self.assertIn(self.info["snapshot_id"], body["note"])
             self.assertEqual({entry["old"].split(":", 1)[0] for entry in body["entries"]},
-                             set(OVERVIEW_COUNTS))
+                             {name for name, count in OVERVIEW_COUNTS.items() if count})
             # the identity map keeps the whole legacy export, so the migration can be audited later
             carried = json.loads(db.get_blob(body["source_blob"]).decode("utf-8"))
             self.assertEqual(carried["format"], LEGACY_OVERVIEW_FORMAT)
@@ -705,7 +719,7 @@ class OverviewMigrationTest(TempCase):
         self.assertEqual(json.loads(metadata["legacy_overview_snapshot_ids"]), [self.info["snapshot_id"]])
         self.assertEqual(json.loads(metadata["legacy_overview_backup"]), result["backup"])
         self.assertNotIn("missing_blobs", snapshot["provenance"])
-        self.assertEqual(len(snapshot["records"]), expected_entries + 2)
+        self.assertEqual(len(snapshot["records"]), expected_entries + 3)  # paper, identity map, selection
 
     def test_backup_holds_the_original_legacy_database(self):
         """The backup written before the rebuild is row-for-row the database that was migrated."""
@@ -859,8 +873,8 @@ class LegacyAuditImportTest(TempCase):
         self.assertEqual(body["limitations"],
                          ["legacy challenger; no item-audit/1 calibration cases exist"])
 
-    def test_both_items_assess_red(self):
-        """The refuted legacy verdicts derive a red defect assessment for both items and both arguments."""
+    def test_triage_keeps_historical_verdicts_without_current_correctness_credit(self):
+        """Imported verdicts stay inspectable while triage makes no proof-correctness claim."""
         result = self.run_import()
         with storage.Database(self.db_path) as db:
             derived = assessment.derive_assessment(db, revision=db.max_revision(),
@@ -874,9 +888,7 @@ class LegacyAuditImportTest(TempCase):
                          {"items": 2, "arguments": 2, "uses": 1, "audits": 1})
         self.assertEqual(sorted(by_collection["items"]), ["items:lem-growing-max", "items:thm-main"])
         self.assertEqual(by_collection["uses"], ["uses:thm-main-D001"])
-        expected = {ref: ("red", "defect") for ref in by_collection["items"] + by_collection["arguments"]}
-        expected.update({ref: ("gray", "unassessed")
-                         for ref in by_collection["uses"] + by_collection["audits"]})
+        expected = {ref: ("gray", "triage") for ref in public}
         self.assertEqual({ref: (value["state"], value["label"]) for ref, value in public.items()},
                          expected)
         self.assertEqual(derived["progress"],

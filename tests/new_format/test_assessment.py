@@ -52,7 +52,8 @@ RECHECK = "historical defect against a changed input; recheck qualification pend
 RESULT_KEYS = {"analysis_complete", "assessments", "audit_id", "audits", "by_target", "constituents", "context", "findings",
                "independent", "judgments", "mode", "obligations", "problems", "progress",
                "published_revision", "revision", "route_records", "routes", "scope", "source_limits",
-               "statements", "support"}
+               "statements", "support", "coverage_diagnostics", "coverage_diagnostic_count",
+               "coverage_diagnostics_truncated"}
 OBLIGATION_KEYS = {"assessment", "check_refs", "explanation", "freshness", "id", "kind", "outcome",
                    "required", "role", "satisfied", "state", "target"}
 CONSTITUENT_KEYS = {"check_refs", "compromised", "disputed", "finding_refs", "freshness", "kind",
@@ -76,14 +77,16 @@ FIXTURE_OBLIGATIONS = {
     ("uses:use_lem_thm", "application", "primary", True),
     ("items:itm_lem", "source_fidelity", "primary", True),
     ("items:itm_thm", "source_fidelity", "primary", True),
+    ("target_specs:tgt_lem", "source_fidelity", "primary", True),
+    ("target_specs:tgt_thm", "source_fidelity", "primary", True),
     ("items:itm_lem", "reconciliation", "coordinator", True),
     ("items:itm_thm", "reconciliation", "coordinator", True),
     ("audits:aud_1", "global_consistency", "primary", False),
     ("audits:aud_1", "adversarial", "primary", False),
     ("audits:aud_1", "method_interface", "primary", False),
 }
-PROGRESS_COMPLETE = {"process_complete": True, "required_obligations": 11,
-                     "completed_current_obligations": 11, "draft_checks": 0, "major_results": 2,
+PROGRESS_COMPLETE = {"process_complete": True, "required_obligations": 13,
+                     "completed_current_obligations": 13, "draft_checks": 0, "major_results": 2,
                      "source_unbound_items": 0}
 
 # -- bodies the fixture does not build ---------------------------------------------------------------
@@ -643,8 +646,9 @@ class ShapeTests(AssessmentCase):
             self.assertEqual(set(c), CONSTITUENT_KEYS)
         for judgment in result["judgments"].values():
             self.assertEqual(set(judgment), JUDGMENT_KEYS)
-        for entry in result["assessments"].values():
-            self.assertEqual(set(entry), ASSESSMENT_KEYS)
+        for key, entry in result["assessments"].items():
+            extra = {"availability", "local_state", "local_label"} if key.startswith(("items:", "parts:", "uses:")) else set()
+            self.assertEqual(set(entry), ASSESSMENT_KEYS | extra)
 
     def test_derive_full_hands_back_the_live_indexes_it_used(self):
         """The projection reuses the derivation, so the result must expose the very same objects."""
@@ -740,9 +744,9 @@ class ObligationTests(AssessmentCase):
         """Eleven required obligations plus the three declared global tasks, and nothing else."""
         result = self.derive(self.complete_fixture())
         self.assertEqual(obligation_tuples(result), FIXTURE_OBLIGATIONS)
-        self.assertEqual(len(result["obligations"]), 14)
-        self.assertEqual(sum(1 for o in result["obligations"] if o["required"]), 11)
-        self.assertEqual(result["progress"]["required_obligations"], 11)
+        self.assertEqual(len(result["obligations"]), 16)
+        self.assertEqual(sum(1 for o in result["obligations"] if o["required"]), 13)
+        self.assertEqual(result["progress"]["required_obligations"], 13)
 
     def test_every_obligation_id_is_the_hash_of_its_own_identity(self):
         """A caller can recompute any obligation id from the audit, the target, the kind and the role."""
@@ -820,7 +824,7 @@ class ObligationTests(AssessmentCase):
                          {("uses:use_ass_lem", "application", "primary", True),
                           ("items:itm_ass", "source_fidelity", "primary", True)})
         self.assertEqual(obligation_tuples(before) - obligation_tuples(after), set())
-        self.assertEqual(after["progress"]["required_obligations"], 13)
+        self.assertEqual(after["progress"]["required_obligations"], 15)
         self.assertEqual(after["route_records"]["items:itm_lem"],
                          ["arguments:arg_lem", "groups:grp_lem", "uses:use_ass_lem"])
 
@@ -851,6 +855,7 @@ class ObligationTests(AssessmentCase):
             ("groups:grp_thm", "derivation", "primary", True),
             ("uses:use_lem_thm", "application", "primary", True),
             ("items:itm_thm", "source_fidelity", "primary", True),
+            ("target_specs:tgt_thm", "source_fidelity", "primary", True),
             ("audits:aud_3", "global_consistency", "primary", False),
             ("audits:aud_3", "adversarial", "primary", False),
             ("audits:aud_3", "method_interface", "primary", False)})
@@ -866,11 +871,11 @@ class ObligationTests(AssessmentCase):
                 global_tasks=[dict(task) for task in GLOBAL_TASKS]))], *fixture.ITEMS, mode="primary")
             result = derive_assessment(db, audit_id="aud_3")
         self.assertEqual(result["judgments"], {})
-        fidelity = next(o for o in result["obligations"] if o["kind"] == "source_fidelity")
+        fidelity = next(o for o in result["obligations"] if o["kind"] == "source_fidelity" and o["target"] == R("items", "itm_thm"))
         self.assertIs(fidelity["satisfied"], True)
         self.assertEqual(fidelity["check_refs"], [{"collection": "observations", "id": "obs_thm",
                                                    "version": 1}])
-        self.assertEqual(result["progress"]["completed_current_obligations"], 1)
+        self.assertEqual(result["progress"]["completed_current_obligations"], 2)
 
     def test_an_audit_target_that_cannot_be_assessed_is_reported_as_a_problem(self):
         """An intermediate result is never an audit target; the derivation says so instead of guessing."""
@@ -895,7 +900,7 @@ class StageTests(AssessmentCase):
         fixture = self.fixture()
         fixture.audit()
         result = self.derive(fixture)
-        self.assertEqual(result["progress"], {"process_complete": False, "required_obligations": 11,
+        self.assertEqual(result["progress"], {"process_complete": False, "required_obligations": 13,
                                               "completed_current_obligations": 0, "draft_checks": 0,
                                               "major_results": 2, "source_unbound_items": 0})
         self.assert_state(result, "items:itm_lem", "gray", "unassessed")
@@ -908,7 +913,7 @@ class StageTests(AssessmentCase):
         fixture = self.fixture()
         fixture.primary()
         result = self.derive(fixture)
-        self.assertEqual(result["progress"]["completed_current_obligations"], 7)
+        self.assertEqual(result["progress"]["completed_current_obligations"], 9)
         self.assertIs(result["progress"]["process_complete"], False)
         self.assertEqual(result["independent"], {"items:itm_lem": "pending", "items:itm_thm": "pending"})
         outstanding = {(key_of(o["target"]), o["kind"], o["role"]) for o in result["obligations"]
@@ -1014,7 +1019,7 @@ class FreshnessTests(AssessmentCase):
                 self.assertEqual(entry["explanation"], "stale; conditional")
         # Stale independent evidence also reopens both reconciliations; only
         # the theorem's unchanged source comparison remains complete.
-        self.assertEqual(result["progress"]["completed_current_obligations"], 1)
+        self.assertEqual(result["progress"]["completed_current_obligations"], 2)
         self.assertIs(result["progress"]["process_complete"], False)
         self.assertEqual(result["support"], {"items:itm_lem": "conditional", "items:itm_thm": "conditional"})
         self.assertEqual(older["progress"], PROGRESS_COMPLETE)
@@ -1068,7 +1073,8 @@ class ContextTests(AssessmentCase):
         with fixture.open(write=False) as db:
             snap = Snapshot(db, db.max_revision())
             binding = snap.binding(snap.live("checks", "chk_der_lem"))
-            self.assertEqual(binding["bindings"]["source_context_digest"], snap.source_context_digest())
+            self.assertIsNone(binding["bindings"]["source_context_digest"])
+            self.assertTrue(any(row["ref"]["collection"] == "sources" for row in binding["bindings"]["records"]))
 
     # REGRESSION: judgment_freshness used to read the stored context digest off the
     # {"packet_id", "bindings"} wrapper Database.binding() returns instead of off the binding itself,
@@ -1083,7 +1089,7 @@ class ContextTests(AssessmentCase):
             sources.capture_sources(db, files=["paper.tex"])
             snap = Snapshot(db, db.max_revision())
             check = snap.live("checks", "chk_der_lem")
-            self.assertEqual(snap.binding(check)["bindings"]["source_context_digest"], before)
+            self.assertIsNone(snap.binding(check)["bindings"]["source_context_digest"])
             self.assertNotEqual(snap.source_context_digest(), before)
             info = judgment_freshness(snap, check, superseded=False)
             result = derive_assessment(db, audit_id=fixture.audit_id)
@@ -1116,7 +1122,7 @@ class DefectTests(AssessmentCase):
             with self.subTest(key=key):
                 entry = self.assert_state(result, key, "amber", "premise unavailable")
                 self.assertEqual(entry["explanation"], "premise unavailable")
-        self.assertEqual(result["support"], {"items:itm_lem": "unavailable", "items:itm_thm": "conditional"})
+        self.assertEqual(result["support"], {"items:itm_lem": "unavailable", "items:itm_thm": "unavailable"})
 
     def test_the_finding_is_reported_on_the_defective_record_and_on_the_affected_use(self):
         """A finding reaches a statement through its target, its checks and the uses it names."""
@@ -1158,7 +1164,7 @@ class DefectTests(AssessmentCase):
                 self.assertEqual(entry["explanation"],
                                  "current completed application assessment identifies refuted")
         self.assert_state(result, "items:itm_lem", "green", "supported")
-        self.assertEqual(result["support"], {"items:itm_lem": "available", "items:itm_thm": "conditional"})
+        self.assertEqual(result["support"], {"items:itm_lem": "available", "items:itm_thm": "unavailable"})
 
     def test_unsuperseded_conflicting_judgments_remain_disputed(self):
         """Both current outcomes remain visible; insertion order is not a resolution."""
@@ -1363,7 +1369,7 @@ class ProcessCompletenessTests(AssessmentCase):
                                edit("create", "uses", "use_ass_lem", dict(USE_ASS_LEM))])
             result = derive_assessment(db, audit_id=fixture.audit_id)
         self.assertIs(result["progress"]["process_complete"], False)
-        self.assertEqual(result["progress"]["required_obligations"], 13)
+        self.assertEqual(result["progress"]["required_obligations"], 15)
         self.assertLess(result["progress"]["completed_current_obligations"],
                         result["progress"]["required_obligations"])
 
@@ -1379,7 +1385,7 @@ class ProcessCompletenessTests(AssessmentCase):
         self.assertEqual(result["source_limits"], [{"collection": "source_issues", "id": "sis_1",
                                                     "version": 1}])
         self.assertIs(result["progress"]["process_complete"], False)
-        self.assertEqual(result["progress"]["completed_current_obligations"], 11)
+        self.assertEqual(result["progress"]["completed_current_obligations"], 13)
         self.assertEqual(result["assessments"], before["assessments"])
 
     def test_a_resolved_source_issue_stops_limiting_the_process(self):

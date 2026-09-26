@@ -49,7 +49,9 @@ class WorkPacketTests(TempCase):
             self.fx.apply(db, [
                 self.fx.item_edit("itm_second", "lemma", "Lemma 2", "anc_lem", "anc_lem_proof"),
                 edit("create", "uses", "use_second", dict(db.head("uses", "use_lem_thm").body,
-                                                          **{"from": R("items", "itm_second")}))])
+                                                          **{"from": R("items", "itm_second")})),
+                edit("create", "application_details", "use_second",
+                     dict(db.head("application_details", "use_lem_thm").body, use_id="use_second"))])
             result = self.prepare(db)
             keys = record_keys(result["packet"])
             self.assertTrue(result["prepared"])
@@ -245,7 +247,9 @@ class WorkBindingTests(TempCase):
             spec = result["manifest"]["work"]["tasks"][0]
             self.fx.apply(db, [self.fx.item_edit("itm_second", "lemma", "Lemma 2", "anc_lem", "anc_lem_proof"),
                 edit("create", "uses", "use_extra", dict(db.head("uses", "use_lem_thm").body,
-                                                          **{"from": R("items", "itm_second")}))])
+                                                          **{"from": R("items", "itm_second")})),
+                edit("create", "application_details", "use_extra",
+                     dict(db.head("application_details", "use_lem_thm").body, use_id="use_extra"))])
             changes = bindings.task_binding_changes(State(db, []), spec, packet=result["manifest"])
             self.assertTrue(any(r["relation"] == "uses_in_group" for r in changes["relations"]))
 

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Stat Proof Check"
+  short_description: "Rigorous non-formal statistical proof audits"
+  default_prompt: "Use $stat-proof-check to audit this paper within the declared scope, checking exact targets, substantive inferences, source coverage, and independent review."
+policy:
+  allow_implicit_invocation: false

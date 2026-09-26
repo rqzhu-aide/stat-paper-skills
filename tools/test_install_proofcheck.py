@@ -1,11 +1,49 @@
 """Focused maintainer checks; real reference delivery is exercised separately."""
 
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
 
 import install_proofcheck as installer
+
+
+class RuntimeDeliveryTests(unittest.TestCase):
+    def setUp(self):
+        self.workspace = tempfile.TemporaryDirectory(prefix="proofcheck-runtime-install-test-")
+        self.addCleanup(self.workspace.cleanup)
+        self.package = Path(self.workspace.name)
+        source = Path(__file__).resolve().parents[1] / "stat-proof-check"
+        shutil.copy2(source / "SKILL.md", self.package / "SKILL.md")
+        (self.package / "scripts").mkdir()
+        shutil.copy2(source / "scripts/paper_audit.py", self.package / "scripts/paper_audit.py")
+        shutil.copytree(source / "scripts/paper_core", self.package / "scripts/paper_core")
+
+    def test_current_runtime_verifies_without_recertifying_a_legacy_audit(self):
+        receipt = installer.delivery(self.package)
+        self.assertEqual(receipt["command"], "version")
+        self.assertTrue(receipt["bundle"]["ok"])
+        self.assertFalse((self.package / "assets/reference-audit").exists())
+
+    def test_changed_bundle_is_rejected_even_when_the_cli_can_start(self):
+        path = self.package / "scripts/paper_core/schema.sql"
+        path.write_bytes(path.read_bytes() + b"\n-- changed after validation\n")
+        with self.assertRaisesRegex(ValueError, "runtime or skill version is inconsistent"):
+            installer.delivery(self.package)
+
+    def test_skill_version_mismatch_is_rejected(self):
+        path = self.package / "SKILL.md"
+        text = path.read_text(encoding="utf-8")
+        text = installer.re.sub(r'^  version:.*$', '  version: "0.0.0"', text, flags=installer.re.MULTILINE)
+        path.write_text(text, encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "runtime or skill version is inconsistent"):
+            installer.delivery(self.package)
+
+    def test_missing_database_entry_does_not_fall_back_to_legacy(self):
+        (self.package / "scripts/paper_audit.py").unlink()
+        with self.assertRaisesRegex(ValueError, "Database runtime failed"):
+            installer.delivery(self.package)
 
 
 class InstallerTests(unittest.TestCase):
@@ -18,7 +56,7 @@ class InstallerTests(unittest.TestCase):
         (self.source / "scripts").mkdir(parents=True)
         (self.source / "SKILL.md").write_text("tested package", encoding="utf-8")
         (self.source / "scripts/proofcheck.py").write_text("# fixture", encoding="utf-8")
-        self.target = self.user_root / ".codex/skills/stat-paper-proofcheck"
+        self.target = self.user_root / ".agents/skills/stat-proof-check"
         self.delivery = patch.object(installer, "delivery", return_value={
             "delivery_status": "FINAL", "usable_finalization": True,
             "freshness": "current"}).start()
@@ -58,16 +96,13 @@ class InstallerTests(unittest.TestCase):
                              (self.source / relative).read_bytes())
         self.assertEqual(self.delivery.call_count, 3)
 
-    def test_other_discoverable_copies_reject_without_install(self):
-        for location in (".agents", ".claude"):
-            with self.subTest(location=location):
-                duplicate = self.user_root / location / "skills/stat-paper-proofcheck"
-                duplicate.mkdir(parents=True)
-                with self.assertRaisesRegex(ValueError, "Other discoverable copies"):
-                    installer.install(self.source, self.user_root)
-                self.assertTrue(duplicate.is_dir())
-                self.assertFalse(self.target.exists())
-                duplicate.rmdir()
+    def test_legacy_codex_copy_rejects_without_install(self):
+        duplicate = self.user_root / ".codex/skills/stat-paper-proofcheck"
+        duplicate.mkdir(parents=True)
+        with self.assertRaisesRegex(ValueError, "Other discoverable copies"):
+            installer.install(self.source, self.user_root)
+        self.assertTrue(duplicate.is_dir())
+        self.assertFalse(self.target.exists())
         self.delivery.assert_not_called()
 
     def test_upgrade_preserves_old_tree_outside_discovery(self):
@@ -80,7 +115,7 @@ class InstallerTests(unittest.TestCase):
         (self.source / "SKILL.md").write_bytes(b"new release")
         receipt = installer.install(self.source, self.user_root, upgrade=True)
         backup = Path(receipt["backup"])
-        self.assertTrue(backup.is_relative_to(self.user_root / ".codex/skill-backups"))
+        self.assertTrue(backup.is_relative_to(self.user_root / ".agents/skill-backups"))
         self.assertEqual((backup / "SKILL.md").read_bytes(), old_bytes)
         self.assertTrue((backup / "obsolete.txt").exists())
         self.assertFalse((self.target / "obsolete.txt").exists())
@@ -96,6 +131,61 @@ class InstallerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "use --upgrade"):
             installer.install(self.source, self.user_root)
         self.assertEqual(before, installer.files(self.target))
+
+    def test_explicit_claude_and_agents_copies_match_and_upgrade_independently(self):
+        for surface in ("claude", "agents"):
+            installer.install(self.source, self.user_root, surface=surface)
+        before = (self.source / "SKILL.md").read_bytes()
+        (self.source / "SKILL.md").write_bytes(b"new shared revision")
+        for surface in ("claude", "agents"):
+            receipt = installer.install(self.source, self.user_root, upgrade=True,
+                                        surface=surface)
+            target = self.user_root / f".{surface}/skills/stat-proof-check"
+            backup = Path(receipt["backup"])
+            self.assertTrue(backup.is_relative_to(self.user_root / f".{surface}/skill-backups"))
+            self.assertEqual((backup / "SKILL.md").read_bytes(), before)
+            self.assertEqual(installer.files(target), installer.files(self.source))
+        self.assertFalse((self.user_root / ".codex").exists())
+
+    def test_cli_defaults_to_agents_and_claude(self):
+        with patch.object(installer.sys, "argv", ["install_proofcheck.py", "--source",
+                          str(self.source), "--user-root", str(self.user_root)]), \
+                patch("builtins.print"):
+            self.assertEqual(installer.main(), 0)
+        for surface in ("agents", "claude"):
+            target = self.user_root / f".{surface}/skills/stat-proof-check"
+            self.assertEqual(installer.files(target), installer.files(self.source))
+        self.assertFalse((self.user_root / ".codex").exists())
+
+    def test_cli_explicit_single_target_only_installs_that_target(self):
+        for surface in ("agents", "claude"):
+            with self.subTest(surface=surface):
+                user_root = self.user_root / surface
+                with patch.object(installer.sys, "argv", ["install_proofcheck.py", "--source",
+                                  str(self.source), "--user-root", str(user_root),
+                                  "--target", surface]), patch("builtins.print"):
+                    self.assertEqual(installer.main(), 0)
+                self.assertEqual({path.name for path in user_root.iterdir()}, {f".{surface}"})
+                target = user_root / f".{surface}/skills/stat-proof-check"
+                self.assertEqual(installer.files(target), installer.files(self.source))
+
+    def test_codex_is_not_an_installation_target(self):
+        with self.assertRaisesRegex(ValueError, "Unknown installation surface"):
+            installer.install(self.source, self.user_root, surface="codex")
+        with patch.object(installer.sys, "argv", ["install_proofcheck.py", "--source",
+                          str(self.source), "--user-root", str(self.user_root),
+                          "--target", "codex"]), patch.object(installer.sys, "stderr"), \
+                self.assertRaises(SystemExit) as error:
+            installer.main()
+        self.assertEqual(error.exception.code, 2)
+        self.assertFalse(self.user_root.exists())
+        self.delivery.assert_not_called()
+
+    def test_unknown_surface_rejects_before_writes(self):
+        with self.assertRaisesRegex(ValueError, "Unknown installation surface"):
+            installer.install(self.source, self.user_root, surface="../outside")
+        self.assertFalse(self.user_root.exists())
+        self.delivery.assert_not_called()
 
     def test_invalid_source_is_rejected_before_mutation(self):
         installer.install(self.source, self.user_root)
@@ -113,7 +203,7 @@ class InstallerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "installed check failed"):
             installer.install(self.source, self.user_root, upgrade=True)
         self.assertEqual(before, installer.files(self.target))
-        candidates = list((self.user_root / ".codex").glob("proofcheck-install-*/stat-paper-proofcheck"))
+        candidates = list((self.user_root / ".agents").glob("proofcheck-install-*/stat-proof-check"))
         self.assertEqual(len(candidates), 1)
         self.assertEqual((candidates[0] / "SKILL.md").read_bytes(), b"new release")
 
@@ -157,7 +247,7 @@ class InstallerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Installation changed during preparation"):
             installer.install(self.source, self.user_root, upgrade=True)
         self.assertEqual(old_test.read_bytes(), b"concurrent edit")
-        self.assertFalse((self.user_root / ".codex/skill-backups").exists())
+        self.assertFalse((self.user_root / ".agents/skill-backups").exists())
 
     def test_stage_rejects_unexpected_development_files(self):
         installer.install(self.source, self.user_root)
@@ -187,7 +277,7 @@ class InstallerTests(unittest.TestCase):
             with self.subTest(user_root=user_root):
                 with self.assertRaisesRegex(ValueError, "outside the source package"):
                     installer.install(self.source, user_root)
-                self.assertFalse((user_root / ".codex").exists())
+                self.assertFalse((user_root / ".agents").exists())
                 self.assertEqual(before, installer.files(self.source))
         self.delivery.assert_not_called()
 

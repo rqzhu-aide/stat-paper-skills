@@ -225,6 +225,10 @@ class ControllerAdversarialTests(TempCase):
         self.fx.apply(self.db, [self.fx.item_edit("itm_definition", "definition", "Definition",
                                                 "anc_thm", "anc_thm_proof")])
         packet = self.prepare(mode="independent")
+        packet = packets.extend_work_assignment(self.db, packet_id=packet["packet_id"], request={
+            "source_refs": [self.db.head("items", "itm_definition").pinned],
+            "reason": "The independent reviewer needs this additional source definition."})
+        self.assertIn("anc_thm", [ref["id"] for ref in packet["manifest"]["read_set"]])
         worker = self.independent_worker(packet, source_target=False)
         worker["judgments"][0]["evidence_refs"].append("anc_thm")
         anchor = self.db.head("anchors", "anc_thm")
@@ -233,9 +237,13 @@ class ControllerAdversarialTests(TempCase):
             "packet_id": generic["packet_id"], "anchors": [{"id": anchor.id, "expected_version": anchor.version,
                 "source_id": self.fx.source_id, "locator": locator(label="lem:a")}]})
         before = self.db.max_revision()
-        result, _ = self.submit(packet, worker)
+        result, envelope = self.submit(packet, worker)
         self.assertEqual("conflict", result["state"], result)
         self.assertEqual(before, self.db.max_revision())
+        self.assertIsNone(result["committed_revision"])
+        self.assertEqual([], self.db.heads("responses"))
+        self.assertEqual(canonical_bytes(worker), self.db.get_blob(
+            self.db.work_submission(envelope["request_id"])["response_sha256"]))
 
     def _upstream_proof_rebase(self, *, borrowed):
         use = self.db.head("uses", "use_lem_thm")

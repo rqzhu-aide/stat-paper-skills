@@ -1,4 +1,0 @@
-interface:
-  display_name: "Statistical Paper Writing"
-  short_description: "Journal-ready statistical drafting and presentation editing"
-  default_prompt: "Use $stat-paper-writing to draft, revise, or perform an author-side presentation audit of this statistical manuscript while preserving supplied claims and keeping referee judgment outside the writing stage."

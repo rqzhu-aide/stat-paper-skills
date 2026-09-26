@@ -1,6 +1,8 @@
 """User-visible graph scope, coherent assignments and bounded work enumeration."""
+from unittest.mock import patch
+
 from support import Fixture, R, TempCase, edit
-from paper_core import assessment, work
+from paper_core import assessment, validation, work
 from paper_core.errors import InvalidRequest
 
 
@@ -63,9 +65,11 @@ class WorkTests(TempCase):
             arg = db.head("arguments", "arg_thm")
             group = db.head("groups", "grp_thm")
             use = db.head("uses", "use_lem_thm")
+            boundary = db.head("proof_boundaries", "bnd_thm")
             fixture.apply(db, [item,
                 edit("replace", "arguments", arg.id, dict(arg.body, target=R("items", "itm_step")), arg.version),
                 edit("replace", "groups", group.id, dict(group.body, conclusion=R("items", "itm_step")), group.version),
+                edit("replace", "proof_boundaries", boundary.id, dict(boundary.body, target=R("items", "itm_step")), boundary.version),
                 edit("replace", "uses", use.id, dict(use.body, to=R("items", "itm_step")), use.version)])
             result = work.derive_work(db, audit_id=fixture.audit_id)
         self.assertEqual(self.task(result, "items", "itm_thm", "composition")["state"], "needs_coordinator")
@@ -89,8 +93,8 @@ class WorkTests(TempCase):
         selection = work.select_assignment(result, {"mode": "primary", "focus": R("items", "itm_lem")})
         self.assertEqual(selection["context"]["argument"], R("arguments", "arg_lem"))
         self.assertEqual([task["kind"] for task in selection["tasks"]],
-                         ["source_fidelity", "derivation", "composition"])
-        self.assertEqual(len(selection["units"]), 3)
+                         ["source_fidelity", "source_fidelity", "derivation", "composition"])
+        self.assertEqual(len(selection["units"]), 4)
 
     def test_group_contracts_application_and_derivation_without_self_wait(self):
         fixture = Fixture(self.path("fixture")).primary()
@@ -280,7 +284,12 @@ class WorkTests(TempCase):
                     "from": R("items", premise), "to": R("items", "itm_thm"), "type": "dependency",
                     "group_id": "grp_thm", "reason": "joint premise", "needed_form": None,
                     "substitutions": [], "evidence_refs": ["anc_thm_proof"], "regime": None, "uncertainty": None}))
-            fixture.apply(db, edits)
+            with patch.object(validation, "extract_refs", wraps=validation.extract_refs) as extracted:
+                fixture.apply(db, edits)
+                # Count structural work instead of asserting a machine-specific
+                # time limit. Reference extraction must not rescan the whole
+                # submitted batch for each changed endpoint.
+                self.assertLess(extracted.call_count, 10 * len(edits))
             result = work.derive_work(db, audit_id=fixture.audit_id)
         chosen = work.select_assignment(result, {"focus": R("items", "itm_thm"), "max_units": 5})
         self.assertGreater(len(chosen["tasks"]), 10)
