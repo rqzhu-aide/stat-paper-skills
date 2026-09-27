@@ -13991,8 +13991,7 @@ def cmd_annotation_check(args: argparse.Namespace) -> int:
         if diagnostics:
             print(
                 "Compare field shapes against "
-                "assets/templates/AUDIT_RECORD_EXAMPLES.json and the complete "
-                "reference audit in assets/reference-audit/."
+                "assets/templates/AUDIT_RECORD_EXAMPLES.json."
             )
         for warning in warnings:
             print(f"warning: {warning}")

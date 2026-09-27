@@ -12,6 +12,12 @@ character is insufficient when the proposed source unit omits part of the proof.
 For Full, reconcile all proof-required declarations and written arguments against the manuscript and
 supplements. For Focused, discover the target's exact internal prerequisites. An imported overview
 selection or a previously registered graph is a starting point, not proof of inventory completeness.
+For each substantive inference, identify its justification as a declared premise, an in-paper
+derivation, or an external result. An uncited load-bearing fact still needs its supplier and actual
+use recorded: for example, closedness of a finite-dimensional subspace or the projection theorem.
+Use [external-result-verification.md](external-result-verification.md) for that fact. A familiar name
+in `rule_names` does not replace source inspection or application checking. Keep routine algebra
+together; this is not a requirement to create a node for every identity.
 Attach the exact audited specification to the same item/part identity, with its source setup.
 A matched synopsis does not certify newly added exact content. Explicitly reuse a previous source
 comparison only when it actually covered that same exact statement, setup, and source versions.
@@ -28,7 +34,7 @@ this adds no separate review or completion gate.
 
 Use [controller-workflow.md](controller-workflow.md) to list and prepare work from prerequisites
 toward the target. Ready work seeds an ordered assignment that can include local successor units
-and final composition. One model call may return many observations/checks; source comparisons,
+and final composition. One response may contain many observations/checks; source comparisons,
 applications and joint reasoning do not require separate calls merely because they have separate
 record IDs. A current negative examination is examined work, not an endless scheduling wait.
 

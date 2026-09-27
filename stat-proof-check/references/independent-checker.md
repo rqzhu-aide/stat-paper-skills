@@ -20,6 +20,9 @@ cannot acquire new evidence by a packet-ID substitution or rebase.
 Use `worker-guidance.json` for response/judgment shapes. Keep the original packet ID and actual
 covered targets. Use packet item/part IDs and supplied anchor IDs. For a hidden argument/intermediate,
 use `SourceTarget: {source_anchor_id, description}`; the coordinator maps the unchanged judgment.
+The generated kind-to-target table describes canonical target collections, not hidden record IDs.
+For example, a `composition` of a written proof uses a source target for its hidden argument,
+not the visible item ID of the conclusion. Global checks target an audit only when separately assigned.
 Choose the kind by the inference: `composition` checks how a route establishes its conclusion;
 `case_coverage`, whether actual branches exhaust the possibilities; `scope_discharge`, how closing
 a temporary hypothesis/scope justifies the enclosing conclusion. Retained theorem hypotheses are

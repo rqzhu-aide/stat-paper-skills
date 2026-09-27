@@ -279,7 +279,7 @@ class ManifestTests(unittest.TestCase):
         manifest = bundle.build_manifest(SOURCE_FILES)
         self.assertEqual({key: manifest[key] for key in RELEASE_CONSTANTS}, {
             "bundle": "paper_core",
-            "core_version": "2.3.0",
+            "core_version": "2.3.1",
             "storage_formats_readable": [2, 3, 4],
             "storage_formats_writable": [4],
             "contract_version": 4,
@@ -287,7 +287,7 @@ class ManifestTests(unittest.TestCase):
             "packet_version": 2,
             "projection_version": 2,
             "protocol_version": "item-audit/1",
-            "supported_features": ["records/3", "packets/1", "packets/2", "work-submissions/1", "audits/1", "independent-review/1", "projection/1", "projection/2", "overview-bridge/1", "sql-superset/1", "records/4", "route-review/1", "work-context-extension/1"],
+            "supported_features": ["records/3", "packets/1", "packets/2", "work-submissions/1", "audits/1", "independent-review/1", "projection/1", "projection/2", "overview-bridge/1", "sql-superset/1", "records/4", "route-review/1", "work-context-extension/1", "audit-scope-binding/1"],
             "legacy_overview_format": "archify-paper-database-1",
         })
 
@@ -560,7 +560,7 @@ class InstalledPackageTests(TempCase):
 
     def assert_healthy_report(self, payload):
         self.assertEqual(payload["command"], "version")
-        self.assertEqual(payload["core_version"], "2.3.0")
+        self.assertEqual(payload["core_version"], "2.3.1")
         self.assertEqual(payload["storage_format"], 4)
         self.assertEqual(payload["contract_version"], 4)
         self.assertEqual(payload["contract"], "proofcheck-records/4")
@@ -576,6 +576,8 @@ class InstalledPackageTests(TempCase):
 
     def test_proofcheck_package_runs_from_its_own_install_root(self):
         """The audit skill's installed wrapper reports the current core and an intact bundle."""
+        self.assertFalse((self.roots["stat-proof-check"] / "assets" / "reference-audit").exists())
+        self.assertTrue((REPO / "tests" / "fixtures" / "reference-audit" / "proofcheck-audit").is_dir())
         payload, stderr = run_wrapper(self.roots["stat-proof-check"], "version")
         self.assertEqual(stderr, "")
         self.assert_healthy_report(payload)
@@ -598,21 +600,21 @@ class InstalledPackageTests(TempCase):
     def test_installed_wrapper_imports_the_core_beside_it_not_the_repository_one(self):
         """The core the wrapper runs is the adjacent copy: its constants, not shared/paper_core's.
 
-        Only the install copy's ``__init__.py`` is edited. The repository still says 2.3.0, so a
+        Only the install copy's ``__init__.py`` is edited. The repository still says 2.3.1, so a
         wrapper that reached back into the repository - or into a sibling skill - could not report
         9.9.9 here.
         """
         root = self.mutable_install()
         init = shipped(root) / "__init__.py"
         source = init.read_text(encoding="utf-8")
-        self.assertIn('CORE_VERSION = "2.3.0"', source)
-        init.write_text(source.replace('CORE_VERSION = "2.3.0"', 'CORE_VERSION = "9.9.9"'),
+        self.assertIn('CORE_VERSION = "2.3.1"', source)
+        init.write_text(source.replace('CORE_VERSION = "2.3.1"', 'CORE_VERSION = "9.9.9"'),
                         encoding="utf-8", newline="\n")
         payload, _ = run_wrapper(root, "version")
         self.assertEqual(payload["core_version"], "9.9.9")
         self.assertEqual(payload["bundle"]["changed"], ["__init__.py"])
         self.assertIs(payload["bundle"]["constants_match"], False)
-        self.assertEqual(CORE_VERSION, "2.3.0")  # the repository source is untouched
+        self.assertEqual(CORE_VERSION, "2.3.1")  # the repository source is untouched
         self.assertIs(bundle.verify_bundle(shipped(PROOFCHECK))["ok"], True)
 
     def test_installed_wrapper_verifies_the_copy_it_imported_not_the_repository(self):
@@ -643,7 +645,7 @@ class InstalledPackageTests(TempCase):
                           encoding="utf-8", newline="\n")
         payload, stderr = run_wrapper(root, "version")
         self.assertEqual(stderr, "")
-        self.assertEqual(payload["core_version"], "2.3.0")
+        self.assertEqual(payload["core_version"], "2.3.1")
         self.assertIs(payload["bundle"]["ok"], True)
 
     def test_installed_package_ships_the_wrapper_and_bundle_it_needs(self):

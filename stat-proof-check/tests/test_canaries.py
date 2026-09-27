@@ -256,7 +256,7 @@ class CalibrationRecordTests(unittest.TestCase):
                     response=paths,
                     session_id=session_id,
                     root=self.root,
-                    checker_profile_id="gpt-test-profile",
+                    checker_profile_id="checker-test-profile",
                     checker_configuration_id=checker_configuration_id,
                     checker_context_id=(
                         checker_context_id or f"fresh-context-{session_id}"
@@ -340,7 +340,7 @@ class CalibrationRecordTests(unittest.TestCase):
             "session_id": session_id,
             "graded_utc": "2026-08-09T00:00:00+00:00",
             "checker_binding": {
-                "checker_profile_id": "gpt-test-profile",
+                "checker_profile_id": "checker-test-profile",
                 "checker_configuration_id": "proofcheck-test-config",
                 "checker_context_id": f"fresh-context-{session_id}",
                 "reviewed": True,
@@ -921,7 +921,7 @@ class CalibrationRecordTests(unittest.TestCase):
                 "--root",
                 "audit-root",
                 "--checker-profile-id",
-                "gpt-test-profile",
+                "checker-test-profile",
                 "--checker-configuration-id",
                 "proofcheck-test-config",
                 "--checker-context-id",

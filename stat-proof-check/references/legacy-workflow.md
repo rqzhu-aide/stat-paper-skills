@@ -19,7 +19,7 @@ Load this entrypoint and only the current role's row.
 | Fresh-context challenger | [challenge-protocol.md](challenge-protocol.md) and the exact challenge packet only |
 | Final report, explicit legacy migration, or release | [reporting-and-release.md](reporting-and-release.md) |
 | Unfamiliar JSON record | Search only the relevant object in [AUDIT_RECORD_EXAMPLES.json](../assets/templates/AUDIT_RECORD_EXAMPLES.json) |
-| Persistent schema or gate error | Compare with the matching historical record under [assets/reference-audit/](../assets/reference-audit/README.md); that audit is stale under the current validator and cannot certify a new run |
+| Persistent schema or gate error | Compare the matching record shape in [AUDIT_RECORD_EXAMPLES.json](../assets/templates/AUDIT_RECORD_EXAMPLES.json), then consult the applicable role guide above for the failed gate |
 | Reconciliation author | Use submit-reconciliation through [challenge-protocol.md](challenge-protocol.md) |
 
 ## Select audit depth

@@ -158,7 +158,7 @@ class ExportSnapshotTest(TempCase):
         self.assertEqual(snapshot["records"], plain_envelopes(db.records_at(top, include_retired=True)))
         self.assertEqual(sorted(snapshot["provenance"]),
                          ["core_version", "projection_version", "source_identity"])
-        self.assertEqual(snapshot["provenance"]["core_version"], "2.3.0")
+        self.assertEqual(snapshot["provenance"]["core_version"], "2.3.1")
         self.assertEqual(snapshot["provenance"]["projection_version"], 2)
         self.assertNotIn("missing_blobs", snapshot["provenance"])
 

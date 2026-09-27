@@ -1,15 +1,15 @@
 ---
 name: stat-proof-check
 metadata:
-  version: "2.3.0"
+  version: "2.3.1"
 description: Rigorous, non-formal proof audits of mathematical and statistical papers. Use only when the user explicitly invokes $stat-proof-check. Checks exact targets, substantive inferences, source coverage, and independent review. Diagnoses written arguments without silently repairing the manuscript.
 ---
 
 # Statistical Paper Proofcheck
 
-Run only on explicit invocation as `$stat-proof-check`. Preserve `allow_implicit_invocation: false` for
-Codex and `{"skillOverrides": {"stat-proof-check": "user-invocable-only"}}`
-for Claude Code and Cowork. An active audit may continue within its declared scope.
+Run only on explicit invocation as `$stat-proof-check`. Preserve the applicable installation settings:
+`allow_implicit_invocation: false` and `{"skillOverrides": {"stat-proof-check": "user-invocable-only"}}`.
+An active audit may continue within its declared scope.
 
 ## Choose scope and workflow
 
@@ -70,7 +70,7 @@ unavailable or refuted premises. Scope and substitutions determine whether a fac
 is available at its use; ownership, labels, and arrow color do not.
 
 Save substantive reasoning, failures, discoveries, and unfinished questions
-promptly. Batch coherent work and use generated response scaffolds. The model
+promptly. Batch coherent work and use generated response scaffolds. The checker
 discovers and examines the mathematics; the controller records and schedules it.
 
 Preserve initial independent source-only review and its unchanged response before

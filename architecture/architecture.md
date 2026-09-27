@@ -10,7 +10,7 @@ The skill supports triage, focused audits, and full audits. A focused audit exam
 
 The maintained backend is [`shared/paper_core`](../shared/paper_core). [`tools/build_paper_core_bundles.py`](../tools/build_paper_core_bundles.py) copies it into `stat-proof-check/scripts/paper_core/` and the sibling `../proof-graphify/scripts/paper_core/` checkout. These bundles must be byte-identical. Each installed skill runs its own bundle and does not import from a neighboring repository or download runtime code.
 
-The current core reports version `2.3.0`, SQLite storage format `4`, and record contract `4`. [`schema.sql`](../shared/paper_core/schema.sql), [`contract.py`](../shared/paper_core/contract.py), and the acceptance and validation modules define the executable data contract. Older readable storage formats and the v1.5 audit import have explicit compatibility paths. A historical format identifier remains historical even though the skill's invocation name is now `stat-proof-check`.
+The current core reports version `2.3.1`, SQLite storage format `4`, and record contract `4`. [`schema.sql`](../shared/paper_core/schema.sql), [`contract.py`](../shared/paper_core/contract.py), and the acceptance and validation modules define the executable data contract. Older readable storage formats and the v1.5 audit import have explicit compatibility paths. A historical format identifier remains historical even though the skill's invocation name is now `stat-proof-check`.
 
 ## From manuscript to assessment
 
@@ -35,4 +35,4 @@ The four `stat-` skills and maintained backend belong to this repository. Proof 
 
 The relevant checks are the skill structure tests, `tests/new_format`, the proof-check installer tests, and the Proof Graphify suite. A passing mechanical suite supports software behavior within its tested cases; it does not substitute for mathematical evaluation of an audit or a live browser review. Dated release receipts and earlier plans are local historical records under `archived/`.
 
-The packaged `stat-proof-check/assets/reference-audit/` is a historical v1.5 regression fixture. Its recorded validator hash is stale, so current delivery checks correctly reject it as a finalized audit. Its original evidence remains intact; renewal would require an actual review under the current protocol.
+`tests/fixtures/reference-audit/` is a repository-only historical v1.5 regression fixture, excluded from skill delivery. Its recorded validator hash is stale, so current delivery checks correctly reject it as a finalized audit. Its original evidence remains intact; renewal would require an actual review under the current protocol.

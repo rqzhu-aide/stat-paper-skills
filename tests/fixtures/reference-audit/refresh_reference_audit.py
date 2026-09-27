@@ -6,8 +6,8 @@ upgrades and any newly required source review must be completed explicitly
 before publishing. Packet output must be outside the canonical audit root.
 
 Usage:
-    python assets/reference-audit/refresh_reference_audit.py prepare ROOT OUTPUT
-    python assets/reference-audit/refresh_reference_audit.py publish ROOT
+    python tests/fixtures/reference-audit/refresh_reference_audit.py prepare ROOT OUTPUT
+    python tests/fixtures/reference-audit/refresh_reference_audit.py publish ROOT
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import io
 import json
 from pathlib import Path
 
-_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "proofcheck.py"
+_SCRIPT = Path(__file__).resolve().parents[3] / "stat-proof-check" / "scripts" / "proofcheck.py"
 _SPEC = importlib.util.spec_from_file_location("proofcheck_refresh", _SCRIPT)
 if _SPEC is None or _SPEC.loader is None:
     raise RuntimeError(f"Cannot load {_SCRIPT}")

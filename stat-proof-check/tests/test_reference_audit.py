@@ -20,7 +20,7 @@ if SPEC is None or SPEC.loader is None:
 proofcheck = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(proofcheck)
 
-REFERENCE = SCRIPT.parents[1] / "assets" / "reference-audit"
+REFERENCE = SCRIPT.parents[2] / "tests" / "fixtures" / "reference-audit"
 REFRESH_SCRIPT = REFERENCE / "refresh_reference_audit.py"
 REFRESH_SPEC = importlib.util.spec_from_file_location(
     "reference_refresh", REFRESH_SCRIPT

@@ -82,7 +82,7 @@ def install_calibration(root: Path) -> None:
                     "session_id": "cal-compile-001",
                     "graded_utc": "2026-08-09T00:00:00.000001+00:00",
                     "checker_binding": {
-                        "checker_profile_id": "gpt-test-profile",
+                        "checker_profile_id": "checker-test-profile",
                         "checker_configuration_id": "compiler-test-config",
                         "checker_context_id": "fresh-compiler-context",
                         "reviewed": True,

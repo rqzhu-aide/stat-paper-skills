@@ -55,6 +55,10 @@ Build `AUDIT_UPDATE.json` as an ordinary replace batch using the configuration p
 `packet_id`, the audit's current `expected_version`, a fresh request ID, and the complete
 unchanged audit body except for its new `qualification_id`. Recording the qualification alone
 does not change the audit. Prepare independent work only after this update succeeds.
+Prefer settling this configuration before preparing other assignments or global checks.
+For new primary global checks, qualification-only attachment preserves the mathematical work.
+Older full-record bindings may require explicit renewal. Inspect affected evidence and renew
+only checks whose consumed inputs changed; never rewrite saved responses or bindings.
 
 ## Exact receipt shape
 

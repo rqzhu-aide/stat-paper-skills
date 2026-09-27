@@ -64,6 +64,12 @@ class AssistanceTests(TempCase):
             guidance = assistance.worker_guidance("independent")
         self.assertEqual(set(contract.JUDGMENT.fields), set(guidance["judgment_shape"]["fields"]))
         self.assertEqual({"source_anchor_id": "", "description": ""}, guidance["source_target_template"])
+        self.assertEqual({kind: list(targets) for kind, targets in contract.CHECK_TARGETS.items()},
+                         guidance["canonical_target_collections"])
+        self.assertEqual(["arguments"], guidance["canonical_target_collections"]["composition"])
+        self.assertEqual(["audits"], guidance["canonical_target_collections"]["adversarial"])
+        self.assertEqual({"kind", "target"}, set(guidance["source_target_example"]))
+        self.assertNotIn("outcome", str(guidance["source_target_example"]))
         text = canonical_bytes(guidance).decode("utf-8")
         for forbidden in ("draft_refs", "primary_checks", "qualification_id", "assigned_task_ids", "prerequisite_ids"):
             self.assertNotIn(forbidden, text)
@@ -73,6 +79,17 @@ class AssistanceTests(TempCase):
                          set(assistance.worker_guidance("reconcile")["row_shape"]["fields"]))
         with self.assertRaises(InvalidRequest):
             assistance.worker_guidance("unknown")
+
+    def test_guidance_distinguishes_controller_coverage_and_reconciliation_identity(self):
+        guidance = assistance.worker_guidance("primary", composition=True)
+        coverage = guidance["response_shape"]["fields"]["coverage"]["array_of"]["fields"]
+        self.assertTrue({"check_task_ids", "existing_check_refs", "replaces"}.issubset(coverage))
+        self.assertNotIn("check_ids", coverage)
+        direct = assistance.authoring_template("coverage", packet_id="pkt_author")
+        self.assertIn("check_ids", direct["body_shape"]["fields"])
+        self.assertNotIn("replaces", direct["body_shape"]["fields"])
+        self.assertIn("direct stored coverage uses check_ids", guidance["coverage_note"])
+        self.assertIn("same ID in the submission envelope", assistance.worker_guidance("reconcile")["note"])
 
     def test_drafts_keep_distinct_owners_and_intended_predecessors(self):
         fx = self.fixture().audit(independent_required=False)
@@ -200,12 +217,14 @@ class AssistanceTests(TempCase):
         fx = self.fixture().primary()
         with fx.open() as db:
             source = fx.packet(db, "items:itm_lem", mode="independent")
+            judgment = copy.deepcopy(assistance.worker_guidance("independent")["source_target_example"])
+            judgment["target"].update(source_anchor_id="anc_lem_proof", description="Lemma proof composition")
+            judgment.update(state="complete", outcome="supported",
+                            reasoning="Induction establishes the claimed uniform bound.", evidence_refs=["anc_lem_proof"],
+                            conditions=[], next_action=None, supersedes=None)
             worker = {"packet_id": source["packet_id"], "covered_targets": [R("items", "itm_lem")],
                       "coverage_note": "Examined the entire lemma proof.", "exposure_report": {"status": "none_known", "note": ""},
-                      "judgments": [{"target": {"source_anchor_id": "anc_lem_proof", "description": "Lemma proof composition"},
-                                     "kind": "composition", "state": "complete", "outcome": "supported",
-                                     "reasoning": "Induction establishes the claimed uniform bound.", "evidence_refs": ["anc_lem_proof"],
-                                     "conditions": [], "next_action": None, "supersedes": None}]}
+                      "judgments": [judgment]}
             raw = canonical_bytes(worker)
             submitted = review.submit_review(db, submission={"contract_version": 4, "request_id": fx.request_id(),
                 "packet_id": source["packet_id"], "reviewer": "checker-A", "qualification_id": "qua_r1",

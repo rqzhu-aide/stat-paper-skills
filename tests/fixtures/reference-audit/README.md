@@ -1,7 +1,8 @@
 # Historical reference audit
 
-This directory preserves a complete legacy proofcheck audit and its original
-evidence. Its validator hash predates the current code. The stored HTML is a
+This repository-only fixture preserves a complete legacy proofcheck audit and its
+original evidence. It is excluded from skill delivery. Its validator hash predates
+the current code. The stored HTML is a
 historical snapshot, and `delivery-check` now reports `NONFINAL` and `stale`.
 Do not use it as a current finalized example or copy its mathematical facts into
 a real audit. A new release would require actual review under the current
@@ -18,7 +19,7 @@ protocol before publication.
 - `workbench/` contains reviewed compact annotations and calibration responses.
   Context packets and annotations belong outside the canonical audit root.
 - The audit retains earlier ledgers, challenge responses, and the historical
-  manifest needed to authenticate current evidence. Earlier evidence is
+  manifest needed to authenticate the saved evidence. Earlier evidence is
   historical provenance, not a newly performed check under the current protocol.
 - Retired report snapshots were moved on 10 September 2026 to the maintainer's
   local `archived/proofcheck/2026-09-10-package-cleanup/` folder, outside this
@@ -86,25 +87,26 @@ a provenance record of the declared fresh context, not automatic verification
 of the identity or independence of the checker.
 
 The primary maintenance review and its two-canary smoke test are disclosed in
-`audit/07_runtime/PRIMARY_REFRESH_1_4.md`; the renewed primary review is in
-`audit/07_runtime/PRIMARY_RENEWAL_2026_09_07.md`. Those earlier canary responses were
+`proofcheck-audit/audit/07_runtime/PRIMARY_REFRESH_1_4.md`; the renewed primary review is in
+`proofcheck-audit/audit/07_runtime/PRIMARY_RENEWAL_2026_09_07.md`. Those earlier canary responses were
 authored in an existing maintenance context. They are not held-out evaluation
-results. Research-level release evaluation uses the separate `evals/` harness;
+results. Research-level release evaluation uses the repository's separate
+`stat-proof-check/evals/` harness;
 its candidate mathematical keys still require independent expert review.
 
 The source-specific primary relevance review is in
-`audit/07_runtime/PRIMARY_USABILITY_REVIEW_2026_09_07.md`. After the final
+`proofcheck-audit/audit/07_runtime/PRIMARY_USABILITY_REVIEW_2026_09_07.md`. After the final
 unreadable auxiliary-context regression repair, the exact unchanged source,
 obligations, inferences, counterexamples, and dependency use were reconfirmed
 and recompiled. The latest review is in
-`audit/07_runtime/PRIMARY_CONTEXT_RECOVERY_2026_09_07.md`. A fresh packet-only
+`proofcheck-audit/audit/07_runtime/PRIMARY_CONTEXT_RECOVERY_2026_09_07.md`. A fresh packet-only
 reviewer supplied new current-context initial responses; earlier responses and
 reconciliations remain preserved. A separate historical two-result maintenance
 exercise used fresh balanced calibration and independent paper responses.
-That exercise is local-only and is not part of the shipped reference evidence.
+That exercise is local-only and is not part of this fixture's evidence.
 
 The initial proofcheck 1.5 renewal is recorded in
-`audit/07_runtime/PRIMARY_RENEWAL_1_5_2026_09_08.md`. A genuinely fresh
+`proofcheck-audit/audit/07_runtime/PRIMARY_RENEWAL_1_5_2026_09_08.md`. A fresh
 context fixed all five balanced calibration responses before grading; all passed.
 Both units were then freshly extracted, scaffolded, fully re-reviewed and
 compiled under the new receipt. Separate fresh packet-only reviewers supplied
@@ -112,7 +114,7 @@ the current independent responses. The written arguments remain invalid and
 both exact statements remain refuted. All previous initial responses,
 reconciliations, ledgers, calibration evidence and release history remain preserved.
 
-The current validator-maintenance renewal is recorded in
+The last historical validator-maintenance renewal is recorded in
 `proofcheck-audit/audit/07_runtime/PRIMARY_SURGICAL_REVIEW_2026_09_08.md` and
 `proofcheck-audit/audit/07_runtime/FINAL_SURGICAL_CONTEXT_2026_09_08.md`.
 The complete source and mathematical evidence were re-reviewed with the same
@@ -123,19 +125,20 @@ responses, preserved before reconciliation and bound without a judgment change.
 Both arguments remain invalid and both statements remain refuted. All original
 responses, reconciliations, calibration and source bytes are retained.
 
-## Verifying the published example
+## Inspecting the historical fixture
 
-From the skill root:
+From the repository root:
 
 ```bash
-python scripts/proofcheck.py status --root assets/reference-audit/proofcheck-audit
-python scripts/proofcheck.py delivery-check --root assets/reference-audit/proofcheck-audit
+python stat-proof-check/scripts/proofcheck.py status --root tests/fixtures/reference-audit/proofcheck-audit
+python stat-proof-check/scripts/proofcheck.py delivery-check --root tests/fixtures/reference-audit/proofcheck-audit
 ```
 
-A newly released copy must report `FINAL` with `usable_finalization: true`. The
-shipped copy currently reports `NONFINAL` because its recorded validator is
-stale. The HTML report records the historical snapshot's outcome and time;
-merely opening the file does not rerun validation.
+A newly finalized copy must report `FINAL` with `usable_finalization: true`. This
+historical fixture reports `NONFINAL` because its recorded validator is
+stale; both inspection commands therefore exit with status 1. The HTML report
+records the historical snapshot's outcome and time; merely opening the file does
+not rerun validation.
 
 ## Maintaining the example honestly
 
@@ -150,7 +153,7 @@ A renderer-only change does not require new mathematical review. On a copy with
 current, valid evidence, publish the new presentation with:
 
 ```bash
-python assets/reference-audit/refresh_reference_audit.py publish <audit-copy>
+python tests/fixtures/reference-audit/refresh_reference_audit.py publish <audit-copy>
 ```
 
 The helper validates all non-report release gates before its first write. It
@@ -165,7 +168,7 @@ the copied audit, review affected primary source work, and preserve historical
 records. Prepare exact current review assignments outside the audit root:
 
 ```bash
-python assets/reference-audit/refresh_reference_audit.py prepare <audit-copy> <new-packet-directory>
+python tests/fixtures/reference-audit/refresh_reference_audit.py prepare <audit-copy> <new-packet-directory>
 ```
 
 Give each fresh challenger only its `*.challenge.json` packet and the current
@@ -174,8 +177,8 @@ After any semantic edit, regenerate the affected packet. Preserve the actual
 initial response before reconciliation:
 
 ```bash
-python scripts/proofcheck.py record-challenge --root <audit-copy> --unit-id <unit> --packet <consumed-challenge.json> --response <actual-initial-response.json>
-python scripts/proofcheck.py bind-challenge --root <audit-copy> --unit-id <unit>
+python stat-proof-check/scripts/proofcheck.py record-challenge --root <audit-copy> --unit-id <unit> --packet <consumed-challenge.json> --response <actual-initial-response.json>
+python stat-proof-check/scripts/proofcheck.py bind-challenge --root <audit-copy> --unit-id <unit>
 ```
 
 Record disagreements and the final reconciliation honestly. If an initial
@@ -186,9 +189,9 @@ instead of mechanically making it look current.
 For an explicitly historical contract-1 or contract-2 audit, `publish` accepts
 `--allow-historical-challenges` only to preserve that legacy evidence during
 presentation migration. This does not upgrade it to contract 3 or claim a new
-independent check. The bundled current reference uses contract 3.
+independent check. This historical fixture uses contract 3.
 
-`tests/test_reference_audit.py` tests the shipped evidence as it stands. Tests do
+`stat-proof-check/tests/test_reference_audit.py` tests the saved evidence as it stands. Tests do
 not silently refresh review hashes to make a failing historical fixture pass.
 They also check packet read-only behavior, rejection of stale or missing review
 evidence, preservation of mathematical records during presentation refresh, and

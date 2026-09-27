@@ -34,6 +34,28 @@ For non-PDF sources, `Locator.label` is a LaTeX source label key, not a descript
 With line numbers, its uncommented `\label{KEY}` must occur inside that range. Use null for
 an unlabeled passage.
 
+Capture source before anchoring. Submit the dedicated anchor request below with
+`paper_audit.py source anchor AUDIT.db --request anchors.json`, replacing its example IDs
+and line range with captured source and current packet identities:
+
+```json
+{
+  "contract_version": 4,
+  "request_id": "req_anchor_example",
+  "packet_id": "pkt_author",
+  "anchors": [{
+    "id": "anc_statement",
+    "expected_version": null,
+    "source_id": "src_paper",
+    "locator": {"start_line": 10, "end_line": 14, "page": null, "label": null}
+  }]
+}
+```
+
+Keep all four locator keys. This request asks the source command to capture the actual excerpt
+and hashes; it is not an ordinary `apply` batch. Rebinding an existing anchor requires its current
+`expected_version` rather than null.
+
 ## Generate one record shape
 
 ```text
@@ -80,13 +102,22 @@ conditional even with all examinations complete. Choose the intended setup befor
 examination; null is valid when no named premise context is intended. Scope changes can reopen
 source comparison and dependent checks; investigate unexpected support using current status.
 
-For example, save a matched source comparison of exact `items:itm_T@1`, obtaining the stored
-observation `observations:obs_T@1`. In that target's `target_specs` template, set
+For a new target, the simplest sequence is to save its final item/part and registered exact
+specification with `fidelity_ref: null`, then compare that specification through its prepared
+source-fidelity task. This directly checks the statement, setup, and captured source together;
+there is no need to add a fidelity reuse reference afterward.
+
+When explicitly reusing an item/part comparison, create the final specification before making
+that comparison. For example, compare exact `items:itm_T@1` after its specification is registered,
+obtaining `observations:obs_T@1`. In a fresh replacement of that specification, keep
 `statement_ref: {collection: "items", id: "itm_T", version: 1}`, `statement: null`, and
-`fidelity_ref: {collection: "observations", id: "obs_T", version: 1}`. Keep the same `scope_id`.
-Submit in a fresh authoring batch. Reuse only a current observation whose source bindings cover
+set `fidelity_ref: {collection: "observations", id: "obs_T", version: 1}`. Keep the same `scope_id`.
+Do not add or change the exact specification between comparison and reuse. Reuse only a current
+observation whose source bindings cover
 every `evidence_refs` anchor; identical display text is insufficient. Setup absent from that
 examination, changed consumed source, or a synopsis needs a new exact-target comparison.
+Older comparisons with strict relation bindings may require one fresh comparison even for
+this metadata attachment. Preserve their original observations and bindings.
 
 A packet may include `historical_records` containing the immutable statement version named by a
 specification. These are read-only provenance outside the live record map and write scope.
@@ -147,8 +178,11 @@ Together, these examinations must have consumed every claimed item/part statemen
 source passage alone is insufficient. An extra unusable linked check prevents coverage credit.
 
 Graph registration can precede complete coverage. Save controller coverage with its checks using
-task IDs and the generated scaffold/guidance, or generate the `coverage` template for direct stored
-coverage. Before asserting completeness, link the target and arguments to a `proof_boundaries`
+`check_task_ids`, pinned `existing_check_refs`, and `replaces` (null for new rows) from the generated
+scaffold/guidance. Direct stored coverage instead uses `check_ids`; its enclosing create/replace
+edit supplies identity and version. Generate the `coverage` template for that interface rather
+than submitting a controller coverage row through `apply`.
+Before asserting completeness, link the target and arguments to a `proof_boundaries`
 record pinning all complete source segments and an accepted `source_reviews` record with
 `purpose: "proof_boundary"`. Reuse the basis for routes sharing a written proof. Source/segment
 changes require renewed review; an unresolved boundary cannot certify full coverage. Registration

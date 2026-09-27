@@ -7,7 +7,7 @@ This repository maintains four skills for statistical and machine-learning paper
 | `stat-write-style` | v1.6.1 | Draft and revise manuscript exposition and presentation |
 | `stat-paper-review` | v1.2.1 | Give a critical, evidence-backed manuscript review |
 | `stat-proof-write` | v0.3.1 | Draft or clarify a mathematical proof |
-| `stat-proof-check` | v2.3.0 | Audit written mathematical arguments without silently repairing them |
+| `stat-proof-check` | v2.3.1 | Audit written mathematical arguments without silently repairing them |
 
 Use `$stat-write-style`, `$stat-paper-review`, `$stat-proof-write`, or `$stat-proof-check` to invoke the corresponding skill. Their `agents/openai.yaml` files disable implicit invocation. Proof writing and proof checking are separate tasks: drafting a proof does not provide an independent audit.
 

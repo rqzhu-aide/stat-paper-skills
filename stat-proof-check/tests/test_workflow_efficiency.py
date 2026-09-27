@@ -126,7 +126,7 @@ class WorkflowEfficiencyTests(unittest.TestCase):
                         response=response_paths,
                         session_id="cal-workflow-efficiency",
                         root=self.audit,
-                        checker_profile_id="gpt-test-profile",
+                        checker_profile_id="checker-test-profile",
                         checker_configuration_id="workflow-efficiency-config",
                         checker_context_id="fresh-workflow-efficiency-context",
                         reviewed_binding=True,

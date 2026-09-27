@@ -42,6 +42,8 @@ choose another focus, or refine a meaningful boundary. Packets default to 131,07
 The coordinator authors [the separate envelope](controller-example-envelope.json), using fresh
 request ID, actual reviewer, original packet, and `rebase_packet_id: null` normally. Independent
 work also names the actual qualification/exposure; other modes use null for those fields.
+For reconciliation, preserve the response scaffold's `request_id` and use that same ID in the
+envelope. A different envelope ID does not identify that response.
 
 ```text
 paper_audit.py work submit AUDIT.db --submission SUBMISSION.json --response RESPONSE.json
@@ -85,6 +87,9 @@ Inspect and replay ambiguous `received` intake unchanged before replacing it. Te
 historical. Same-byte artifact output may be reused; different output requires a new directory.
 Notes/check-link edits need not stale mathematics. Adding coverage or changing its spans/claims can
 reopen composition while local derivations remain current; changed source or scope can also reopen work.
+Prefer saving coverage with the checks that examine it. Controller coverage uses `check_task_ids`,
+`existing_check_refs`, and `replaces`; direct stored coverage uses `check_ids`, with replacement in
+the enclosing edit. Generate the relevant shape rather than copying fields between these interfaces.
 Use bounded change diagnostics instead of repeating unaffected checks. When evidence, reasoning and
 blocker are unchanged, act on the existing next action or stop that branch; do not create another draft.
 

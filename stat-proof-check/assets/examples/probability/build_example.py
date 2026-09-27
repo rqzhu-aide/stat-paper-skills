@@ -58,14 +58,17 @@ def _packet(db, paper_id, mode="primary"):
     return packets.get_packet(db, targets=[ref("papers", paper_id)], mode=mode)
 
 
-def _item(name, kind, statement, *, scope=None, owner=None, proof=None):
+def _item(name, kind, statement, *, scope=None, owner=None, proof=None, proof_idea=None):
     passages = [{"role": "statement", "anchor_id": "anc_" + name}]
     if proof:
         passages.append({"role": "proof", "anchor_id": "anc_" + proof})
-    return create("items", "itm_" + name, {"kind": kind, "label": name.replace("_", " ").title(),
+    body = {"kind": kind, "label": name.replace("_", " ").title(),
         "caption": name.replace("_", " "), "statement": {"form": "verbatim", "text": statement},
         "passages": passages, "aliases": [], "uncertainty": None, "origin": "source",
-        "owner_id": owner, "scope_id": scope})
+        "owner_id": owner, "scope_id": scope}
+    if proof_idea:
+        body["proof_idea"] = proof_idea
+    return create("items", "itm_" + name, body)
 
 
 def _group(name, argument, conclusion, *, scope="scp_global", discharges=()):
@@ -75,13 +78,15 @@ def _group(name, argument, conclusion, *, scope="scp_global", discharges=()):
         "evidence_refs": ["anc_" + ("hoeffding_proof" if name == "hoeffding" else name)]})
 
 
-def _use(name, supplier, consumer, group, section, needed):
+def _use(name, supplier, consumer, group, section, needed, *, substitutions=(), regime=None):
     identifier = "use_" + name
     return [create("uses", identifier, {"from": ref("items", supplier), "to": ref("items", consumer),
         "type": "dependency", "reason": needed, "evidence_refs": ["anc_" + section],
-        "regime": None, "uncertainty": None}),
+        "regime": regime, "uncertainty": None}),
         create("application_details", identifier, {"use_id": identifier, "group_id": group,
-            "needed_form": {"form": "transcription", "text": needed}, "substitutions": [], "state": "registered"})]
+            "needed_form": {"form": "transcription", "text": needed},
+            "substitutions": [{"symbol": symbol, "value": value} for symbol, value in substitutions],
+            "state": "registered"})]
 
 
 def build_example(destination, *, render=False):
@@ -108,8 +113,13 @@ def build_example(destination, *, render=False):
                                                      "page": None, "label": None}}
                 for name, section in sections.items()]})
         edits = [_item("setup", "definition", sections["setup"]["text"]),
-                 _item("hoeffding", "lemma", sections["hoeffding"]["text"], proof="hoeffding_proof"),
-                 _item("ratio", "theorem", sections["ratio"]["text"], proof="ratio_proof"),
+                 _item("hoeffding", "lemma", sections["hoeffding"]["text"], proof="hoeffding_proof",
+                       proof_idea="Bound the variance under exponential tilting to control the centered moment generating function. "
+                                  "Independence factors the joint moment, and the two tail bounds combine to give the conditional theorem."),
+                 _item("ratio", "theorem", sections["ratio"]["text"], proof="ratio_proof",
+                       proof_idea="Specialize the conditional concentration lemma to each coordinate and combine the two deviation events. "
+                                  "On their intersection the denominator stays positive, so the ratio admits a deterministic error bound. "
+                                  "Discharge the temporary event assumption and use the event's probability to obtain the final bound."),
                  _item("event", "assumption", sections["event"]["text"], scope="scp_event"),
                  create("scopes", "scp_global", {"argument_id": None, "parent_id": None, "assumptions": [],
                      "binders": [], "conditions": [], "evidence_refs": ["anc_setup"]}),
@@ -140,7 +150,11 @@ def build_example(destination, *, render=False):
             ("joint_final", "joint", "ratio", "final", "P(E) >= 1-delta."),
             ("implication_final", "conditional", "ratio", "final", "E is contained in the target error event.")]
         for name, supplier, consumer, group, needed in edges:
-            edits.extend(_use(name, "itm_" + supplier, "itm_" + consumer, "grp_" + group, group, needed))
+            coordinate = {"hx": "X", "hy": "Y"}.get(name)
+            substitutions = (("Z_i", coordinate + "_i"), ("m", "mu_" + coordinate), ("u", "t")) if coordinate else ()
+            regime = "Each coordinate sequence is independent across pairs, takes values in [0,1], and uses t>0; within-pair independence is unnecessary." if coordinate else None
+            edits.extend(_use(name, "itm_" + supplier, "itm_" + consumer, "grp_" + group, group, needed,
+                              substitutions=substitutions, regime=regime))
         acceptance.apply_batch(db, batch(_packet(db, paper_id)["packet_id"], edits))
         boundary_packet = _packet(db, paper_id)
         sources.review_sources(db, batch=batch(boundary_packet["packet_id"], [create("source_reviews", "srv_boundaries", {
@@ -215,6 +229,12 @@ def build_example(destination, *, render=False):
             "denominator_outside_scope": derivation.support(ref("items", "itm_denominator"), "scp_global"),
             "discharged_implication": derivation.support(ref("items", "itm_conditional"), "scp_global")}
         result = {"database": str(database), "audit_id": AUDIT, "provenance": PROVENANCE, "scope_examples": scope_examples,
+                  "specialization_examples": {
+                      "conditional_theorem_in_consumer_scope": derivation.support(ref("items", "itm_hoeffding"), "scp_global"),
+                      "checked_x_application": derivation.use_support(db.head("uses", "use_hx")),
+                      "checked_y_application": derivation.use_support(db.head("uses", "use_hy")),
+                      "specialized_x_bound": derivation.support(ref("items", "itm_x_tail"), "scp_global"),
+                      "specialized_y_bound": derivation.support(ref("items", "itm_y_tail"), "scp_global")},
                   "progress": assessment["progress"], "primary_submissions": len(receipts), "independent_review": "not performed"}
         if render:
             from paper_core.projection import build_projection

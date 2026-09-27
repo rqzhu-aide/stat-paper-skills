@@ -93,10 +93,10 @@ class UnitSubmissionTests(unittest.TestCase):
         self.assertEqual(before, self.registry.read_bytes())
 
     def test_failed_internal_use_from_reference_keeps_its_mathematical_status(self):
-        root = SCRIPT.parents[1] / "assets/reference-audit/proofcheck-audit"
+        root = SCRIPT.parents[2] / "tests/fixtures/reference-audit/proofcheck-audit"
         skeleton_path = root / "audit/04_local_checks/thm-main.skeleton.json"
         skeleton = read_json(skeleton_path)
-        annotations = read_json(SCRIPT.parents[1] / "assets/reference-audit/workbench/thm.annotations.json")
+        annotations = read_json(SCRIPT.parents[2] / "tests/fixtures/reference-audit/workbench/thm.annotations.json")
         registry = read_json(root / "audit/03_dependencies/DEPENDENCY_REGISTRY.json")
         projection = proofcheck.packet_dependency_projection(registry, root, "thm:main", "primary", skeleton)
         _, bindings = authoring._step_bindings(proofcheck, skeleton, annotations)

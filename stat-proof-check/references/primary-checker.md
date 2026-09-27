@@ -13,6 +13,9 @@ joint derivation, and final composition distinct even when one response examines
 Do not repeat a supplier's proof for an ordinary application; borrowed proof reasoning needs
 the relevant proof passage and a distinct examination. Check source coverage against complete
 reviewed boundaries, including internally originating reasoning and written alternative routes.
+Record missing load-bearing external facts, cited or uncited, as discoveries naming the fact,
+its use, and needed source. A rule name is not verification. Distinguish inspected external
+results from self-contained derivations.
 
 Preserve meaningful partial work as a draft with a next action.
 Use `replaces` only for an explicitly selected same-reviewer draft; preserve its `supersedes`

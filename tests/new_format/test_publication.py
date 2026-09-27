@@ -87,7 +87,8 @@ class PublicationCase(TempCase):
 
     def fragment_keys(self, fixture) -> set:
         """The fragment keys the standard fixture must produce, including the generated check ids."""
-        fixed = ["items:itm_lem:1", "items:itm_thm:1", "groups:grp_lem:1", "groups:grp_thm:1",
+        fixed = ["items:itm_lem:1", "items:itm_thm:1", "arguments:arg_lem:1", "arguments:arg_thm:1",
+                 "groups:grp_lem:1", "groups:grp_thm:1",
                  "uses:use_lem_thm:1", "scopes:scp_plain:1", "reconciliations:rec_lem:1",
                  "reconciliations:rec_thm:1", "checks:chk_comp_lem:1", "checks:chk_comp_thm:1",
                  "checks:chk_der_lem:1", "checks:chk_der_thm:1", "checks:chk_app:1",
@@ -187,7 +188,7 @@ class DisplayFragmentTests(PublicationCase):
 
     def test_the_documented_fragment_fields_are_the_only_ones_offered(self):
         """FRAGMENT_FIELDS is the published contract between the core and the renderer."""
-        self.assertEqual(("statement", "reason", "needed_form", "rationale", "conditions", "reasoning",
+        self.assertEqual(("label", "statement", "reason", "needed_form", "rationale", "conditions", "reasoning",
                           "description", "proof_idea", "regime", "uncertainty", "impact_reason"), publish.FRAGMENT_FIELDS)
 
     def test_fragments_are_keyed_by_pinned_ref_and_skip_records_without_prose(self):
@@ -199,9 +200,9 @@ class DisplayFragmentTests(PublicationCase):
         keys = {f"{e['ref']['collection']}:{e['ref']['id']}:{e['ref']['version']}" for e in projection["records"]}
         self.assertEqual(self.fragment_keys(fixture), set(fragments))
         without_prose = {key.split(":")[0] for key in keys - set(fragments)}
-        self.assertEqual({"anchors", "arguments", "audits", "coverage", "observations", "responses", "sources",
+        self.assertEqual({"anchors", "audits", "coverage", "observations", "responses", "sources",
                           "target_specs", "proof_boundaries"}, without_prose)
-        self.assertEqual({"statement_html": "Lemma 1 text"}, fragments["items:itm_lem:1"])
+        self.assertEqual({"label_html": "Lemma 1", "statement_html": "Lemma 1 text"}, fragments["items:itm_lem:1"])
         self.assertEqual({"reason_html": "applied as stated"}, fragments["uses:use_lem_thm:1"])
         self.assertEqual({"rationale_html": "one step"}, fragments["groups:grp_lem:1"])
         self.assertEqual({"rationale_html": "adjudicated"}, fragments["reconciliations:rec_lem:1"])
@@ -232,21 +233,23 @@ class DisplayFragmentTests(PublicationCase):
              "body": {"reasoning": "because $n$", "conditions": ["if $n$", "plain"], "next_action": None,
                       "outcome": "supported"}},
             {"ref": {"collection": "items", "id": "itm_a", "version": 2},
-             "body": {"statement": {"form": "verbatim", "text": "S & T"}, "label": "Lemma 9"}},
+             "body": {"statement": {"form": "verbatim", "text": "S & T"}, "label": "Lemma 9 <x> & y"}},
             {"ref": {"collection": "checks", "id": "chk_b", "version": 1},
              "body": {"conditions": [{"text": "structured"}]}},
             {"ref": {"collection": "items", "id": "itm_b", "version": 1},
              "body": {"statement": None, "reason": None, "label": "Lemma 8"}},
         ]}
         fragments = publish.display_fragments(projection)
-        self.assertEqual({"checks:chk_a:3", "items:itm_a:2"}, set(fragments))
+        self.assertEqual({"checks:chk_a:3", "items:itm_a:2", "items:itm_b:1"}, set(fragments))
         self.assertEqual({"conditions_html", "reasoning_html"}, set(fragments["checks:chk_a:3"]))
         conditions = fragments["checks:chk_a:3"]["conditions_html"]
         self.assertEqual(2, len(conditions))
         self.assertTrue(conditions[0].startswith("if <math "), conditions[0])
         self.assertIn('<annotation encoding="application/x-tex">n</annotation>', conditions[0])
         self.assertEqual("plain", conditions[1])
-        self.assertEqual({"statement_html": "S &amp; T"}, fragments["items:itm_a:2"])
+        self.assertEqual({"label_html": "Lemma 9 &lt;x&gt; &amp; y", "statement_html": "S &amp; T"},
+                         fragments["items:itm_a:2"])
+        self.assertEqual({"label_html": "Lemma 8"}, fragments["items:itm_b:1"])
 
     def test_the_remaining_prose_fields_render_under_their_own_html_names(self):
         """reason, needed_form and description each become ``<field>_html`` with the same escaping rules."""
@@ -293,7 +296,8 @@ class DisplayFragmentTests(PublicationCase):
         self.assertEqual(untouched, payload["projection"])
         self.assertEqual(untouched, projection)
         self.assertEqual(publish.display_fragments(untouched), payload["display"]["refs"])
-        self.assertEqual({"statement_html": "Lemma 1 text"}, payload["display"]["refs"]["items:itm_lem:1"])
+        self.assertEqual({"label_html": "Lemma 1", "statement_html": "Lemma 1 text"},
+                         payload["display"]["refs"]["items:itm_lem:1"])
         self.assertEqual(self.fragment_keys(fixture), set(payload["display"]["refs"]))
 
 

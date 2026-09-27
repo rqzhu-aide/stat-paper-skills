@@ -338,6 +338,10 @@
    "reason": "The live controller pilot exposed a mismatch between exact-target reconciliation rows and whole-result completion. These tests combine current rows while preserving missing, stale, unresolved and newly added review requirements; they replace no legacy test."
   },
   {
+   "new_test": "tests/new_format/test_source_limit_context.py",
+   "reason": "Focused audits must retain source limitations on consumed setup, exact targets and proof-boundary segments while excluding unrelated context. These regressions verify blocked release and recovery after resolution; they replace no legacy test."
+  },
+  {
    "new_test": "tests/new_format/test_work_origin_bindings.py",
    "reason": "The live controller pilot exposed lost semantic binding policy when source-only independent work was mapped through a generic packet. These tests preserve controller origin without relaxing generic transaction checks and replace no legacy test."
   },
@@ -384,6 +388,10 @@
   {
    "new_test": "tests/new_format/test_evidence_freshness.py",
    "reason": "Implementation-audit regressions for supplier scope and statement evidence, borrowed proof content, finite scope cycles and reviewed exact relocation in generated evidence bindings. These binding records are new and replace no legacy test."
+  },
+  {
+   "new_test": "tests/new_format/test_neutral_audit_metadata.py",
+   "reason": "Database binding regressions distinguish source-fidelity and qualification metadata from changed mathematical inputs, while preserving historical and independent review policies. The legacy format has no equivalent record bindings."
   },
   {
    "new_test": "tests/new_format/test_cli.py",

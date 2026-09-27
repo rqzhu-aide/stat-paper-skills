@@ -2,7 +2,7 @@
 from copy import deepcopy
 
 from support import R, TempCase, edit
-from paper_core import projection, sources
+from paper_core import assessment, projection, sources
 
 
 def scope(identity, *, parent=None, assumptions=(), conditions=(), argument=None):
@@ -13,6 +13,42 @@ def scope(identity, *, parent=None, assumptions=(), conditions=(), argument=None
 def exact(identity, target, *, statement=None, pin=None, scope_id=None, state="registered"):
     return edit("create", "target_specs", identity, {"target": target, "statement_ref": pin,
         "statement": statement, "scope_id": scope_id, "state": state, "evidence_refs": [], "fidelity_ref": None})
+
+
+def blocked_premise_fixture(fixture, *, alternative=False):
+    """Synthetic judgments: the application is examined, but its supplier is private."""
+    fixture.audit(independent_required=False)
+    with fixture.open() as db:
+        edits = [scope("scp_supplier", parent="scp_plain", conditions=["x > 0"])]
+        for collection, identity in (("target_specs", "tgt_lem"), ("arguments", "arg_lem"), ("groups", "grp_lem")):
+            row = db.head(collection, identity)
+            edits.append(edit("replace", collection, identity, dict(row.body, scope_id="scp_supplier"), row.version))
+        fixture.apply(db, edits, *fixture.ITEMS)
+    fixture.primary()
+    if alternative:
+        with fixture.open() as db:
+            fixture.apply(db, [
+                fixture.argument_edit("arg_alternative", "itm_thm", "grp_alternative", "anc_thm_proof"),
+                fixture.group_edit("grp_alternative", "arg_alternative", "itm_thm", "anc_thm_proof"),
+                fixture.check_edit("chk_alternative_der", R("groups", "grp_alternative"), "derivation"),
+                fixture.check_edit("chk_alternative_comp", R("arguments", "arg_alternative"), "composition")
+            ], *fixture.ITEMS, mode="primary")
+    return fixture
+
+
+def cyclic_premise_fixture(fixture):
+    """Examined local implications cannot establish two mutually dependent claims."""
+    fixture.audit(independent_required=False)
+    with fixture.open() as db:
+        original = db.head("uses", "use_lem_thm").body
+        fixture.apply(db, [edit("create", "uses", "use_cycle", dict(original,
+            **{"from": R("items", "itm_thm"), "to": R("items", "itm_lem"), "group_id": "grp_lem",
+               "needed_form": {"form": "verbatim", "text": "Theorem 1 text"}}))], *fixture.ITEMS)
+    fixture.primary()
+    with fixture.open() as db:
+        fixture.apply(db, [fixture.check_edit("chk_cycle", R("uses", "use_cycle"), "application")],
+                      *fixture.ITEMS, mode="primary")
+    return fixture
 
 
 class ReaderProjectionTests(TempCase):
@@ -244,3 +280,45 @@ class ReaderProjectionTests(TempCase):
         self.assertEqual([ref["id"] for ref in detail["reader"]["finding_refs"]], ["fnd_open"])
         self.assertEqual([ref["id"] for ref in detail["reader"]["source_limit_refs"]], ["sis_formula"])
         self.assertIn("fnd_resolved", [ref["id"] for ref in detail["record_refs"]])
+
+    def test_satisfied_application_keeps_its_pinned_blocking_context_without_changing_assessment(self):
+        fixture = blocked_premise_fixture(self.fixture())
+        with fixture.open(write=False) as db:
+            _, before = assessment.derive_full(db, audit_id=fixture.audit_id)
+        dataset = self.project(fixture, audit_id=fixture.audit_id)
+        reader = dataset["details"]["item:itm_thm"]["reader"]
+        application = reader["applications"][0]
+        explanation = application["support_explanation"]
+        self.assertEqual(application["assessment"]["local_label"], "supported")
+        self.assertEqual(explanation["code"], "scope_unavailable")
+        self.assertEqual(explanation["target_ref"]["id"], "itm_lem")
+        self.assertEqual(explanation["blocking_scope_ref"]["id"], "scp_supplier")
+        self.assertEqual(explanation["active_scope_ref"]["id"], "scp_plain")
+        self.assertEqual([row["id"] for row in explanation["path_refs"]], ["use_lem_thm", "itm_lem"])
+        task = next(row for row in dataset["worklist"]["tasks"] if row["kind"] == "application")
+        self.assertEqual(task["state"], "satisfied")
+        self.assertEqual(task["support_explanation"]["message"], explanation["message"])
+        self.assertEqual(reader["targets"][0]["support_explanation"]["code"], explanation["code"])
+        self.assertEqual(dataset["connections"][0]["applications"][0]["support_explanation"], explanation)
+        self.assertEqual(reader["targets"][0]["assessment"], projection.public_assessment(before["assessments"]["items:itm_thm"]))
+        self.assertEqual(dataset["summary"]["progress"], before["progress"])
+
+    def test_available_alternative_does_not_inherit_another_routes_blocker(self):
+        fixture = blocked_premise_fixture(self.fixture(), alternative=True)
+        reader = self.project(fixture, audit_id=fixture.audit_id)["details"]["item:itm_thm"]["reader"]
+        self.assertEqual(reader["targets"][0]["assessment"]["availability"], "available")
+        self.assertIsNone(reader["targets"][0]["support_explanation"])
+        self.assertEqual(reader["applications"][0]["support_explanation"]["code"], "scope_unavailable")
+
+    def test_bounded_and_cyclic_explanations_retain_the_last_requirement(self):
+        fixture = cyclic_premise_fixture(self.fixture())
+        dataset = self.project(fixture, audit_id=fixture.audit_id)
+        for identity in ("itm_lem", "itm_thm"):
+            explanation = dataset["details"][f"item:{identity}"]["reader"]["targets"][0]["support_explanation"]
+            self.assertEqual(explanation["code"], "explanation_truncated")
+            self.assertEqual(explanation["target_ref"], explanation["path_refs"][-1])
+        with fixture.open(write=False) as db:
+            derivation, _ = assessment.derive_full(db, audit_id=fixture.audit_id)
+            explanation = derivation.support_closure.explain(("use", "use_cycle"), limit=10)
+        self.assertEqual(explanation["code"], "unfounded_cycle")
+        self.assertEqual(explanation["target"], explanation["path"][-1])

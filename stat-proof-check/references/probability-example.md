@@ -20,7 +20,7 @@ The optional report uses the installed renderer and its existing dependencies.
 The saved reasoning is an authored worked answer. The database has no reviewer
 qualification or independent response. It requires independent review, so its
 report remains a working result and its process is incomplete. Running this
-fixture is not a fresh scientific evaluation or proof of model accuracy.
+fixture is not a fresh scientific evaluation or evidence of proof-checking accuracy.
 
 ## The mathematical argument
 
@@ -67,6 +67,10 @@ Lemma H is globally stated with hypotheses inside its assertion. Its application
 explicitly verify boundedness, independence, the mean, and the chosen threshold.
 The lemma is available within the consumer's proof context; its hypotheses are
 not misrepresented as assumptions trapped in a sibling proof scope.
+The two applications save their substitutions explicitly, including `Z_i`, `m`, and `u`.
+Their recorded reasoning checks independence across pairs, coordinate boundedness, and `t>0`
+locally in Theorem R's setup. The receipt's `specialization_examples` reports availability of
+the conditional theorem, both checked applications, and both specialized tail bounds.
 
 By contrast, `scp_event` contains the temporary premise \(\omega\in E\).
 The premise and denominator bound are available there and unavailable outside it.
@@ -74,6 +78,9 @@ The explicit scope-discharge examination establishes the globally usable
 conditional event inclusion. It does not make the denominator bound hold for
 every outcome. The receipt reports all six scope probes, including these two
 deliberately unavailable outside-scope uses.
+The regression tests also deny support when a specialization's applicability check has a gap
+or when the supplier is mistakenly restricted to the temporary event scope. A supported general
+theorem does not excuse an unchecked hypothesis at a particular use.
 
 The database retains complete source boundaries and exact target specifications.
 Each application and derivation has saved reasoning, and composition links the

@@ -8,9 +8,17 @@ import subprocess
 from support import CORE, R, TempCase, edit
 from paper_core import projection, publish
 from paper_core.canonical import digest
+from test_reader_projection import blocked_premise_fixture, cyclic_premise_fixture
 
 
 class ReaderPublicationTests(TempCase):
+    def support_paper(self, *, alternative=False):
+        fixture = blocked_premise_fixture(self.fixture(), alternative=alternative)
+        with fixture.open(write=False) as db:
+            dataset = projection.build_projection(db, audit_id=fixture.audit_id)
+            envelope = publish.render_input(db, dataset, release=False, source_identity="reader-support-test")
+        return dataset, envelope
+
     def reader_paper(self, *, with_parts=False):
         fixture = self.fixture().primary()
         with fixture.open() as db:
@@ -62,13 +70,33 @@ class ReaderPublicationTests(TempCase):
 
     @staticmethod
     def fields(page, *, context=None, field=None):
-        pattern = rb'<(?P<tag>div|span)[^>]*data-reader-field="[^"]+"[^>]*>.*?</(?P=tag)>'
-        rows = [match[0] for match in re.finditer(pattern, page, flags=re.S)]
-        if context:
-            rows = [row for row in rows if f'data-reader-context="{context}"'.encode() in row]
-        if field:
-            rows = [row for row in rows if f'data-reader-field="{field}"'.encode() in row]
-        return rows
+        text = page.decode()
+        starts = [0]
+        for line in text.splitlines(keepends=True):
+            starts.append(starts[-1] + len(line))
+
+        class Fields(publish._Scan):
+            def field_offset(self):
+                line, column = self.getpos()
+                return starts[line - 1] + column
+
+            def handle_starttag(self, tag, attrs):
+                super().handle_starttag(tag, attrs)
+                self.elements[-1]["start"] = self.field_offset()
+
+            def handle_endtag(self, tag):
+                for row in reversed(self.stack):
+                    if row["tag"] == tag:
+                        row["end"] = self.field_offset() + len(tag) + 3
+                        break
+                super().handle_endtag(tag)
+
+        scan = Fields()
+        scan.feed(text)
+        return [text[row["start"]:row["end"]].encode() for row in scan.elements
+                if "data-reader-field" in row["attrs"] and "end" in row
+                and (context is None or row["attrs"].get("data-reader-context") == context)
+                and (field is None or row["attrs"]["data-reader-field"] == field)]
 
     def test_reader_displays_pinned_claim_strategy_contexts_and_unresolved_evidence(self):
         dataset, envelope = self.reader_paper()
@@ -89,6 +117,109 @@ class ReaderPublicationTests(TempCase):
         apps = dataset["details"]["item:itm_thm"]["reader"]["applications"]
         self.assertEqual(len(apps), 3)
         self.assertFalse(any("use_internal" in edge["primary_use_ids"] for edge in dataset["connections"]))
+
+    def test_blocked_support_is_visible_and_linked_even_when_application_check_is_satisfied(self):
+        dataset, envelope = self.support_paper()
+        page = self.render(envelope, "support")
+        self.assertEqual(publish.mechanical_acceptance(page, dataset)["status"], "pass")
+        scan = publish._Scan()
+        scan.feed(page.decode())
+        notices = [row for row in scan.elements if "data-reader-support" in row["attrs"]]
+        target = next(row for row in notices if row["attrs"].get("data-reader-detail") == "item:itm_thm"
+                      and row["attrs"]["data-reader-support"] == "target:0")
+        message = next(row for row in target["children"] if row["tag"] == "p" and
+                       any("data-reader-support-message" in child["attrs"] for child in row["children"]))
+        self.assertIn("Lemma 1", "".join(message["text"]))
+        self.assertIn("private scope", "".join(message["text"]))
+        for notice in notices:
+            for ancestor in self.ancestors(notice):
+                self.assertNotEqual(ancestor["tag"], "template")
+                self.assertFalse(ancestor["tag"] == "details" and "open" not in ancestor["attrs"])
+        self.assertIn(b'data-reader-support-link="application" data-reader-support-ref="uses:use_lem_thm:1"', page)
+        self.assertIn(b'data-reader-support-link="blocking_scope" data-reader-support-ref="scopes:scp_supplier:1"', page)
+        for before, after in ((b"The supplier depends on a private scope", b"The supplier has a verified scope"),
+                              (b'data-reader-support-code="scope_unavailable"', b'data-reader-support-code="statement_refuted"'),
+                              (b'data-reader-support-ref="scopes:scp_supplier:1"', b'data-reader-support-ref="scopes:scp_plain:1"')):
+            self.assertEqual(publish.mechanical_acceptance(page.replace(before, after, 1), dataset)["status"], "fail")
+        removed = re.sub(rb'<div class="proof-reader-notice"[^>]*data-reader-support="target:0"[^>]*>.*?</div>',
+                         b"", page, count=1, flags=re.S)
+        self.assertNotEqual(removed, page)
+        self.assertEqual(publish.mechanical_acceptance(removed, dataset)["status"], "fail")
+
+        for context in (b"target:0", b"application:0"):
+            pattern = rb'(<div class="proof-reader-notice"[^>]*data-reader-support="' + context + rb'"[^>]*>.*?</div>)'
+            collapsed = re.sub(pattern, rb'<details><summary>Support context</summary>\1</details>',
+                               page, count=1, flags=re.S)
+            self.assertNotEqual(collapsed, page)
+            self.assertEqual(publish.mechanical_acceptance(collapsed, dataset)["status"], "fail")
+            expanded = collapsed.replace(b"<details><summary>Support context", b"<details open><summary>Support context", 1)
+            self.assertEqual(publish.mechanical_acceptance(expanded, dataset)["status"], "pass")
+
+    def test_truncated_support_links_the_last_displayed_requirement(self):
+        fixture = cyclic_premise_fixture(self.fixture())
+        with fixture.open(write=False) as db:
+            dataset = projection.build_projection(db, audit_id=fixture.audit_id)
+            envelope = publish.render_input(db, dataset, release=False, source_identity="cyclic-reader-test")
+        page = self.render(envelope, "cyclic-support")
+        self.assertEqual(publish.mechanical_acceptance(page, dataset)["status"], "pass")
+        scan = publish._Scan()
+        scan.feed(page.decode())
+        for identity in ("itm_lem", "itm_thm"):
+            key = f"item:{identity}"
+            explanation = dataset["details"][key]["reader"]["targets"][0]["support_explanation"]
+            notice = next(row for row in scan.elements if row["attrs"].get("data-reader-detail") == key
+                          and row["attrs"].get("data-reader-support") == "target:0")
+            target = explanation["path_refs"][-1]
+            pinned = f"{target['collection']}:{target['id']}:{target['version']}"
+            self.assertTrue(any(row["attrs"].get("data-reader-support-link") == "target"
+                                and row["attrs"].get("data-reader-support-ref") == pinned
+                                and any(parent is notice for parent in self.ancestors(row)) for row in scan.elements))
+
+    @staticmethod
+    def ancestors(element):
+        parent = element["parent"]
+        while parent:
+            yield parent
+            parent = parent["parent"]
+
+    def test_supported_alternative_has_no_target_warning_and_keeps_route_specific_warning(self):
+        dataset, envelope = self.support_paper(alternative=True)
+        page = self.render(envelope, "alternative")
+        self.assertEqual(publish.mechanical_acceptance(page, dataset)["status"], "pass")
+        self.assertNotIn(b'data-reader-detail="item:itm_thm" data-reader-support="target:0"', page)
+        self.assertIn(b'data-reader-detail="item:itm_thm" data-reader-support="application:0"', page)
+
+    def test_math_labels_render_in_pinned_fields_headings_and_links_with_safe_fallback(self):
+        fixture = self.fixture().primary()
+        label = r'Result $J_\lambda$ on $S$. Literal <script>alert(1)</script>.'
+        with fixture.open() as db:
+            for identity in ("itm_lem", "itm_thm"):
+                row = db.head("items", identity)
+                fixture.apply(db, [edit("replace", "items", identity, dict(row.body, label=label), row.version)], *fixture.ITEMS)
+            dataset = projection.build_projection(db, audit_id=fixture.audit_id)
+            envelope = publish.render_input(db, dataset, release=False, source_identity="math-label-test")
+        page = self.render(envelope, "math-label")
+        self.assertEqual(publish.mechanical_acceptance(page, dataset)["status"], "pass")
+        labels = [row for row in self.fields(page, field="label") if b':2"' in row]
+        self.assertTrue(labels)
+        self.assertTrue(all(b"<math" in row and b"<script>" not in row and b"&lt;script&gt;" in row for row in labels))
+        scan = publish._Scan()
+        scan.feed(page.decode())
+        headings = [e for e in scan.elements if e["tag"] == "h3" and "proof-detail-heading" in e["attrs"].get("class", "")]
+        self.assertTrue(any(any(c["tag"] == "span" and "proof-formula" in c["attrs"].get("class", "")
+                                for c in h["children"]) for h in headings))
+        linked_labels = [e for e in scan.elements if e["tag"] == "span" and e["attrs"].get("data-reader-field") == "label"
+                         and e["attrs"].get("data-reader-context", "").endswith((":from", ":to"))]
+        self.assertTrue(linked_labels)
+        self.assertTrue(all(any(a["tag"] == "a" for a in self.ancestors(e)) for e in linked_labels))
+        self.assertIn(b'data-reader-ref="items:itm_lem:1" data-reader-field="statement.text"', page)
+        altered = page.replace(labels[0], labels[0].replace(b"Result", b"Wrong result"), 1)
+        self.assertEqual(publish.mechanical_acceptance(altered, dataset)["status"], "fail")
+        for fragments in envelope["display"]["refs"].values():
+            fragments.pop("label_html", None)
+        fallback = self.render(envelope, "old-label-input")
+        self.assertEqual(publish.mechanical_acceptance(fallback, dataset)["status"], "pass")
+        self.assertTrue(any(b"$J_\\lambda$" in row and b"<math" not in row for row in self.fields(fallback, field="label")))
 
     def test_overview_tampering_fails_even_with_intact_hidden_record_copies(self):
         dataset, envelope = self.reader_paper()

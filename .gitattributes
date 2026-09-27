@@ -1,8 +1,8 @@
 * text=auto eol=lf
 
 # Preserve exact bytes of sealed evidence, review responses, and copied references.
-stat-proof-check/assets/reference-audit/proofcheck-audit/** -text
-stat-proof-check/assets/reference-audit/workbench/** -text
+tests/fixtures/reference-audit/proofcheck-audit/** -text
+tests/fixtures/reference-audit/workbench/** -text
 shared/paper_core/** -text
 stat-proof-check/scripts/paper_core/** -text
 stat-proof-check/scripts/paper_audit.py -text

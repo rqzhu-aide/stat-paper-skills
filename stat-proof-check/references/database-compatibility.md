@@ -39,3 +39,9 @@ version-2 work extension. Merely creating or migrating a database does not activ
 Every tool opening an extended database, including Proof Graphify, needs a compatible core.
 Older cores refuse unknown required features. Original packets and responses remain immutable;
 the feature does not migrate storage format 4 or grant additional mathematical credit.
+
+The optional `audit-scope-binding/1` feature activates when full-audit packets or checks first
+capture the effective audit scope. Older cores then refuse the database. Earlier full global
+checks that did not capture this scope require reexamination and explicit successors; their
+evidence remains unchanged, and unaffected local checks remain available. This is a renewal
+requirement, not a mathematical refutation or a storage-format migration.

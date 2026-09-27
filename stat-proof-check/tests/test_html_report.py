@@ -27,7 +27,7 @@ def load(name: str):
 
 pc = load("proofcheck")
 report = load("proofcheck_report")
-REFERENCE = ROOT / "assets/reference-audit/proofcheck-audit"
+REFERENCE = ROOT.parent / "tests/fixtures/reference-audit/proofcheck-audit"
 
 
 class VisibleText(HTMLParser):

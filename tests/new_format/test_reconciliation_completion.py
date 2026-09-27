@@ -1,7 +1,7 @@
 """Exact-target review rows jointly close a route without hiding unfinished review."""
 from __future__ import annotations
 
-from support import R, TempCase, edit
+from support import R, TempCase, edit, node_available, run_cli
 from paper_core import assessment, review, work
 from paper_core.canonical import canonical_bytes
 
@@ -118,6 +118,89 @@ class ReconciliationCompletionTests(TempCase):
         self.assertEqual(status["independent"]["items:itm_lem"], "complete")
         self.assertEqual(status["independent"]["items:itm_thm"], "pending")
         self.assertFalse(status["progress"]["process_complete"])
+
+    def primary_successor(self, *, outcome="gap", supersedes=True):
+        check = self.fx.check_edit("chk_comp_lem_new", R("arguments", "arg_lem"), "composition",
+            outcome=outcome, evidence=["anc_lem_proof"],
+            supersedes=self.fx.pin(self.db, "checks", "chk_comp_lem") if supersedes else None)
+        check["body"]["reasoning"] = "Re-examined the complete argument and recorded the current primary opinion."
+        self.fx.apply(self.db, [check], *self.fx.ITEMS, mode="primary")
+        return self.fx.pin(self.db, "checks", check["id"])
+
+    def test_primary_successor_reopens_review_work_and_blocks_release_until_adjudicated(self):
+        independent = self.independent()
+        self.reconcile(independent)
+        response = self.db.head("responses", self.db.head("checks", independent[("arguments", "arg_lem")]).body["response_id"])
+        original = self.db.get_blob(response.body["original_blob"])
+        self.primary_successor()
+
+        status = self.status()
+        self.assertEqual(status["independent"], {"items:itm_lem": "disputed", "items:itm_thm": "complete"})
+        self.assertFalse(status["progress"]["process_complete"])
+        self.assertEqual(status["assessments"]["items:itm_lem"]["state"], "red")
+        tasks = work.derive_work(self.db, audit_id=self.fx.audit_id)["tasks"]
+        reconciliation = next(t for t in tasks if t["kind"] == "reconciliation" and t["target"] == R("items", "itm_lem"))
+        self.assertNotEqual(reconciliation["state"], "satisfied")
+        self.assertTrue(all(t["state"] == "satisfied" for t in tasks if t["role"] == "independent"))
+        refused, _ = run_cli("release", self.fx.path, "--audit", self.fx.audit_id,
+                             "--out", self.work / "blocked", expect=2)
+        self.assertEqual(refused["error"]["code"], "RELEASE_BLOCKED")
+        self.assertFalse((self.work / "blocked").exists())
+
+        # Explicit adjudication can close a negative audit without changing the
+        # preserved independent opinion or commissioning another source reading.
+        self.reconcile(independent, [("arguments", "arg_lem", "composition", "chk_comp_lem_new")],
+                       prefix="rec_current", supersedes=self.fx.pin(self.db, "reconciliations", "rec_0"))
+        status = self.status()
+        self.assertTrue(status["progress"]["process_complete"])
+        self.assertEqual(status["independent"]["items:itm_lem"], "complete")
+        self.assertEqual(status["assessments"]["items:itm_lem"]["state"], "red")
+        self.assertEqual(self.db.get_blob(response.body["original_blob"]), original)
+        self.assertTrue(all(t["state"] == "satisfied" for t in work.derive_work(
+            self.db, audit_id=self.fx.audit_id)["tasks"] if t["required"]))
+        if node_available():
+            released, _ = run_cli("release", self.fx.path, "--audit", self.fx.audit_id,
+                                  "--out", self.work / "released")
+            self.assertTrue(released["process_complete"])
+            self.assertEqual(released["publication"]["state"], "published")
+
+    def test_same_outcome_primary_successor_still_needs_current_comparison(self):
+        independent = self.independent()
+        self.reconcile(independent)
+        self.primary_successor(outcome="supported")
+        status = self.status()
+        self.assertEqual(status["independent"], {"items:itm_lem": "pending", "items:itm_thm": "complete"})
+        self.assertFalse(status["progress"]["process_complete"])
+
+    def test_additional_primary_opinion_must_be_included_in_renewed_comparison(self):
+        independent = self.independent()
+        self.reconcile(independent)
+        self.primary_successor(outcome="supported", supersedes=False)
+        self.reconcile(independent, TARGETS[:1], prefix="rec_omits_late")
+        self.assertEqual(self.status()["independent"]["items:itm_lem"], "pending")
+        packet = self.fx.packet(self.db, *self.fx.ITEMS, mode="reconcile")
+        row = self.fx.reconciliation_edit(self.db, "rec_both_primary", "arg_lem", "chk_comp_lem",
+                                         independent[("arguments", "arg_lem")])
+        row["body"]["primary_checks"].append(self.fx.pin(self.db, "checks", "chk_comp_lem_new"))
+        review.reconcile(self.db, batch=self.fx.batch([row], packet["packet_id"]))
+        self.assertTrue(self.status()["progress"]["process_complete"])
+
+    def test_primary_revised_row_can_name_same_batch_opinion_only_as_successor(self):
+        independent = self.independent()
+        self.reconcile(independent)
+        successor = self.fx.check_edit("chk_comp_lem_new", R("arguments", "arg_lem"), "composition",
+            outcome="gap", evidence=["anc_lem_proof"], supersedes=self.fx.pin(self.db, "checks", "chk_comp_lem"))
+        packet = self.fx.packet(self.db, *self.fx.ITEMS, mode="reconcile")
+        row = self.fx.reconciliation_edit(self.db, "rec_primary_revised", "arg_lem", "chk_comp_lem",
+                                         independent[("arguments", "arg_lem")])
+        row["body"].update(decision="primary_revised",
+                          successor_checks=[dict(R("checks", successor["id"]), version=1)],
+                          supersedes=self.fx.pin(self.db, "reconciliations", "rec_0"))
+        review.reconcile(self.db, batch=self.fx.batch([successor, row], packet["packet_id"]))
+        status = self.status()
+        self.assertEqual(status["independent"]["items:itm_lem"], "complete")
+        self.assertTrue(status["progress"]["process_complete"])
+        self.assertEqual(status["assessments"]["items:itm_lem"]["state"], "red")
 
     def test_all_stale_independent_evidence_cannot_complete_vacuously(self):
         independent = self.independent()
