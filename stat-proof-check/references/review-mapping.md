@@ -8,19 +8,22 @@ A = original source-only worker packet, named by the unchanged response
 B = current private coordinator packet containing the canonical mapping targets
 ```
 
-After submitting the response from A, obtain B and generate a mapping scaffold:
+After submitting the response from A, obtain B and generate a mapping scaffold. Run these
+examples from the [chosen work folder](database-audit.md#choose-the-work-folder);
+`AUDIT.db` means its `audit.db`.
+Choose distinct filenames for later mappings so earlier coordinator records remain available:
 
 ```text
-paper_audit.py get AUDIT.db --target items:itm_ID --mode primary --out mapping-context.json
-paper_audit.py review mapping-template AUDIT.db --response rsp_ID --packet pkt_B --out mapping-help.json
-paper_audit.py review map AUDIT.db --response rsp_ID --mapping MAPPING.json
+paper_audit.py get AUDIT.db --target items:itm_ID --mode primary --out work/authoring/mapping-context.json
+paper_audit.py review mapping-template AUDIT.db --response rsp_ID --packet pkt_B --out work/authoring/mapping-help.json
+paper_audit.py review map AUDIT.db --response rsp_ID --mapping work/authoring/mapping.json
 ```
 
 Here `itm_ID` owns the argument; use a part target where appropriate. Replace `pkt_B` with
-the packet ID returned in `mapping-context.json`. Obtain broader context through `get` if B
+the packet ID returned in `work/authoring/mapping-context.json`. Obtain broader context through `get` if B
 lacks a needed canonical record.
 
-Author only the generated `template` member as `MAPPING.json`, filling reviewer, exact canonical
+Author only the generated `template` member as `work/authoring/mapping.json`, filling reviewer, exact canonical
 targets and source-grounded rationales. Use zero-based judgment indexes; `--judgment N` selects
 particular rows. B's read set must contain each mapped record. Original reviewed scope and source
 overlap remain tied to A. Neither mapping nor a corrected envelope can change a judgment's kind,

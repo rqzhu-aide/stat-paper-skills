@@ -5,7 +5,7 @@ Use `evals/release_eval.py` to compare actual proof-checking behavior across ski
 Run this maintenance workflow from the development repository. The ordinary
 installed skill omits `evals/` and `tests/`; neither is needed for a paper audit.
 
-This workflow is separate from the balanced two-canary smoke test required during an ordinary audit. Do not run the whole release pilot for every paper. A canary pass remains a smoke-check result and does not establish research-level competence.
+This workflow is separate from the [reviewer qualification](database-qualification.md) required during an ordinary database audit. Legacy v1.5 folders use the [balanced two-canary smoke test](checker-calibration.md). Do not run the whole release pilot for every paper. Passing qualification or a canary smoke test does not establish research-level competence.
 
 ## Pilot and review status
 

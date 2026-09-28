@@ -1,4 +1,4 @@
-# External Result Verification
+# Legacy v1.5: External Result Verification
 
 Use this workflow whenever an external theorem, lemma, inequality, or technical
 fact is load-bearing, whether or not the manuscript supplies an inline citation

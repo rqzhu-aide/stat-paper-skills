@@ -1,6 +1,6 @@
 # Proof-check architecture
 
-This folder describes the current `stat-proof-check` implementation. The skill's [entry point](../stat-proof-check/SKILL.md) and references define the agent workflow; this folder explains the code and repository boundaries.
+This folder describes the current `stat-proof-check` architecture and retains labeled change records and proposals. The skill's [entry point](../stat-proof-check/SKILL.md) and references define the agent workflow; this folder explains the code and repository boundaries.
 
 | Source | Responsibility |
 |---|---|
@@ -12,4 +12,15 @@ This folder describes the current `stat-proof-check` implementation. The skill's
 
 The companion [Proof Graphify repository](https://github.com/rqzhu-aide/proof-graphify) owns its skill and architecture. Its local checkout is a sibling at `../proof-graphify/` for cross-package development. The two repositories have separate Git histories and remotes.
 
-Completed plans, audits, and old architecture versions are retained in the local `archived/` folder, outside skill discovery and Git. They are historical evidence, not current implementation instructions.
+## Proof-check change records and proposals
+
+These notes preserve decisions and evidence. Current workflow instructions remain in the skill and its references.
+
+| Note | Status |
+|---|---|
+| [Targeted reliability fixes](proofcheck-targeted-fixes-handoff.md) | Implemented; retained scope of the September 27 fixes |
+| [Targeted fixes validation](proofcheck-targeted-fixes-validation.md) | Implementation, verification, and subsequent installation record |
+| [Reader and output fixes](proofcheck-reader-output-fixes.md) | Implemented in maintained sources; records validation and remaining live-browser/test-run limitations |
+| [Automatic-workflow handoff](proofcheck-automatic-workflow-handoff.md) | Unimplemented proposal for a new wrapper and managed-run design; not current workflow instructions |
+
+Additional completed plans, audits, and old architecture versions are retained in the local `archived/` folder, outside skill discovery and Git. They are historical evidence, not current implementation instructions.

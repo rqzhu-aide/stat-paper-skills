@@ -6,6 +6,11 @@ The database records calibration evidence but does not run cases, grade mathemat
 the declared model identity. Do not convert software test fixtures or a reviewer's confidence into
 a passing qualification.
 
+Run these examples from the [chosen work folder](database-audit.md#choose-the-work-folder);
+`AUDIT.db` means its `audit.db`. Keep each calibration under
+`work/qualification/<qualification-name>/`, with unchanged responses in `responses/`.
+Replace `calibration-1` below with that name.
+
 ## Run and grade a balanced calibration
 
 1. Choose at least one valid written proof and one flawed written proof with established reference
@@ -42,27 +47,27 @@ configuration requires a new calibration record with a new ID. Update the audit 
 authoring commands and use the new qualification for subsequent dispatch. Never replace the old
 qualification record or represent a historical response as newly calibrated.
 
-After recording a qualification, attach it to the audit through a fresh audit configuration
+After recording a qualification, record its ID in the audit configuration through a fresh
 packet. The `primary` role can update this configuration; a paper's `author` packet does not
 grant audit configuration authority:
 
 ```text
-python "<skill-root>/scripts/paper_audit.py" get AUDIT.db --target audits:AUDIT_ID --mode primary --out AUDIT_CONFIG.json
-python "<skill-root>/scripts/paper_audit.py" apply AUDIT.db --batch AUDIT_UPDATE.json
+python "<skill-root>/scripts/paper_audit.py" get AUDIT.db --target audits:AUDIT_ID --mode primary --out work/authoring/audit-config.json
+python "<skill-root>/scripts/paper_audit.py" apply AUDIT.db --batch work/authoring/audit-update.json
 ```
 
-Build `AUDIT_UPDATE.json` as an ordinary replace batch using the configuration packet's
+Build `work/authoring/audit-update.json` as an ordinary replace batch using the configuration packet's
 `packet_id`, the audit's current `expected_version`, a fresh request ID, and the complete
 unchanged audit body except for its new `qualification_id`. Recording the qualification alone
 does not change the audit. Prepare independent work only after this update succeeds.
 Prefer settling this configuration before preparing other assignments or global checks.
-For new primary global checks, qualification-only attachment preserves the mathematical work.
+For new primary global checks, a qualification-only configuration update preserves the mathematical work.
 Older full-record bindings may require explicit renewal. Inspect affected evidence and renew
 only checks whose consumed inputs changed; never rewrite saved responses or bindings.
 
 ## Exact receipt shape
 
-Submit with `python "<skill-root>/scripts/paper_audit.py" qualification record AUDIT.db --receipt RECEIPT.json`.
+Submit with `python "<skill-root>/scripts/paper_audit.py" qualification record AUDIT.db --receipt work/qualification/calibration-1/receipt.json`.
 This dedicated command is packetless and creates immutable qualification records only.
 
 | Object | Complete fields |
@@ -87,11 +92,12 @@ that example. Do not use its IDs, profile or grades as evidence for a paper audi
 ## Mechanical assembly from real files
 
 Generate fresh request and qualification IDs using `ids --kind request` and `ids --kind qualifications`.
-Prepare `qualification-grading.json` with those `request_id` and `qualification_id`, the actual
+Prepare `work/qualification/calibration-1/qualification-grading.json` with those `request_id` and `qualification_id`, the actual
 `reviewer`, `profile`, `protocol_version`, `limitations`, and a `cases` array. Each case entry has
 `case_id`, `class: "valid"|"invalid"`, `response_path`, and the actual graded `outcome`; include the
 case input, reference criteria and grading rationale in this evidence file as well. Paths below are
-relative to that file. The evidence file is coordinator-authored and has no separate enforced schema.
+relative to that file, for example `responses/valid-case.json`, not relative to the proof-check
+root. The evidence file is coordinator-authored and has no separate enforced schema.
 
 This standard-library snippet only packs that evidence and the unchanged response files:
 
@@ -99,7 +105,7 @@ This standard-library snippet only packs that evidence and the unchanged respons
 import base64, hashlib, json
 from pathlib import Path
 
-grading_path = Path("qualification-grading.json")
+grading_path = Path("work/qualification/calibration-1/qualification-grading.json")
 evidence_bytes = grading_path.read_bytes()
 grading = json.loads(evidence_bytes)
 blobs = {}
@@ -127,7 +133,7 @@ receipt = {"contract_version": 4, "request_id": grading["request_id"],
            "edits": [{"op": "create", "collection": "qualifications",
                       "id": grading["qualification_id"], "expected_version": None, "body": body}],
            "blobs": list(blobs.values())}
-with Path("RECEIPT.json").open("x", encoding="utf-8") as output:
+with (grading_path.parent / "receipt.json").open("x", encoding="utf-8") as output:
     json.dump(receipt, output, ensure_ascii=False, indent=2)
     output.write("\n")
 ```

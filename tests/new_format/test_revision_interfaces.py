@@ -27,7 +27,13 @@ class RevisionInterfacesTests(unittest.TestCase):
         self.assertTrue(result["prepared"], result)
         self.assertNotIn("worker_guidance", result)
         self.assertNotIn("coordinator_guidance", result)
-        self.assertEqual(len(result["files"]), 5)
+        self.assertNotIn("submission_envelope_template", result)
+        self.assertEqual(set(result["files"]), {
+            "worker-packet.json", "response-scaffold.json", "worker-guidance.json",
+            "coordinator-manifest.json", "coordinator-guidance.json", "submission-envelope-template.json"})
+        self.assertEqual(result["worker_delivery_files"], [
+            "worker-packet.json", "response-scaffold.json", "worker-guidance.json"])
+        self.assertNotIn("submission-envelope-template.json", result["worker_delivery_files"])
         guide = json.loads((self.root / "assignment/worker-guidance.json").read_text(encoding="utf-8"))
         self.assertNotIn("itm_lem", json.dumps(guide))
 

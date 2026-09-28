@@ -1,14 +1,14 @@
 ---
 name: stat-proof-check
 metadata:
-  version: "2.3.1"
+  version: "2.3.4"
 description: Rigorous, non-formal proof audits of mathematical and statistical papers. Use only when the user explicitly invokes $stat-proof-check. Checks exact targets, substantive inferences, source coverage, and independent review. Diagnoses written arguments without silently repairing the manuscript.
 ---
 
 # Statistical Paper Proofcheck
 
-Run only on explicit invocation as `$stat-proof-check`. Preserve the applicable installation settings:
-`allow_implicit_invocation: false` and `{"skillOverrides": {"stat-proof-check": "user-invocable-only"}}`.
+Run only when the user explicitly invokes `$stat-proof-check`.
+Preserve this explicit-invocation policy in the host's skill settings when supported.
 An active audit may continue within its declared scope.
 
 ## Choose scope and workflow
@@ -24,11 +24,11 @@ An active audit may continue within its declared scope.
 Incomplete source or unfinished work requires an explicitly limited assessment.
 Priority does not narrow coverage. Checking selected parts does not check a whole theorem.
 
-For new audits and current databases, use [database-audit.md](references/database-audit.md).
-SQLite is the authority; exports and HTML are views. A source-backed overview may
-provide the starting statements and connections, but neither its selection nor a
-source match supplies proof credit or an exhaustive audit inventory. Preserve
-overview identities, selection, comparisons, and detailed audit records in shared use.
+For new/current audits, use [database-audit.md](references/database-audit.md).
+Default to `proof-check-<paper-name>/{audit.db,report.html,work/}`; deliver report/database links.
+Start new audits from the manuscript in their own database, independently of proof-graphify.
+Resume existing proof-check work in place; follow that reference's folder and collision rules.
+SQLite is authoritative; exports and HTML are views.
 
 For an existing v1.5 folder, use [legacy-workflow.md](references/legacy-workflow.md)
 until explicitly imported. Its ledger fields and commands do not apply to database work.

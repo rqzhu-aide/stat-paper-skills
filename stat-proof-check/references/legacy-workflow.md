@@ -44,7 +44,7 @@ unavailable dependencies. `critical_units` controls priority only.
 - The checker owns normalization, mathematical judgments, failure evidence,
   and issue classification, including every atomic-move field below.
 - Default to one complete proof unit per packet; never truncate evidence for a batch.
-- Lighter models may draft transcription fields, not mathematical judgments.
+- Transcription assistance may draft fields; the calibrated checker supplies mathematical judgments.
 - Reuse work only while dependency-closed semantic inputs remain current.
 
 ## Legacy workflow

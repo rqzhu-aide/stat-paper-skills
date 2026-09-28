@@ -1,4 +1,4 @@
-# Reporting and Release
+# Legacy v1.5: Markdown report format
 
 This file defines the final user report and the release checks. Challenger
 semantics remain in [challenge-protocol.md](challenge-protocol.md).

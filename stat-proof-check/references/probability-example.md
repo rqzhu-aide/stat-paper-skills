@@ -7,20 +7,37 @@ scope discharge. It is not routine worker context. The
 including saved primary responses. They use the public database APIs and do not
 depend on the repository's test helpers.
 
-Run with a shared Python installation and a new output directory:
+Run with a shared Python installation from the [chosen work folder](database-audit.md#choose-the-work-folder).
+Use a new supporting-fixture directory under `work/authoring/`:
 
 ```text
-python -X utf8 -B <skill-root>/assets/examples/probability/build_example.py --out <new-output-directory> --render
+python -X utf8 -B "<skill-root>/assets/examples/probability/build_example.py" --out work/authoring/probability-example-1 --render
 ```
 
 Omit `--render` to build only the SQLite database, captured source, response and
 submission files, and receipt. Existing nonempty output directories are refused.
 The optional report uses the installed renderer and its existing dependencies.
+The builder creates its own `probability.db`, `working.html` (when rendered), source,
+responses and receipt inside that fixture directory. These illustrate the interface; they
+are separate from the paper audit's root `audit.db` and `report.html`.
+A later fixture run needs a new directory name.
 
 The saved reasoning is an authored worked answer. The database has no reviewer
 qualification or independent response. It requires independent review, so its
 report remains a working result and its process is incomplete. Running this
-fixture is not a fresh scientific evaluation or evidence of proof-checking accuracy.
+fixture is not a fresh scientific evaluation or evidence of proof-checking accuracy, and it
+cannot qualify an independent reviewer.
+
+## Continue through independent review
+
+The example remains deliberately incomplete. For a real paper audit, use its own `audit.db`,
+not the fixture's synthetic records. Continue in this order:
+
+1. [Qualify the actual reviewer and record its ID in the audit configuration](database-qualification.md).
+2. [Prepare, dispatch and submit independent work](controller-workflow.md); that reference also covers recovery.
+3. [Map source targets when needed](review-mapping.md).
+4. [Reconcile the actual opinions](reconciler.md), then follow the audit's
+   [report and release instructions](database-audit.md#report-and-release).
 
 ## The mathematical argument
 

@@ -21,17 +21,18 @@ import sqlite3
 import unittest
 from pathlib import Path
 
-from support import R, TempCase, edit, node_available
+from support import R, TempCase, edit, locator, node_available
 
 from paper_core import (CONTRACT_NAME, CONTRACT_VERSION, CORE_VERSION, DEFAULT_FEATURES, PROJECTION_VERSION, STORAGE_FORMAT,
-                        SUPPORTED_FEATURES, acceptance, packets, projection, publish, queries, review,
+                        SUPPORTED_FEATURES, acceptance, assessment, packets, projection, publish, queries, review,
                         sources, storage)
 from paper_core.errors import InvalidRequest
 
 # The documented result surface of status(); a query that grows or loses a key breaks its callers.
 STATUS_KEYS = {"revision", "head_revision", "storage", "paper", "counts", "sources", "audit", "audits",
                "mode", "process_complete", "progress", "obligations", "assessments", "independent",
-               "findings", "source_limits", "published_revision", "publications", "context", "problems", "factual_summary"}
+               "findings", "source_limits", "published_revision", "publications", "context", "problems", "factual_summary",
+               "coverage_diagnostics", "coverage_diagnostic_count", "coverage_diagnostics_truncated"}
 CHANGES_KEYS = {"since", "revision", "total", "limit", "offset", "returned", "next_offset", "records",
                 "source_context", "affected_checks"}
 VALIDATE_KEYS = {"revision", "ok", "records", "errors", "warnings", "stale_bindings", "projection_problems",
@@ -142,7 +143,7 @@ class StatusTests(QueryCase):
     """``status`` reports progress and presentation state without ever failing for incompleteness."""
 
     def test_status_reports_exactly_the_documented_keys_at_every_stage(self):
-        """status() returns the same twenty documented keys before an audit exists and after completion."""
+        """status() returns the documented keys before an audit exists and after completion."""
         fixture = self.fixture()
         fixture.structure()
         with fixture.open(write=False) as db:
@@ -154,6 +155,47 @@ class StatusTests(QueryCase):
         self.assertEqual(set(result), STATUS_KEYS)
         self.assertEqual(result["revision"], head)
         self.assertEqual(result["head_revision"], head)
+
+    def test_status_exposes_coverage_blockers_and_preserves_historical_scope(self):
+        """Missing coverage is actionable in status and disappears only at the examined revision."""
+        fixture = self.fixture().audit()
+        with fixture.open(write=False) as db:
+            revision = db.max_revision()
+            result = queries.status(db)
+            expected = assessment.derive_assessment(db, audit_id="aud_1")
+            for field in ("coverage_diagnostics", "coverage_diagnostic_count", "coverage_diagnostics_truncated"):
+                self.assertEqual(result[field], expected[field])
+            self.assertGreater(result["coverage_diagnostic_count"], 0)
+            self.assertFalse(result["coverage_diagnostics_truncated"])
+            self.assertTrue(any(row["code"] == "missing_coverage" for row in result["coverage_diagnostics"]))
+        fixture.complete()
+        with fixture.open(write=False) as db:
+            self.assertEqual(queries.status(db)["coverage_diagnostics"], [])
+            self.assertEqual(queries.status(db)["coverage_diagnostic_count"], 0)
+            self.assertEqual(queries.status(db, revision=revision)["coverage_diagnostics"],
+                             result["coverage_diagnostics"])
+
+    def test_status_reports_assessment_coverage_truncation_without_losing_total_count(self):
+        """A large uncovered argument keeps the assessment's bounded list and full diagnostic count."""
+        fixture = self.fixture().audit()
+        with fixture.open() as db:
+            anchor_ids = [f"anc_extra_{index}" for index in range(101)]
+            sources.anchor_sources(db, request={
+                "contract_version": 3, "request_id": fixture.request_id(),
+                "packet_id": fixture.packet(db)["packet_id"],
+                "anchors": [{"id": aid, "expected_version": None, "source_id": fixture.source_id,
+                             "locator": locator(start=8, end=10)} for aid in anchor_ids]})
+            prior = db.head("arguments", "arg_lem")
+            fixture.apply(db, [edit("replace", "arguments", prior.id,
+                                   dict(prior.body, evidence_refs=prior.body["evidence_refs"] + anchor_ids),
+                                   expected=prior.version)], *fixture.ITEMS)
+            result = queries.status(db)
+            expected = assessment.derive_assessment(db, audit_id="aud_1")
+            self.assertEqual(len(result["coverage_diagnostics"]), 100)
+            self.assertGreater(result["coverage_diagnostic_count"], 100)
+            self.assertTrue(result["coverage_diagnostics_truncated"])
+            for field in ("coverage_diagnostics", "coverage_diagnostic_count", "coverage_diagnostics_truncated"):
+                self.assertEqual(result[field], expected[field])
 
     def test_status_before_an_audit_is_overview_mode_with_nothing_assessed(self):
         """Without a registered audit the snapshot is mode "overview": no audit, no obligations, no assessments."""

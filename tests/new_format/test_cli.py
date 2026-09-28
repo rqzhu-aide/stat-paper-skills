@@ -18,6 +18,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import support
 from support import (CLI_ENV, GLOBAL_TASKS, OVERVIEW, OVERVIEW_EXAMPLE, PAPER_TEX, R, TempCase, edit, locator,
@@ -349,10 +350,10 @@ class BuiltCase(TempCase):
 class TestVersionCommand(TempCase):
 
     def test_version_reports_the_core_and_contract_identity(self):
-        """version names core 2.3.1, storage format 4 and contract proofcheck-records/4."""
+        """version names core 2.3.4, storage format 4 and contract proofcheck-records/4."""
         payload, _ = run_cli("version")
         self.assertEqual(payload["command"], "version")
-        self.assertEqual(payload["core_version"], "2.3.1")
+        self.assertEqual(payload["core_version"], "2.3.4")
         self.assertEqual(payload["storage_format"], 4)
         self.assertEqual(payload["contract_version"], 4)
         self.assertEqual(payload["contract"], "proofcheck-records/4")
@@ -679,7 +680,7 @@ class TestStatusAndValidate(BuiltCase):
         storage_block = dict(status["storage"])
         self.assertIsInstance(storage_block.pop("metadata"), dict)
         self.assertEqual(storage_block, {"storage_format": 4, "contract_version": 4,
-                                         "contract": "proofcheck-records/4", "core_version": "2.3.1",
+                                         "contract": "proofcheck-records/4", "core_version": "2.3.4",
                                          "projection_version": 2})
 
     def test_an_incomplete_assessment_is_a_successful_status_query(self):
@@ -808,6 +809,42 @@ class TestReleaseBlocked(BuiltCase):
         self.assertIn("RELEASE_BLOCKED", stderr)
         self.assertFalse(out.exists(), "a refused release must not create its output directory")
         self.assertEqual(self.head_revision(db), before)
+        retry = payload["error"]["retry"]
+        self.assertEqual(retry["next_commands"],
+                         [["paper_audit.py", "work", "list", str(db.resolve()), "--audit", AUDIT]])
+        self.assertEqual(retry["checkpoint"]["command"],
+                         ["paper_audit.py", "checkpoint", str(db.resolve()), "--audit", AUDIT])
+        self.assertEqual(retry["checkpoint"]["required_options"], ["--out"])
+        self.assertIn("report.html", retry["checkpoint"]["instruction"])
+        self.assertFalse(self.path("report.html").exists())
+        self.assertFalse(out.with_suffix(".working.html").exists())
+
+    def test_blocked_release_preserves_the_selected_checkpoint_destination_without_writing_it(self):
+        """Retry guidance keeps the selected report path; release never writes the working report."""
+        db = self.db_copy("primary")
+        before = self.head_revision(db)
+        for report_name in ("report.html", "custom reports/proof audit.html"):
+            for existing in (False, True):
+                with self.subTest(report_name=report_name, existing=existing):
+                    report = self.path(report_name)
+                    original = b"existing working report\n"
+                    if existing:
+                        report.write_bytes(original)
+                    out = self.path("release")
+                    payload, _ = run_cli("release", db, "--audit", AUDIT, "--out", out,
+                                         "--checkpoint-out", report, expect=2)
+                    self.assertEqual(payload["error"]["code"], "RELEASE_BLOCKED")
+                    self.assertEqual(payload["error"]["retry"]["next_commands"], [
+                        ["paper_audit.py", "checkpoint", str(db.resolve()), "--audit", AUDIT,
+                         "--out", str(report.resolve())],
+                        ["paper_audit.py", "work", "list", str(db.resolve()), "--audit", AUDIT]])
+                    self.assertFalse(out.exists())
+                    self.assertFalse(out.with_suffix(".working.html").exists())
+                    if existing:
+                        self.assertEqual(report.read_bytes(), original)
+                    else:
+                        self.assertFalse(report.exists())
+                    self.assertEqual(self.head_revision(db), before)
 
     def test_an_open_source_issue_blocks_completion_and_release(self):
         """A recorded source limit reopens the process even with every obligation satisfied."""
@@ -892,13 +929,14 @@ class TestPublication(BuiltCase):
         self.assertEqual(second["report_paths"], ["reports/check.html"])
 
     def test_release_writes_an_immutable_three_file_package(self):
-        """release publishes report, export and receipt for a process-complete audit."""
-        db, _ = self.published_copy()
+        """release freezes three files and leaves the selected working report unchanged."""
+        db, html = self.published_copy()
+        working_bytes = html.read_bytes()
         out = self.path("release")
-        payload, stderr = run_cli("release", db, "--audit", AUDIT, "--out", out)
+        payload, stderr = run_cli("release", db, "--audit", AUDIT, "--out", out, "--checkpoint-out", html)
         self.assertEqual(payload["command"], "release")
         self.assertIs(payload["process_complete"], True)
-        self.assertEqual(payload["core_version"], "2.3.1")
+        self.assertEqual(payload["core_version"], "2.3.4")
         self.assertEqual(payload["storage_format"], 4)
         self.assertEqual(payload["contract"], "proofcheck-records/4")
         self.assertEqual(payload["audit_id"], AUDIT)
@@ -907,6 +945,7 @@ class TestPublication(BuiltCase):
         self.assertEqual(payload["publication"]["state"], "published")
         self.assertEqual(payload["files"], ["report.html", "export.json", "receipt.json"])
         self.assertEqual(sorted(p.name for p in out.iterdir()), ["export.json", "receipt.json", "report.html"])
+        self.assertEqual(html.read_bytes(), working_bytes)
         self.assertEqual(sha((out / "report.html").read_bytes()), payload["publication"]["artifact_sha256"])
         receipt = json.loads((out / "receipt.json").read_text(encoding="utf-8"))
         self.assertEqual(receipt["revision"], payload["revision"])
@@ -1289,7 +1328,7 @@ class TestTelemetry(BuiltCase):
         details = [event["details"] for event in summary["event_list"]]
         self.assertEqual({d["command"] for d in details}, {"status", "changes"})
         self.assertTrue(all(d["exit_code"] == 0 and d["outcome"] == "ok" for d in details), details)
-        self.assertTrue(all(d["core_version"] == "2.3.1" for d in details), details)
+        self.assertTrue(all(d["core_version"] == "2.3.4" for d in details), details)
 
     def test_a_failed_command_records_its_exit_code_and_error_code(self):
         """The telemetry event of a refused command carries outcome error and the error code."""
@@ -1440,6 +1479,66 @@ class TestImportLegacy(TempCase):
         self.assertEqual(payload["error"]["code"], "INVALID_REQUEST")
         self.assertIn("legacy audit folder not found", payload["error"]["message"])
         self.assertFalse(target.exists())
+
+
+class TestWorkDiagnostics(TempCase):
+    def prepare(self, fixture, *extra):
+        return run_cli("work", "prepare", fixture.path, "--audit", "aud_1", "--mode", "primary",
+                       "--out", self.work / "assignment", *extra)[0]
+
+    def test_no_primary_assignment_does_not_claim_unfinished_review_is_complete(self):
+        fx = self.fixture().primary()
+        result = self.prepare(fx)
+        self.assertFalse(result["prepared"])
+        self.assertFalse(result["preparation"]["process_complete"])
+        self.assertNotEqual("recorded_scope_complete", result["preparation"]["reason"])
+        self.assertEqual(result["preparation"]["next_commands"][0][1:3], ["work", "list"])
+
+    def test_oversized_assignment_reports_size_blocker_without_creating_packet(self):
+        fx = self.fixture().audit()
+        with fx.open() as db:
+            before = db.conn.execute("SELECT count(*) FROM packets").fetchone()[0]
+        result = self.prepare(fx, "--max-bytes", "1")
+        self.assertFalse(result["prepared"])
+        self.assertEqual("packet_size_limit", result["preparation"]["reason"])
+        self.assertFalse(result["preparation"]["process_complete"])
+        with fx.open() as db:
+            self.assertEqual(before, db.conn.execute("SELECT count(*) FROM packets").fetchone()[0])
+
+    def test_no_assignment_after_completion_names_recorded_scope(self):
+        result = self.prepare(self.fixture().complete())
+        self.assertFalse(result["prepared"])
+        self.assertTrue(result["preparation"]["process_complete"])
+        self.assertEqual("recorded_scope_complete", result["preparation"]["reason"])
+
+    @unittest.skipUnless(node_available(), "rendering a report needs node")
+    def test_partial_checkpoint_returns_same_scope_as_status_and_continuation_commands(self):
+        fx = self.fixture().primary()
+        report = self.work / "working report.html"
+        result, _ = run_cli("checkpoint", fx.path, "--audit", "aud_1", "--out", report)
+        state, _ = run_cli("status", fx.path, "--audit", "aud_1")
+        self.assertFalse(result["process_complete"])
+        self.assertEqual(result["factual_summary"], state["factual_summary"])
+        self.assertEqual(result["output_path"], str(report.resolve()))
+        self.assertEqual(result["next_commands"][0][1:3], ["work", "list"])
+        self.assertTrue(report.is_file())
+
+    @unittest.skipUnless(node_available(), "rendering a report needs node")
+    def test_partial_release_failure_reports_saved_files_without_claiming_delivery(self):
+        from paper_core import cli
+        from paper_core.errors import PublicationError
+        fx = self.fixture().complete()
+        destination = self.work / "release"
+        args = argparse.Namespace(db=str(fx.path), audit="aud_1", out=str(destination))
+        with patch.object(cli, "write_export", side_effect=OSError("fixture export write failed")):
+            with self.assertRaises(PublicationError) as caught:
+                cli.cmd_release(args)
+        failure = caught.exception.records[-1]
+        self.assertFalse(failure["delivery_complete"])
+        self.assertEqual(failure["stage"], "export")
+        self.assertEqual(failure["available_files"], ["report.html"])
+        self.assertTrue((destination / "report.html").is_file())
+        self.assertFalse((destination / "receipt.json").exists())
 
 
 if __name__ == "__main__":

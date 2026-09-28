@@ -1,9 +1,13 @@
 # Detailed mathematical checking
 
-Read this with the assigned source packet and primary or independent role brief.
-Use only the relevant sections of [domain-risk-checks.md](domain-risk-checks.md).
-The goal is inspectable mathematics for every substantive inference in scope,
-not a checklist row or graph node for every physical line.
+Use the assigned packet, role brief, and relevant [domain checks](domain-risk-checks.md).
+Show every substantive inference; routine lines need no separate node.
+
+## Mathematical text and JSON
+
+Use `$...$`/`\(...\)` inline or `$$...$$`/`\[...\]` display.
+Undelimited math stays plain; preserve source excerpts. JSON requires doubled backslashes,
+including dollar-delimited commands: `"$\\theta$"`. Prefer a JSON serializer with Python raw strings.
 
 ## Establish the source and exact target
 

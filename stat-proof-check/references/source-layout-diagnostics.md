@@ -1,4 +1,4 @@
-# Source layout diagnostics
+# Legacy v1.5: Source layout diagnostics
 
 Use this procedure when the read-only source check reports `review_required`
 items or inventory review finds an unsupported proof boundary or association.

@@ -1,4 +1,4 @@
-# Proof-System Audit
+# Legacy v1.5: Proof-System Audit
 
 ## 1. Build the inventory
 
@@ -97,7 +97,7 @@ For each formal result, record:
 - constants, rates, domains, and probability level;
 - local-check status.
 
-Also review the method-interface trigger. Inventory each load-bearing estimated object only when it meets the trigger in `SKILL.md`. Do not turn every oracle nuisance or routine computation into a software audit.
+Also review the method-interface trigger. Inventory each load-bearing estimated object only when it meets the trigger in [legacy workflow step 4](legacy-workflow.md#4-close-dependencies-and-issues). Do not turn every oracle nuisance or routine computation into a software audit.
 
 For `depth: full`, put every inventory unit with `proof_required: true` in
 `audit_scope.in_scope_units`. Do not exclude a proof-required result because its

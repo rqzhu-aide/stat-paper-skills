@@ -1,4 +1,4 @@
-# Independent Verification Protocol
+# Legacy v1.5: Independent Verification Protocol
 
 Every unit in `audit_scope.in_scope_units` needs a fresh independent check.
 `critical_units` controls priority, never coverage. The challenger reads this

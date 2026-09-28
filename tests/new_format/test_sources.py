@@ -1045,6 +1045,38 @@ class AnchorCommand(support.TempCase):
             self.assertIsNone(db.head("anchors", "anc_other"))
             self.assertEqual(db.max_revision(), revision)
 
+    def test_accepted_anchor_retry_returns_historical_listing_after_source_and_anchor_changes(self):
+        """Replay restores its original changed/unchanged versions, without resolving today's source."""
+        fx = self.fixture().anchors()
+        with fx.open() as db:
+            request = anchor_request(fx.packet(db)["packet_id"], "req_history", [
+                anchor_entry("anc_lem", fx.source_id, locator(label="lem:a"), expected=1),
+                anchor_entry("anc_new", fx.source_id, locator(label="thm:b"))])
+            first = sources.anchor_sources(db, request=request)
+            rewrite(fx.source_root / "paper.tex", "% shifted\n" + support.PAPER_TEX)
+            sources.capture_sources(db, files=["paper.tex"])
+            sources.anchor_sources(db, request=anchor_request(fx.packet(db)["packet_id"], "req_move_both", [
+                anchor_entry("anc_lem", fx.source_id, locator(label="lem:a"), expected=1),
+                anchor_entry("anc_new", fx.source_id, locator(label="thm:b"), expected=1)]))
+            before = (db.max_revision(), len(db.all_versions()))
+            with patch.object(sources, "resolve_anchor", side_effect=AssertionError("must replay history")):
+                self.assertEqual(sources.anchor_sources(db, request=request), first)
+            self.assertEqual(first["anchors"][0]["source_version"], 1)
+            self.assertEqual(first["unchanged"], [{"id": "anc_lem", "version": 1}])
+            self.assertEqual(db.head("anchors", "anc_new").body["source_version"], 2)
+            self.assertEqual((db.max_revision(), len(db.all_versions())), before)
+            changed = dict(request, anchors=[anchor_entry("anc_lem", fx.source_id, locator(label="absent"))])
+            with self.assertRaises(InvalidRequest) as caught:
+                sources.anchor_sources(db, request=changed)
+            self.assertEqual(caught.exception.code, "REQUEST_ID_REUSED")
+            # An unaccepted ID still resolves and validates the live source normally.
+            fresh = anchor_request(fx.packet(db)["packet_id"], "req_new_bad", [
+                anchor_entry("anc_missing", fx.source_id, locator(label="absent"))])
+            with self.assertRaises(InvalidRequest) as caught:
+                sources.anchor_sources(db, request=fresh)
+            self.assertEqual(caught.exception.code, "LABEL_NOT_FOUND")
+            self.assertEqual((db.max_revision(), len(db.all_versions())), before)
+
 
 class SourceReviewAndLimits(support.TempCase):
     """``review_sources`` records source reviews and issues, and open issues limit the audit."""
@@ -1101,6 +1133,50 @@ class SourceReviewAndLimits(support.TempCase):
                              ["edits/0: source review batches carry source_reviews and source_issues only"])
             self.assertEqual(db.max_revision(), revision)
             self.assertIsNone(db.head("observations", "obs_x"))
+
+    def test_accepted_review_retry_preserves_receipt_after_its_source_and_anchor_pins_go_stale(self):
+        """Old acceptance is replayable; new or changed requests cannot bypass current pin checks."""
+        fx = self.fixture().anchors()
+        with fx.open() as db:
+            batch = fx.batch([edit("create", "source_reviews", "srv_replay", {
+                "source_refs": [fx.pin(db, "sources", fx.source_id)],
+                "anchor_refs": [fx.pin(db, "anchors", "anc_lem")],
+                "purpose": "locator_confirmation", "decision": "accepted",
+                "rationale": "the original excerpt matches", "reviewer": "coord"})], fx.packet(db)["packet_id"])
+            first = sources.review_sources(db, batch=batch)
+            rewrite(fx.source_root / "paper.tex", "% shifted\n" + support.PAPER_TEX)
+            sources.capture_sources(db, files=["paper.tex"])
+            sources.anchor_sources(db, request=anchor_request(fx.packet(db)["packet_id"], "req_reanchor", [
+                anchor_entry("anc_lem", fx.source_id, locator(label="lem:a"), expected=1)]))
+            before = (db.max_revision(), len(db.all_versions()))
+            self.assertEqual(sources.review_sources(db, batch=batch), first)
+            self.assertLess(first["revision"], db.max_revision())
+            changed_edit = dict(batch["edits"][0], body=dict(batch["edits"][0]["body"], rationale="different"))
+            with self.assertRaises(InvalidRequest) as caught:
+                sources.review_sources(db, batch=dict(batch, edits=[changed_edit]))
+            self.assertEqual(caught.exception.code, "REQUEST_ID_REUSED")
+            with self.assertRaises(InvalidRequest) as caught:
+                sources.review_sources(db, batch=dict(batch, request_id="req_new_stale",
+                                                     packet_id=fx.packet(db)["packet_id"]))
+            self.assertIn(f"edits/0: source_refs entry {fx.source_id} must pin the live version",
+                          caught.exception.records)
+            self.assertIn("edits/0: anchor_refs entry anc_lem must pin the live version", caught.exception.records)
+            self.assertEqual((db.max_revision(), len(db.all_versions())), before)
+
+    def test_review_cannot_replay_an_accepted_batch_from_another_command(self):
+        """A previously accepted apply envelope is still outside the source-review command's scope."""
+        fx = self.fixture().structure()
+        with fx.open() as db:
+            scope = {"argument_id": None, "parent_id": None, "assumptions": [], "binders": [],
+                     "conditions": [], "evidence_refs": []}
+            batch = fx.batch([edit("create", "scopes", "scp_other", scope)], fx.packet(db)["packet_id"])
+            acceptance.apply_batch(db, batch)
+            revision = db.max_revision()
+            with self.assertRaises(InvalidRequest) as caught:
+                sources.review_sources(db, batch=batch)
+            self.assertEqual(caught.exception.records,
+                             ["edits/0: source review batches carry source_reviews and source_issues only"])
+            self.assertEqual(db.max_revision(), revision)
 
     def test_a_malformed_review_envelope_is_reported_before_any_record_check(self):
         """A wrong contract_version fails the envelope shape, not the per-edit rules."""

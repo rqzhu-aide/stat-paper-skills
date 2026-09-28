@@ -1,4 +1,4 @@
-# Evidence and Verdicts
+# Legacy v1.5: Evidence and Verdicts
 
 This file is the canonical contract for evidence strength and proof-audit judgments. Issue lifecycle rules are in [issues-and-repairs.md](issues-and-repairs.md), and independent challenger rules are in [challenge-protocol.md](challenge-protocol.md).
 

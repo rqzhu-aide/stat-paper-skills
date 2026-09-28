@@ -1,4 +1,4 @@
-# Line-by-Line Verification Protocol
+# Legacy v1.5: Line-by-Line Verification Protocol
 
 ## Contents
 
@@ -128,11 +128,11 @@ separately, but normally inspect one complete proof unit and produce all of its
 ordered atomic records in one model call. Do not create one call per source
 line, risk row, or inference move.
 
-A lighter model may draft transcription: prefilled literals, goals, exact claim
-restatements, and source grouping. The strongest available model must review
-that draft and supply every judgment: status, risks, side conditions, failures,
-computations, premises, rules, conclusions, issues, and challenges. All authors
-face identical gates; telemetry's `stage` can record the tier. Calibration's
+Transcription assistance may draft prefilled literals, goals, exact claim
+restatements, and source grouping. The calibrated checker must review that draft
+and supply every judgment: status, risks, side conditions, failures, computations,
+premises, rules, conclusions, issues, and challenges. All authors face identical
+gates; telemetry's `stage` can record the work stage. Calibration's
 `checker_profile_id` names the judgment-bearing checker. A changed profile or
 configuration requires fresh calibration before further judgment. A worker or
 context handoff under the same profile and configuration reuses the passing

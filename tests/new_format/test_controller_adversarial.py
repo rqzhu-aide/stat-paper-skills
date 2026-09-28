@@ -122,7 +122,13 @@ class ControllerAdversarialTests(TempCase):
         original = self.db.get_blob(self.db.packet(packet["packet_id"])["payload_sha256"])
         recovered = controller.inspect_work(self.db, packet_id=packet["packet_id"])
         paths = controller.write_artifacts(self.db, recovered, self.path("recovered"))
+        self.assertEqual(["worker-packet.json", "response-scaffold.json", "worker-guidance.json"],
+                         recovered["worker_delivery_files"])
+        self.assertIn("submission-envelope-template.json", paths)
         from pathlib import Path
+        delivered = b"\n".join(Path(paths[name]["path"]).read_bytes() for name in recovered["worker_delivery_files"])
+        for forbidden in (b"qualification_id", b"draft_candidates", b"renewal_candidates", b"primary_opinions"):
+            self.assertNotIn(forbidden, delivered)
         raw = Path(paths["worker-packet.json"]["path"]).read_bytes()
         self.assertEqual(original, raw)
         worker = json.loads(raw)

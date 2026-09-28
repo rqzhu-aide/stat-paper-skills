@@ -113,10 +113,20 @@ class AssistanceTests(TempCase):
             self.assertEqual(predecessor, by_owner["checker-a"]["supersedes"])
             self.assertIsNone(by_owner["checker-b"]["supersedes"])
             self.assertEqual("Check the base case.", by_owner["checker-b"]["next_action"])
+            self.assertEqual(drafts[0]["body"]["reasoning"], by_owner["checker-a"]["reasoning"])
+            self.assertEqual(drafts[0]["body"]["conditions"], by_owner["checker-a"]["conditions"])
+            self.assertEqual("draft", by_owner["checker-a"]["state"])
             self.assertEqual(before, db.max_revision())
             limited = copy.deepcopy(prepared["manifest"])
             limited["read_set"] = [pin for pin in limited["read_set"] if pin["id"] != "chk_draft_b"]
             self.assertEqual(["checker-a"], [r["reviewer"] for r in assistance.coordinator_guidance(db, limited)["draft_candidates"]])
+            # Historical draft pins retain their own prose after the head changes.
+            draft = db.head("checks", "chk_draft_a")
+            fx.apply(db, [edit("replace", "checks", draft.id,
+                dict(draft.body, reasoning="A later draft has different reasoning."), draft.version)], mode="primary")
+            historical = assistance.coordinator_guidance(db, prepared["manifest"])
+            saved = next(row for row in historical["draft_candidates"] if row["ref"]["id"] == draft.id)
+            self.assertEqual(draft.body["reasoning"], saved["reasoning"])
 
     def test_reconciliation_candidates_are_exact_and_require_an_authored_decision(self):
         fx = self.fixture().independent()
@@ -130,6 +140,13 @@ class AssistanceTests(TempCase):
             self.assertTrue(candidate["has_both_roles"])
             self.assertEqual(["chk_comp_lem"], [pin["id"] for pin in candidate["primary_checks"]])
             self.assertEqual([fx.independent_checks["itm_lem"]], [pin["id"] for pin in candidate["independent_checks"]])
+            for role in ("primary", "independent"):
+                self.assertEqual(candidate[f"{role}_checks"], [op["ref"] for op in candidate[f"{role}_opinions"]])
+                for opinion in candidate[f"{role}_opinions"]:
+                    pin = opinion["ref"]
+                    body = db.version("checks", pin["id"], pin["version"]).body
+                    for field in ("state", "outcome", "reasoning", "conditions", "evidence_refs", "reviewer", "supersedes"):
+                        self.assertEqual(body[field], opinion[field])
             self.assertTrue(all("row_template" not in entry for entry in result["reconciliation_candidates"]))
             row = result["reconciliation_row_template"]
             self.assertEqual("", row["decision"])
@@ -143,6 +160,46 @@ class AssistanceTests(TempCase):
             self.assertEqual(row, db.head("reconciliations", "rec_guided").body)
             with self.assertRaisesRegex(InvalidRequest, "current assessment"):
                 assistance.coordinator_guidance(db, prepared["manifest"], assessed=assessed)
+
+    def test_negative_renewal_retains_exact_opinion_and_changed_input_explanation(self):
+        fx = self.fixture().primary()
+        with fx.open() as db:
+            predecessor = fx.pin(db, "checks", "chk_comp_lem")
+            negative = Fixture.check_edit("chk_negative", R("arguments", "arg_lem"), "composition",
+                outcome="gap", supersedes=predecessor, evidence=["anc_lem_proof"])
+            negative["body"].update(reasoning="The written induction omits the base case.",
+                                     conditions=["The base case must be proved separately."])
+            fx.apply(db, [negative], mode="primary")
+            old = db.head("coverage", "cov_lem")
+            fx.apply(db, [edit("replace", "coverage", old.id,
+                dict(old.body, end_offset=old.body["end_offset"] - 1), old.version)], mode="primary")
+            prepared = controller.prepare_work(db, audit_id=fx.audit_id, mode="primary", focus=R("items", "itm_lem"))
+            candidate = next(row for row in prepared["coordinator_guidance"]["renewal_candidates"]
+                             if row["ref"]["id"] == "chk_negative")
+            for field in ("state", "outcome", "reasoning", "conditions", "evidence_refs", "reviewer", "supersedes"):
+                self.assertEqual(negative["body"][field], candidate[field])
+            self.assertGreater(candidate["recovery"]["changed_count"], 0)
+            self.assertTrue(all(row.get("outcome") is None for row in prepared["scaffold"]["results"]))
+            self.assertNotIn(negative["body"]["reasoning"], str(prepared["worker_guidance"]))
+
+    def test_conflicting_reconciliation_opinions_do_not_choose_a_decision(self):
+        fx = self.fixture().independent()
+        with fx.open() as db:
+            negative = Fixture.check_edit("chk_disagreement", R("arguments", "arg_lem"), "composition",
+                outcome="gap", supersedes=fx.pin(db, "checks", "chk_comp_lem"))
+            negative["body"].update(reasoning="The induction step still lacks its base case.",
+                                     conditions=["A valid base case is needed."])
+            fx.apply(db, [negative], mode="primary")
+            prepared = controller.prepare_work(db, audit_id=fx.audit_id, mode="reconcile", focus=R("items", "itm_lem"))
+            guidance = prepared["coordinator_guidance"]
+            candidate = next(row for row in guidance["reconciliation_candidates"] if row["target"] == R("arguments", "arg_lem"))
+            self.assertTrue(candidate["has_both_roles"])
+            self.assertEqual("gap", candidate["primary_opinions"][0]["outcome"])
+            self.assertEqual(negative["body"]["conditions"], candidate["primary_opinions"][0]["conditions"])
+            self.assertEqual("supported", candidate["independent_opinions"][0]["outcome"])
+            self.assertEqual("", guidance["reconciliation_row_template"]["decision"])
+            self.assertEqual("", guidance["reconciliation_row_template"]["rationale"])
+            self.assertEqual([], prepared["scaffold"]["edits"])
 
     def test_primary_renewal_candidates_are_assigned_readable_and_currently_stale(self):
         fx = self.fixture().primary()
@@ -306,6 +363,7 @@ class AssistanceTests(TempCase):
             self.assertEqual([successor.pinned], candidate["independent_checks"])
             self.assertEqual([prior.pinned], [entry["ref"] for entry in candidate["required_other_opinions"]])
             self.assertTrue(candidate["required_other_opinions"][0]["superseded"])
+            self.assertEqual(prior.body["reasoning"], candidate["required_other_opinions"][0]["reasoning"])
             self.assertIn(prior.pinned, prepared["manifest"]["read_set"])
             self.assertNotIn("missing_required_opinion_count", candidate)
             limited = copy.deepcopy(prepared["manifest"])

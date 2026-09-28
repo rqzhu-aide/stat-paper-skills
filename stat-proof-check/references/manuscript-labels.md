@@ -1,4 +1,4 @@
-# Reviewed manuscript labels
+# Legacy v1.5: Reviewed manuscript labels
 
 Result numbering is optional presentation metadata in the audit manifest's
 `report_context.manuscript_labels`. Use it when a printed PDF supplies the

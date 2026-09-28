@@ -1,4 +1,4 @@
-# Checker Calibration Canaries
+# Legacy v1.5: Checker Calibration Canaries
 
 Canaries test whether the checker detects mathematical errors rather than only
 producing complete records. The sealed set contains planted defects and valid

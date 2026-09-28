@@ -10,6 +10,13 @@ Mint IDs in batches per kind, including request IDs, rather than launching a com
 Unused minted IDs need no database entry. Controller responses generate their own check,
 observation, coverage and finding IDs; do not pre-mint those IDs for `work submit`.
 
+Follow [mathematical text and JSON](mathematical-checking.md#mathematical-text-and-json)
+for formula delimiters, backslash escaping, and unchanged source excerpts.
+
+Run these examples from the [chosen work folder](database-audit.md#choose-the-work-folder);
+`AUDIT.db` means its `audit.db`. The manuscript's registered source root is separate from
+this working directory.
+
 ## Shared values
 
 | Name | Exact shape or allowed values |
@@ -35,7 +42,7 @@ With line numbers, its uncommented `\label{KEY}` must occur inside that range. U
 an unlabeled passage.
 
 Capture source before anchoring. Submit the dedicated anchor request below with
-`paper_audit.py source anchor AUDIT.db --request anchors.json`, replacing its example IDs
+`paper_audit.py source anchor AUDIT.db --request work/authoring/anchors.json`, replacing its example IDs
 and line range with captured source and current packet identities:
 
 ```json
@@ -59,7 +66,7 @@ and hashes; it is not an ordinary `apply` batch. Rebinding an existing anchor re
 ## Generate one record shape
 
 ```text
-python "<skill-root>/scripts/paper_audit.py" template AUDIT.db --packet pkt_AUTHOR --collection items --out item-template.json
+python "<skill-root>/scripts/paper_audit.py" template AUDIT.db --packet pkt_AUTHOR --collection items --out work/authoring/item-template.json
 ```
 
 The output contains an uncommitted `template` batch and its contract-derived shape. Author
@@ -157,14 +164,17 @@ also reconcile the registered proof inventory. Both modes list exactly the three
 once each. Use `protocol_version: "item-audit/1"`. Qualification records are created through
 `qualification record`, never fabricated in a graph batch.
 
-Preserve a selected overview arrow `A -> T` when detail expands it through `A -> C -> T`.
+The selection/refinement rules below apply to the audit's own result view or overview records
+already embedded in a resumed proof-check audit, subject to the
+[work-folder separation rule](database-audit.md#choose-the-work-folder).
+Preserve a selected summary arrow `A -> T` when detail expands it through `A -> C -> T`.
 A `connection_refinements` record links that summary use to the relevant detailed uses and argument.
 For borrowed proof reasoning, the actual supplier can instead be an intermediate owned by A:
 map the summary to `C -> T` without inventing `A -> C`. Ownership alone provides no support.
 The refinement must explain the original source-backed contribution, and shared detailed applications
 are checked once. Distinct uses, parallel contributions, and mixed outcomes retain their identities.
 
-Overview selections record their items, connections, main results, and source context independently
+Such overview selections record their items, connections, main results, and source context independently
 of audit scope. Adding audit-only detail does not silently enlarge that selection or its comparison
 context. Ordinary overview edits preserve extensions; changing consumed mathematics reopens affected
 work. A changed summary needs its own renewed comparison even when an unchanged exact target retains
@@ -213,23 +223,23 @@ suggested simulation or numerical validation remains an unperformed follow-up fo
 
 ## Authoring commands and envelopes
 
-Capture source using `source capture DB --files FILES.json`, where `FILES.json` is an array of paths
+Capture source using `source capture AUDIT.db --files work/authoring/files.json`, where that file is an array of paths
 relative to the source root. Source IDs come from the capture receipt. Obtain an author packet
 covering the paper or affected records before writing:
 
 ```text
-python "<skill-root>/scripts/paper_audit.py" get AUDIT.db --target papers:pap_ID --mode author --out author.json
-python "<skill-root>/scripts/paper_audit.py" source anchor AUDIT.db --request ANCHORS.json
-python "<skill-root>/scripts/paper_audit.py" get AUDIT.db --target papers:pap_ID --mode author --out graph-context.json
-python "<skill-root>/scripts/paper_audit.py" apply AUDIT.db --batch GRAPH.json
+python "<skill-root>/scripts/paper_audit.py" get AUDIT.db --target papers:pap_ID --mode author --out work/authoring/author.json
+python "<skill-root>/scripts/paper_audit.py" source anchor AUDIT.db --request work/authoring/anchors.json
+python "<skill-root>/scripts/paper_audit.py" get AUDIT.db --target papers:pap_ID --mode author --out work/authoring/graph-context.json
+python "<skill-root>/scripts/paper_audit.py" apply AUDIT.db --batch work/authoring/graph.json
 ```
 
-`ANCHORS.json` is exactly `{contract_version: 4, request_id, packet_id, anchors: [...]}`. Each entry
+`work/authoring/anchors.json` is exactly `{contract_version: 4, request_id, packet_id, anchors: [...]}`. Each entry
 is `{id, expected_version: positive integer|null, source_id, locator: Locator}`. Use null for a new
 anchor, the supplied current version to rebind an existing one. The script extracts the excerpt,
 hashes and source version; do not invent those fields or create anchors through `apply`.
 
-`GRAPH.json` is exactly `{contract_version: 4, request_id, packet_id, edits: [...]}`. A create or
+`work/authoring/graph.json` is exactly `{contract_version: 4, request_id, packet_id, edits: [...]}`. A create or
 replace edit is `{op: "create"|"replace", collection, id, expected_version, body}`. Create uses null;
 replace uses the packet's current version and the complete new body. A retire edit is
 `{op: "retire", collection, id, expected_version, reason: nonempty string}`, with no body. Records
@@ -241,7 +251,7 @@ to retrieve its receipt; a new edit gets a new request ID.
 Read the actual source to identify every segment and continuation of the written proof. Create
 a source review using a current author packet:
 
-    python "<skill-root>/scripts/paper_audit.py" source review AUDIT.db --request BOUNDARY-REVIEW.json
+    python "<skill-root>/scripts/paper_audit.py" source review AUDIT.db --request work/authoring/boundary-review.json
 
 The request is the same `{contract_version: 4, request_id, packet_id, edits}` envelope.
 Each create edit targets `source_reviews` with body

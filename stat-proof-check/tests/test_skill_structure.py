@@ -37,7 +37,6 @@ class SkillStructureTests(unittest.TestCase):
         self.assertRegex(metadata, r"allow_implicit_invocation:\s*false")
         skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("Use only when the user explicitly invokes $stat-proof-check", skill)
-        self.assertIn('"user-invocable-only"', skill)
 
     def test_dispatch_contract_includes_scientific_core_without_coordinator_material(self):
         private = {"database-audit.md", "controller-workflow.md", "database-qualification.md",
@@ -64,7 +63,7 @@ class SkillStructureTests(unittest.TestCase):
 
     def test_current_reference_links_resolve(self):
         names = set(sum((list(paths) for paths in ROLE_REFERENCES.values()), [])) | {
-            "database-audit.md", "controller-workflow.md", "checker-protocol.md", "graph-records.md",
+            "database-audit.md", "controller-workflow.md", "graph-records.md",
             "coordinator-protocol.md", "review-mapping.md", "database-compatibility.md", "supplied-route-review.md"}
         for path in [SKILL_ROOT / "SKILL.md", *(REFERENCES / name for name in names)]:
             for link in re.findall(r"\[[^\]]+\]\(([^)]+)\)", path.read_text(encoding="utf-8")):

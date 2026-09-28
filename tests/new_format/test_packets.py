@@ -262,7 +262,7 @@ class PacketAllowlistTests(TempCase):
 
 
 class BlindingTests(TempCase):
-    """Independent packets carry source material only (handoff 6, checker-protocol 'Independent checker')."""
+    """Independent packets carry source material only (independent-checker.md)."""
 
     def setUp(self):
         super().setUp()

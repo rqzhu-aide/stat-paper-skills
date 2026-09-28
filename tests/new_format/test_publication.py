@@ -43,7 +43,8 @@ SELFTEST_CHECKS = ["hash:assets/archify/template.html", "hash:assets/archify/uti
                    "hash:assets/archify/i18n.mjs", "hash:assets/archify/LICENSE",
                    "hash:assets/archify/JetBrainsMono-OFL.txt", "render:dag_small.json",
                    "render:index_fallback.json", "render:long_math.json", "fail:cycle_dag.json",
-                   "render:cyclic", "render:cyclic-dense", "reader:pinned-context-and-tampering", "reader:missing-strategy"]
+                   "render:cyclic", "render:cyclic-dense", "reader:pinned-context-and-tampering", "reader:missing-strategy",
+                   "reader:clutter-preserves-evidence-and-limitations"]
 ISO_INSTANT = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$"
 SHA256_HEX = r"^[0-9a-f]{64}$"
 # The page embeds the projection and the render input as JSON. Assertions about what a reader can
@@ -173,6 +174,26 @@ class MathRenderTests(unittest.TestCase):
         self.assertIn(r"<code>$\frac{1}{2$</code>", html)
         self.assertIn('title="This LaTeX expression is unsupported by the offline converter."', html)
         self.assertTrue(html.endswith(" y"), html[-20:])
+
+    def test_decoded_json_escapes_fall_back_with_a_specific_reason(self):
+        r"""An under-escaped \theta, \rho or \nabla arrives as a control character plus letters; it must not render."""
+        for command, reason in (("theta", "tab + heta"), ("rho", "carriage return + ho"),
+                                ("nabla", "newline + abla"), ("rVert", "carriage return + Vert")):
+            with self.subTest(command=command):
+                text = json.loads('"$x \\' + command + ' y$"')
+                html = render_text(text)
+                self.assertNotIn("<math", html)
+                self.assertIn(f"Likely decoded LaTeX escape ({reason})", html)
+        for legitimate in (r"$\theta\to\rho\nabla$", "$x =\t" + "o(1)$", "$x +\r\n" + "ho$", "$x +\t" + "hetas$"):
+            with self.subTest(legitimate=legitimate):
+                self.assertNotIn("decoded LaTeX escape", render_text(legitimate))
+
+    def test_little_o_with_tex_whitespace_still_renders(self):
+        for whitespace in (" ", "  ", "\t", "\n", "\r\n"):
+            with self.subTest(whitespace=whitespace):
+                html = render_text("$x =\to" + whitespace + "(1)$")
+                self.assertIn("<math", html)
+                self.assertNotIn("math-fallback", html)
 
     def test_macro_definitions_are_refused_rather_than_expanded(self):
         """Source macro definitions are never expanded, so a definition renders as its literal text."""
@@ -474,6 +495,15 @@ class MechanicalAcceptanceTests(PublicationCase):
                 result = publish.mechanical_acceptance(self.before_body_end(injected), self.projection)
                 self.assertEqual([expected], result["failures"])
 
+    def test_readable_scope_labels_keep_exact_target_identity(self):
+        marker = b'<span data-proof-scope-target="items:itm_thm">'
+        self.assertIn(marker, self.html)
+        for replacement in (b'<span data-proof-scope-target="items:itm_lem">',
+                            marker + b'Unrelated label '):
+            with self.subTest(replacement=replacement):
+                result = publish.mechanical_acceptance(self.swap(marker, replacement), self.projection)
+                self.assertIn("visible audit scope differs from the canonical scope", result["failures"])
+
     def test_a_listed_finding_or_source_limit_must_come_from_the_summary(self):
         """The page cannot invent a finding or a source limitation the summary does not carry."""
         self.assertEqual([], self.projection["summary"]["findings"]["refs"])
@@ -541,6 +571,21 @@ class PublishReportTests(PublicationCase):
                           rows[0]["output_path"], rows[0]["artifact_sha256"]))
         self.assertEqual(result["receipt"], json.loads(rows[0]["receipt_json"]))
         self.assertEqual(["report.html"], sorted(p.name for p in output.parent.iterdir()))
+
+    def test_a_database_with_no_statements_publishes_an_index_page(self):
+        """A checkpoint straight after init has nothing to lay out; it publishes an index page, not bad geometry."""
+        root = self.scratch("empty")
+        (root / "paper.tex").write_text(support.PAPER_TEX, encoding="utf-8")
+        database = root / "paper.db"
+        run_cli("init", database, "--source-root", root, "--title", "Empty paper")
+        output = self.work / "out" / "report.html"
+        payload, _ = run_cli("checkpoint", database, "--out", output)
+        self.assertEqual(("published", "index", 0, 0),
+                         (payload["state"], payload["receipt"]["layout_mode"], payload["receipt"]["nodes"],
+                          payload["receipt"]["connections"]))
+        self.assertEqual("not_applicable", payload["receipt"]["geometry"]["status"])
+        self.assertEqual("pass", payload["receipt"]["python_acceptance"]["status"])
+        self.assertIn(b"No statements are recorded yet", output.read_bytes())
 
     def test_the_receipt_records_the_projection_identity_and_both_acceptances(self):
         """The stored receipt names the publication and pins the rendered projection's shape."""
@@ -817,7 +862,13 @@ class MissingRendererTests(PublicationCase):
         self.assertEqual("PUBLICATION_FAILED", payload["error"]["code"])
         self.assertEqual("Node.js is required to render reports but no `node` executable was found",
                          payload["error"]["message"])
-        self.assertIs(False, payload["error"]["records"][-1]["prior_output_retained"])
+        publication = next(record for record in payload["error"]["records"]
+                           if "prior_output_retained" in record)
+        self.assertIs(False, publication["prior_output_retained"])
+        delivery = next(record for record in payload["error"]["records"] if "delivery_complete" in record)
+        self.assertIs(False, delivery["delivery_complete"])
+        self.assertEqual("report", delivery["stage"])
+        self.assertEqual([], delivery["available_files"])
         self.assertTrue(output.is_dir(), output)
         self.assertEqual([], sorted(p.name for p in output.iterdir()))
         with fixture.open(write=False) as db:

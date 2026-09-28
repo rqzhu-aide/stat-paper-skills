@@ -10,8 +10,9 @@ and record the reviewed boundary basis before claiming full coverage. Coverage o
 character is insufficient when the proposed source unit omits part of the proof.
 
 For Full, reconcile all proof-required declarations and written arguments against the manuscript and
-supplements. For Focused, discover the target's exact internal prerequisites. An imported overview
-selection or a previously registered graph is a starting point, not proof of inventory completeness.
+supplements. For Focused, discover the target's exact internal prerequisites. Start new audits from
+the manuscript in their own proof-check database. When resuming, a previously registered graph is
+a starting point, not proof of inventory completeness.
 For each substantive inference, identify its justification as a declared premise, an in-paper
 derivation, or an external result. An uncited load-bearing fact still needs its supplier and actual
 use recorded: for example, closedness of a finite-dimensional subspace or the projection theorem.
@@ -56,6 +57,8 @@ After an informative derivation, identified defect, or unresolved obstacle, save
 or changing target, save reasoning, examined evidence, remaining questions, and next action as a
 draft. A valid partial save must not depend on complete proof coverage, all findings being resolved,
 or final report publication. Regenerate working reports at meaningful checkpoints.
+At a stopping boundary, follow the [handoff checklist](database-audit.md#stop-and-hand-off).
+Saved reasoning outside the review workflow does not count as recorded independent completion.
 
 Submit the worker response unchanged using the envelope and recovery rules in
 [controller-workflow.md](controller-workflow.md). The coordinator supplies actual reviewer

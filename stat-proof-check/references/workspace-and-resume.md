@@ -1,4 +1,4 @@
-# Workspace and Resume
+# Legacy v1.5: Workspace and Resume
 
 Canonical rules for portable setup, source state, checkpoints, resumption, and blocked work. See [issues-and-repairs.md](issues-and-repairs.md) for repair and [reporting-and-release.md](reporting-and-release.md) for release.
 

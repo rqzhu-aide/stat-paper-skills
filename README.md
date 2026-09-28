@@ -7,7 +7,7 @@ This repository maintains four skills for statistical and machine-learning paper
 | `stat-write-style` | v1.6.1 | Draft and revise manuscript exposition and presentation |
 | `stat-paper-review` | v1.2.1 | Give a critical, evidence-backed manuscript review |
 | `stat-proof-write` | v0.3.1 | Draft or clarify a mathematical proof |
-| `stat-proof-check` | v2.3.1 | Audit written mathematical arguments without silently repairing them |
+| `stat-proof-check` | v2.3.4 | Audit written mathematical arguments without silently repairing them |
 
 Use `$stat-write-style`, `$stat-paper-review`, `$stat-proof-write`, or `$stat-proof-check` to invoke the corresponding skill. Their `agents/openai.yaml` files disable implicit invocation. Proof writing and proof checking are separate tasks: drafting a proof does not provide an independent audit.
 
@@ -30,7 +30,7 @@ stat-paper-skills/                 local grouping folder
 
 This repository maps to [stat-paper-skills](https://github.com/rqzhu-aide/stat-paper-skills). The sibling `../proof-graphify/` checkout maps to its own [proof-graphify repository](https://github.com/rqzhu-aide/proof-graphify), which owns that skill and its `architecture/` folder. The two repositories have separate Git histories and remotes. The sibling checkout supports cross-package development; installed skills do not require it.
 
-The current [proof-check architecture](architecture/README.md) describes the shared backend and audit workflow. Proof Graphify's [architecture](https://github.com/rqzhu-aide/proof-graphify/tree/main/architecture) describes its selective overview and reader. Completed revision plans, audits, receipts, and superseded designs are kept in the local `archived/` folder, outside the remote and skill discovery.
+The [proof-check architecture index](architecture/README.md) describes the shared backend and audit workflow and labels retained change records and proposals. Proof Graphify's [architecture](https://github.com/rqzhu-aide/proof-graphify/tree/main/architecture) describes its selective overview and reader. Older plans, audits, receipts, and superseded designs are kept in the local `archived/` folder, outside the remote and skill discovery.
 
 ## Skill use and installation
 
@@ -48,7 +48,7 @@ Install the first three skills from their source folders under a user-wide skill
 python -B tools/install_proofcheck.py --source stat-proof-check --target agents --target claude
 ```
 
-The installer checks the bundle, stages the package, and verifies each installed copy. Old skill names must be moved outside skill discovery first. The proof-check Claude installation also needs `"stat-proof-check": "user-invocable-only"` under `skillOverrides`. Use a shared Python installation; do not create a project-local environment. Optional offline LaTeX conversion uses a shared `latex2mathml` installation. If the new names are not visible immediately, refresh skill discovery or restart Codex.
+The installer checks the bundle, stages the package, and verifies each installed copy. Old skill names must be moved outside skill discovery first. The proof-check Claude installation also needs `"stat-proof-check": "user-invocable-only"` under `skillOverrides`. Use a shared Python installation; do not create a project-local environment. Optional offline LaTeX conversion uses a shared `latex2mathml` installation. If the new names are not visible immediately, refresh skill discovery or restart the host application.
 
 ## Backend and validation
 

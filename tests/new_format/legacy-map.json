@@ -386,6 +386,10 @@
    "reason": "Independent implementation-audit counterexamples for missing source coverage, unrelated coverage claims/checks, unresolved current contradictions and target-specific independent disagreement. These exercise the new graph assessment contract and replace no legacy test."
   },
   {
+   "new_test": "tests/new_format/test_empty_evidence.py",
+   "reason": "Blank captured text must not certify source fidelity or proof completeness. These regressions cover atomic rejection, valid secondary and PDF evidence, preserved history and repair in the shared database runtime; they replace no legacy test."
+  },
+  {
    "new_test": "tests/new_format/test_evidence_freshness.py",
    "reason": "Implementation-audit regressions for supplier scope and statement evidence, borrowed proof content, finite scope cycles and reviewed exact relocation in generated evidence bindings. These binding records are new and replace no legacy test."
   },
@@ -420,6 +424,10 @@
   {
    "new_test": "tests/new_format/test_export_migration.py",
    "reason": "Native v3 overview behavior is tested independently of the retired overview versions. This module remains active without requiring the v1 or v2 runtime or tests."
+  },
+  {
+   "new_test": "tests/new_format/test_targeted_workflow.py",
+   "reason": "The targeted reliability lifecycle combines current controller scaffolds, retained-byte recovery, qualification, source-target mapping, explicit reconciliation and complete or incomplete reports through the existing CLI. It preserves all legacy tests."
   }
  ]
 }

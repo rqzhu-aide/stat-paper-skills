@@ -7,7 +7,10 @@ and application extensions, a reviewed proof-boundary link, and a focused audit.
 It contains no checks or findings. This example's audit is primary-only to demonstrate authoring;
 that setting is not a substitute for the independent review required by a formal audit.
 
-First create a separate example paper directory with `paper.txt` containing these exact five lines:
+If running this optional teaching example, keep its source, database, batches and assignments under
+`work/authoring/transitivity-example-1/` in the chosen proof-check folder. Use a fresh example folder
+for another run; its database is separate from the actual paper's `audit.db`.
+First create `source/paper.txt` inside the example folder containing these exact five lines:
 
 ```text
 Let u, v, w be real numbers.
@@ -17,7 +20,7 @@ Theorem T: u <= w.
 Proof. By transitivity, u <= v and v <= w imply u <= w.
 ```
 
-Initialize a new example database using that directory as its source root and capture
+Initialize a new example database using that example's `source/` directory as its source root and capture
 `["paper.txt"]`. Copy the returned paper/source IDs and obtain an author packet. Create these
 anchors in a single request, replacing `req_anchors_example`, `pkt_author_example`, and every
 `src_example` with actual fresh IDs/packet identity:

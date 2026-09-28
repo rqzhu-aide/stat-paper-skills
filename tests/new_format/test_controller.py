@@ -1,5 +1,6 @@
 """Controller behavior through real packets, acceptance and restartable intake."""
 import copy
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -229,7 +230,7 @@ class ControllerTests(unittest.TestCase):
         paths = controller.write_artifacts(self.db, info, out)
         self.assertEqual(set(paths), {"worker-packet.json", "coordinator-manifest.json",
                                       "response-scaffold.json", "worker-guidance.json",
-                                      "coordinator-guidance.json"})
+                                      "coordinator-guidance.json", "submission-envelope-template.json"})
         self.assertEqual(controller.write_artifacts(self.db, info, out), paths)
         (out / "worker-packet.json").write_text("different")
         with self.assertRaises(InvalidRequest):
@@ -249,6 +250,82 @@ class ControllerTests(unittest.TestCase):
             self.assertTrue(prepared["prepared"], prepared)
             self.assertEqual(calculate.call_count, 1)
             self.assertTrue(prepared["coordinator_guidance"]["reconciliation_candidates"])
+
+    def test_reconciliation_exports_stable_initial_identity_and_blank_envelope(self):
+        fx = Fixture(Path(self.tmp.name) / "reconcile_stable").independent()
+        with fx.open() as db:
+            prepared = controller.prepare_work(db, audit_id=fx.audit_id, mode="reconcile", focus=R("items", "itm_lem"))
+            first = controller.write_artifacts(db, prepared, Path(self.tmp.name) / "stable")
+            inspected = controller.inspect_work(db, packet_id=prepared["packet_id"])
+            self.assertEqual(prepared["scaffold"], inspected["scaffold"])
+            self.assertEqual(first, controller.write_artifacts(db, inspected, Path(self.tmp.name) / "stable"))
+            envelope = prepared["submission_envelope_template"]
+            self.assertEqual(prepared["initial_request_id"], envelope["request_id"])
+            self.assertEqual(envelope["request_id"], prepared["scaffold"]["request_id"])
+            self.assertEqual("", envelope["reviewer"])
+            self.assertIsNone(envelope["qualification_id"])
+            self.assertIsNone(envelope["exposure"])
+            result = controller.submit_work(db, envelope_bytes=canonical_bytes(envelope),
+                                            response_bytes=canonical_bytes(prepared["scaffold"]))
+            self.assertFalse(result["stored"])
+
+    def test_artifact_io_failure_names_saved_packet_and_inspection_recovery(self):
+        prepared = self.prepare()
+        packets_before = self.db.conn.execute("SELECT COUNT(*) FROM packets").fetchone()[0]
+        with patch.object(Path, "mkdir", side_effect=OSError("fixture denied write")):
+            with self.assertRaises(InvalidRequest) as caught:
+                controller.write_artifacts(self.db, prepared, Path(self.tmp.name) / "denied")
+        self.assertEqual("ARTIFACT_WRITE_FAILED", caught.exception.code)
+        self.assertIn(prepared["packet_id"], str(caught.exception))
+        self.assertIn("work inspect", str(caught.exception))
+        recovered = controller.inspect_work(self.db, packet_id=prepared["packet_id"])
+        controller.write_artifacts(self.db, recovered, Path(self.tmp.name) / "recovered")
+        self.assertEqual(packets_before, self.db.conn.execute("SELECT COUNT(*) FROM packets").fetchone()[0])
+
+    def test_old_submission_ids_are_recovered_explicitly_without_rewriting_bytes(self):
+        fx = Fixture(Path(self.tmp.name) / "old_reconciliation").independent()
+        with fx.open() as db:
+            prepared = controller.prepare_work(db, audit_id=fx.audit_id, mode="reconcile", focus=R("items", "itm_lem"))
+            envelope = dict(prepared["submission_envelope_template"], request_id="req_older_saved_attempt", reviewer="coordinator")
+            worker = {"contract_version": 4, "request_id": envelope["request_id"], "packet_id": prepared["packet_id"],
+                "edits": [fx.reconciliation_edit(db, "rec_old_attempt", "arg_lem", "chk_comp_lem", fx.independent_checks["itm_lem"])]}
+            raw_envelope, raw_worker = json.dumps(envelope, indent=2).encode(), json.dumps(worker, indent=3).encode()
+            saved = controller.submit_work(db, envelope_bytes=raw_envelope, response_bytes=raw_worker)
+            self.assertEqual("accepted", saved["state"], saved)
+            second = dict(envelope, request_id="req_explicit_second_attempt")
+            second_worker = dict(worker, request_id=second["request_id"], edits=[])
+            controller.submit_work(db, envelope_bytes=canonical_bytes(second), response_bytes=canonical_bytes(second_worker))
+            inspected = controller.inspect_work(db, packet_id=prepared["packet_id"])
+            self.assertTrue(inspected["submission_recovery"]["selection_required"])
+            self.assertEqual({envelope["request_id"], second["request_id"]}, set(inspected["submission_recovery"]["request_ids"]))
+            self.assertEqual(prepared["initial_request_id"], inspected["initial_request_id"])
+            recovered = controller.inspect_work(db, request_id=envelope["request_id"])
+            paths = controller.write_artifacts(db, recovered, Path(self.tmp.name) / "original_attempt")
+            self.assertEqual(raw_envelope, Path(paths["submission-envelope.json"]["path"]).read_bytes())
+            self.assertEqual(raw_worker, Path(paths["worker-response.json"]["path"]).read_bytes())
+            self.assertEqual(saved, controller.submit_work(db, envelope_bytes=raw_envelope, response_bytes=raw_worker))
+
+    def test_live_guidance_changes_require_fresh_output_without_overwriting_old_files(self):
+        fx = Fixture(Path(self.tmp.name) / "live_guidance").primary()
+        with fx.open() as db:
+            coverage = db.head("coverage", "cov_lem")
+            fx.apply(db, [edit("replace", "coverage", coverage.id,
+                dict(coverage.body, end_offset=coverage.body["end_offset"] - 1), coverage.version)], mode="primary")
+            prepared = controller.prepare_work(db, audit_id=fx.audit_id, mode="primary", focus=R("items", "itm_lem"))
+            destination = Path(self.tmp.name) / "original_guidance"
+            paths = controller.write_artifacts(db, prepared, destination)
+            original = {name: Path(value["path"]).read_bytes() for name, value in paths.items()}
+            predecessor = prepared["coordinator_guidance"]["renewal_candidates"][0]["ref"]
+            fx.apply(db, [Fixture.check_edit("chk_explicit_renewal", R("arguments", "arg_lem"), "composition",
+                                            supersedes=predecessor)], mode="primary")
+            inspected = controller.inspect_work(db, packet_id=prepared["packet_id"])
+            self.assertNotIn("renewal_candidates", inspected["coordinator_guidance"])
+            with self.assertRaises(InvalidRequest) as caught:
+                controller.write_artifacts(db, inspected, destination)
+            self.assertEqual("OUTPUT_CONFLICT", caught.exception.code)
+            self.assertIn("fresh-directory", caught.exception.retry)
+            self.assertEqual(original, {name: Path(value["path"]).read_bytes() for name, value in paths.items()})
+            controller.write_artifacts(db, inspected, Path(self.tmp.name) / "updated_guidance")
 
     def test_input_limits_and_empty_response(self):
         self.assertFalse(controller.submit_work(self.db, envelope_bytes=b"x" * 65537,

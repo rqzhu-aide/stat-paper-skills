@@ -1,4 +1,4 @@
-# Issues and Repairs
+# Legacy v1.5: Issues and Repairs
 
 This file is the canonical contract for issue identity, severity effects, propagation, archival, repair, and historical-current recheck closure. Apply the verdict and confidence scales in [legacy-evidence-and-verdicts.md](legacy-evidence-and-verdicts.md).
 

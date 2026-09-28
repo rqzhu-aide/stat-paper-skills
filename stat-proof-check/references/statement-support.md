@@ -1,4 +1,4 @@
-# Checked Statement Supplements
+# Legacy v1.5: Checked Statement Supplements
 
 Load this optional contract only when a separate reviewer reconstruction can
 establish a conclusion despite a defect in its written proof, or when a later
