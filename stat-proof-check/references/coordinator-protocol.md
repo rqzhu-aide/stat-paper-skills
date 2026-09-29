@@ -5,6 +5,9 @@ Start from the requested audit scope, captured sources, and major-item inventory
 declarations, assumptions, definitions with well-posedness claims, locally proved results, and
 external restatements. Review source-selection limitations before assigning mathematical work.
 Locate complete statement and proof passages, including supplements and relevant macros.
+An unavailable proof of a requested result remains a source limitation or unresolved examination
+in scope. Excluding the result removes its required work; missing material alone does not authorize
+narrowing the request.
 Confirm their boundaries against the actual source, including continuations and written alternatives,
 and record the reviewed boundary basis before claiming full coverage. Coverage of every registered
 character is insufficient when the proposed source unit omits part of the proof.
@@ -57,6 +60,8 @@ After an informative derivation, identified defect, or unresolved obstacle, save
 or changing target, save reasoning, examined evidence, remaining questions, and next action as a
 draft. A valid partial save must not depend on complete proof coverage, all findings being resolved,
 or final report publication. Regenerate working reports at meaningful checkpoints.
+Finalize global examinations after substantive statement, source-boundary and graph edits settle.
+Early global work can reveal problems; later changes may require renewal.
 At a stopping boundary, follow the [handoff checklist](database-audit.md#stop-and-hand-off).
 Saved reasoning outside the review workflow does not count as recorded independent completion.
 

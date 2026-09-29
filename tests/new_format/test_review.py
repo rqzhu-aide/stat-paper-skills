@@ -22,6 +22,7 @@ from unittest import mock
 from support import Fixture, R, TempCase, edit, locator, run_cli, sha, write_json
 
 from paper_core import controller, packets, review, sources
+from paper_core.canonical import canonical_bytes
 from paper_core.errors import ConflictError, InvalidRequest
 
 EVIDENCE = b"calibration transcript for checker-B"
@@ -653,6 +654,38 @@ class MapResponseTests(TempCase):
             self.assertEqual(stored.body["state"], "accepted")
             self.assertEqual([v.body["state"] for v in db.versions_of("responses", result["response_id"])],
                              ["needs_revision", "accepted"])
+
+    def test_source_judgment_maps_to_private_intermediate_argument(self):
+        from test_work_packets import intermediate_edits, selection, task
+        with self.fx.open() as db:
+            self.fx.apply(db, intermediate_edits(self.fx, origin="reconstruction"))
+            local = task("private_step_review", R("arguments", "arg_step"), "composition", role="independent")
+            prepared = packets.prepare_assignment(db, audit_id="aud_1", mode="independent",
+                                                  selection=selection((local,)))
+            worker = worker_response(prepared["packet_id"],
+                [judgment(source_target("anc_lem_proof", "The induction inference written in this passage"),
+                    reasoning="Examined the written induction inference for the bound on a_n.")],
+                covered=[R("items", "itm_thm")], coverage_note="Reviewed this local induction inference in source context.")
+            raw = canonical_bytes(worker)
+            envelope = {"contract_version": 4, "request_id": self.fx.request_id(),
+                "packet_id": prepared["packet_id"], "rebase_packet_id": None,
+                "reviewer": "checker-A", "qualification_id": "qua_r1", "exposure": "source_only",
+                "exposure_note": "Fresh source-only reviewer."}
+            pending = controller.submit_work(db, envelope_bytes=canonical_bytes(envelope), response_bytes=raw)
+            self.assertEqual("needs_revision", pending["state"], pending)
+            private = self.fx.packet(db, "items:itm_thm", mode="reconcile")
+            mapped = review.map_response(db, mapping=mapping_request(self.fx, private["packet_id"],
+                pending["response_id"], [entry(0, R("arguments", "arg_step"))]))
+            self.assertEqual("accepted", mapped["state"])
+            check = db.head("checks", mapped["checks"][0]["check_id"])
+            self.assertEqual(R("arguments", "arg_step"), check.body["target"])
+            self.assertFalse(any(row.body["role"] == "independent" and row.body["target"] == R("arguments", "arg_thm")
+                                 for row in db.heads("checks")))
+            self.assertEqual(worker["judgments"][0]["reasoning"], check.body["reasoning"])
+            self.assertEqual(raw, db.get_blob(db.head("responses", pending["response_id"]).body["original_blob"]))
+            bound = db.binding("checks", check.id, check.version)["bindings"]
+            self.assertTrue(any(row["ref"]["id"] == "itm_step" and "setup_digest" in row for row in bound["records"]))
+            self.assertTrue(any(row["ref"]["id"] == "scp_step" for row in bound["records"]))
 
     def test_mapping_preserves_the_original_response_bytes(self):
         """Mapping never substitutes the blob: the worker's bytes are byte-for-byte what they were."""

@@ -426,6 +426,10 @@
    "reason": "Native v3 overview behavior is tested independently of the retired overview versions. This module remains active without requiring the v1 or v2 runtime or tests."
   },
   {
+   "new_test": "tests/new_format/test_qualification_packer.py",
+   "reason": "The documented qualification packer now requires explicit calibration isolation alongside balanced passing cases. These tests execute that recipe and preserve evidence bytes under the existing contract; they replace no legacy test."
+  },
+  {
    "new_test": "tests/new_format/test_targeted_workflow.py",
    "reason": "The targeted reliability lifecycle combines current controller scaffolds, retained-byte recovery, qualification, source-target mapping, explicit reconciliation and complete or incomplete reports through the existing CLI. It preserves all legacy tests."
   }

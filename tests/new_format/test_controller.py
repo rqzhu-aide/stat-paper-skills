@@ -142,7 +142,46 @@ class ControllerTests(unittest.TestCase):
         worker["results"][0]["note"] += " changed"
         result = self.submit(envelope, worker)
         self.assertEqual(result["error"]["code"], "REQUEST_ID_REUSED")
+        self.assertFalse(result["stored"])
+        self.assertIn("earlier work submission", result["next_actions"][0])
+        self.assertIn("new request ID", result["next_actions"][0])
+        self.assertIsNotNone(self.db.work_submission(envelope["request_id"]))
         self.assertEqual(self.db.max_revision(), accepted["committed_revision"])
+
+    def test_terminal_failure_requires_new_id_for_correction_and_preserves_replay(self):
+        packet = self.prepare()
+        envelope, worker = self.envelope(packet), self.completed(packet)
+        invalid = copy.deepcopy(worker)
+        invalid["results"][-1]["task_id"] = "obl_unassigned"
+        rejected = self.submit(envelope, invalid)
+        self.assertTrue(rejected["stored"])
+        self.assertIn("saved receipt", " ".join(rejected["next_actions"]))
+        self.assertIn("new request ID", " ".join(rejected["next_actions"]))
+        self.assertEqual(rejected, self.submit(envelope, invalid))
+        changed = self.submit(envelope, worker)
+        self.assertEqual("REQUEST_ID_REUSED", changed["error"]["code"])
+        corrected = self.submit(dict(envelope, request_id=self.fx.request_id()), worker)
+        self.assertEqual("accepted", corrected["state"], corrected)
+        self.assertEqual(rejected, controller.inspect_work(self.db, request_id=envelope["request_id"])["result"])
+
+    def test_pre_intake_failure_does_not_consume_an_unused_id(self):
+        packet = self.prepare()
+        envelope, worker = self.envelope(packet), self.completed(packet)
+        rejected = self.submit(dict(envelope, unknown_field=True), worker)
+        self.assertFalse(rejected["stored"])
+        self.assertIn("did not reserve", rejected["next_actions"][0])
+        self.assertIsNone(self.db.work_submission(envelope["request_id"]))
+        self.assertEqual("accepted", self.submit(envelope, worker)["state"])
+
+    def test_other_command_id_requires_new_id_without_work_inspection(self):
+        packet = self.prepare()
+        old_id = self.db.conn.execute("SELECT request_id FROM commits ORDER BY revision LIMIT 1").fetchone()[0]
+        rejected = self.submit(self.envelope(packet, request_id=old_id), self.completed(packet))
+        self.assertFalse(rejected["stored"])
+        self.assertEqual("REQUEST_ID_REUSED", rejected["error"]["code"])
+        self.assertIsNone(self.db.work_submission(old_id))
+        self.assertIn("new request ID", rejected["next_actions"][0])
+        self.assertIn("no work submission to inspect", rejected["next_actions"][0])
 
     def test_canonical_envelope_replay_does_not_depend_on_whitespace(self):
         packet = self.prepare()
@@ -194,6 +233,7 @@ class ControllerTests(unittest.TestCase):
             interrupted = self.submit(envelope, worker)
             self.assertEqual(interrupted["state"], "received")
             self.assertTrue(interrupted["stored"])
+            self.assertIn("unchanged input with the same request ID", interrupted["next_actions"][0])
         row = self.db.work_submission(envelope["request_id"])
         self.assertEqual(row["state"], "received")
         inspected = controller.inspect_work(self.db, request_id=envelope["request_id"])
@@ -231,12 +271,38 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(set(paths), {"worker-packet.json", "coordinator-manifest.json",
                                       "response-scaffold.json", "worker-guidance.json",
                                       "coordinator-guidance.json", "submission-envelope-template.json"})
+        expected = {"worker-packet.json": info["packet"], "coordinator-manifest.json": info["manifest"],
+                    "response-scaffold.json": info["scaffold"], "worker-guidance.json": info["worker_guidance"],
+                    "coordinator-guidance.json": info["coordinator_guidance"],
+                    "submission-envelope-template.json": info["submission_envelope_template"]}
+        for name, value in paths.items():
+            raw = Path(value["path"]).read_bytes()
+            self.assertGreater(len(raw.splitlines()), 1)
+            self.assertEqual(expected[name], json.loads(raw))
+            self.assertEqual(len(raw), value["bytes"])
         self.assertEqual(controller.write_artifacts(self.db, info, out), paths)
         (out / "worker-packet.json").write_text("different")
         with self.assertRaises(InvalidRequest):
             controller.write_artifacts(self.db, info, out)
         history = controller.inspect_work(self.db, audit_id=self.fx.audit_id)
         self.assertTrue(any(row["id"] == packet["packet_id"] for row in history["entries"]))
+
+    def test_old_minified_packet_is_preserved_and_recovered_to_fresh_directory(self):
+        packet = self.prepare()
+        out = Path(self.tmp.name) / "old-output"
+        out.mkdir()
+        canonical = self.db.get_blob(self.db.packet(packet["packet_id"])["payload_sha256"])
+        old = out / "worker-packet.json"
+        old.write_bytes(canonical)
+        with self.assertRaises(InvalidRequest) as caught:
+            controller.write_artifacts(self.db, packet, out)
+        self.assertEqual("OUTPUT_CONFLICT", caught.exception.code)
+        self.assertIn("fresh-directory", caught.exception.retry)
+        self.assertEqual(canonical, old.read_bytes())
+        fresh = controller.write_artifacts(self.db, packet, Path(self.tmp.name) / "fresh-output")
+        exported = Path(fresh["worker-packet.json"]["path"]).read_bytes()
+        self.assertEqual(canonical, canonical_bytes(json.loads(exported)))
+        self.assertEqual(canonical, self.db.get_blob(self.db.packet(packet["packet_id"])["payload_sha256"]))
 
     def test_reconciliation_guidance_reuses_preparation_assessment(self):
         from paper_core import assessment

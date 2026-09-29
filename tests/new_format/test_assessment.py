@@ -32,7 +32,8 @@ import unittest
 
 from support import GLOBAL_TASKS, PAPER_TEX, R, TempCase, edit
 
-from paper_core import packets, review, sources
+from paper_core import controller, packets, review, sources
+from paper_core.canonical import canonical_bytes
 from paper_core.assessment import (DEFECT_OUTCOMES, INDICATORS, OBLIGATION_KINDS, PROOF_CHECK_KINDS,
                                    PROOF_KINDS, ROLES, STATES, Snapshot, derive_assessment, derive_full,
                                    judgment_freshness, key_of, obligation_id, pinned_of, reduce, ref_of)
@@ -1335,12 +1336,106 @@ class IndependentTests(AssessmentCase):
                           and o["role"] == "independent" and o["target"]["id"] == "arg_lem")
         self.assertEqual(obligation["state"], "missing")
         self.assertIs(obligation["satisfied"], False)
-        self.assertEqual(obligation["explanation"], "no independent composition work recorded")
+        self.assertIn("independent exposure is declared compromised", obligation["explanation"])
+        self.assertIn("possible exposure", obligation["assessment"]["explanation"])
         self.assertIs(result["constituents"][obligation["id"]]["compromised"], True)
         judgment = next(info for info in result["judgments"].values() if info["role"] == "independent")
         self.assertEqual(judgment["exposure"], "compromised")
         self.assertEqual(judgment["response_state"], "accepted")
         self.assertIs(result["progress"]["process_complete"], False)
+
+    def test_partially_mapped_source_only_response_is_pending_until_whole_response_acceptance(self):
+        from test_review import entry, judgment, mapping_request, source_target, submission, worker_response
+        fixture = self.fixture().primary()
+        with fixture.open() as db:
+            packet = packets.get_packet(db, targets=[R("items", "itm_lem")], mode="independent")
+            raw = json.dumps(worker_response(packet["packet_id"], [
+                judgment(source_target("anc_lem_proof", "Final conclusion")),
+                judgment(source_target("anc_lem_proof", "Local inference"), kind="derivation")])).encode()
+            saved = review.submit_review(db, submission=submission(fixture, packet["packet_id"]), response_bytes=raw)
+            mapping_packet = fixture.packet(db, *fixture.ITEMS, mode="primary")
+            review.map_response(db, mapping=mapping_request(fixture, mapping_packet["packet_id"], saved["response_id"],
+                [entry(0, R("arguments", "arg_lem"))]))
+            partial = derive_assessment(db, audit_id=fixture.audit_id)
+            obligation = next(o for o in partial["obligations"] if o["role"] == "independent"
+                and o["target"] == R("arguments", "arg_lem"))
+            self.assertEqual(partial["independent"]["items:itm_lem"], "pending")
+            self.assertFalse(partial["constituents"][obligation["id"]]["compromised"])
+            self.assertFalse(obligation["satisfied"])
+            self.assertIn("mapping is unfinished", obligation["explanation"])
+            self.assertIn("mapping is unfinished", obligation["assessment"]["explanation"])
+            self.assertFalse(partial["progress"]["process_complete"])
+            self.assertEqual(db.head("responses", saved["response_id"]).body["exposure"], "source_only")
+            mapping_packet = fixture.packet(db, *fixture.ITEMS, mode="primary")
+            review.map_response(db, mapping=mapping_request(fixture, mapping_packet["packet_id"], saved["response_id"],
+                [entry(1, R("groups", "grp_lem"))]))
+            full = derive_assessment(db, audit_id=fixture.audit_id)
+            self.assertEqual(full["independent"]["items:itm_lem"], "pending")
+            self.assertTrue(next(o for o in full["obligations"] if o["id"] == obligation["id"])["satisfied"])
+            self.assertFalse(full["progress"]["process_complete"])
+            self.assertEqual(db.get_blob(db.head("responses", saved["response_id"]).body["original_blob"]), raw)
+
+    def test_supplied_route_with_invalidated_basis_is_pending_without_claiming_exposure(self):
+        from unittest import mock
+        fixture = self.fixture().independent()
+        with fixture.open() as db:
+            prepared = controller.prepare_work(db, audit_id=fixture.audit_id, mode="independent", route_id="arg_lem")
+            worker = json.loads(json.dumps(prepared["scaffold"]))
+            worker["coverage_note"] = "Examined the supplied route after the preserved blind review."
+            for task in prepared["manifest"]["work"]["tasks"]:
+                worker["judgments"].append({"target": task["target"], "kind": task["kind"], "state": "complete",
+                    "outcome": "supported", "reasoning": "The exact source inference follows under its stated conditions.",
+                    "evidence_refs": ["anc_lem_proof"], "conditions": [], "next_action": None, "supersedes": None})
+            saved = controller.submit_work(db, envelope_bytes=canonical_bytes({"contract_version": 4,
+                "request_id": fixture.request_id(), "packet_id": prepared["packet_id"], "rebase_packet_id": None,
+                "reviewer": "checker-A", "qualification_id": "qua_r1", "exposure": "route_provided",
+                "exposure_note": "Fresh context containing this supplied route only."}), response_bytes=canonical_bytes(worker))
+            self.assertEqual(saved["state"], "accepted", saved)
+            valid = derive_assessment(db, audit_id=fixture.audit_id)
+            valid_obligation = next(o for o in valid["obligations"] if o["role"] == "independent"
+                and o["target"] == R("arguments", "arg_lem"))
+            self.assertTrue(valid_obligation["satisfied"])
+            route = db.head("arguments", "arg_lem")
+            group = db.head("groups", "grp_lem")
+            fixture.apply(db, [edit("create", "scopes", "scp_changed", {
+                "argument_id": "arg_lem", "parent_id": "scp_plain", "assumptions": [], "binders": [],
+                "conditions": ["A newly stated positive-input condition"], "evidence_refs": ["anc_lem_proof"]}),
+                edit("replace", "arguments", route.id, dict(route.body, scope_id="scp_changed"), route.version),
+                edit("replace", "groups", group.id, dict(group.body, scope_id="scp_changed"), group.version)],
+                *fixture.ITEMS, mode="primary")
+            derivation, stale = derive_full(db, audit_id=fixture.audit_id)
+            obligation = next(o for o in stale["obligations"] if o["id"] == valid_obligation["id"])
+            self.assertFalse(obligation["satisfied"])
+            self.assertFalse(stale["constituents"][obligation["id"]]["compromised"])
+            self.assertEqual(stale["independent"]["items:itm_lem"], "pending")
+            route_info = next(info for info in stale["judgments"].values() if info["exposure"] == "route_provided"
+                and info["kind"] == "composition")
+            self.assertFalse(derivation.independent_usable(route_info))
+            # With only the supplied-route judgment available, the missing basis
+            # still describes pending work, not a declaration of exposure.
+            with mock.patch.object(derivation, "_independent_checks_for", return_value=[route_info]):
+                self.assertEqual(derivation.independent_indicator("items:itm_lem"), "pending")
+            self.assertIn("supplied-route review lacks", derivation._independent_limitation(route_info))
+            self.assertFalse(stale["progress"]["process_complete"])
+
+    def test_missing_or_failed_qualification_keeps_review_pending(self):
+        from test_review import qualification_receipt, submission, worker_response
+        fixture = self.fixture().primary()
+        with fixture.open() as db:
+            review.record_qualification(db, receipt=qualification_receipt(fixture, qid="qua_failed",
+                reviewer="checker-A", qualified=False))
+            packet = packets.get_packet(db, targets=[R("items", "itm_lem")], mode="independent")
+            for identity in ("qua_missing", "qua_failed"):
+                with self.subTest(qualification=identity):
+                    revision = db.max_revision()
+                    with self.assertRaises(InvalidRequest):
+                        review.submit_review(db, submission=submission(fixture, packet["packet_id"], qualification_id=identity),
+                            response_bytes=canonical_bytes(worker_response(packet["packet_id"], [])))
+                    result = derive_assessment(db, audit_id=fixture.audit_id)
+                    self.assertEqual(db.max_revision(), revision)
+                    self.assertEqual(result["independent"]["items:itm_lem"], "pending")
+                    self.assertFalse(any(c["compromised"] for c in result["constituents"].values()))
+                    self.assertFalse(result["progress"]["process_complete"])
 
     def test_an_independent_judgment_records_its_response_state_and_exposure(self):
         """Every judgment says where it came from, so a reader can tell blinded work from mapped work."""

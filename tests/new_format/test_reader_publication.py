@@ -12,6 +12,59 @@ from test_reader_projection import blocked_premise_fixture, cyclic_premise_fixtu
 
 
 class ReaderPublicationTests(TempCase):
+    def test_audit_wide_finding_has_visible_evidence_and_a_working_destination(self):
+        fixture = self.fixture().primary()
+        with fixture.open() as db:
+            fixture.apply(db, [edit("create", "findings", "fnd_audit", {
+                "audit_id": fixture.audit_id, "target": R("audits", fixture.audit_id), "category": "presentation",
+                "lifecycle": "open", "description": "Manuscript-wide notation needs a definition.",
+                "evidence_refs": ["anc_thm"], "check_refs": [], "affected_uses": [],
+                "impact_reason": "The notation is shared across the manuscript.", "resolution": None})], mode="primary")
+            dataset = projection.build_projection(db, audit_id=fixture.audit_id)
+            output = self.path("audit-finding.html")
+            receipt = publish.publish_report(db, projection=dataset, output=output, release=False)
+        self.assertEqual(receipt["state"], "published")
+        page = output.read_bytes()
+        self.assertEqual(publish.mechanical_acceptance(page, dataset)["failures"], [])
+        self.assertIn(b'data-proof-detail="audit:aud_1"', page)
+        self.assertIn(b"Manuscript-wide notation needs a definition.", page)
+        self.assertEqual(dataset["summary"]["findings"]["open"], 1)
+        self.assertEqual(next(row for row in dataset["record_locations"] if row["ref"]["id"] == "fnd_audit")["detail_key"],
+                         "audit:aud_1")
+
+    def test_scope_and_review_explanations_render_and_are_checked(self):
+        for empty in (False, True):
+            with self.subTest(empty=empty):
+                fixture = self.fixture("scope_" + str(empty)).audit(mode="full")
+                with fixture.open() as db:
+                    audit = db.head("audits", fixture.audit_id)
+                    exclusions = [{"target": R("items", name), "source_anchor_ids": [],
+                        "reason": "Explicit exclusion", "consequence": "Result omitted from required work"}
+                        for name in ("itm_lem", "itm_thm")]
+                    additions = [] if empty else [fixture.item_edit("itm_setup", "assumption", "Setup", "anc_lem", "anc_lem_proof")]
+                    fixture.apply(db, [*additions, edit("replace", "audits", audit.id,
+                        dict(audit.body, exclusions=exclusions), audit.version)], mode="primary")
+                    dataset = projection.build_projection(db, audit_id=fixture.audit_id)
+                    envelope = publish.render_input(db, dataset, release=False, source_identity="scope-test")
+                page = self.render(envelope, "scope_" + str(empty))
+                self.assertEqual(publish.mechanical_acceptance(page, dataset)["failures"], [])
+                explanation = dataset["summary"]["factual"]["independent_review"]["explanation"].encode()
+                self.assertIn(explanation, page)
+                self.assertIn(b"Full audit of the declared scope after the recorded exclusions.", page)
+                altered = page.replace(explanation, b"Independent review was completed.")
+                self.assertIn("visible scientific summary differs from the assessed snapshot facts",
+                    publish.mechanical_acceptance(altered, dataset)["failures"])
+
+    def test_older_factual_projection_without_explanations_still_renders(self):
+        fixture = self.fixture().primary()
+        with fixture.open(write=False) as db:
+            dataset = projection.build_projection(db, audit_id=fixture.audit_id)
+            dataset["summary"]["factual"]["independent_review"].pop("explanation")
+            envelope = publish.render_input(db, dataset, release=False, source_identity="old-projection-test")
+        page = self.render(envelope, "older-facts")
+        self.assertEqual(publish.mechanical_acceptance(page, dataset)["failures"], [])
+        self.assertIn(b"Independent review: pending.", page)
+
     def support_paper(self, *, alternative=False):
         fixture = blocked_premise_fixture(self.fixture(), alternative=alternative)
         with fixture.open(write=False) as db:

@@ -7,7 +7,7 @@ from unittest import mock
 import support
 from support import R, TempCase, edit
 
-from paper_core import bindings, packets
+from paper_core import bindings, controller, packets, work
 from paper_core.canonical import canonical_bytes
 from paper_core.errors import ConflictError, InvalidRequest
 from paper_core.validation import State
@@ -31,6 +31,28 @@ def selection(*units):
 
 def record_keys(packet):
     return {(entry["ref"]["collection"], entry["ref"]["id"]) for entry in packet["records"]}
+
+
+def intermediate_edits(fx, *, origin="source", passages=True):
+    """A separately registered local argument with source outside its major owner."""
+    intermediate = fx.item_edit("itm_step", "equation", "PRIVATE CAPTION", "anc_lem_proof", "anc_lem_proof")
+    intermediate["body"].update(owner_id="itm_thm", origin=origin, scope_id="scp_step",
+                                statement={"form": "verbatim", "text": "PRIVATE RECONSTRUCTION"},
+                                proof_idea="PRIVATE PROOF OUTLINE")
+    if not passages:
+        intermediate["body"]["passages"] = []
+    argument = fx.argument_edit("arg_step", "itm_step", "grp_step", "anc_lem_proof")
+    argument["body"].update(scope_id="scp_step", label="PRIVATE ARGUMENT LABEL")
+    group = fx.group_edit("grp_step", "arg_step", "itm_step", "anc_lem_proof")
+    group["body"].update(scope_id="scp_step", rationale="PRIVATE COORDINATOR REASONING")
+    return [intermediate,
+        edit("create", "scopes", "scp_step", {"argument_id": "arg_step", "parent_id": "scp_plain",
+            "assumptions": [R("items", "itm_lem")], "binders": [],
+            "conditions": ["PRIVATE FORMAL CONDITION"], "evidence_refs": ["anc_lem"]}),
+        argument, group,
+        edit("create", "target_specs", "tgt_step", {"target": R("items", "itm_step"),
+            "statement_ref": None, "statement": {"form": "verbatim", "text": "PRIVATE EXACT TARGET"},
+            "scope_id": "scp_step", "evidence_refs": ["anc_lem_proof"], "state": "draft", "fidelity_ref": None})]
 
 
 class WorkPacketTests(TempCase):
@@ -200,6 +222,68 @@ class WorkPacketTests(TempCase):
             result = self.prepare(db, selection((independent,)), mode="independent")
             self.assertTrue(result["prepared"])
             self.assertEqual([R("parts", "prt_thm")], result["packet"]["targets"])
+
+    def test_scheduled_intermediate_composition_delivers_source_without_private_outline(self):
+        with self.fx.open() as db:
+            self.fx.apply(db, intermediate_edits(self.fx, origin="reconstruction"))
+            scheduled = next(row for row in work.derive_work(db, audit_id="aud_1")["tasks"]
+                             if row["role"] == "independent" and row["target"] == R("arguments", "arg_step"))
+            result = controller.prepare_work(db, audit_id="aud_1", mode="independent",
+                                             task_ids=[scheduled["id"]], allow_provisional=True)
+            self.assertTrue(result["prepared"], result)
+            self.assertEqual([R("items", "itm_thm")], result["packet"]["targets"])
+            self.assertEqual(R("arguments", "arg_step"), result["manifest"]["work"]["tasks"][0]["target"])
+            keys = record_keys(result["packet"])
+            self.assertIn(("anchors", "anc_lem_proof"), keys)
+            self.assertIn(("anchors", "anc_lem"), keys)
+            self.assertIn(("items", "itm_lem"), keys)
+            self.assertEqual([], packets.blinding_violations(result["packet"]))
+            raw = canonical_bytes(result["packet"]).decode("utf-8")
+            for hidden in ("PRIVATE", "itm_step", "arg_step", "grp_step", "scp_step", "tgt_step", scheduled["id"]):
+                self.assertNotIn(hidden, raw)
+            inputs = result["manifest"]["work"]["source_context_inputs"]
+            self.assertTrue(any(row["ref"]["id"] == "itm_step" and "setup_digest" in row for row in inputs))
+            self.assertTrue(any(row["ref"]["id"] == "scp_step" for row in inputs))
+
+    def test_local_task_targets_resolve_to_major_owner_without_trusting_task_owner(self):
+        with self.fx.open() as db:
+            self.fx.apply(db, intermediate_edits(self.fx))
+            self.fx.apply(db, [edit("create", "uses", "use_step", {
+                "from": R("items", "itm_lem"), "to": R("items", "itm_step"), "type": "dependency",
+                "reason": "PRIVATE USE REASON", "evidence_refs": ["anc_lem_proof"], "regime": None,
+                "uncertainty": None})])
+            for collection, identity, kind in (("items", "itm_step", "external_source"),
+                    ("arguments", "arg_step", "composition"), ("groups", "grp_step", "derivation"),
+                    ("uses", "use_step", "application"), ("target_specs", "tgt_step", "source_fidelity")):
+                with self.subTest(target=identity):
+                    local = task("private_local", R(collection, identity), kind, role="independent")
+                    local["owner"] = R("items", "itm_lem")
+                    result = self.prepare(db, selection((local,)), mode="independent")
+                    self.assertEqual([R("items", "itm_thm")], result["packet"]["targets"])
+                    self.assertIn(("anchors", "anc_lem_proof"), record_keys(result["packet"]))
+                    self.assertEqual([], packets.blinding_violations(result["packet"]))
+
+    def test_invalid_intermediate_owner_chain_is_still_rejected(self):
+        with self.fx.open() as db:
+            self.fx.apply(db, intermediate_edits(self.fx))
+            invalid = self.fx.item_edit("itm_nested", "equation", "Nested", "anc_lem_proof", "anc_lem_proof")
+            invalid["body"]["owner_id"] = "itm_step"
+            before = db.max_revision()
+            with self.assertRaisesRegex(InvalidRequest, "batch failed validation") as caught:
+                self.fx.apply(db, [invalid])
+            self.assertTrue(any("owner must be a major item" in message for message in caught.exception.records))
+            self.assertEqual(before, db.max_revision())
+
+    def test_missing_intermediate_passage_fails_without_storing_a_packet(self):
+        with self.fx.open() as db:
+            created = intermediate_edits(self.fx, passages=False)[0]
+            created["body"]["scope_id"] = None
+            self.fx.apply(db, [created])
+            count = db.conn.execute("SELECT COUNT(*) FROM packets").fetchone()[0]
+            local = task("private_missing", R("items", "itm_step"), "external_source", role="independent")
+            with self.assertRaisesRegex(InvalidRequest, "no captured local source passage"):
+                self.prepare(db, selection((local,)), mode="independent")
+            self.assertEqual(count, db.conn.execute("SELECT COUNT(*) FROM packets").fetchone()[0])
 
 
 class WorkBindingTests(TempCase):

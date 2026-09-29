@@ -117,7 +117,7 @@ class ControllerAdversarialTests(TempCase):
         response = self.db.head("responses", result["response_id"])
         self.assertEqual("compromised", response.body["exposure"])
 
-    def test_recovered_independent_worker_artifact_is_exact_original_source_only_payload(self):
+    def test_recovered_independent_worker_artifact_preserves_original_source_only_payload(self):
         packet = self.prepare(mode="independent")
         original = self.db.get_blob(self.db.packet(packet["packet_id"])["payload_sha256"])
         recovered = controller.inspect_work(self.db, packet_id=packet["packet_id"])
@@ -130,7 +130,11 @@ class ControllerAdversarialTests(TempCase):
         for forbidden in (b"qualification_id", b"draft_candidates", b"renewal_candidates", b"primary_opinions"):
             self.assertNotIn(forbidden, delivered)
         raw = Path(paths["worker-packet.json"]["path"]).read_bytes()
-        self.assertEqual(original, raw)
+        self.assertGreater(len(raw.splitlines()), 1)
+        self.assertEqual(json.loads(original), json.loads(raw))
+        self.assertEqual(original, canonical_bytes(json.loads(raw)))
+        self.assertEqual(digest(json.loads(original)), digest(json.loads(raw)))
+        self.assertEqual(original, self.db.get_blob(self.db.packet(packet["packet_id"])["payload_sha256"]))
         worker = json.loads(raw)
         self.assertEqual([], packets.blinding_violations(worker))
         self.assertNotIn("_manifest", worker)

@@ -18,7 +18,7 @@ import unittest
 
 from support import CLI_ENV, GLOBAL_TASKS, R, TempCase, edit
 
-from paper_core import PROJECTION_VERSION, projection, storage
+from paper_core import PROJECTION_VERSION, projection, queries, storage
 from paper_core.assessment import derive_assessment
 from paper_core.canonical import compact_json
 from paper_core.errors import InvalidRequest
@@ -800,6 +800,77 @@ class ProjectionFailureTests(ProjectionCase):
             self.assertEqual(db.max_revision(), head)
             self.assertEqual(dumped(projection.build_projection(db, audit_id="aud_1")), dumped(before))
         self.assertEqual(db_digest(fixture.path), digest)
+
+
+class ScopeExplanationTests(ProjectionCase):
+    def test_configured_review_without_eligible_results_has_honest_summary(self):
+        for empty in (False, True):
+            with self.subTest(empty=empty):
+                fixture = self.fixture("scope_" + str(empty)).audit(mode="full")
+                with fixture.open() as db:
+                    audit = db.head("audits", fixture.audit_id)
+                    exclusions = [{"target": R("items", name), "source_anchor_ids": [],
+                        "reason": "Explicitly excluded for this audit", "consequence": "No review of this result"}
+                        for name in ("itm_lem", "itm_thm")]
+                    additions = [] if empty else [fixture.item_edit("itm_setup", "assumption", "Setup", "anc_lem", "anc_lem_proof")]
+                    fixture.apply(db, [*additions, edit("replace", "audits", audit.id,
+                        dict(audit.body, exclusions=exclusions), audit.version)], mode="primary")
+                    view = projection.build_projection(db, audit_id=fixture.audit_id)
+                    state = queries.status(db, audit_id=fixture.audit_id)
+                factual = view["summary"]["factual"]
+                self.assertEqual(state["factual_summary"], factual)
+                self.assertEqual(factual["independent_review"]["explanation"],
+                    "Independent review is configured, but no eligible result targets are currently in scope.")
+                self.assertEqual(factual["independent_review"]["state"], "pending" if empty else "not_required")
+                self.assertFalse(any(o["role"] == "independent" for o in view["obligations"]))
+                self.assertEqual(factual["scope"]["explanation"],
+                    "Full audit of the declared scope after the recorded exclusions.")
+                self.assertEqual({e["label"] for e in factual["scope"]["exclusions"]}, {"Lemma 1", "Theorem 1"})
+
+    def test_included_theorem_without_route_still_needs_review(self):
+        fixture = self.fixture().audit()
+        with fixture.open() as db:
+            audit = db.head("audits", fixture.audit_id)
+            fixture.apply(db, [fixture.item_edit("itm_missing", "theorem", "Requested theorem", "anc_thm", "anc_thm_proof"),
+                edit("replace", "audits", audit.id, dict(audit.body, targets=[R("items", "itm_missing")]), audit.version)],
+                mode="primary")
+            view = projection.build_projection(db, audit_id=fixture.audit_id)
+        review = view["summary"]["factual"]["independent_review"]
+        self.assertEqual(review["state"], "pending")
+        self.assertEqual(review["explanation"], "Independent review: pending.")
+        self.assertFalse(view["summary"]["progress"]["process_complete"])
+        self.assertFalse(any(o["role"] == "independent" for o in view["obligations"]))
+        self.assertIn("itm_missing", {n["id"] for n in view["nodes"]})
+
+
+class AuditFindingLocationTests(ProjectionCase):
+    def test_audit_findings_are_located_with_and_without_required_global_work(self):
+        for required in (False, True):
+            with self.subTest(required=required):
+                fixture = self.fixture("finding_" + str(required)).primary()
+                with fixture.open() as db:
+                    if required:
+                        audit = db.head("audits", fixture.audit_id)
+                        tasks = [dict(t, applicability="required", reason="Synthetic manuscript-wide examination")
+                            if t["kind"] == "global_consistency" else t for t in audit.body["global_tasks"]]
+                        fixture.apply(db, [edit("replace", "audits", audit.id, dict(audit.body, global_tasks=tasks), audit.version)],
+                            *fixture.ITEMS, mode="primary")
+                    check = fixture.check_edit("chk_global", R("audits", fixture.audit_id), "global_consistency", evidence=["anc_lem"])
+                    fixture.apply(db, [check], "audits:" + fixture.audit_id, mode="primary")
+                    fixture.apply(db, [edit("create", "findings", "fnd_global", {
+                        "audit_id": fixture.audit_id, "target": R("audits", fixture.audit_id), "category": "presentation",
+                        "lifecycle": "open", "description": "Notation changes without explanation.", "evidence_refs": ["anc_thm"],
+                        "check_refs": [fixture.pin(db, "checks", "chk_global")], "affected_uses": [],
+                        "impact_reason": "The notation is used across the manuscript.", "resolution": None})],
+                        "audits:" + fixture.audit_id, mode="primary")
+                    view, report = projection.project(db, audit_id=fixture.audit_id)
+                self.assertEqual(report["problems"], view["summary"]["limitations"])
+                self.assertEqual({n["id"] for n in view["nodes"]}, {"itm_lem", "itm_thm"})
+                self.assertEqual(view["summary"]["findings"]["open"], 1)
+                detail = view["details"]["audit:" + fixture.audit_id]
+                self.assertTrue({"fnd_global", "chk_global", "anc_thm", "anc_lem"}.issubset({r["id"] for r in detail["record_refs"]}))
+                location = next(r for r in view["record_locations"] if r["ref"]["id"] == "fnd_global")
+                self.assertEqual((location["detail_key"], location["section_key"]), ("audit:" + fixture.audit_id, "findings"))
 
 
 if __name__ == "__main__":  # pragma: no cover

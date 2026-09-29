@@ -35,7 +35,9 @@ this working directory.
 
 A locator supplies both start/end lines together with start no greater than end, or another location
 method. Page locators require PDF source. An exclusion supplies a target or at least one source
-anchor. A `not_applicable` global task needs a nonempty reason.
+anchor. Excluding an item removes that result and its parts from required audit work. Keep a missing
+proof of a requested result in scope as a source limitation or unresolved examination.
+A `not_applicable` global task needs a nonempty reason.
 
 For non-PDF sources, `Locator.label` is a LaTeX source label key, not a descriptive caption.
 With line numbers, its uncommented `\label{KEY}` must occur inside that range. Use null for

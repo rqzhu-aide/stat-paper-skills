@@ -281,6 +281,39 @@ class ReaderProjectionTests(TempCase):
         self.assertEqual([ref["id"] for ref in detail["reader"]["source_limit_refs"]], ["sis_formula"])
         self.assertIn("fnd_resolved", [ref["id"] for ref in detail["record_refs"]])
 
+    def test_audit_findings_and_repairs_keep_their_audit_and_lifecycle(self):
+        fixture = self.fixture().primary()
+        with fixture.open() as db:
+            audit = db.head("audits", fixture.audit_id)
+            fixture.apply(db, [edit("create", "audits", "aud_other", dict(audit.body, report_path="reports/other.html"))])
+            finding = {"audit_id": fixture.audit_id, "target": R("audits", fixture.audit_id), "category": "presentation",
+                "lifecycle": "open", "description": "Notation switches across sections.", "evidence_refs": ["anc_thm"],
+                "check_refs": [], "affected_uses": [], "impact_reason": "The notation governs the manuscript.", "resolution": None}
+            fixture.apply(db, [edit("create", "findings", "fnd_audit", finding),
+                edit("create", "findings", "fnd_other", dict(finding, audit_id="aud_other", target=R("audits", "aud_other"))),
+                edit("create", "repairs", "rep_audit", {"finding_id": "fnd_audit", "kind": "source_revision_proposal",
+                    "description": "Define the notation before use.", "supported_form": None, "argument_id": None,
+                    "added_conditions": [], "evidence_refs": ["anc_lem"]})], mode="primary")
+        original = self.project(fixture, audit_id=fixture.audit_id)
+        detail = original["details"]["audit:" + fixture.audit_id]
+        refs = {ref["id"] for ref in detail["record_refs"]}
+        self.assertTrue({"fnd_audit", "rep_audit", "anc_thm", "anc_lem"}.issubset(refs))
+        self.assertNotIn("fnd_other", {r["ref"]["id"] for r in original["records"]})
+        other = self.project(fixture, audit_id="aud_other")
+        self.assertIn("fnd_other", {r["ref"]["id"] for r in other["records"]})
+        self.assertNotIn("fnd_audit", {r["ref"]["id"] for r in other["records"]})
+        with fixture.open() as db:
+            current = db.head("findings", "fnd_audit")
+            fixture.apply(db, [edit("replace", "findings", current.id, dict(current.body,
+                lifecycle="resolved", resolution="The author defined the notation."), current.version)], mode="primary")
+        resolved = self.project(fixture, audit_id=fixture.audit_id)
+        self.assertEqual(resolved["summary"]["findings"]["open"], 0)
+        self.assertEqual(resolved["summary"]["findings"]["resolved"], 1)
+        location = next(row for row in resolved["record_locations"] if row["ref"]["id"] == "fnd_audit")
+        self.assertEqual(location["ref"]["version"], 2)
+        self.assertEqual(location["detail_key"], "audit:" + fixture.audit_id)
+        self.assertIn("rep_audit", {r["id"] for r in resolved["details"][location["detail_key"]]["record_refs"]})
+
     def test_satisfied_application_keeps_its_pinned_blocking_context_without_changing_assessment(self):
         fixture = blocked_premise_fixture(self.fixture())
         with fixture.open(write=False) as db:

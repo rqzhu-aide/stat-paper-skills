@@ -350,10 +350,10 @@ class BuiltCase(TempCase):
 class TestVersionCommand(TempCase):
 
     def test_version_reports_the_core_and_contract_identity(self):
-        """version names core 2.3.4, storage format 4 and contract proofcheck-records/4."""
+        """version names core 2.3.5, storage format 4 and contract proofcheck-records/4."""
         payload, _ = run_cli("version")
         self.assertEqual(payload["command"], "version")
-        self.assertEqual(payload["core_version"], "2.3.4")
+        self.assertEqual(payload["core_version"], "2.3.5")
         self.assertEqual(payload["storage_format"], 4)
         self.assertEqual(payload["contract_version"], 4)
         self.assertEqual(payload["contract"], "proofcheck-records/4")
@@ -680,7 +680,7 @@ class TestStatusAndValidate(BuiltCase):
         storage_block = dict(status["storage"])
         self.assertIsInstance(storage_block.pop("metadata"), dict)
         self.assertEqual(storage_block, {"storage_format": 4, "contract_version": 4,
-                                         "contract": "proofcheck-records/4", "core_version": "2.3.4",
+                                         "contract": "proofcheck-records/4", "core_version": "2.3.5",
                                          "projection_version": 2})
 
     def test_an_incomplete_assessment_is_a_successful_status_query(self):
@@ -936,7 +936,7 @@ class TestPublication(BuiltCase):
         payload, stderr = run_cli("release", db, "--audit", AUDIT, "--out", out, "--checkpoint-out", html)
         self.assertEqual(payload["command"], "release")
         self.assertIs(payload["process_complete"], True)
-        self.assertEqual(payload["core_version"], "2.3.4")
+        self.assertEqual(payload["core_version"], "2.3.5")
         self.assertEqual(payload["storage_format"], 4)
         self.assertEqual(payload["contract"], "proofcheck-records/4")
         self.assertEqual(payload["audit_id"], AUDIT)
@@ -1236,6 +1236,22 @@ class TestChangesExportBackup(BuiltCase):
         self.assertIn("refusing to overwrite", payload["error"]["message"])
         self.assertEqual(out.read_bytes(), b"not a database")
 
+    def test_backup_creates_missing_parents_and_reports_non_directory_parent(self):
+        source = BUILT.snapshots["complete"]
+        before = source.read_bytes()
+        out = self.path("missing/nested/backup.db")
+        payload, _ = run_cli("backup", source, "--out", out)
+        self.assertEqual(BUILT.complete_revision, payload["revision"])
+        copied, _ = run_cli("status", out)
+        self.assertEqual(BUILT.complete_revision, copied["revision"])
+        parent = self.path("parent-file")
+        parent.write_bytes(b"keep parent")
+        payload, _ = run_cli("backup", source, "--out", parent / "backup.db", expect=2)
+        self.assertEqual("BACKUP_PATH_INVALID", payload["error"]["code"])
+        self.assertIn("not a directory", payload["error"]["message"])
+        self.assertEqual(b"keep parent", parent.read_bytes())
+        self.assertEqual(before, source.read_bytes())
+
 
 # -- packets -------------------------------------------------------------------------------------------
 class TestPackets(BuiltCase):
@@ -1328,7 +1344,7 @@ class TestTelemetry(BuiltCase):
         details = [event["details"] for event in summary["event_list"]]
         self.assertEqual({d["command"] for d in details}, {"status", "changes"})
         self.assertTrue(all(d["exit_code"] == 0 and d["outcome"] == "ok" for d in details), details)
-        self.assertTrue(all(d["core_version"] == "2.3.4" for d in details), details)
+        self.assertTrue(all(d["core_version"] == "2.3.5" for d in details), details)
 
     def test_a_failed_command_records_its_exit_code_and_error_code(self):
         """The telemetry event of a refused command carries outcome error and the error code."""

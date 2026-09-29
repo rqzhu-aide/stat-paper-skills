@@ -15,6 +15,7 @@ import shutil
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import support
 from support import CORE, HANDOFF, Fixture, R, TempCase, edit
@@ -1038,6 +1039,46 @@ class MaintenanceTests(StorageCase):
             self.assertEqual(copy.metadata["storage_format"], "4")
             self.assertEqual(copy.integrity(), {"foreign_key_violations": [], "integrity": ["ok"]})
             self.assertEqual(storage.paper_record(copy).id, fixture.paper_id)
+
+    def test_backup_creates_nested_parent_directories_without_changing_source(self):
+        fixture = self.structured()
+        destination = self.work / "missing" / "nested" / "backup.db"
+        before = fixture.path.read_bytes()
+        with fixture.open(write=False) as db:
+            result = db.backup(destination)
+            revision = db.max_revision()
+        self.assertEqual(before, fixture.path.read_bytes())
+        with storage.Database(destination) as copied:
+            self.assertEqual(revision, copied.max_revision())
+            self.assertEqual(result["sha256"], support.sha(destination.read_bytes()))
+
+    def test_backup_rejects_non_directory_parent_with_actionable_error(self):
+        fixture = self.structured()
+        parent = self.path("parent-file")
+        parent.write_bytes(b"keep parent")
+        before = fixture.path.read_bytes()
+        with fixture.open(write=False) as db:
+            with self.assertRaises(InvalidRequest) as caught:
+                db.backup(parent / "backup.db")
+        self.assertEqual("BACKUP_PATH_INVALID", caught.exception.code)
+        self.assertIn("not a directory", str(caught.exception))
+        self.assertEqual(b"keep parent", parent.read_bytes())
+        self.assertEqual(before, fixture.path.read_bytes())
+
+    def test_backup_creation_permission_failure_is_actionable_and_preserves_source(self):
+        fixture = self.structured()
+        destination = self.path("denied.db")
+        before = fixture.path.read_bytes()
+        with fixture.open(write=False) as db:
+            for owner, operation in ((storage.os, "open"), (storage.Path, "mkdir")):
+                with self.subTest(operation=operation):
+                    with patch.object(owner, operation, side_effect=PermissionError("fixture denied")):
+                        with self.assertRaises(InvalidRequest) as caught:
+                            db.backup(destination)
+                    self.assertEqual("BACKUP_PATH_INVALID", caught.exception.code)
+                    self.assertIn("destination path and permissions", str(caught.exception))
+                    self.assertFalse(destination.exists())
+                    self.assertEqual(before, fixture.path.read_bytes())
 
     def test_the_backup_is_a_detached_copy_not_a_second_handle(self):
         """Writing to the copy never reaches the source database, and the source keeps its own revision."""

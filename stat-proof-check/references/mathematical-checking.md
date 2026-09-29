@@ -11,11 +11,11 @@ including dollar-delimited commands: `"$\\theta$"`. Prefer a JSON serializer wit
 
 ## Establish the source and exact target
 
-Read the complete statement together with its applicable section setup, definitions,
-proof, continuations, and referenced supplement. A displayed formula may depend on
-preceding prose or a private macro. For PDF material, verify consequential symbols,
-subscripts, powers, signs, inverses, and domains visually. State inaccessible or
-ambiguous material before claiming source fidelity or complete coverage.
+Read the complete statement, applicable setup, definitions, proof, continuations,
+supplement, and relevant macros. For PDF material, verify consequential symbols,
+subscripts, powers, signs, inverses, and domains visually. An available PyMuPDF
+`page.get_pixmap()` can render a page for inspection. State inaccessible or ambiguous
+material before claiming source fidelity or complete coverage.
 
 Normalize the assertion without strengthening or weakening it. Preserve:
 
@@ -42,10 +42,10 @@ For
 \[
 \Gamma,A_1,\ldots,A_m\Longrightarrow C,
 \]
-identify the actual input forms, substitutions, active scope, operation, rule,
-side conditions, source location, and mathematical outcome. Write the calculation
-or logical derivation in the check's reasoning. “Standard algebra” or “all risks
-checked” supplies no inspectable justification.
+examine the decisive written transition using actual inputs, substitutions, scope,
+operation, rule, side conditions, and source location. Show its calculation or logical derivation
+and outcome in reasoning;
+a familiar final formula or “standard algebra” does not justify an invalid transition.
 
 Split where a new premise, operation, event, measure, quantifier, regime, or scope
 needs a distinct justification. Expose a useful intermediate bound, equation,
@@ -151,10 +151,9 @@ its needed regularity in this problem.
 
 ## Origins, completion, and repairs
 
-Distinguish the written argument, faithful reconstruction of omitted routine
-details, and a genuinely different proposed repair. A borrowed internal bound
-may remain valid when its owner's final theorem is false; examine that bound's
-own inputs instead of treating ownership as an implication.
+Distinguish the written argument, reconstruction of routine details, and proposed
+repairs. Do not silently substitute corrected expressions for printed ones. A borrowed
+internal bound can survive a false owner theorem; examine its own inputs.
 
 Complete the route backward from its final target, checking conjunctions, cases,
 quantifiers, and discharged scopes. Separately inspect all in-scope written material,

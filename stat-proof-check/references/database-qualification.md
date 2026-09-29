@@ -93,11 +93,14 @@ that example. Do not use its IDs, profile or grades as evidence for a paper audi
 
 Generate fresh request and qualification IDs using `ids --kind request` and `ids --kind qualifications`.
 Prepare `work/qualification/calibration-1/qualification-grading.json` with those `request_id` and `qualification_id`, the actual
-`reviewer`, `profile`, `protocol_version`, `limitations`, and a `cases` array. Each case entry has
+`reviewer`, `profile`, `protocol_version`, `limitations`, `calibration_isolated`, and a `cases` array. Each case entry has
 `case_id`, `class: "valid"|"invalid"`, `response_path`, and the actual graded `outcome`; include the
 case input, reference criteria and grading rationale in this evidence file as well. Paths below are
 relative to that file, for example `responses/valid-case.json`, not relative to the proof-check
 root. The evidence file is coordinator-authored and has no separate enforced schema.
+Set `calibration_isolated: true` only for confirmed fresh calibration isolation; false or unknown
+isolation cannot qualify. Arrange isolated calibration if possible; otherwise save primary work
+and a reviewer handoff. This declaration does not certify the later paper review's actual exposure.
 
 This standard-library snippet only packs that evidence and the unchanged response files:
 
@@ -122,7 +125,7 @@ for case in grading["cases"]:
     raw = (grading_path.parent / case["response_path"]).read_bytes()
     results[case["class"]].append({"case_id": case["case_id"],
         "response_blob": preserve(raw), "outcome": case["outcome"]})
-qualified = bool(results["valid"] and results["invalid"]) and all(
+qualified = grading.get("calibration_isolated") is True and bool(results["valid"] and results["invalid"]) and all(
     case["outcome"] == "pass" for rows in results.values() for case in rows)
 body = {"reviewer": grading["reviewer"], "profile": grading["profile"],
         "protocol_version": grading["protocol_version"],

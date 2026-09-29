@@ -5,7 +5,8 @@ Read the reconciliation packet, scaffold, worker guidance, coordinator guidance 
 independent reasoning after preserving the independent response. Reopen mathematical guidance
 when new substantive reasoning needs examination. Worker guidance supplies the row shape;
 coordinator guidance supplies eligible exact-target pins and their saved opinions. Compare reasoning
-and conditions even when outcome labels match. `has_both_roles` records presence, not agreement.
+and the actual conditions even when outcome labels or condition counts match.
+Matching counts do not compare conditions or reasoning. `has_both_roles` records presence, not agreement.
 Author the decision and rationale; guidance never supplies an `agree` default.
 
 Use one row for each exact compared target, commonly an argument, group, or use. Its major owner

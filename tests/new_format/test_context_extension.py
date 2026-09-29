@@ -3,9 +3,9 @@ import json
 from unittest import mock
 
 from support import R, TempCase, edit, locator
-from test_work_packets import record_keys, selection, task
+from test_work_packets import intermediate_edits, record_keys, selection, task
 from test_review import entry, judgment, mapping_request, source_target, worker_response
-from paper_core import controller, packets, sources, storage, WORK_CONTEXT_EXTENSION_FEATURE
+from paper_core import controller, packets, review, sources, storage, WORK_CONTEXT_EXTENSION_FEATURE
 from paper_core.canonical import canonical_bytes
 from paper_core.errors import ConflictError, IncompatibleError, InvalidRequest
 
@@ -67,6 +67,39 @@ class ContextExtensionTests(TempCase):
                 self.assertTrue(any(row["ref"]["collection"] == "items" for row in result["packet"]["records"]))
             for identity, idea in ideas.items():
                 self.assertEqual(db.head("items", identity).body["proof_idea"], idea)
+
+    def test_intermediate_context_extension_retains_private_target_and_passage_binding(self):
+        with self.fx.open() as db:
+            self.fx.apply(db, intermediate_edits(self.fx, origin="reconstruction"))
+            self.capture_extra(db)
+            original = self.prepare(db, target="itm_step")
+            extended = packets.extend_work_assignment(db, packet_id=original["packet_id"],
+                request=self.request(db, ("anchors", "anc_extra")))
+            self.assertEqual(original["assigned_task_ids"], extended["assigned_task_ids"])
+            self.assertEqual(R("arguments", "arg_step"), extended["manifest"]["work"]["tasks"][0]["target"])
+            self.assertEqual(original["packet"]["targets"], extended["packet"]["targets"])
+            self.assertIn(("anchors", "anc_extra"), record_keys(extended["packet"]))
+            self.assertFalse(packets.blinding_violations(extended["packet"]))
+            self.assertNotIn("itm_step", canonical_bytes(extended["packet"]).decode("utf-8"))
+            selectors = extended["manifest"]["work"]["source_context_inputs"]
+            self.assertTrue(any(row["ref"]["id"] == "arg_step" and row.get("source_passage_selection") == 1
+                                for row in selectors))
+            with self.assertRaises(InvalidRequest) as caught:
+                controller._validate_rebase(original["manifest"], extended["manifest"])
+            self.assertEqual("NEW_CONTEXT_RESPONSE_REQUIRED", caught.exception.code)
+            worker = worker_response(extended["packet_id"],
+                [judgment(source_target("anc_lem_proof", "The captured local argument"))],
+                covered=[R("items", "itm_thm")])
+            envelope = {"contract_version": 4, "request_id": self.fx.request_id(),
+                "packet_id": extended["packet_id"], "rebase_packet_id": None,
+                "reviewer": "checker-A", "qualification_id": "qua_r1", "exposure": "source_only",
+                "exposure_note": "Fresh source-only reviewer."}
+            pending = controller.submit_work(db, envelope_bytes=canonical_bytes(envelope),
+                                             response_bytes=canonical_bytes(worker))
+            private = self.fx.packet(db, "items:itm_thm", mode="reconcile")
+            mapped = review.map_response(db, mapping=mapping_request(self.fx, private["packet_id"],
+                pending["response_id"], [entry(0, R("arguments", "arg_step"))]))
+            self.assertEqual("accepted", mapped["state"])
 
     def test_borrowed_argument_includes_its_proof(self):
         with self.fx.open() as db:
