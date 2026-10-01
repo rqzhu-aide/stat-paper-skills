@@ -15,6 +15,11 @@ Exit 0 means success, 2 invalid input, 3 conflict, 4 incompatible package/schema
 Failures include `error.code`, `message`, and affected records. For submissions, also inspect `stored`
 and `committed_revision`; retained input need not have produced accepted mathematics.
 
+`get` without `--out` returns the packet (`records` is a list). With `--out`, it writes that
+packet and returns a receipt: `out` is its path and `record_count` (also `records`) is a count.
+When using `get ... --out work/authoring/author.json`, parse that saved file once for packet
+records, for example `json.loads(Path(receipt["out"]).read_text(encoding="utf-8"))["records"]`.
+
 Pass `--run-id RUN` to database commands when collecting command timing. `ids` and `version` have
 no database and do not accept it. Use `telemetry summary DB --run-id RUN`; unavailable model/time
 measurements stay unknown. Measure at meaningful boundaries, not by polling after every record.
@@ -76,6 +81,16 @@ with `template`; do not rediscover schemas from implementation code. Obtain IDs 
 Source commands capture actual excerpts and hashes; do not fabricate them. For a runnable authoring
 example using the UTF-8 helper, optionally consult [the worked example](probability-example.md).
 
+Coordinators can use `source diagnostics AUDIT.db --degraded` to locate current PDF anchors
+with detected replacement characters. Omit `--degraded` to list all current PDF anchors and
+their extraction limitations. Rows show the captured source version and file, physical page,
+replacement count, limitation, and direct live referrers to that anchor version, without excerpts.
+This read-only view does not change evidence or audit status. No detected replacements does
+not establish correct extraction; visually inspect consequential formulas. Treat a damaged
+passage according to its actual use, without propagating uncertainty to unrelated work.
+Keep this coordinator inventory out of independent source-only delivery; supply the necessary
+source and its limitations through the existing worker packet and context-extension workflow.
+
 Render an early checkpoint after recording the main results and their source-backed uses. Compare
 the displayed results and connections with the declared scope. Missing connections require further
 dependency recording or an explicit limitation; isolated nodes do not establish independence.
@@ -135,6 +150,9 @@ Render at meaningful checkpoints. Use the generated table for examination counts
 `process_complete` for audit completion; never hand-count checks. Retain requested parts/exclusions,
 draft/stale state, conditional or unavailable support, source limits and review qualification. Explain
 findings; do not override a limitation with an unsupported positive summary. Use source labels.
+Checkpoint receipts and the report's collapsed Math display notes summarize literal fallbacks
+by cause and saved record field. These are nonblocking presentation notes, not a repair queue;
+they require no additional checkpoint, source comparison or rewrite of audited text.
 Follow [mathematical text and JSON](mathematical-checking.md#mathematical-text-and-json)
 for authored formulas and source transcription. Inspect the result
 cards: the exact audited claim and part scope,

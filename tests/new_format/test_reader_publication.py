@@ -6,12 +6,69 @@ import shutil
 import subprocess
 
 from support import CORE, R, TempCase, edit
-from paper_core import projection, publish
+from paper_core import projection, publish, sources
 from paper_core.canonical import digest
 from test_reader_projection import blocked_premise_fixture, cyclic_premise_fixture
 
 
 class ReaderPublicationTests(TempCase):
+    def test_source_labels_show_plural_locations_and_the_captured_version(self):
+        fixture = self.fixture().primary()
+        # Capture a later source, while the anchors still refer to captured v1.
+        path = fixture.source_root / "paper.tex"
+        with fixture.open(write=False) as db:
+            available = projection.build_projection(db, audit_id=fixture.audit_id)
+            available_input = publish.render_input(db, available, release=False, source_identity="available-source-test")
+        available_page = self.render(available_input, "available-source-labels")
+        available_labels = b" ".join(re.findall(rb'<p class="proof-reader-sources">(.*?)</p>', available_page, re.S))
+        self.assertIn(b"paper.tex", available_labels)
+        path.write_text(path.read_text(encoding="utf-8") + "\n% later source\n", encoding="utf-8")
+        with fixture.open() as db:
+            sources.capture_sources(db, files=["paper.tex"])
+            dataset = projection.build_projection(db, audit_id=fixture.audit_id)
+            # Exercise physical-page labels and differently named historical paths
+            # in a presentation fixture, without rewriting saved source evidence.
+            for record in dataset["records"]:
+                ref, body = record["ref"], record["body"]
+                if ref["collection"] == "sources":
+                    body["path"] = "captured-paper.pdf" if ref["version"] == 1 else "current-paper.pdf"
+                elif ref["collection"] == "anchors" and ref["id"] in ("anc_lem", "anc_lem_proof", "anc_thm"):
+                    body["locator"] = {"page": {"anc_lem": 18, "anc_lem_proof": 19, "anc_thm": 4}[ref["id"]],
+                                       "start_line": None, "end_line": None, "label": None}
+                elif ref["collection"] == "target_specs" and ref["id"] == "tgt_lem":
+                    body["evidence_refs"] = ["anc_lem", "anc_lem_proof", "anc_thm"]
+                elif ref["collection"] == "uses":
+                    body["evidence_refs"] = ["anc_lem", "anc_thm_proof"]
+            envelope = publish.render_input(db, dataset, release=False, source_identity="source-label-test")
+        page = self.render(envelope, "plural-source-labels")
+        self.assertEqual(publish.mechanical_acceptance(page, dataset)["failures"], [])
+        labels = b" ".join(re.findall(rb'<p class="proof-reader-sources">(.*?)</p>', page, re.S))
+        for location in (b"physical page 18", b"physical page 19", b"physical page 4", b"lines 14 to 16"):
+            self.assertIn(location, labels)
+        # The projection omits captured v1's source record after recapture. Use
+        # an honest partial label, rather than borrowing v2's current path.
+        self.assertIn(b"Captured source", labels)
+        self.assertNotIn(b"current-paper.pdf", labels)
+        self.assertIn(b"captured v1", labels)
+        self.assertNotIn(b"Source 1", labels)
+        self.assertIn(b"data-jump-record", labels)
+
+        # With captured metadata present, distinguish the old file and another
+        # source file without consulting the live filesystem or current head.
+        captured = deepcopy(next(r for r in available["records"] if r["ref"]["collection"] == "sources"))
+        captured["body"]["path"] = "captured-paper.pdf"
+        appendix = deepcopy(captured)
+        appendix["ref"]["id"] += "_appendix"
+        appendix["body"]["path"] = "appendix.pdf"
+        dataset["records"].extend([captured, appendix])
+        next(r for r in dataset["records"] if r["ref"]["id"] == "anc_thm_proof")["body"]["source_id"] = appendix["ref"]["id"]
+        captured_page = self.render(envelope, "captured-multiple-file-labels")
+        self.assertEqual(publish.mechanical_acceptance(captured_page, dataset)["failures"], [])
+        captured_labels = b" ".join(re.findall(rb'<p class="proof-reader-sources">(.*?)</p>', captured_page, re.S))
+        self.assertIn(b"captured-paper.pdf, physical page 18", captured_labels)
+        self.assertIn(b"appendix.pdf, lines 14 to 16", captured_labels)
+        self.assertNotIn(b"current-paper.pdf", captured_labels)
+
     def test_audit_wide_finding_has_visible_evidence_and_a_working_destination(self):
         fixture = self.fixture().primary()
         with fixture.open() as db:

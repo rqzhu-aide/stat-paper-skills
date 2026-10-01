@@ -432,6 +432,10 @@
   {
    "new_test": "tests/new_format/test_targeted_workflow.py",
    "reason": "The targeted reliability lifecycle combines current controller scaffolds, retained-byte recovery, qualification, source-target mapping, explicit reconciliation and complete or incomplete reports through the existing CLI. It preserves all legacy tests."
+  },
+  {
+   "new_test": "tests/new_format/test_mechanical_improvements.py",
+   "reason": "Transport, receipt and recovery regressions cover the existing packet workflow, while bounded display diagnostics preserve scientific records and completion. These tests replace no legacy test."
   }
  ]
 }

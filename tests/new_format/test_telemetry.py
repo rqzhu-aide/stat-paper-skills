@@ -32,7 +32,7 @@ FAILED_COMMAND_DETAIL_KEYS = sorted(COMMAND_DETAIL_KEYS + ["error_code"])
 DB_COMMANDS = frozenset({
     "apply", "attach", "backup", "changes", "checkpoint", "compare", "export", "get", "init",
     "migrate-overview", "qualification record", "release", "review map", "review reconcile",
-    "review submit", "source anchor", "source capture", "source review", "status", "telemetry record",
+    "review submit", "source anchor", "source capture", "source review", "source diagnostics", "status", "telemetry record",
     "telemetry summary", "validate", "migrate", "work list", "work prepare", "work submit", "work inspect",
     "template", "review mapping-template", "work extend"})
 NO_DB_COMMANDS = frozenset({"ids", "import-legacy", "version"})

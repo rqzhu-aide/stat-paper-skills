@@ -65,6 +65,20 @@ Keep all four locator keys. This request asks the source command to capture the 
 and hashes; it is not an ordinary `apply` batch. Rebinding an existing anchor requires its current
 `expected_version` rather than null.
 
+One statement can continue across physical PDF pages while remaining one item. For already
+captured anchors on pages 18, 19 and standing context on page 4, its existing `passages` can be:
+
+```json
+[{"role": "statement", "anchor_id": "anc_p18"},
+ {"role": "statement", "anchor_id": "anc_p19"},
+ {"role": "evidence", "anchor_id": "anc_p04"}]
+```
+
+A use supported by discontiguous passages can have `evidence_refs: ["anc_p08", "anc_p12"]`.
+Target specifications likewise use `evidence_refs`; proof boundaries use pinned `anchor_refs`.
+Keep separately audited conclusions as parts of that item. Existing report links show captured
+files/pages or inclusive text lines; no duplicate nodes, location fields or comparisons are needed.
+
 ## Generate one record shape
 
 ```text
@@ -83,6 +97,18 @@ and `external_result`. Intermediate kinds are `equation`, `claim`, `derivation`,
 parts belong to major items. Preserve the manuscript declaration kind independently of origin.
 A locally declared lemma remains a lemma even when attributed elsewhere; `external_result`
 represents a result introduced only by citation.
+
+Declaration kind, document provenance and availability are separate. A theorem belonging to
+this paper's unavailable supplement remains a theorem with a source limitation. Locate its
+bounded description in the supplied manuscript; do not invent its missing statement or proof.
+Load-bearing outside results still need exact supplier inspection and application checking.
+
+Supplements can use numbering from an earlier manuscript version. Match corresponding
+statements and proof headings by content, hypotheses and cross-references, not a numerical
+offset. If main Theorem 3.1 is proved as supplementary Theorem 1, keep one item with the main
+label, retain the alternate name in `aliases`, and attach each passage to its actual file/page.
+If hypotheses or conclusions differ, preserve the distinct exact targets or routes and explain
+the mismatch; a matching heading does not establish coverage of the requested claim.
 
 Use `equation` for a meaningful displayed relation or bound, `claim` for an assertion, and
 `derivation` for a multi-step argument whose conclusion is not separately declared. Give

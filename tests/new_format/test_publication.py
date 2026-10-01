@@ -28,7 +28,7 @@ RENDERER_DIR = CORE / "renderer"
 SELFTEST = RENDERER_DIR / "selftest.mjs"
 NO_NODE = "node is not installed; the bundled renderer cannot run"
 RENDER_ONLY_RECEIPT_KEYS = {"artifact_sha256", "connections", "geometry", "input_bytes", "input_sha256",
-                            "layout_mode", "nodes", "python_acceptance", "representation"}
+                            "layout_mode", "nodes", "python_acceptance", "representation", "math_diagnostics"}
 PUBLICATION_RECEIPT_KEYS = RENDER_ONLY_RECEIPT_KEYS | {"kind", "output_path", "publication_id", "started_at", "state"}
 # The renderer's own two receipts. Both lists are part of the build evidence: a check that silently
 # disappears from the renderer would otherwise weaken every publication without failing anything.
@@ -146,7 +146,8 @@ class MathRenderTests(unittest.TestCase):
         """A formula the converter rejects keeps its exact source text in a labelled fallback span."""
         html = render_text(r"bad $\unknowncmd{x}$ tail")
         self.assertIn('<span class="math-fallback" title="This LaTeX expression is unsupported by the offline'
-                      ' converter.">', html)
+                      ' converter.', html)
+        self.assertIn(r"\unknowncmd", html)
         self.assertIn('<span class="math-fallback-label">LaTeX (not rendered): </span>', html)
         self.assertIn(r"<code>$\unknowncmd{x}$</code>", html)
         self.assertTrue(html.startswith("bad ") and html.endswith(" tail"), html)
@@ -172,7 +173,7 @@ class MathRenderTests(unittest.TestCase):
         html = render_text(r"x $\frac{1}{2$ y")
         self.assertNotIn("<math", html)
         self.assertIn(r"<code>$\frac{1}{2$</code>", html)
-        self.assertIn('title="This LaTeX expression is unsupported by the offline converter."', html)
+        self.assertIn('title="This LaTeX expression is unsupported by the offline converter. unmatched brace"', html)
         self.assertTrue(html.endswith(" y"), html[-20:])
 
     def test_decoded_json_escapes_fall_back_with_a_specific_reason(self):
@@ -200,7 +201,7 @@ class MathRenderTests(unittest.TestCase):
         html = render_text(r"m $\newcommand{\z}{1}\z$ x")
         self.assertNotIn("<math", html)
         self.assertIn(r"<code>$\newcommand{\z}{1}\z$</code>", html)
-        self.assertIn('title="This LaTeX expression is unsupported by the offline converter."', html)
+        self.assertIn('title="This LaTeX expression is unsupported by the offline converter. source macro definitions are not expanded"', html)
 
 
 # -- display fragments and render input ------------------------------------------------------------

@@ -22,6 +22,10 @@ An assignment groups coherent context for one argument/result and role, normally
 call while retaining distinct records. `--task` keeps necessary joint context; `--exclude-task`
 excludes work assigned elsewhere. There is no background queue. `--allow-provisional` permits
 explicit conditional local work, never missing-source or independence bypasses.
+`work list --limit` accepts 1..100 tasks. A successful assignment can defer other units:
+`different_context` and `unit_limit` mean remaining scheduled work, not a repair. Proceed with
+the valid assignment; preserve existing scheduling of other contexts. Size deferrals retain
+measured contributors and the applicable limits; do not split a unit or repeatedly guess sizes.
 
 Preparation writes the files below plus coordinator manifest, guidance and an envelope template. Its
 `worker_delivery_files` receipt lists the assignment files to deliver for the chosen role. For primary work, read
@@ -63,6 +67,11 @@ paper_audit.py work submit AUDIT.db --submission work/assignments/primary-result
 Preserve worker bytes unchanged. One request ID identifies those bytes and its envelope; an identical
 retry returns the original receipt. Changed input or explicit rebase needs a new ID. Intake precedes
 parsing/freshness checks. Included mathematical edits commit atomically; omitted rows remain unfinished.
+For a clear saved terminal rejection, correct the named fields from the local attempt and supplied
+guidance, then use a fresh ID; unchanged replay only returns that rejection. An unused ID rejected
+before intake remains available. Inspect only when artifacts or intake state are unclear. Clerical
+coordinator-envelope corrections preserving actual review provenance need no checker redispatch;
+worker-authored scientific changes require a new authored response.
 Read `stored`, `state`, `committed_revision`, diagnostics and next actions separately. Accepted gaps
 or inconclusive examinations are not transport errors. Envelope/response limits are 65,536/2,097,152 bytes.
 
@@ -74,6 +83,10 @@ or inconclusive examinations are not transport errors. Envelope/response limits 
 | Unsaved old reasoning, consumed mathematics unchanged | Keep original packet identity; explicitly rebase authorization in a new envelope. |
 | Saved completed judgment, consumed mathematics changed | For primary renewal, pass the needed permissible completed predecessor pin from coordinator guidance in the assignment brief. The worker reexamines, authors `supersedes`, and saves the response for unchanged submission. |
 | Missing neutral source in source-only independent work | Capture/anchor it, then `work extend`; examine it and author a new response naming C. |
+
+`WRITE_SCOPE` identifies the affected field/reference and its remedy: missing context, a wrong
+pin, or an unauthorized edit. Reading a record does not authorize replacing it. `work extend`
+supplies independent neutral source context; it is not general primary repair authorization.
 
 Draft and renewal guidance includes the pinned prior outcome, conditions, reasoning and evidence,
 plus available changed-input diagnostics. These are previous examinations, not renewed proof credit.

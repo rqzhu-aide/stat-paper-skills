@@ -34,7 +34,7 @@ PRIMARY_CHECKS = ("chk_comp_lem", "chk_comp_thm", "chk_der_lem", "chk_der_thm", 
 
 # Every leaf command the CLI offers, and the ones that do not carry the wrapper's --run-id option.
 LEAF_COMMANDS = {
-    "init", "attach", "migrate-overview", "source capture", "source anchor", "source review", "ids", "get",
+    "init", "attach", "migrate-overview", "source capture", "source anchor", "source review", "source diagnostics", "ids", "get",
     "apply", "compare", "review submit", "review map", "review reconcile", "qualification record", "changes",
     "status", "validate", "checkpoint", "release", "export", "backup", "import-legacy", "telemetry record",
     "telemetry summary", "version", "migrate", "work list", "work prepare", "work submit", "work inspect",
@@ -350,10 +350,10 @@ class BuiltCase(TempCase):
 class TestVersionCommand(TempCase):
 
     def test_version_reports_the_core_and_contract_identity(self):
-        """version names core 2.3.5, storage format 4 and contract proofcheck-records/4."""
+        """version names core 2.3.6, storage format 4 and contract proofcheck-records/4."""
         payload, _ = run_cli("version")
         self.assertEqual(payload["command"], "version")
-        self.assertEqual(payload["core_version"], "2.3.5")
+        self.assertEqual(payload["core_version"], "2.3.6")
         self.assertEqual(payload["storage_format"], 4)
         self.assertEqual(payload["contract_version"], 4)
         self.assertEqual(payload["contract"], "proofcheck-records/4")
@@ -680,7 +680,7 @@ class TestStatusAndValidate(BuiltCase):
         storage_block = dict(status["storage"])
         self.assertIsInstance(storage_block.pop("metadata"), dict)
         self.assertEqual(storage_block, {"storage_format": 4, "contract_version": 4,
-                                         "contract": "proofcheck-records/4", "core_version": "2.3.5",
+                                         "contract": "proofcheck-records/4", "core_version": "2.3.6",
                                          "projection_version": 2})
 
     def test_an_incomplete_assessment_is_a_successful_status_query(self):
@@ -936,7 +936,7 @@ class TestPublication(BuiltCase):
         payload, stderr = run_cli("release", db, "--audit", AUDIT, "--out", out, "--checkpoint-out", html)
         self.assertEqual(payload["command"], "release")
         self.assertIs(payload["process_complete"], True)
-        self.assertEqual(payload["core_version"], "2.3.5")
+        self.assertEqual(payload["core_version"], "2.3.6")
         self.assertEqual(payload["storage_format"], 4)
         self.assertEqual(payload["contract"], "proofcheck-records/4")
         self.assertEqual(payload["audit_id"], AUDIT)
@@ -1344,7 +1344,7 @@ class TestTelemetry(BuiltCase):
         details = [event["details"] for event in summary["event_list"]]
         self.assertEqual({d["command"] for d in details}, {"status", "changes"})
         self.assertTrue(all(d["exit_code"] == 0 and d["outcome"] == "ok" for d in details), details)
-        self.assertTrue(all(d["core_version"] == "2.3.5" for d in details), details)
+        self.assertTrue(all(d["core_version"] == "2.3.6" for d in details), details)
 
     def test_a_failed_command_records_its_exit_code_and_error_code(self):
         """The telemetry event of a refused command carries outcome error and the error code."""

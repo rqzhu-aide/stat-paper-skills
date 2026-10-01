@@ -11,6 +11,8 @@ narrowing the request.
 Confirm their boundaries against the actual source, including continuations and written alternatives,
 and record the reviewed boundary basis before claiming full coverage. Coverage of every registered
 character is insufficient when the proposed source unit omits part of the proof.
+Match differently numbered supplementary proofs using their content and hypotheses, following
+[graph-records.md](graph-records.md); preserve mismatches rather than silently merging targets.
 
 For Full, reconcile all proof-required declarations and written arguments against the manuscript and
 supplements. For Focused, discover the target's exact internal prerequisites. Start new audits from

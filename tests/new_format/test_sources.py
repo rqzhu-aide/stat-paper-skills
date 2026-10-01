@@ -792,6 +792,87 @@ class AnchorResolution(support.TempCase):
         self.assertIn("is not UTF-8 text; line anchors need text", str(caught.exception))
 
 
+class SourceDiagnosticTests(support.TempCase):
+    def diagnostic_fixture(self):
+        fx = self.fixture().primary()
+        (fx.source_root / "supplement.pdf").write_bytes(TWO_PAGE_PDF)
+        with fx.open() as db:
+            captured = sources.capture_sources(db, files=["supplement.pdf"])
+            source_id = captured["sources"][0]["id"]
+            pages = [Mock(extract_text=Mock(return_value=text)) for text in ("a\x00b\x10c", "Clean source text.")]
+            packet = fx.packet(db)
+            with patch.object(sources, "PdfReader", return_value=SimpleNamespace(pages=pages)):
+                sources.anchor_sources(db, request={"contract_version": 4, "request_id": fx.request_id(),
+                    "packet_id": packet["packet_id"], "anchors": [
+                        {"id": f"anc_pdf_{page}", "expected_version": None, "source_id": source_id,
+                         "locator": locator(page=page)} for page in (1, 2)]})
+            item, use = db.head("items", "itm_lem"), db.head("uses", "use_lem_thm")
+            fx.apply(db, [edit("replace", "items", item.id,
+                              dict(item.body, passages=item.body["passages"] +
+                                   [{"role": "evidence", "anchor_id": "anc_pdf_1"}]), item.version),
+                          edit("replace", "uses", use.id, dict(use.body, evidence_refs=["anc_pdf_1"]), use.version)])
+        return fx, source_id
+
+    def test_degraded_filter_reports_shared_owners_and_captured_source_without_mutation(self):
+        fx, source_id = self.diagnostic_fixture()
+        with fx.open(write=False) as db:
+            before = db.all_versions()
+            assessment = queries.status(db, audit_id=fx.audit_id)
+            result = sources.source_diagnostics(db, degraded=True)
+            self.assertEqual(before, db.all_versions())
+            self.assertEqual(assessment, queries.status(db, audit_id=fx.audit_id))
+        self.assertEqual(2, result["pdf_anchor_count"])
+        self.assertEqual(1, result["degraded_anchor_count"])
+        self.assertEqual(1, result["returned_anchor_count"])
+        row = result["anchors"][0]
+        self.assertEqual("supplement.pdf", row["file"])
+        self.assertEqual({"collection": "sources", "id": source_id, "version": 1}, row["source_ref"])
+        self.assertEqual(1, row["locator"]["page"])
+        self.assertEqual(2, row["replacement_count"])
+        self.assertIn("Missing glyph meanings were not recovered", row["extraction_note"])
+        self.assertEqual({("items", "itm_lem"), ("uses", "use_lem_thm")},
+                         {(r["collection"], r["id"]) for r in row["targets"]})
+        self.assertNotIn("excerpt", row)
+
+    def test_cli_is_read_only_and_all_anchors_includes_clean_pages(self):
+        fx, _ = self.diagnostic_fixture()
+        original = fx.path.read_bytes()
+        result, stderr = support.run_cli("source", "diagnostics", fx.path)
+        self.assertEqual("", stderr)
+        self.assertEqual(2, result["returned_anchor_count"])
+        self.assertEqual([2, 0], [row["replacement_count"] for row in result["anchors"]])
+        filtered, _ = support.run_cli("source", "diagnostics", fx.path, "--degraded")
+        self.assertEqual(1, filtered["returned_anchor_count"])
+        self.assertEqual(original, fx.path.read_bytes())
+
+    def test_recapture_keeps_the_anchor_bound_to_its_actual_source_version(self):
+        fx, source_id = self.diagnostic_fixture()
+        with fx.open() as db:
+            (fx.source_root / "supplement.pdf").write_bytes(TWO_PAGE_PDF + b"\n% later capture\n")
+            sources.capture_sources(db, files=["supplement.pdf"])
+            self.assertEqual(2, db.head("sources", source_id).version)
+            row = sources.source_diagnostics(db, degraded=True)["anchors"][0]
+            self.assertEqual(1, row["source_ref"]["version"])
+
+    def test_unreferenced_damage_is_visible_without_rewriting_a_focused_assessment(self):
+        fx, _ = self.diagnostic_fixture()
+        with fx.open() as db:
+            item, use = db.head("items", "itm_lem"), db.head("uses", "use_lem_thm")
+            fx.apply(db, [edit("replace", "items", item.id, dict(item.body,
+                passages=[p for p in item.body["passages"] if p["anchor_id"] != "anc_pdf_1"]), item.version),
+                edit("replace", "uses", use.id, dict(use.body, evidence_refs=["anc_thm_proof"]), use.version)])
+            before = queries.status(db, audit_id=fx.audit_id)
+            self.assertEqual([], sources.source_diagnostics(db, degraded=True)["anchors"][0]["targets"])
+            self.assertEqual(before, queries.status(db, audit_id=fx.audit_id))
+
+    def test_non_pdf_anchors_are_not_classified_as_pdf_damage(self):
+        fx = self.fixture().structure()
+        with fx.open(write=False) as db:
+            result = sources.source_diagnostics(db, degraded=True)
+            self.assertEqual([], result["anchors"])
+            self.assertEqual(0, result["pdf_anchor_count"])
+
+
 class AnchorCommand(support.TempCase):
     """``anchor_sources`` turns an anchor request into anchor record versions through a packet."""
 

@@ -1,23 +1,27 @@
 # Detailed mathematical checking
 
-Use the assigned packet, role brief, and relevant [domain checks](domain-risk-checks.md).
-Show every substantive inference; routine lines need no separate node.
+Use the assigned packet, role brief and relevant [domain checks](domain-risk-checks.md).
+Show substantive inferences; routine lines need no separate node.
 
 ## Mathematical text and JSON
 
 Use `$...$`/`\(...\)` inline or `$$...$$`/`\[...\]` display.
-Undelimited math stays plain; preserve source excerpts. JSON requires doubled backslashes,
-including dollar-delimited commands: `"$\\theta$"`. Prefer a JSON serializer with Python raw strings.
+Preserve raw excerpts; undelimited math stays plain. Serialize Python raw strings to JSON,
+which doubles backslashes (`"$\\theta$"`).
+
+For new transcriptions, use already source-established standard notation, e.g. `\bx=\mathbf{x}`.
+Do not search macros solely for display or guess `\T`. Unsupported notation stays literal.
+Display notes require no audited-target rewrite or re-examination; actual source mismatches
+or uncertain meaning still need scientific treatment.
 
 ## Establish the source and exact target
 
-Read the complete statement, applicable setup, definitions, proof, continuations,
-supplement, and relevant macros. For PDF material, verify consequential symbols,
-subscripts, powers, signs, inverses, and domains visually. An available PyMuPDF
-`page.get_pixmap()` can render a page for inspection. State inaccessible or ambiguous
-material before claiming source fidelity or complete coverage.
+Read the complete statement, setup, definitions, proof, continuations, supplement, and relevant macros.
+Visually verify consequential PDF symbols, subscripts, powers, signs, inverses, and domains
+(PyMuPDF `page.get_pixmap()` can render pages). State inaccessible or ambiguous material before
+claiming source fidelity or complete coverage.
 
-Normalize the assertion without strengthening or weakening it. Preserve:
+Normalize without changing the assertion. Preserve:
 
 - Objects, types, domains, ordered quantifiers, and which quantities are fixed or random.
 - Explicit and inherited hypotheses, including numerical caps and conjunctions.
@@ -32,9 +36,8 @@ when a bound must be uniform in the specified \(M\). Likewise,
 |R_n(\theta)|\le C_\theta n^{-1}
 \]
 does not supply a single constant uniform over \(\theta\).
-Retain the exact target separately from a short overview synopsis. Compare the
-actual saved target and its setup with source; an accurate review note cannot
-repair an inaccurate assertion.
+Keep exact targets separate from overview synopses. Compare saved targets and setup with source;
+review notes cannot repair inaccurate assertions.
 
 ## Reconstruct inspectable transitions
 
@@ -166,4 +169,4 @@ for the unchanged statement has its own provenance; a restricted statement has
 its own target. A candidate repair remains provisional until the claimed
 mathematics and required independent review are completed.
 
-For authoring a multi-step probability argument, use [the optional worked example](probability-example.md). It is not required reading for an ordinary assignment.
+Optional: [multi-step probability authoring example](probability-example.md).
