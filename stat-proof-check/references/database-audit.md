@@ -116,6 +116,11 @@ Build the audit inventory from the manuscript; a saved graph alone establishes n
 coverage nor proof credit. Full/focused audits name all three global tasks
 `global_consistency`, `adversarial`, and `method_interface`, each required or explicitly not applicable.
 Review complete proof continuations before recording accepted proof boundaries.
+For PDF pages containing neighboring results, record the actual proof's `proof_spans` in the
+immutable boundary source review as described in [graph-records.md](graph-records.md). Coverage
+then follows those reviewed character ranges for each argument, while workers and readers retain
+the full page evidence. Do not classify unrelated page material as structural coverage. Missing
+selectors retain whole-page coverage, and uncertain proof boundaries remain unresolved.
 
 ## Check, review and recover
 

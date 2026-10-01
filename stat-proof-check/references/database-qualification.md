@@ -61,9 +61,9 @@ Build `work/authoring/audit-update.json` as an ordinary replace batch using the 
 unchanged audit body except for its new `qualification_id`. Recording the qualification alone
 does not change the audit. Prepare independent work only after this update succeeds.
 Prefer settling this configuration before preparing other assignments or global checks.
-For new primary global checks, a qualification-only configuration update preserves the mathematical work.
-Older full-record bindings may require explicit renewal. Inspect affected evidence and renew
-only checks whose consumed inputs changed; never rewrite saved responses or bindings.
+A qualification-only update preserves primary work whose consumed inputs do not depend on that field.
+Historical full-record bindings remain conservative unless their original provenance establishes that
+the field was irrelevant. Inspect affected evidence; never rewrite saved responses or bindings.
 
 ## Exact receipt shape
 

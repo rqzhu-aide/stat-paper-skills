@@ -18,6 +18,8 @@ These notes preserve decisions and evidence. Current workflow instructions remai
 
 | Note | Status |
 |---|---|
+| [Workflow revision handoff](proofcheck-workflow-revision-handoff.md) | Implemented scope for preserving examinations, coherent independent reviews, and precise PDF coverage |
+| [Workflow revision validation](proofcheck-workflow-revision-validation.md) | October 1 implementation, compatibility, installation, and live-test limitation |
 | [Targeted reliability fixes](proofcheck-targeted-fixes-handoff.md) | Implemented; retained scope of the September 27 fixes |
 | [Targeted fixes validation](proofcheck-targeted-fixes-validation.md) | Implementation, verification, and subsequent installation record |
 | [Reader and output fixes](proofcheck-reader-output-fixes.md) | Implemented in maintained sources; records validation and remaining live-browser/test-run limitations |

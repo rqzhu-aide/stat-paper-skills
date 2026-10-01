@@ -24,24 +24,30 @@ the packet ID returned in `work/authoring/mapping-context.json`. Obtain broader 
 lacks a needed canonical record.
 
 Author only the generated `template` member as `work/authoring/mapping.json`, filling reviewer, exact canonical
-targets and source-grounded rationales. Use zero-based judgment indexes; `--judgment N` selects
-particular rows. B's read set must contain each mapped record. Original reviewed scope and source
+targets and source-grounded rationales. Use zero-based judgment indexes; `review mapping-template --judgment N`
+selects particular rows. B's read set must contain each mapped record. Original reviewed scope and source
 overlap remain tied to A. Neither mapping nor a corrected envelope can change a judgment's kind,
-reasoning, outcome, evidence, or actual coverage. Wrong kinds or malformed content require a
-corrected worker response. For a correctly identified inference missing from the graph, refine
-from source and map where permissible through a current B. Preserve the original response.
-New evidence requires actual examination, not relabeling old bytes.
+reasoning, outcome, evidence, or actual coverage. Wrong kinds, incompatible combined targets, malformed
+content, or judgments outside the assigned scope require a reviewer-authored correction. Preserve
+original bytes and actual continuity; a corrected envelope cannot supply scientific corrections.
+For a correctly identified inference missing from the graph, refine from source and map where permissible
+through a current B. Do not invent records merely to accept a response or retire a legitimate refinement
+to restore freshness. Missing neutral source uses `work extend` and actual examination of the new packet.
+An additional result outside the assignment needs separately scoped review, not relabeling old bytes.
 
 Equivalent routine reasoning actually examined in an accepted response may be mapped with an
 explicit equivalence rationale. Mapping cannot duplicate an exact existing mapping or credit unseen
 mathematics. Substantive new reasoning or changed conditions uses
 [supplied-route review](supplied-route-review.md). Item/part completion requires all required
 exact route examinations and their reconciliations; mapping one composition does not close the rest.
+Privately compare the examined reasoning with required routes and arrange focused review where it is
+missing. Keep this coordinator inventory out of source-only worker delivery.
 
 The current response may become accepted while its original submission receipt remains
 `needs_revision`. Inspect current record state separately from that historical transport receipt.
-Retain pending original opinions and resolve their substantive issues rather than silently dropping
-counterexamples when a corrected response arrives.
+One pending judgment keeps the whole response unaccepted. Retain the original and preserve unresolved
+substantive concerns in corrected reasoning and a saved finding or unresolved issue. Relevant accepted
+extra opinions still require reconciliation; a correction cannot erase a counterexample.
 
 Record actual reviewer identity and qualification from dispatch, never worker-written fields.
 Use `source_only` only for verified isolation; use `route_provided` for its declared supplied packet.

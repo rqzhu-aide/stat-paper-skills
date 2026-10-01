@@ -304,6 +304,60 @@ class AssistanceTests(TempCase):
                 assistance.mapping_template(source_packet_id=source["packet_id"], mapping_packet_id=packet["packet_id"],
                     response_id=submitted["response_id"], judgment_indexes=[0, 0])
 
+    def test_guided_route_and_local_opinions_survive_mapping_for_exact_reconciliation(self):
+        fx = self.fixture().primary()
+        with fx.open() as db:
+            source = fx.packet(db, "items:itm_lem", mode="independent")
+            example = assistance.worker_guidance("independent")["source_target_example"]
+            judgments = []
+            for kind, description, outcome, reasoning in (
+                ("composition", "The complete written induction route for the lemma", "gap",
+                 "The base case and induction step were examined together. The route omits the base "
+                 "condition and therefore does not establish the claimed uniform bound."),
+                ("derivation", "The induction base in the lemma proof", "refuted",
+                 "The unrestricted base value may be a_1 = 2, contradicting a_1 <= 1. "
+                 "This counterexample must survive any correction of the route."),
+            ):
+                judgment = copy.deepcopy(example)
+                judgment["target"].update(source_anchor_id="anc_lem_proof", description=description)
+                judgment.update(kind=kind, state="complete", outcome=outcome, reasoning=reasoning,
+                                evidence_refs=["anc_lem_proof"], conditions=[], next_action=None, supersedes=None)
+                judgments.append(judgment)
+            worker = {"packet_id": source["packet_id"], "covered_targets": [R("items", "itm_lem")],
+                      "coverage_note": judgments[1]["reasoning"],
+                      "exposure_report": {"status": "none_known", "note": ""}, "judgments": judgments}
+            raw = canonical_bytes(worker)
+            submitted = review.submit_review(db, submission={"contract_version": 4, "request_id": fx.request_id(),
+                "packet_id": source["packet_id"], "reviewer": "checker-A", "qualification_id": "qua_r1",
+                "exposure": "source_only", "exposure_note": ""}, response_bytes=raw)
+            self.assertEqual("needs_revision", submitted["state"])
+            saved_checks = []
+            for index, target in enumerate((R("arguments", "arg_lem"), R("groups", "grp_lem"))):
+                packet = fx.packet(db, "items:itm_lem", mode="primary")
+                mapping = assistance.mapping_template(source_packet_id=source["packet_id"],
+                    mapping_packet_id=packet["packet_id"], response_id=submitted["response_id"],
+                    judgment_indexes=[index])["template"]
+                mapping["reviewer"] = "coordinator"
+                mapping["entries"][0].update(target=target, rationale="This exact inference occupies the reviewed proof passage.")
+                mapped = review.map_response(db, mapping=mapping)
+                self.assertEqual("needs_revision" if index == 0 else "accepted", mapped["state"])
+                check = db.head("checks", mapped["checks"][0]["check_id"])
+                self.assertEqual(target, check.body["target"])
+                for field in ("kind", "outcome", "reasoning", "evidence_refs"):
+                    self.assertEqual(judgments[index][field], check.body[field])
+                saved_checks.append(check.id)
+            response = db.head("responses", submitted["response_id"])
+            self.assertEqual(raw, db.get_blob(response.body["original_blob"]))
+            prepared = controller.prepare_work(db, audit_id=fx.audit_id, mode="reconcile", focus=R("items", "itm_lem"))
+            guidance = prepared["coordinator_guidance"]
+            candidates = {row["target"]["id"]: row for row in guidance["reconciliation_candidates"]}
+            for target, check_id in zip(("arg_lem", "grp_lem"), saved_checks):
+                row = candidates[target]
+                self.assertEqual([check_id], [pin["id"] for pin in row["independent_checks"]])
+                self.assertEqual(db.head("checks", check_id).body["reasoning"], row["independent_opinions"][0]["reasoning"])
+            self.assertNotIn("arg_thm", candidates)
+            self.assertEqual("", guidance["reconciliation_row_template"]["decision"])
+
     def test_compromised_opinion_is_not_offered_as_eligible_independent_evidence(self):
         fx = self.fixture().independent()
         with fx.open() as db:

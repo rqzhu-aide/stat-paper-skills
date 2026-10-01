@@ -8,6 +8,12 @@ Inspect when recovery or clarification is needed; render at meaningful checkpoin
 
 ## Prepare and dispatch
 
+Plan the actual available reviewer configuration before dispatch. Arrange [qualification](database-qualification.md)
+once and reuse it across fresh contexts while provider, model, effort, tools and isolation are unchanged.
+A genuine configuration change requires new calibration; a cosmetic preference does not justify redispatch.
+Verify actual isolation and exposure for each review. If independent execution is unavailable, preserve useful
+primary work and deliver the existing reviewer handoff.
+
 Paths follow the [folder rules](database-audit.md#choose-the-work-folder); run from the audit root
 or use absolute paths. Keep each assignment under
 `work/assignments/<role>-<result>-<number>/`, using a fresh name for new assignments.
@@ -120,7 +126,7 @@ Same-byte artifact output may be reused; different output requires a new directo
 reflects current eligibility and may change after another commit; keep the old files and inspect into
 a fresh directory rather than freezing obsolete advice or overwriting an authored response.
 Notes/check-link edits need not stale mathematics. Adding coverage or changing its spans/claims can
-reopen composition while local derivations remain current; changed source or scope can also reopen work.
+reopen primary composition while local derivations remain current; changed source or scope can also reopen work.
 Prefer saving coverage with the checks that examine it. Controller coverage uses `check_task_ids`,
 `existing_check_refs`, and `replaces`; direct stored coverage uses `check_ids`, with replacement in
 the enclosing edit. Generate the relevant shape rather than copying fields between these interfaces.
@@ -129,13 +135,14 @@ blocker are unchanged, act on the existing next action or stop that branch; do n
 
 ## Review and finish
 
-Prepare independent work with `--mode independent`; arrange [qualification](database-qualification.md)
-once for the actual configuration and reuse it while that configuration is unchanged. If fresh
-independent execution is unavailable, save useful primary work and a reviewer handoff.
+Prepare independent work with `--mode independent` using the qualified configuration.
 Preserve the original response, [map if needed](review-mapping.md), then prepare `--mode reconcile`.
 Use generated exact-target eligible pins and [reconciliation rules](reconciler.md).
 
-When stopping, follow the [handoff checklist](database-audit.md#stop-and-hand-off).
+On resume, inspect current database state and saved responses before redispatching. At a stopping boundary,
+follow the [handoff checklist](database-audit.md#stop-and-hand-off) and render a current checkpoint when possible.
+If rendering fails, identify retained HTML as old and link the saved work. Render at meaningful boundaries,
+not after every record.
 
 Preparation selects unfinished work. To correct an already satisfied primary check, use a current
 `get --mode primary` packet and `apply` with a full successor-check body, or an authorized reconciliation

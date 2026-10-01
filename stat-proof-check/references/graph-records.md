@@ -214,6 +214,9 @@ belong to the same audit and argument, and have its corresponding obligation sat
 current and complete, or lead to such an examination through explicit `supersedes` successors.
 Together, these examinations must have consumed every claimed item/part statement; citing its
 source passage alone is insufficient. An extra unusable linked check prevents coverage credit.
+For a reviewed subpage proof selection, coverage accounts for its selected intervals, including
+every continuation. Unrelated material elsewhere on a PDF page needs no coverage row and must
+not be labeled structural merely to close the audit. The complete page excerpt remains evidence.
 
 Graph registration can precede complete coverage. Save controller coverage with its checks using
 `check_task_ids`, pinned `existing_check_refs`, and `replaces` (null for new rows) from the generated
@@ -288,6 +291,31 @@ decision: "accepted"|"unresolved", rationale: nonempty string, reviewer: nonempt
 Pin the captured source versions and all complete proof anchors. The rationale identifies the
 source boundary, continuations inspected, and any limitation. An accepted decision is the author's
 actual source review, not a value to infer from parser output.
+
+When a PDF page contains other material, the review may additionally carry `proof_spans`:
+
+```json
+"proof_spans": [
+  {"argument_ref": {"collection": "arguments", "id": "arg_ID", "version": 1},
+   "anchor_ref": {"collection": "anchors", "id": "anc_ID", "version": 1},
+   "start_offset": 120, "end_offset": 480}
+]
+```
+
+These nonempty `[start_offset, end_offset)` intervals address characters in the stored excerpt,
+not UTF-8 bytes, PDF coordinates, or text copied from another extractor. Inspect the full page
+visually, locate all proof segments and continuations, and retain the full captured excerpt.
+Use separate entries for disjoint segments and for different arguments sharing a page. Each
+anchor pin must appear in `anchor_refs`, with its captured source version in `source_refs`.
+Pin the current argument version when recording the review. A later label-only change does not
+invalidate that selection; changed argument proof inputs or anchor versions require renewed review.
+Each linked boundary must retain every selected anchor for each of its arguments. An ambiguous
+boundary stays unresolved; do not derive the selection from whichever intervals already have checks.
+
+Omitting `proof_spans` retains the whole-anchor requirement. Accepted reviews are immutable:
+record changed selections under a new review ID, then update the boundary's review pin. Review
+metadata alone does not change a source-only reviewer's delivered selection. The first span-aware
+write adds the `reviewed-proof-spans/1` database feature; use an updated shared core to reopen it.
 
 Then create or replace `proof_boundaries` through ordinary graph authoring, linking that review
 and its complete segment list to the exact target and all applicable arguments. Use

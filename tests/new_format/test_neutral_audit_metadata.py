@@ -227,6 +227,78 @@ class QualificationMetadataTests(TempCase):
         saved = self.db.work_submission(envelope["request_id"])
         self.assertEqual(raw, self.db.get_blob(saved["response_sha256"]))
 
+    def local_response(self, prepared, variant):
+        response = copy.deepcopy(prepared["scaffold"])
+        for row in response["results"]:
+            if row["type"] == "source_fidelity":
+                row.update(result="matched", note="Synthetic source comparison.", evidence_refs=["anc_lem"])
+            else:
+                row.update(state="complete", outcome="supported", reasoning="Synthetic primary examination.",
+                           evidence_refs=["anc_lem_proof"])
+        if variant == "source_only":
+            response["results"] = [r for r in response["results"] if r["type"] == "source_fidelity"]
+        elif variant == "findings_only":
+            response["results"] = []
+            response["findings"] = [{"target": R("items", "itm_lem"), "category": "presentation",
+                "description": "Clarify the notation.", "evidence_refs": ["anc_lem"],
+                "related_task_ids": [], "existing_check_refs": [], "affected_uses": [],
+                "impact_reason": "Readers need a consistent convention."}]
+        elif variant == "coverage_only":
+            response["results"] = []
+            response["coverage"] = [{"argument_id": "arg_lem", "anchor_id": "anc_lem_proof",
+                "start_offset": 0, "end_offset": 1, "classification": "structural",
+                "claim_refs": [], "check_task_ids": [], "existing_check_refs": [], "replaces": None,
+                "note": "Synthetic leading structural character, not the substantive proof."}]
+        return response
+
+    def test_prepared_local_primary_work_survives_qualification_change_with_original_bytes(self):
+        for variant in ("source_only", "checks", "findings_only", "coverage_only"):
+            for before, after in ((None, "qua_r1"), ("qua_r1", None)):
+                with self.subTest(variant=variant, before=before, after=after):
+                    self.setup_audit()
+                    if before:
+                        self.replace_audit(qualification_id=before)
+                    prepared = controller.prepare_work(self.db, audit_id=self.fx.audit_id, mode="primary",
+                                                       focus=R("items", "itm_lem"))
+                    self.assertTrue(prepared["prepared"], prepared)
+                    raw = canonical_bytes(self.local_response(prepared, variant))
+                    self.replace_audit(qualification_id=after)
+                    envelope = {"contract_version": 4, "request_id": self.fx.request_id(),
+                        "packet_id": prepared["packet_id"], "rebase_packet_id": None, "reviewer": "fixture",
+                        "qualification_id": None, "exposure": None, "exposure_note": ""}
+                    receipt = controller.submit_work(self.db, envelope_bytes=canonical_bytes(envelope),
+                                                     response_bytes=raw)
+                    self.assertEqual("accepted", receipt["state"], receipt)
+                    saved = self.db.work_submission(envelope["request_id"])
+                    self.assertEqual(raw, self.db.get_blob(saved["response_sha256"]))
+
+    def test_primary_qualification_neutrality_does_not_hide_changed_mathematics_or_scope(self):
+        for change in ("source", "statement", "protocol", "scope"):
+            with self.subTest(change=change):
+                self.setup_audit()
+                prepared = controller.prepare_work(self.db, audit_id=self.fx.audit_id, mode="primary",
+                                                   focus=R("items", "itm_lem"))
+                raw = canonical_bytes(self.local_response(prepared, "checks"))
+                self.replace_audit(qualification_id="qua_r1")
+                if change == "source":
+                    path = self.fx.source_root / "paper.tex"
+                    path.write_text(path.read_text(encoding="utf-8").replace("a_n", "b_n"), encoding="utf-8")
+                    sources.capture_sources(self.db, files=["paper.tex"])
+                elif change == "statement":
+                    item = self.db.head("items", "itm_lem")
+                    self.fx.apply(self.db, [edit("replace", "items", item.id,
+                        dict(item.body, statement={"form": "verbatim", "text": "Changed assertion"}), item.version)])
+                else:
+                    self.replace_audit(**({"protocol_version": "item-audit/next"} if change == "protocol"
+                                         else {"targets": [R("items", "itm_thm")]}))
+                envelope = {"contract_version": 4, "request_id": self.fx.request_id(),
+                    "packet_id": prepared["packet_id"], "rebase_packet_id": None, "reviewer": "fixture",
+                    "qualification_id": None, "exposure": None, "exposure_note": ""}
+                revision = self.db.max_revision()
+                receipt = controller.submit_work(self.db, envelope_bytes=canonical_bytes(envelope), response_bytes=raw)
+                self.assertEqual("conflict", receipt["state"], receipt)
+                self.assertEqual(revision, self.db.max_revision())
+
     def test_prepared_global_finding_preserves_only_qualification_neutrality(self):
         for changes, expected in (({"qualification_id": "qua_r1"}, "accepted"),
                                   ({"report_path": "another-report.html"}, "conflict"),

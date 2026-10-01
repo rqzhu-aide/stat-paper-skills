@@ -1,10 +1,11 @@
 """Generic mapping preserves controller review provenance without relaxing generic OCC."""
 from __future__ import annotations
 
+import hashlib
 from unittest import mock
 
 from support import R, TempCase, edit, locator
-from paper_core import assessment, controller, review, sources
+from paper_core import assessment, bindings, controller, projection, queries, review, sources, work
 from paper_core.canonical import canonical_bytes
 from paper_core.errors import ConflictError
 
@@ -16,7 +17,7 @@ class WorkOriginBindingTests(TempCase):
         self.db = self.fx.open()
         self.addCleanup(self.db.close)
 
-    def pending(self, *, work_origin=True):
+    def pending(self, *, work_origin=True, exposure="source_only", extra_judgment=False):
         if work_origin:
             prepared = controller.prepare_work(self.db, audit_id="aud_1", mode="independent",
                                                 focus=R("items", "itm_lem"))
@@ -29,8 +30,11 @@ class WorkOriginBindingTests(TempCase):
             "judgments": [{"target": {"source_anchor_id": "anc_lem_proof", "description": "The proof argument"},
                 "kind": "composition", "state": "complete", "outcome": "supported", "reasoning": "Source-based examination",
                 "evidence_refs": ["anc_lem_proof"], "conditions": [], "next_action": None, "supersedes": None}]}
+        if extra_judgment:
+            worker["judgments"].append(dict(worker["judgments"][0], kind="derivation"))
         submission = {"contract_version": 3, "request_id": self.fx.request_id(), "packet_id": packet["packet_id"],
-                      "reviewer": "checker-A", "qualification_id": "qua_r1", "exposure": "source_only", "exposure_note": ""}
+                      "reviewer": "checker-A", "qualification_id": "qua_r1", "exposure": exposure,
+                      "exposure_note": "Possible primary exposure" if exposure == "compromised" else ""}
         if work_origin:
             envelope = dict(submission, rebase_packet_id=None)
             submitted = controller.submit_work(self.db, envelope_bytes=canonical_bytes(envelope),
@@ -46,7 +50,7 @@ class WorkOriginBindingTests(TempCase):
                    "reviewer": "coordinator"}
         return request
 
-    def mapped(self, *, historical_binding=False, **kwargs):
+    def mapped(self, *, historical_binding=False, historical_coverage=False, **kwargs):
         request = self.pending(**kwargs)
         if historical_binding:
             # Freeze the historical stored shape explicitly. Merely changing a
@@ -57,6 +61,10 @@ class WorkOriginBindingTests(TempCase):
                 original_shape.pop("semantic_memberships", None)
                 return insert(collection, identifier, version, packet_id, original_shape)
             with mock.patch.object(self.db, "insert_binding", side_effect=insert_historical):
+                mapped = review.map_response(self.db, mapping=request)
+        elif historical_coverage:
+            # Reproduce the previous writer, retaining its exact stored bindings.
+            with mock.patch.object(bindings, "_without_coordinator_coverage", side_effect=lambda binding: binding):
                 mapped = review.map_response(self.db, mapping=request)
         else:
             mapped = review.map_response(self.db, mapping=request)
@@ -85,22 +93,154 @@ class WorkOriginBindingTests(TempCase):
         self.coverage_progress()
         self.assertEqual("current", self.freshness(check_id)["freshness"])
 
-    def test_work_origin_mapping_stales_when_coverage_span_changes(self):
+    def assert_coverage_incomplete(self):
+        derived = assessment.derive_assessment(self.db, audit_id="aud_1")
+        self.assertFalse(derived["progress"]["process_complete"])
+        self.assertTrue(derived["coverage_diagnostics"])
+
+    def test_work_origin_mapping_survives_coverage_span_changes(self):
         check_id = self.mapped()
         old = self.db.head("coverage", "cov_lem")
         self.fx.apply(self.db, [edit("replace", "coverage", old.id,
             dict(old.body, end_offset=old.body["end_offset"] - 1), old.version)], mode="primary")
         changed = self.freshness(check_id)
-        self.assertEqual("needs_review", changed["freshness"])
-        self.assertTrue(any(r["ref"]["id"] == "cov_lem" and r["facet"] == "coverage"
-                            for r in changed["changes"]["records"]))
+        self.assertEqual("current", changed["freshness"])
+        self.assert_coverage_incomplete()
 
-    def test_work_origin_mapping_stales_when_coverage_claim_changes(self):
+    def test_work_origin_mapping_survives_coverage_claim_changes(self):
         check_id = self.mapped()
         old = self.db.head("coverage", "cov_lem")
         self.fx.apply(self.db, [edit("replace", "coverage", old.id,
             dict(old.body, claim_refs=[R("items", "itm_thm")]), old.version)], mode="primary")
+        self.assertEqual("current", self.freshness(check_id)["freshness"])
+        self.assert_coverage_incomplete()
+
+    def test_new_work_binding_omits_only_coordinator_coverage(self):
+        check_id = self.mapped()
+        stored = self.db.binding("checks", check_id, 1)["bindings"]
+        self.assertFalse(any(row["ref"]["collection"] == "coverage" for row in stored["records"]))
+        for field in ("relations", "semantic_memberships"):
+            self.assertFalse(any(row["relation"] == "coverage_in_argument" for row in stored[field]))
+        self.assertTrue(any(row["ref"]["collection"] == "proof_boundaries" and row["facet"] == "coverage"
+                            for row in stored["records"]))
+        self.assertTrue(any(row["ref"]["collection"] == "source_reviews" for row in stored["records"]))
+        boundary = self.db.head("proof_boundaries", "bnd_lem")
+        self.fx.apply(self.db, [edit("replace", "proof_boundaries", boundary.id,
+            dict(boundary.body, state="unresolved"), boundary.version)], mode="primary")
+        self.assertNotEqual("current", self.freshness(check_id)["freshness"])
+
+    def test_added_and_retired_coverage_do_not_renew_independent_examination(self):
+        check_id = self.mapped()
+        old = self.db.head("coverage", "cov_lem")
+        self.fx.apply(self.db, [{"op": "retire", "collection": "coverage", "id": old.id,
+            "expected_version": old.version, "reason": "Replace coordinator accounting"}], mode="primary")
+        self.assertEqual("current", self.freshness(check_id)["freshness"])
+        self.assert_coverage_incomplete()
+        self.fx.apply(self.db, [edit("create", "coverage", "cov_replacement", old.body)], mode="primary")
+        self.assertEqual("current", self.freshness(check_id)["freshness"])
+        self.assertNotEqual("current", self.freshness("chk_comp_lem")["freshness"])
+
+    def test_historical_coverage_recovery_agrees_across_readers_without_writes(self):
+        check_id = self.mapped(historical_coverage=True)
+        check = self.db.head("checks", check_id)
+        stored = self.db.binding("checks", check_id, 1)
+        self.assertTrue(any(row["ref"]["collection"] == "coverage" for row in stored["bindings"]["records"]))
+        before_coverage = self.db.max_revision()
+        old = self.db.head("coverage", "cov_lem")
+        self.fx.apply(self.db, [edit("replace", "coverage", old.id,
+            dict(old.body, end_offset=old.body["end_offset"] - 1), old.version)], mode="primary")
+        frozen = (self.db.max_revision(), hashlib.sha256(self.db.path.read_bytes()).hexdigest())
+        snap = assessment.Snapshot(self.db, self.db.max_revision())
+        self.assertTrue(bindings.binding_changes(snap, stored["bindings"])["records"])
+        self.assertEqual("current", self.freshness(check_id)["freshness"])
+        validated = queries.validate_snapshot(self.db)
+        self.assertNotIn(check_id, [row["ref"]["id"] for row in validated["stale_bindings"]])
+        changed = queries.changes(self.db, since=before_coverage)
+        self.assertNotIn(check_id, [row["ref"]["id"] for row in changed["affected_checks"]])
+        tasks = work.derive_work(self.db, audit_id="aud_1")["tasks"]
+        independent = next(row for row in tasks if row["role"] == "independent" and row["target"] == check.body["target"])
+        self.assertEqual("satisfied", independent["state"])
+        status = queries.status(self.db, audit_id="aud_1")
+        self.assertFalse(status["process_complete"])
+        self.assertTrue(status["coverage_diagnostics"])
+        projected, _ = projection.project(self.db, audit_id="aud_1")
+        self.assertFalse(projected["summary"]["progress"]["process_complete"])
+        self.assertEqual(stored, self.db.binding("checks", check_id, 1))
+        self.assertEqual(frozen, (self.db.max_revision(), hashlib.sha256(self.db.path.read_bytes()).hexdigest()))
+
+    def test_missing_original_packet_does_not_recover_historical_coverage(self):
+        check_id = self.mapped(historical_coverage=True)
+        old = self.db.head("coverage", "cov_lem")
+        self.fx.apply(self.db, [edit("replace", "coverage", old.id,
+            dict(old.body, end_offset=old.body["end_offset"] - 1), old.version)], mode="primary")
+        with mock.patch.object(self.db, "packet", return_value=None):
+            self.assertEqual("needs_review", self.freshness(check_id)["freshness"])
+
+    def test_missing_original_response_does_not_recover_historical_coverage(self):
+        check_id = self.mapped(historical_coverage=True)
+        response = self.db.head("responses", self.db.head("checks", check_id).body["response_id"])
+        old = self.db.head("coverage", "cov_lem")
+        self.fx.apply(self.db, [edit("replace", "coverage", old.id,
+            dict(old.body, end_offset=old.body["end_offset"] - 1), old.version)], mode="primary")
+        has_blob = self.db.has_blob
+        with mock.patch.object(self.db, "has_blob", side_effect=lambda sha:
+                               False if sha == response.body["original_blob"] else has_blob(sha)):
+            self.assertEqual("needs_review", self.freshness(check_id)["freshness"])
+
+    def test_coverage_recovery_does_not_add_provenance_gates_without_coverage_drift(self):
+        for historical in (False, True):
+            with self.subTest(historical_coverage=historical):
+                self.fx = self.fixture(f"provenance-{historical}").primary()
+                self.db = self.fx.open()
+                self.addCleanup(self.db.close)
+                check_id = self.mapped(historical_coverage=historical)
+                # The correction must not reclassify an already-current judgment
+                # when it grants no exemption from the saved binding.
+                with mock.patch.object(self.db, "packet", return_value=None):
+                    self.assertEqual("current", self.freshness(check_id)["freshness"])
+
+    def test_audit_qualification_change_does_not_change_original_review_qualification(self):
+        check_id = self.mapped(historical_coverage=True)
+        old = self.db.head("coverage", "cov_lem")
+        audit = self.db.head("audits", "aud_1")
+        self.fx.apply(self.db, [edit("replace", "coverage", old.id,
+            dict(old.body, end_offset=old.body["end_offset"] - 1), old.version),
+            edit("replace", "audits", audit.id, dict(audit.body, qualification_id=None), audit.version)], mode="primary")
+        self.assertEqual("current", self.freshness(check_id)["freshness"])
+
+    def test_historical_coverage_recovery_keeps_changed_setup_stale(self):
+        check_id = self.mapped(historical_coverage=True)
+        stored = self.db.binding("checks", check_id, 1)
+        self.assertEqual(1, stored["bindings"]["neutral_setup_validated"])
+        old = self.db.head("coverage", "cov_lem")
+        scope = self.db.head("scopes", "scp_plain")
+        self.fx.apply(self.db, [edit("replace", "coverage", old.id,
+            dict(old.body, end_offset=old.body["end_offset"] - 1), old.version),
+            edit("replace", "scopes", scope.id, dict(scope.body, conditions=["New unreviewed condition"]), scope.version)], mode="primary")
+        changed = self.freshness(check_id)
+        self.assertEqual("needs_review", changed["freshness"])
+        self.assertTrue(any(row["ref"]["id"] == scope.id for row in changed["changes"]["records"]))
+        self.assertIn(check_id, [row["ref"]["id"] for row in queries.validate_snapshot(self.db)["stale_bindings"]])
+        self.assertEqual(stored, self.db.binding("checks", check_id, 1))
+
+    def test_compromised_review_keeps_coverage_binding_and_no_credit(self):
+        check_id = self.mapped(exposure="compromised")
+        old = self.db.head("coverage", "cov_lem")
+        self.fx.apply(self.db, [edit("replace", "coverage", old.id,
+            dict(old.body, end_offset=old.body["end_offset"] - 1), old.version)], mode="primary")
         self.assertEqual("needs_review", self.freshness(check_id)["freshness"])
+
+    def test_partially_mapped_review_keeps_coverage_binding_and_no_credit(self):
+        mapping = self.pending(extra_judgment=True)
+        mapped = review.map_response(self.db, mapping=mapping)
+        self.assertEqual("needs_revision", mapped["state"])
+        check_id = mapped["checks"][0]["check_id"]
+        old = self.db.head("coverage", "cov_lem")
+        self.fx.apply(self.db, [edit("replace", "coverage", old.id,
+            dict(old.body, end_offset=old.body["end_offset"] - 1), old.version)], mode="primary")
+        self.assertEqual("needs_review", self.freshness(check_id)["freshness"])
+        tasks = work.derive_work(self.db, audit_id="aud_1")["tasks"]
+        self.assertTrue(all(row["state"] != "satisfied" for row in tasks if row["role"] == "independent"))
 
     def test_work_origin_mapping_stales_when_reviewed_proof_excerpt_changes(self):
         check_id = self.mapped()

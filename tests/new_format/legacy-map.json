@@ -342,6 +342,10 @@
    "reason": "Focused audits must retain source limitations on consumed setup, exact targets and proof-boundary segments while excluding unrelated context. These regressions verify blocked release and recovery after resolution; they replace no legacy test."
   },
   {
+   "new_test": "tests/new_format/test_reviewed_proof_spans.py",
+   "reason": "Immutable reviewed PDF proof selections preserve whole-page evidence while bounding coverage to each argument and retaining source-only review freshness and historical compatibility. These regressions replace no legacy test."
+  },
+  {
    "new_test": "tests/new_format/test_work_origin_bindings.py",
    "reason": "The live controller pilot exposed lost semantic binding policy when source-only independent work was mapped through a generic packet. These tests preserve controller origin without relaxing generic transaction checks and replace no legacy test."
   },
