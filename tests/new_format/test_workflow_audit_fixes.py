@@ -40,7 +40,7 @@ class WorkflowAuditFixTests(TempCase):
             self.assertTrue(selected["conditional_on_task_ids"], "The supplier's separate proof remains unfinished.")
 
     def test_global_checks_share_audit_context_and_keep_separate_questions(self):
-        fx = self.fixture().audit(independent_required=False)
+        fx = self.fixture().audit(independent_required=False).primary()
         with fx.open() as db:
             audit = db.head("audits", fx.audit_id)
             self.replace(fx, db, "audits", fx.audit_id, global_tasks=[dict(row,

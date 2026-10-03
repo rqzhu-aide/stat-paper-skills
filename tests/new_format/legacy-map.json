@@ -266,6 +266,22 @@
  ],
  "new_without_legacy_predecessor": [
   {
+   "new_test": "tests/new_format/test_workflow_evidence_maintenance.py",
+   "reason": "Forward-only evidence maintenance checks preserved source consumption and conservative historical bindings; no legacy test is replaced."
+  },
+  {
+   "new_test": "tests/new_format/test_workflow_grounding_policy.py",
+   "reason": "Source-grounded stage readiness and consistent preparation policy add transition coverage without replacing legacy tests."
+  },
+  {
+   "new_test": "tests/new_format/test_workflow_intake_recovery.py",
+   "reason": "Useful partial intake, unchanged drafts and terminal-only renewal authorization add transition coverage without replacing legacy tests."
+  },
+  {
+   "new_test": "tests/new_format/test_workflow_preparation_entrypoints.py",
+   "reason": "Ordinary and exceptional preparation entry points share scientific eligibility while preserving private investigation metadata; no legacy test is replaced."
+  },
+  {
    "new_test": "tests/new_format/test_coverage_diagnostics.py",
    "reason": "Coverage diagnostics explain why current source and check evidence is insufficient for completion. These recovery messages extend the database assessment and have no legacy ledger predecessor."
   },

@@ -1,7 +1,7 @@
 ---
 name: stat-proof-check
 metadata:
-  version: "2.3.8"
+  version: "2.3.9"
 description: Rigorous, non-formal proof audits of mathematical and statistical papers. Use only when the user explicitly invokes $stat-proof-check. Checks exact targets, substantive inferences, source coverage, and independent review. Diagnoses written arguments without silently repairing the manuscript.
 ---
 

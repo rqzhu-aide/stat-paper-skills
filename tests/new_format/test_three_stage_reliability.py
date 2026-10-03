@@ -74,7 +74,9 @@ class ReviewReliabilityTests(TempCase):
         fx = self.fixture().audit()
         with fx.open() as db:
             primary = controller.prepare_work(db, audit_id=fx.audit_id, mode="primary", focus=R("items", "itm_lem"))
-            independent = controller.prepare_work(db, audit_id=fx.audit_id, mode="independent", focus=R("items", "itm_lem"))
+            independent = controller.prepare_work(db, audit_id=fx.audit_id, mode="independent", focus=R("items", "itm_lem"),
+                exception_purpose="Exercise cross-mode packet-pairing recovery",
+                exception_limitations="Protocol fixture with primary examination unfinished")
             worker = copy.deepcopy(primary["scaffold"])
             worker["results"] = [row for row in worker["results"] if row["type"] == "source_fidelity"]
             for row in worker["results"]:
@@ -194,7 +196,10 @@ class GlobalSelectionReliabilityTests(TempCase):
             result["consumed_inputs"] = self.legacy_binding({"records": result["consumed_inputs"]})["records"]
             return result
         with mock.patch.object(packets, "task_binding", side_effect=legacy_task) if historical else mock.patch.object(packets, "task_binding", wraps=original):
-            return controller.prepare_work(db, audit_id=fx.audit_id, mode="primary", focus=R("audits", fx.audit_id))
+            ids = [row["id"] for row in work.derive_work(db, audit_id=fx.audit_id)["tasks"]
+                   if row["kind"] == "global_consistency" and row["required"]]
+            return controller.prepare_work(db, audit_id=fx.audit_id, mode="primary",
+                focus=R("audits", fx.audit_id), task_ids=ids)
 
     def submit(self, fx, db, prepared, historical=False):
         worker = copy.deepcopy(prepared["scaffold"])

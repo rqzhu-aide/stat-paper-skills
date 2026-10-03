@@ -18,6 +18,9 @@ These notes preserve decisions and evidence. Current workflow instructions remai
 
 | Note | Status |
 |---|---|
+| [2.3.8 workflow defect tracker](proofcheck-v238-defect-tracker.md) | Confirmed defects, implementation status, contributing mistakes and closure evidence |
+| [Workflow reliability revision handoff](proofcheck-v238-reliability-handoff.md) | Implemented agent/model-neutral corrections within the existing three stages |
+| [2.3.9 reliability validation](proofcheck-v239-reliability-validation.md) | Integration corrections, preserved cases, behavioral evidence and release validation |
 | [Three stage revision handoff](proofcheck-three-stage-handoff.md) | Implemented October 2 revision: stage-specific preparation, fixed audit snapshots, and separate Archify HTML delivery |
 | [Three stage implementation validation](proofcheck-three-stage-validation.md) | Integration tests, preserved-case comparisons, continuation evidence and release status |
 | [Three stage plan validation](proofcheck-three-stage-plan-audit.md) | Historical pre-implementation review and disposable probes that informed the final design |

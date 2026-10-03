@@ -18,12 +18,14 @@ At startup or resume, inspect database state and known saved outputs before comm
 
 | Stage | Work and next operation |
 |---|---|
-| 1 Prepare and examine | Inventory the source, compare statements/setup and complete proof boundaries, correct known representation problems, build useful graph detail and save primary examination with coverage. Use `stage1 status` and `stage1 prepare`. |
+| 1 Prepare and examine | Inventory source, compare statements/setup, establish the argument's final group and actual source links, then certify complete proof boundaries and save primary examination with coverage. Use `stage1 status` and `stage1 prepare`. |
 | 2 Review and finalize | Obtain independent examination, integrate unchanged responses, map source targets and reconcile actual reasoning. Finish applicable global checks and the final inventory comparison, then `stage2 finalize`. |
 | 3 Produce HTML | Use `stage3 build` on the frozen snapshot. Check presentation and navigation without reexamining unchanged mathematics. |
 
 The normal Stage 2 preparation checks Stage 1 readiness across the declared audit scope. Required local
-primary examinations must be current and accounted for, and known source/representation problems settled.
+primary examinations must be current and accounted for, with usable source grounding for required written
+routes and known representation problems settled. Grounding connects actual applications and inferences
+to their sources; it does not preassign an independent judgment or certify its correspondence.
 Current required source comparisons must be `matched`: a comparison marked `needs_attention` can be
 counted as examined while still needing correction. Use current `get`/`compare` and authorized authoring
 to settle it; do not repeatedly request an already satisfied task. Completed mathematical gaps or
@@ -43,10 +45,19 @@ before expanding the worker pool. A negative result is not a reason to seek repe
 
 These stage boundaries govern normal preparation, not the eligibility of previously valid reviews.
 Submission, inspection, mapping and recovery remain available throughout. The existing `work prepare`
-interface remains for compatibility and specific exceptional investigations, including supplied-route
-review; record the purpose and limitations of such work. Three stages do not mean three giant assignments.
+interface uses the same ordering. For a specific exceptional investigation, supply both
+`--exception-purpose` and `--exception-limitations`. `--route` already declares supplied-route review
+and records its scope limitations. Exceptions waive no scientific or independence requirement.
+Three stages do not mean three giant assignments.
 
 ## Choose available execution contexts
+
+At setup/resume, identify exposed isolated-worker, clean-session/process and existing external-return
+routes using available tools/help. Reuse a verified route while its configuration is unchanged; otherwise
+check one plausible, already configured and authorized route. Record available, unavailable with the
+observed failure, or unknown in the existing run note. Missing native subagents alone proves no broader
+unavailability. Do not repeat unchanged probes, install tools, establish accounts/services/billing or
+solicit another person merely for discovery.
 
 Plan the actual available reviewer configuration before dispatch. Arrange [qualification](database-qualification.md)
 once and reuse it across fresh contexts while provider, model, effort, tools and isolation are unchanged.
@@ -138,12 +149,18 @@ paper_audit.py work submit AUDIT.db --submission work/assignments/primary-result
 
 Preserve worker bytes unchanged. One request ID identifies those bytes and its envelope; an identical
 retry returns the original receipt. Changed input or explicit rebase needs a new ID. Intake precedes
-parsing/freshness checks. Included mathematical edits commit atomically; omitted rows remain unfinished.
+parsing/freshness checks. Included mathematical edits commit atomically; untouched scaffold rows are
+omitted and remain unfinished. A scaffold-only return is retained as `NO_AUTHORED_WORK` without scientific
+writes. Informative drafts need reasoning and a next action; missing evidence can itself be the documented
+question. Coverage/findings must reference actual saved checks, never an omitted placeholder.
 For a saved terminal rejection, inspect current obligations before reviving the failed submission.
 Follow the specific correction below where work is still needed, then use a fresh ID;
 unchanged replay only returns that rejection. An unused ID rejected
 before intake remains available. Inspect when artifacts or intake state are unclear.
-Read `stored`, `state`, `committed_revision`, diagnostics and recovery actions separately. Follow the
+Read `stored`, `state`, `committed_revision`, saved/unchanged check references, omitted task IDs and
+satisfied/remaining assigned tasks separately. An accepted save can preserve useful partial work without
+completing an obligation. An unchanged authorized draft continuation creates no new version; changed
+consumed inputs require specific recovery. Follow the
 specific operation and its required inputs; saving a review awaiting mapping is not a request to redispatch it. Accepted gaps
 or inconclusive examinations are not transport errors. Envelope/response limits are 65,536/2,097,152 bytes.
 
@@ -164,7 +181,7 @@ not descriptive folder names. Files are recovery candidates, not accepted eviden
 | Wrong worker-authored kind, incompatible target or malformed/scientifically incorrect response | Obtain an authored correction, preserving the original and unresolved concerns. Use genuine author continuity when available; otherwise follow the new-examiner rule above. |
 | More reasoning on a saved draft | Select its exact same-reviewer `replaces` pin from coordinator guidance; preserve `supersedes`. |
 | Retained reasoning needs current authorization, consumed mathematics unchanged | Keep original packet identity; explicitly rebase authorization in a new envelope. |
-| Saved completed judgment, consumed mathematics changed | For primary renewal, pass the needed permissible completed predecessor pin from coordinator guidance in the assignment brief. The worker reexamines, authors `supersedes`, and saves the response for unchanged submission. |
+| Saved completed judgment, consumed mathematics changed | Pass the affected current predecessor from coordinator guidance in the assignment brief. The worker reexamines, authors `supersedes`, and saves the response unchanged. Do not renew already superseded ancestors. |
 | Missing neutral source in source-only independent work | Capture/anchor it, then `work extend`; examine it and author a new response naming C. |
 
 Several problems can coexist. Mapping cannot remedy absent source, changed inputs, wrong scientific content

@@ -230,7 +230,9 @@ class WorkPacketTests(TempCase):
             scheduled = next(row for row in work.derive_work(db, audit_id="aud_1")["tasks"]
                              if row["role"] == "independent" and row["target"] == R("arguments", "arg_step"))
             result = controller.prepare_work(db, audit_id="aud_1", mode="independent",
-                                             task_ids=[scheduled["id"]], allow_provisional=True)
+                task_ids=[scheduled["id"]], allow_provisional=True,
+                exception_purpose="Inspect source-only transport for a scheduled intermediate argument.",
+                exception_limitations="Packet blinding investigation only; primary intermediate work is incomplete.")
             self.assertTrue(result["prepared"], result)
             self.assertEqual([R("items", "itm_thm")], result["packet"]["targets"])
             self.assertEqual(R("arguments", "arg_step"), result["manifest"]["work"]["tasks"][0]["target"])
@@ -301,8 +303,13 @@ class GlobalProofSourcePacketTests(TempCase):
             dict(audit.body, global_tasks=globals_), audit.version)], mode="primary")
 
     def prepare(self, **kwargs):
+        tasks = work.derive_work(self.db, audit_id=self.fx.audit_id)["tasks"]
+        ids = [row["id"] for row in tasks if row["kind"] == "global_consistency" and row["required"]]
         return controller.prepare_work(self.db, audit_id=self.fx.audit_id, mode="primary",
-                                       focus=R("audits", self.fx.audit_id), **kwargs)
+            focus=R("audits", self.fx.audit_id), task_ids=ids,
+            exception_purpose="Inspect bounded global proof-source transport and immutable source pins.",
+            exception_limitations="Packet shape and freshness investigation only; changed boundaries are not fully covered.",
+            **kwargs)
 
     def supplemental_boundary(self):
         (self.fx.source_root / "supplement.tex").write_text(

@@ -121,7 +121,8 @@ For PDF pages containing neighboring results, record the actual proof's `proof_s
 immutable boundary source review as described in [graph-records.md](graph-records.md). Coverage
 then follows those reviewed character ranges for each argument, while workers and readers retain
 the full page evidence. Do not classify unrelated page material as structural coverage. Missing
-selectors retain whole-page coverage, and uncertain proof boundaries remain unresolved.
+selectors retain whole-page coverage. Stale explicit selectors require boundary recovery without
+manufacturing neighboring-text coverage tasks; uncertain boundaries remain unresolved.
 
 ## Check, review and recover
 

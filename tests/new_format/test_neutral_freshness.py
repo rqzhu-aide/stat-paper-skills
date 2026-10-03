@@ -246,6 +246,18 @@ class NeutralFreshnessTests(TempCase):
             "argument_id": "arg_lem", "parent_id": None, "assumptions": [], "binders": [],
             "conditions": ["An additional premise must be discharged"], "evidence_refs": ["anc_thm"]}),
             edit("replace", "groups", group.id, dict(group.body, discharges=["scp_discharged"]), group.version)])
+        # Preparation now requires current Stage 1 evidence. Renew the changed
+        # primary inference while preserving the legacy packet omission below.
+        coverage = self.db.head("coverage", "cov_lem")
+        self.fx.apply(self.db, [
+            self.fx.check_edit("chk_der_discharged", R("groups", "grp_lem"), "derivation",
+                evidence=["anc_lem_proof"], supersedes=self.fx.pin(self.db, "checks", "chk_der_lem")),
+            self.fx.check_edit("chk_comp_discharged", R("arguments", "arg_lem"), "composition",
+                evidence=["anc_lem_proof"], supersedes=self.fx.pin(self.db, "checks", "chk_comp_lem")),
+            self.fx.check_edit("chk_scope_discharged", R("groups", "grp_lem"), "scope_discharge",
+                evidence=["anc_lem_proof"]),
+            edit("replace", "coverage", coverage.id, dict(coverage.body,
+                check_ids=["chk_der_discharged"]), coverage.version)], *self.fx.ITEMS, mode="primary")
         original = self.prepare_old_selector_packet(omitted_scope="scp_discharged")
         self.assert_legacy_omission_is_rejected(original)
 

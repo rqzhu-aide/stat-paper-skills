@@ -18,6 +18,12 @@ class ControllerAdversarialTests(TempCase):
         self.addCleanup(self.db.close)
 
     def prepare(self, *, mode="primary", item="itm_lem", **kwargs):
+        if mode == "independent":
+            # These tests exercise saved-return authority and provenance before
+            # primary completion, which is now an explicit bounded investigation.
+            kwargs.update(exception_purpose="Exercise independent intake and correspondence protocol",
+                          exception_limitations="The fixture's primary examination is unfinished; this "
+                                                "investigation provides no audit completion or stage readiness.")
         result = controller.prepare_work(self.db, audit_id="aud_1", mode=mode,
                                          focus=R("items", item), **kwargs)
         self.assertTrue(result["prepared"], result)

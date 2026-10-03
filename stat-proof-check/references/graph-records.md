@@ -291,8 +291,9 @@ to retrieve its receipt; a new edit gets a new request ID.
 
 ## Review complete source boundaries
 
-Read the actual source to identify every segment and continuation of the written proof. Create
-a source review using a current author packet:
+Read the actual source to identify every segment and continuation of the written proof. Establish its
+argument/final group and actual application/group source links before certifying spans; same-batch
+cross-references can register this structure together. Then create a source review using a current author packet:
 
     python "<skill-root>/scripts/paper_audit.py" source review AUDIT.db --request work/authoring/boundary-review.json
 
@@ -319,12 +320,14 @@ not UTF-8 bytes, PDF coordinates, or text copied from another extractor. Inspect
 visually, locate all proof segments and continuations, and retain the full captured excerpt.
 Use separate entries for disjoint segments and for different arguments sharing a page. Each
 anchor pin must appear in `anchor_refs`, with its captured source version in `source_refs`.
-Pin the current argument version when recording the review. A later label-only change does not
-invalidate that selection; changed argument proof inputs or anchor versions require renewed review.
+Pin the current argument version when recording the review. Label-only changes preserve the selection.
+Changed proof inputs or source extent require renewed review; only narrowly proven additions linking
+already consumed evidence can retain a new certificate. Older certificates remain conservative.
 Each linked boundary must retain every selected anchor for each of its arguments. An ambiguous
 boundary stays unresolved; do not derive the selection from whichever intervals already have checks.
 
-Omitting `proof_spans` retains the whole-anchor requirement. Accepted reviews are immutable:
+Omitting `proof_spans` retains the whole-anchor requirement. A stale explicit selection instead requires
+boundary renewal, without turning neighboring page text into new coverage work. Accepted reviews are immutable:
 record changed selections under a new review ID, then update the boundary's review pin. Review
 metadata alone does not change a source-only reviewer's delivered selection. The first span-aware
 write adds the `reviewed-proof-spans/1` database feature; use an updated shared core to reopen it.

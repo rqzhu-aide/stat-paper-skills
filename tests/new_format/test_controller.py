@@ -487,10 +487,11 @@ class ControllerTests(unittest.TestCase):
 
     def test_reconciliation_guidance_reuses_preparation_assessment(self):
         from paper_core import assessment
-        from paper_core import work
+        from paper_core import stages, work
         fx = Fixture(Path(self.tmp.name) / "reconcile").independent()
         with fx.open() as db:
-            with patch.object(work, "derive_full", wraps=assessment.derive_full) as calculate, \
+            with patch.object(stages, "derive_full", wraps=assessment.derive_full) as calculate, \
+                    patch.object(work, "derive_full", side_effect=AssertionError("duplicate work assessment")), \
                     patch.object(assessment, "derive_full", side_effect=AssertionError("duplicate assessment")):
                 prepared = controller.prepare_work(db, audit_id=fx.audit_id, mode="reconcile",
                                                    focus=R("items", "itm_lem"))

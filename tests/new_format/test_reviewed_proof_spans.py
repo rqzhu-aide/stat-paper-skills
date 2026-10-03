@@ -253,6 +253,43 @@ class ReviewedProofSpansTests(TempCase):
         result = self.status()
         self.assertFalse(result["progress"]["process_complete"])
         self.assertTrue(any("proof boundary for arg_lem" in problem for problem in result["problems"]))
+        self.assertFalse(any("proof coverage for arg_lem" in problem for problem in result["problems"]), result["problems"])
+        self.assertFalse(any(row["code"] == "missing_coverage" and "arg_lem" in row["argument_ids"]
+                             for row in result.get("coverage_diagnostics", [])))
+
+    def test_stale_explicit_selection_keeps_neighbor_ranges_and_no_page_credit(self):
+        self.record()
+        self.boundaries()
+        self.primary()
+        argument = self.db.head("arguments", "arg_lem")
+        self.fx.apply(self.db, [self.fx.group_edit("grp_new", "arg_lem", "itm_lem", "anc_lem_proof"),
+            edit("replace", "arguments", argument.id, dict(argument.body, final_group_id="grp_new"), argument.version)])
+        derivation, result = assessment.derive_full(self.db, audit_id=self.fx.audit_id)
+        self.assertIsNone(derivation.reviewed_boundaries["arg_lem"])
+        self.assertEqual({"anc_thm_proof": [self.ranges["thm"]]}, derivation.reviewed_boundaries["arg_thm"])
+        self.assertFalse(result["progress"]["process_complete"])
+        self.assertTrue(any(row["code"] == "boundary_spans" and row["argument_ids"] == ["arg_lem"]
+                            for row in result["coverage_diagnostics"]))
+        self.assertFalse(any(row["code"] == "missing_coverage" and "arg_lem" in row["argument_ids"]
+                             for row in result["coverage_diagnostics"]))
+        self.assertFalse(any("proof coverage" in problem for problem in result["problems"]), result["problems"])
+
+    def test_new_full_page_link_is_outside_consumed_subpage_selection(self):
+        self.record()
+        self.boundaries()
+        self.fx.apply(self.db, [self.fx.check_edit("chk_selected", R("groups", "grp_lem"), "derivation",
+            evidence=["anc_lem_proof"])], *self.fx.ITEMS, mode="primary")
+        packet = self.fx.packet(self.db)
+        with mock.patch.object(sources, "_extract_page", return_value=(PAGE, "Synthetic page.")):
+            sources.anchor_sources(self.db, request={"contract_version": 4, "request_id": self.fx.request_id(),
+                "packet_id": packet["packet_id"], "anchors": [{"id": "anc_same_page", "expected_version": None,
+                    "source_id": self.pdf_id, "locator": locator(page=1)}]})
+        group = self.db.head("groups", "grp_lem")
+        self.fx.apply(self.db, [edit("replace", "groups", group.id,
+            dict(group.body, evidence_refs=group.body["evidence_refs"] + ["anc_same_page"]), group.version)])
+        snap = assessment.Snapshot(self.db, self.db.max_revision())
+        self.assertNotEqual("current", assessment.judgment_freshness(snap,
+            self.db.head("checks", "chk_selected"), superseded=False)["freshness"])
 
     def test_equivalent_reordered_split_and_overlapping_selection_keeps_freshness(self):
         self.record()

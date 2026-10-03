@@ -159,6 +159,14 @@ class QualificationMetadataTests(TempCase):
         self.fx.apply(self.db, [edit("replace", "audits", old.id, dict(old.body, **changes), old.version)],
                       *self.fx.ITEMS, mode="primary")
 
+    def prepare_global_metadata_investigation(self):
+        ids = [row["id"] for row in work.derive_work(self.db, audit_id=self.fx.audit_id)["tasks"]
+               if row["target"] == R("audits", self.fx.audit_id) and row["required"]]
+        return controller.prepare_work(self.db, audit_id=self.fx.audit_id, mode="primary",
+            focus=R("audits", self.fx.audit_id), task_ids=ids,
+            exception_purpose="Inspect global assignment freshness under audit metadata changes.",
+            exception_limitations="Metadata binding investigation only; local proof work and review readiness are incomplete.")
+
     def save_globals(self, *, historical=False):
         rows = [self.fx.check_edit("chk_" + kind, R("audits", self.fx.audit_id), kind)
                 for kind in ("global_consistency", "adversarial")]
@@ -211,8 +219,7 @@ class QualificationMetadataTests(TempCase):
 
     def test_prepared_global_response_survives_qualification_attachment_unchanged(self):
         self.setup_audit()
-        prepared = controller.prepare_work(self.db, audit_id=self.fx.audit_id, mode="primary",
-                                           focus=R("audits", self.fx.audit_id))
+        prepared = self.prepare_global_metadata_investigation()
         self.assertTrue(prepared["prepared"], prepared)
         response = copy.deepcopy(prepared["scaffold"])
         for row in response["results"]:
@@ -305,8 +312,7 @@ class QualificationMetadataTests(TempCase):
                                   ({"protocol_version": "item-audit/next"}, "conflict")):
             with self.subTest(changes=changes):
                 self.setup_audit()
-                prepared = controller.prepare_work(self.db, audit_id=self.fx.audit_id, mode="primary",
-                                                   focus=R("audits", self.fx.audit_id))
+                prepared = self.prepare_global_metadata_investigation()
                 self.assertTrue(prepared["prepared"], prepared)
                 response = copy.deepcopy(prepared["scaffold"])
                 for row in response["results"]:
@@ -336,8 +342,7 @@ class QualificationMetadataTests(TempCase):
         def old_facet(builder, collection, identifier, facet, **kwargs):
             return add(builder, collection, identifier, "full" if collection == "audits" else facet, **kwargs)
         with patch.object(_Builder, "add", old_facet):
-            prepared = controller.prepare_work(self.db, audit_id=self.fx.audit_id, mode="primary",
-                                               focus=R("audits", self.fx.audit_id))
+            prepared = self.prepare_global_metadata_investigation()
         self.assertTrue(prepared["prepared"], prepared)
         response = copy.deepcopy(prepared["scaffold"])
         for row in response["results"]:
@@ -356,7 +361,9 @@ class QualificationMetadataTests(TempCase):
         self.setup_audit()
         self.replace_audit(qualification_id="qua_r1")
         prepared = controller.prepare_work(self.db, audit_id=self.fx.audit_id, mode="independent",
-                                           focus=R("items", "itm_lem"))
+            focus=R("items", "itm_lem"),
+            exception_purpose="Inspect independent assignment guards when qualification configuration changes.",
+            exception_limitations="Qualification freshness investigation only; primary proof work is incomplete.")
         self.assertTrue(prepared["prepared"], prepared)
         response = {"packet_id": prepared["packet_id"], "covered_targets": [R("items", "itm_lem")],
             "coverage_note": "Synthetic source examination.",
@@ -490,8 +497,7 @@ class QualificationMetadataTests(TempCase):
 
     def test_full_global_preparation_includes_scope_and_rejects_inventory_addition(self):
         self.setup_audit(full=True)
-        prepared = controller.prepare_work(self.db, audit_id=self.fx.audit_id, mode="primary",
-                                           focus=R("audits", self.fx.audit_id))
+        prepared = self.prepare_global_metadata_investigation()
         self.assertTrue(prepared["prepared"], prepared)
         supplied = {(r["collection"], r["id"]) for r in prepared["manifest"]["read_set"]}
         self.assertTrue({("items", "itm_lem"), ("items", "itm_thm")} <= supplied)

@@ -26,7 +26,9 @@ lacks a needed canonical record.
 Read the current response guidance alongside the generated template, including additional blockers.
 Author only the `template` member as `work/authoring/mapping.json`, filling reviewer, exact canonical
 targets and source-grounded rationales. Use zero-based judgment indexes; `review mapping-template --judgment N`
-selects particular rows. B's read set must contain each mapped record. Original reviewed scope and source
+selects particular rows. Derive indexes from this stored response, never a different round's file.
+Compare the actual inference; row position, a supplier keyword or shared page alone cannot choose it.
+B's read set must contain each mapped record. Original reviewed scope and source
 overlap remain tied to A. Neither mapping nor a corrected envelope can change a judgment's kind,
 reasoning, outcome, evidence, or actual coverage. Wrong kinds, incompatible combined targets, malformed
 content, or judgments outside the assigned scope require a reviewer-authored correction. Preserve

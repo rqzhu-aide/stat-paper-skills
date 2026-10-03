@@ -321,7 +321,8 @@ class Fixture:
             "audit_id": audit_id, "target": target, "kind": kind, "role": role, "reviewer": reviewer,
             "protocol_version": "item-audit/1", "state": state, "outcome": outcome,
             "reasoning": "checked against the source", "evidence_refs": list(evidence), "conditions": [],
-            "next_action": None, "response_id": None, "supersedes": supersedes})
+            "next_action": "Finish the remaining source examination" if state == "draft" else None,
+            "response_id": None, "supersedes": supersedes})
 
     def coverage_edits(self, db):
         return [edit("create", "coverage", f"cov_{name}", {

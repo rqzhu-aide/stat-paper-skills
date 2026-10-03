@@ -105,8 +105,10 @@ class ReviewRecoveryTests(TempCase):
             self.assertEqual(info["exposure"], "compromised")
             self.assertEqual(info["eligible_independent_check_count"], 0)
             self.assertIn("obtain_independent_review", [a["operation"] for a in info["recovery"]])
-            saved, _, _ = self.submit(db, [judgment(R("items", "itm_lem"), kind="external_source", state="draft",
-                                                  outcome=None, evidence=("anc_lem",))])
+            partial = judgment(R("items", "itm_lem"), kind="external_source", state="draft",
+                outcome=None, evidence=("anc_lem",), reasoning="The source states the bound, but its original citation remains unresolved.")
+            partial["next_action"] = "Locate the cited source and inspect the exact bound."
+            saved, _, _ = self.submit(db, [partial])
             draft = review.inspect_response(db, response_id=saved["response_id"])
             self.assertEqual(draft["state"], "accepted")
             self.assertEqual(draft["eligible_independent_check_count"], 0)

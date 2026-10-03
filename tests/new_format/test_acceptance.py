@@ -83,7 +83,7 @@ def check_body(**overrides):
     body = {"audit_id": "aud_1", "target": R("arguments", "arg_lem"), "kind": "composition",
             "role": "primary", "reviewer": "primary-1", "protocol_version": "item-audit/1",
             "state": "draft", "outcome": None, "reasoning": "checked against the source",
-            "evidence_refs": [], "conditions": [], "next_action": None, "response_id": None,
+            "evidence_refs": [], "conditions": [], "next_action": "Finish the remaining source examination", "response_id": None,
             "supersedes": None}
     body.update(overrides)
     return body
