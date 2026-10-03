@@ -1,13 +1,14 @@
 """Controller assignments: bounded complete context and per-task mathematical inputs."""
 from __future__ import annotations
 
+import copy
 import unittest
 from unittest import mock
 
 import support
-from support import R, TempCase, edit
+from support import R, TempCase, edit, locator
 
-from paper_core import bindings, controller, packets, work
+from paper_core import bindings, controller, packets, sources, work
 from paper_core.canonical import canonical_bytes
 from paper_core.errors import ConflictError, InvalidRequest
 from paper_core.validation import State
@@ -284,6 +285,206 @@ class WorkPacketTests(TempCase):
             with self.assertRaisesRegex(InvalidRequest, "no captured local source passage"):
                 self.prepare(db, selection((local,)), mode="independent")
             self.assertEqual(count, db.conn.execute("SELECT COUNT(*) FROM packets").fetchone()[0])
+
+
+class GlobalProofSourcePacketTests(TempCase):
+    def setUp(self):
+        super().setUp()
+        self.fx = self.fixture().audit(independent_required=False)
+        self.fx.primary()
+        self.db = self.fx.open()
+        self.addCleanup(self.db.close)
+        audit = self.db.head("audits", self.fx.audit_id)
+        globals_ = [dict(row, applicability="required", reason="") if row["kind"] == "global_consistency"
+                    else row for row in audit.body["global_tasks"]]
+        self.fx.apply(self.db, [edit("replace", "audits", audit.id,
+            dict(audit.body, global_tasks=globals_), audit.version)], mode="primary")
+
+    def prepare(self, **kwargs):
+        return controller.prepare_work(self.db, audit_id=self.fx.audit_id, mode="primary",
+                                       focus=R("audits", self.fx.audit_id), **kwargs)
+
+    def supplemental_boundary(self):
+        (self.fx.source_root / "supplement.tex").write_text(
+            "The theorem continues here.\nAn unrelated proof.\n", encoding="utf-8")
+        captured = sources.capture_sources(self.db, files=["supplement.tex"])
+        source_id = captured["sources"][0]["id"]
+        packet = self.fx.packet(self.db)
+        sources.anchor_sources(self.db, request={"contract_version": 4,
+            "request_id": self.fx.request_id(), "packet_id": packet["packet_id"], "anchors": [
+                {"id": identity, "expected_version": None, "source_id": source_id,
+                 "locator": locator(start=line, end=line)}
+                for identity, line in (("anc_continuation", 1), ("anc_unrelated", 2))]})
+        packet = self.fx.packet(self.db)
+        sources.review_sources(self.db, batch=self.fx.batch([edit("create", "source_reviews", "srv_supplement", {
+            "source_refs": [self.fx.pin(self.db, "sources", self.fx.source_id),
+                            self.fx.pin(self.db, "sources", source_id)],
+            "anchor_refs": [self.fx.pin(self.db, "anchors", identity)
+                            for identity in ("anc_thm_proof", "anc_continuation", "anc_unrelated")],
+            "purpose": "proof_boundary", "decision": "accepted", "reviewer": "fixture",
+            "rationale": "The selected continuation and an unrelated proof were both inspected."})],
+            packet["packet_id"]))
+        boundary = self.db.head("proof_boundaries", "bnd_thm")
+        self.fx.apply(self.db, [edit("replace", "proof_boundaries", boundary.id, dict(boundary.body,
+            anchor_refs=boundary.body["anchor_refs"] + [self.fx.pin(self.db, "anchors", "anc_continuation")],
+            source_review_ref=self.fx.pin(self.db, "source_reviews", "srv_supplement")), boundary.version)])
+
+    def response(self, prepared, evidence=("anc_thm_proof",)):
+        worker = copy.deepcopy(prepared["scaffold"])
+        self.assertEqual(["global_consistency"], [row["kind"] for row in prepared["manifest"]["work"]["tasks"]])
+        for result in worker["results"]:
+            result.update(state="complete", outcome="gap", reasoning="Synthetic global examination preserves its defect.",
+                          evidence_refs=list(evidence))
+        return worker
+
+    def submit(self, prepared, worker):
+        envelope = {"contract_version": 4, "request_id": self.fx.request_id(),
+            "packet_id": prepared["packet_id"], "rebase_packet_id": None, "reviewer": "primary-1",
+            "qualification_id": None, "exposure": None, "exposure_note": ""}
+        return controller.submit_work(self.db, envelope_bytes=canonical_bytes(envelope),
+                                      response_bytes=canonical_bytes(worker))
+
+    def test_global_response_can_cite_proof_and_boundary_only_supplement(self):
+        self.supplemental_boundary()
+        prepared = self.prepare()
+        self.assertTrue(prepared["prepared"], prepared)
+        keys = record_keys(prepared["packet"])
+        self.assertTrue({("anchors", "anc_lem_proof"), ("anchors", "anc_thm_proof"),
+                         ("anchors", "anc_continuation"), ("proof_boundaries", "bnd_thm"),
+                         ("source_reviews", "srv_supplement")} <= keys)
+        self.assertNotIn(("anchors", "anc_unrelated"), keys)
+        self.assertFalse(any(collection in ("groups", "coverage", "checks", "responses")
+                             for collection, _ in keys))
+        self.assertEqual([], prepared["manifest"]["write_scope"])
+        outcome = self.submit(prepared, self.response(prepared, ("anc_thm_proof", "anc_continuation")))
+        self.assertEqual("accepted", outcome["state"], outcome)
+        checks = [row for row in self.db.heads("checks") if row.body["kind"] == "global_consistency"]
+        self.assertEqual(["gap"], [row.body["outcome"] for row in checks])
+
+    def test_registered_argument_evidence_is_supplied_without_its_groups(self):
+        self.supplemental_boundary()
+        item = self.db.head("items", "itm_thm")
+        boundary = self.db.head("proof_boundaries", "bnd_thm")
+        self.fx.apply(self.db, [
+            edit("replace", "items", item.id, dict(item.body,
+                passages=[p for p in item.body["passages"] if p["role"] != "proof"]), item.version),
+            edit("replace", "proof_boundaries", boundary.id, dict(boundary.body, state="unresolved",
+                anchor_refs=[self.fx.pin(self.db, "anchors", "anc_continuation")]), boundary.version)])
+        prepared = self.prepare()
+        self.assertTrue(prepared["prepared"], prepared)
+        keys = record_keys(prepared["packet"])
+        self.assertIn(("anchors", "anc_thm_proof"), keys)
+        self.assertNotIn(("groups", "grp_thm"), keys)
+
+    def test_focused_targets_and_full_exclusions_do_not_add_unselected_proofs(self):
+        self.supplemental_boundary()
+        for mode in ("focused", "full"):
+            with self.subTest(mode=mode):
+                audit = self.db.head("audits", self.fx.audit_id)
+                self.fx.apply(self.db, [edit("replace", "audits", audit.id, dict(audit.body,
+                    mode=mode, targets=[R("items", "itm_lem")], exclusions=[{
+                        "target": R("items", "itm_thm"), "source_anchor_ids": [],
+                        "reason": "Outside this test's requested scope.", "consequence": "The theorem is not audited."}]),
+                    audit.version)], mode="primary")
+                prepared = self.prepare()
+                self.assertTrue(prepared["prepared"], prepared)
+                keys = record_keys(prepared["packet"])
+                self.assertIn(("anchors", "anc_lem_proof"), keys)
+                self.assertNotIn(("anchors", "anc_thm_proof"), keys)
+                self.assertNotIn(("anchors", "anc_continuation"), keys)
+
+    def test_global_source_context_retains_byte_and_record_bounds(self):
+        self.supplemental_boundary()
+        prepared = self.prepare()
+        self.assertTrue(prepared["prepared"], prepared)
+        before = self.db.conn.execute("SELECT COUNT(*) FROM packets").fetchone()[0]
+        for kwargs in ({"max_bytes": prepared["size"]["worker_bytes"] - 1}, {}):
+            with self.subTest(kwargs=kwargs), mock.patch.object(packets, "MAX_WORK_RECORDS",
+                    packets.MAX_WORK_RECORDS if kwargs else 3):
+                result = self.prepare(**kwargs)
+                self.assertFalse(result["prepared"], result)
+                self.assertEqual("OVERSIZED_CONTEXT", result["diagnostics"][0]["code"])
+                self.assertTrue(result["diagnostics"][0]["largest_contributors"])
+                self.assertEqual(before, self.db.conn.execute("SELECT COUNT(*) FROM packets").fetchone()[0])
+
+    def test_unrelated_inference_detail_does_not_enlarge_global_or_independent_context(self):
+        before = self.prepare()
+        independent_task = task("private_global_control", R("arguments", "arg_thm"), "composition", role="independent")
+        independent = packets.prepare_assignment(self.db, audit_id=self.fx.audit_id, mode="independent",
+                                                 selection=selection((independent_task,)))
+        self.fx.apply(self.db, [self.fx.group_edit(f"grp_unrelated_{i}", "arg_thm", "itm_thm", "anc_thm_proof")
+                               for i in range(30)])
+        after = self.prepare()
+        self.assertEqual(record_keys(before["packet"]), record_keys(after["packet"]))
+        self.assertEqual(before["size"]["worker_bytes"], after["size"]["worker_bytes"])
+        self.assertEqual([], packets.blinding_violations(independent["packet"]))
+        self.assertFalse(any(collection in packets.BLINDED_COLLECTIONS
+                             for collection, _ in record_keys(independent["packet"])))
+
+    def test_changed_cited_anchor_rejects_saved_response_and_new_preparation_diagnoses_pin(self):
+        prepared = self.prepare()
+        worker = self.response(prepared)
+        anchor = self.db.head("anchors", "anc_thm_proof")
+        packet = self.fx.packet(self.db)
+        sources.anchor_sources(self.db, request={"contract_version": 4, "request_id": self.fx.request_id(),
+            "packet_id": packet["packet_id"], "anchors": [{"id": anchor.id, "expected_version": anchor.version,
+                "source_id": self.fx.source_id, "locator": locator(start=14, end=15)}]})
+        outcome = self.submit(prepared, worker)
+        self.assertEqual("conflict", outcome["state"], outcome)
+        self.assertEqual("CONFLICT", outcome["error"]["code"])
+        self.assertFalse(any(row.body["kind"] == "global_consistency" for row in self.db.heads("checks")))
+        before = self.db.conn.execute("SELECT COUNT(*) FROM packets").fetchone()[0]
+        with self.assertRaises(InvalidRequest) as caught:
+            self.prepare()
+        self.assertEqual("WORK_CONTEXT_PIN", caught.exception.code)
+        self.assertEqual(anchor.pinned, caught.exception.records[0]["required_ref"])
+        self.assertEqual(before, self.db.conn.execute("SELECT COUNT(*) FROM packets").fetchone()[0])
+
+    def test_new_routes_stale_global_work_but_argument_labels_do_not(self):
+        prepared = self.prepare()
+        worker = self.response(prepared)
+        argument = self.db.head("arguments", "arg_thm")
+        self.fx.apply(self.db, [edit("replace", "arguments", argument.id,
+            dict(argument.body, label="An editorial label"), argument.version)])
+        self.assertEqual("accepted", self.submit(prepared, worker)["state"])
+        # A separate prepared global task remains sensitive to new route membership.
+        global_task = task("global_again", R("audits", self.fx.audit_id), "global_consistency")
+        selected = selection((global_task,))
+        selected["context"] = {"owner": None, "argument": None}
+        later = packets.prepare_assignment(self.db, audit_id=self.fx.audit_id, mode="primary", selection=selected)
+        later["scaffold"] = controller.response_scaffold(later["manifest"])
+        self.fx.apply(self.db, [self.fx.argument_edit("arg_other", "itm_thm", "grp_other", "anc_thm_proof"),
+                               self.fx.group_edit("grp_other", "arg_other", "itm_thm", "anc_thm_proof")])
+        outcome = self.submit(later, self.response(later))
+        self.assertEqual("conflict", outcome["state"], outcome)
+        self.assertTrue(any(row["relation"] == "arguments_for_target"
+                            for detail in outcome["diagnostics"] for row in detail.get("relations", [])))
+
+    def test_old_boundary_review_pin_is_diagnosed_without_substituting_live_review(self):
+        prior = self.db.head("source_reviews", "srv_boundaries")
+        packet = self.fx.packet(self.db)
+        sources.review_sources(self.db, batch=self.fx.batch([edit("create", "source_reviews", "srv_pending",
+            dict(prior.body, decision="unresolved"))], packet["packet_id"]))
+        boundary = self.db.head("proof_boundaries", "bnd_thm")
+        pin = self.fx.pin(self.db, "source_reviews", "srv_pending")
+        self.fx.apply(self.db, [edit("replace", "proof_boundaries", boundary.id,
+            dict(boundary.body, state="unresolved", source_review_ref=pin), boundary.version)])
+        prepared = self.prepare()
+        self.assertTrue(prepared["prepared"], prepared)
+        supplied = next(row for row in prepared["packet"]["records"] if row["ref"]["id"] == "srv_pending")
+        self.assertEqual(pin, supplied["ref"])
+        pending = self.db.head("source_reviews", "srv_pending")
+        packet = self.fx.packet(self.db)
+        sources.review_sources(self.db, batch=self.fx.batch([edit("replace", "source_reviews", pending.id,
+            dict(pending.body, rationale="Later unresolved review; the old boundary still pins version 1."),
+            pending.version)], packet["packet_id"]))
+        before = self.db.conn.execute("SELECT COUNT(*) FROM packets").fetchone()[0]
+        with self.assertRaises(InvalidRequest) as caught:
+            self.prepare()
+        self.assertEqual("WORK_CONTEXT_PIN", caught.exception.code)
+        self.assertEqual(pin, caught.exception.records[0]["required_ref"])
+        self.assertEqual(2, caught.exception.records[0]["current_ref"]["version"])
+        self.assertEqual(before, self.db.conn.execute("SELECT COUNT(*) FROM packets").fetchone()[0])
 
 
 class WorkBindingTests(TempCase):

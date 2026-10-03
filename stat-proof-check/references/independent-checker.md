@@ -5,6 +5,8 @@ Receive only the worker packet, response scaffold, generated worker guidance, th
 [evidence-and-verdicts.md](evidence-and-verdicts.md), plus relevant domain/external guidance.
 Do not seek the coordinator manifest, database, working report, primary reconstruction,
 judgments, repairs, or calibration keys. Report any possible exposure honestly.
+Related source-only assignments may share your own neutral context; keep each packet's response separate.
+A role change or resumed conversation containing primary reasoning does not make that context independent.
 
 Independently normalize the requested target and reconstruct its substantive inferences from source,
 including omitted dependencies. A composition judgment's reasoning must examine the route's applications,

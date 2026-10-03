@@ -38,8 +38,9 @@ LEAF_COMMANDS = {
     "apply", "compare", "review submit", "review map", "review reconcile", "qualification record", "changes",
     "status", "validate", "checkpoint", "release", "export", "backup", "import-legacy", "telemetry record",
     "telemetry summary", "version", "migrate", "work list", "work prepare", "work submit", "work inspect",
-    "template", "review mapping-template", "work extend"}
-NO_DATABASE_COMMANDS = {"ids", "version"}
+    "template", "review mapping-template", "work extend", "stage1 status", "stage1 prepare",
+    "stage2 status", "stage2 prepare", "stage2 finalize", "stage3 build"}
+NO_DATABASE_COMMANDS = {"ids", "version", "stage3 build"}
 TELEMETRY_COMMANDS = {"telemetry record", "telemetry summary"}
 TOP_LEVEL_COMMANDS = {name.split(" ")[0] for name in LEAF_COMMANDS}
 
@@ -350,10 +351,10 @@ class BuiltCase(TempCase):
 class TestVersionCommand(TempCase):
 
     def test_version_reports_the_core_and_contract_identity(self):
-        """version names core 2.3.7, storage format 4 and contract proofcheck-records/4."""
+        """version names core 2.3.8, storage format 4 and contract proofcheck-records/4."""
         payload, _ = run_cli("version")
         self.assertEqual(payload["command"], "version")
-        self.assertEqual(payload["core_version"], "2.3.7")
+        self.assertEqual(payload["core_version"], "2.3.8")
         self.assertEqual(payload["storage_format"], 4)
         self.assertEqual(payload["contract_version"], 4)
         self.assertEqual(payload["contract"], "proofcheck-records/4")
@@ -680,7 +681,7 @@ class TestStatusAndValidate(BuiltCase):
         storage_block = dict(status["storage"])
         self.assertIsInstance(storage_block.pop("metadata"), dict)
         self.assertEqual(storage_block, {"storage_format": 4, "contract_version": 4,
-                                         "contract": "proofcheck-records/4", "core_version": "2.3.7",
+                                         "contract": "proofcheck-records/4", "core_version": "2.3.8",
                                          "projection_version": 2})
 
     def test_an_incomplete_assessment_is_a_successful_status_query(self):
@@ -936,7 +937,7 @@ class TestPublication(BuiltCase):
         payload, stderr = run_cli("release", db, "--audit", AUDIT, "--out", out, "--checkpoint-out", html)
         self.assertEqual(payload["command"], "release")
         self.assertIs(payload["process_complete"], True)
-        self.assertEqual(payload["core_version"], "2.3.7")
+        self.assertEqual(payload["core_version"], "2.3.8")
         self.assertEqual(payload["storage_format"], 4)
         self.assertEqual(payload["contract"], "proofcheck-records/4")
         self.assertEqual(payload["audit_id"], AUDIT)
@@ -1344,7 +1345,7 @@ class TestTelemetry(BuiltCase):
         details = [event["details"] for event in summary["event_list"]]
         self.assertEqual({d["command"] for d in details}, {"status", "changes"})
         self.assertTrue(all(d["exit_code"] == 0 and d["outcome"] == "ok" for d in details), details)
-        self.assertTrue(all(d["core_version"] == "2.3.7" for d in details), details)
+        self.assertTrue(all(d["core_version"] == "2.3.8" for d in details), details)
 
     def test_a_failed_command_records_its_exit_code_and_error_code(self):
         """The telemetry event of a refused command carries outcome error and the error code."""
@@ -1520,6 +1521,24 @@ class TestWorkDiagnostics(TempCase):
         self.assertFalse(result["preparation"]["process_complete"])
         with fx.open() as db:
             self.assertEqual(before, db.conn.execute("SELECT count(*) FROM packets").fetchone()[0])
+        action = result["preparation"]["size_action"]
+        self.assertEqual("retry_supported_limit", action["operation"])
+        retried, _ = run_cli(*action["command"][1:])
+        self.assertTrue(retried["prepared"], retried)
+        self.assertEqual(1048576, retried["packet_limits"]["max_bytes"])
+
+    def test_maximum_size_failure_has_no_ineffective_retry_command(self):
+        from paper_core import cli
+        fx = self.fixture().audit()
+        result = {"prepared": False, "diagnostics": [{"code": "OVERSIZED_CONTEXT",
+            "measured_or_lower_bound_bytes": 1048577, "unique_record_count": 1}]}
+        args = argparse.Namespace(max_bytes=1048576)
+        with fx.open() as db:
+            before = db.max_revision()
+            cli._preparation_diagnostic(db, result, fx.audit_id, args)
+            self.assertEqual(before, db.max_revision())
+        self.assertEqual("inspect_context_boundary", result["preparation"]["size_action"]["operation"])
+        self.assertNotIn("command", result["preparation"]["size_action"])
 
     def test_no_assignment_after_completion_names_recorded_scope(self):
         result = self.prepare(self.fixture().complete())
@@ -1546,7 +1565,12 @@ class TestWorkDiagnostics(TempCase):
         fx = self.fixture().complete()
         destination = self.work / "release"
         args = argparse.Namespace(db=str(fx.path), audit="aud_1", out=str(destination))
-        with patch.object(cli, "write_export", side_effect=OSError("fixture export write failed")):
+        replace = cli.os.replace
+        def fail_export_replace(source, target):
+            if Path(target) == destination / "export.json":
+                raise OSError("fixture export write failed")
+            return replace(source, target)
+        with patch.object(cli.os, "replace", side_effect=fail_export_replace):
             with self.assertRaises(PublicationError) as caught:
                 cli.cmd_release(args)
         failure = caught.exception.records[-1]
@@ -1555,6 +1579,8 @@ class TestWorkDiagnostics(TempCase):
         self.assertEqual(failure["available_files"], ["report.html"])
         self.assertTrue((destination / "report.html").is_file())
         self.assertFalse((destination / "receipt.json").exists())
+        self.assertTrue((Path(failure["preparation_directory"]) / "export.json").is_file())
+        self.assertIn("--resume", failure["resume_command"])
 
 
 if __name__ == "__main__":

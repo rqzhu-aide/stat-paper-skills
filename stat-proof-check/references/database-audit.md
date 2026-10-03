@@ -49,6 +49,7 @@ proof-check-<paper-name>/
       page-images/
       external-references/
     recovery/                  recovered assignment/submission copies
+    finalized/                 frozen report-snapshot.json and finalization.json bundles
     helpers/                   small task-specific scripts
     exports/                   optional mathematical snapshots
     backups/                   optional database backups
@@ -91,9 +92,9 @@ passage according to its actual use, without propagating uncertainty to unrelate
 Keep this coordinator inventory out of independent source-only delivery; supply the necessary
 source and its limitations through the existing worker packet and context-extension workflow.
 
-Render an early checkpoint after recording the main results and their source-backed uses. Compare
-the displayed results and connections with the declared scope. Missing connections require further
-dependency recording or an explicit limitation; isolated nodes do not establish independence.
+An optional early checkpoint can help compare recorded results and connections with declared scope.
+It is a preview, not a required interruption of Stage 1. Missing connections require further dependency
+recording or an explicit limitation; isolated nodes do not establish independence.
 
 Reuse the database and report paths; do not delete durable data, authored responses or provenance,
 or relocate registered sources merely to tidy the folder.
@@ -124,34 +125,41 @@ selectors retain whole-page coverage, and uncertain proof boundaries remain unre
 
 ## Check, review and recover
 
-Register the audit through ordinary authoring. Arrange genuine balanced
-[reviewer qualification](database-qualification.md) for the actual independent configuration, then record
-its ID in the audit configuration. Workers never receive calibration keys. Follow [controller-workflow.md](controller-workflow.md)
-for exact role delivery and the prepare/examine/submit cycle. Several local examinations can share one
-coherent assignment. Save meaningful partial reasoning before yielding.
+Register the audit through ordinary authoring. Follow [controller-workflow.md](controller-workflow.md)
+for the proof-owner sequence, [qualification](database-qualification.md), role delivery and recovery.
+It covers separate sessions or reviewers when subagents are unavailable, and an honest handoff when
+required independent execution is unavailable.
 
 Use `work list DB --audit aud_ID` for actionable work, `status DB --audit aud_ID` for assessed state,
 and the submission receipt for immediate next actions. Status includes a factual summary of exact
 scope, current versus unfinished evidence, dependency support and review state. These recorded facts
 cannot prove that the source was faithfully interpreted or the mathematics correctly checked.
 
-Independent review starts source-only in a fresh context. Preserve its unchanged response, map
-source targets using the private coordinator context, and reconcile exact-target evidence. A
-substantive new route requires declared supplied-route review. Missing independent capability
-requires a working result/handoff, not manufactured qualifying self-review.
+`stage1 status` reports primary readiness and representation blockers; `stage2 status` reports review,
+global-work and finalization readiness. Normal preparation uses `stage1 prepare` and `stage2 prepare`
+with mode `independent`, `reconcile` or `global`. Use the same `work submit`, `work inspect`, `work extend`
+and `review map` interfaces throughout. Source comparisons marked `needs_attention` need an actual
+correction/recomparison even when counted as completed examinations. A completed mathematical gap
+has a different meaning and does not itself block progression.
 
 ## Report and release
 
 ```text
-paper_audit.py checkpoint AUDIT.db --audit aud_ID --out report.html
-paper_audit.py validate AUDIT.db
-paper_audit.py release AUDIT.db --audit aud_ID --out releases/<release-name> --checkpoint-out report.html
+paper_audit.py stage2 finalize AUDIT.db --audit aud_ID --out work/finalized/result-1
+paper_audit.py stage3 build work/finalized/result-1 --out report.html
 ```
 
-Pass the chosen working-report path to `--checkpoint-out`; when resuming, use its established path.
-This option supplies recovery guidance if release is blocked and does not change the release output.
+Finalization saves one fixed revision, its report snapshot and a receipt. It does not render HTML.
+Stage 3 consumes that saved bundle and preserves its exact audit identity, findings, scope and limitations.
+If the live database later changes, the old report remains a historical snapshot until deliberately renewed.
+Renderer or layout changes do not require scientific reexamination.
 
-Render at meaningful checkpoints. Use the generated table for examination counts and `status`'s
+Use `stage2 finalize --partial` to save a working snapshot with its actual incomplete work or source
+representation blockers. Canonical examination counts remain unchanged; a working report is not a
+finalized audit even when those counts are complete. Failed analysis cannot create a new canonical
+snapshot. Keep its diagnostics and any older snapshot, clearly identified as historical.
+
+Use optional `checkpoint` previews at meaningful boundaries. Use the generated table for examination counts and `status`'s
 `process_complete` for audit completion; never hand-count checks. Retain requested parts/exclusions,
 draft/stale state, conditional or unavailable support, source limits and review qualification. Explain
 findings; do not override a limitation with an unsupported positive summary. Use source labels.
@@ -167,9 +175,20 @@ routes and local conditions remain distinguishable. Inspect actual HTML navigati
 support qualifications and working/completed status; a useful explanation adds no proof credit.
 
 `checkpoint` preserves the prior HTML if rendering fails. `validate` checks structure and recorded
-consistency, never mathematical truth. `release` requires process completion and creates immutable
-HTML/export/receipt output; a blocked release creates no directory. Completed audits may contain
+consistency, never mathematical truth. The compatibility `release` command composes finalization and
+publication into immutable HTML/export/receipt output; it requires process completion and settled
+source representation. A blocked release creates no public release directory. Completed audits may contain
 gaps, refutations or adjudicated inconclusive results. They may not hide undone work or missing review.
+
+```text
+paper_audit.py release AUDIT.db --audit aud_ID --out releases/<release-name> --checkpoint-out report.html
+```
+
+Pass the established report path to `--checkpoint-out` for recovery advice when release is blocked.
+If publication fails after freezing, retain its reported preparation directory and follow the supplied
+`release ... --resume PREPARATION_DIR` command. It finishes delivery from the old snapshot rather than
+reexamining the paper or silently switching to the live revision. A direct Stage 3 build failure simply
+reuses the same frozen bundle. Never describe a retained older HTML file as the new successful build.
 
 `backup AUDIT.db --out work/backups/<backup-name>.db` preserves full recovery state.
 `export AUDIT.db --out work/exports/<snapshot-name>.json` is only the mathematical snapshot.
@@ -182,12 +201,18 @@ evaluation separately.
 
 Before stopping with unfinished work:
 
-1. Save substantive partial reasoning and authored responses, then inspect `status` and `work list`.
-2. Create a `checkpoint` at the chosen working-report path when possible. If rendering fails,
-   disclose the failure and link the database and saved work; identify any retained older HTML as old.
-3. Deliver the report and database paths, exact examined scope and exclusions, findings, unfinished
-   obligations, and next action. Missing independent execution requires this limited handoff,
-   never a completed-audit claim.
+1. Save substantive partial reasoning and authored responses, then inspect `status` and `work list`
+   using the [pagination guidance](controller-workflow.md#prepare-and-dispatch) for the remaining inventory.
+   Inspect known assignment/delivery directories for unsubmitted output as well as intake history;
+   follow [controller recovery](controller-workflow.md#recover-only-affected-work) without treating files
+   as accepted evidence. Preserve response paths, packet/request identities and specific remaining questions.
+2. Save an explicitly working snapshot with `stage2 finalize --partial` when assessment can complete,
+   then build it with Stage 3 if useful. A `checkpoint` remains an optional preview. If assessment or
+   rendering fails, disclose the failure and link the database and saved work; identify retained older HTML as old.
+3. Deliver report/database paths and their revisions, exact examined scope and exclusions, findings,
+   saved output awaiting integration, unfinished obligations and next action. A short continuation note
+   points to these artifacts rather than maintaining another task ledger. Missing independent execution
+   requires this limited handoff, never a completed-audit claim.
 
 The checkpoint receipt returns the same factual scope summary as `status` and commands for remaining work.
 For a completed release, link its report as the final artifact; keep the working files for continuation.
@@ -201,5 +226,6 @@ commands reuse `--checkpoint-out` when supplied. If that option was omitted, the
 a checkpoint template requiring an explicit `--out` choice, alongside the work-list command.
 Choose this audit's existing working-report path, or the root `report.html` for a new audit,
 before running that checkpoint.
-If writing a release fails after some files exist, the error identifies those files and the failed
-stage; it is not a delivered release. Keep them for inspection before choosing a new destination.
+If writing a release fails after some files exist, the error identifies those files, the failed
+step and retained frozen preparation. It is not a delivered release. Use its exact resume operation;
+do not discard finalized scientific data merely because presentation failed.

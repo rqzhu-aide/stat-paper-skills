@@ -211,6 +211,35 @@ class WorkTests(TempCase):
                 work.list_work(db, audit_id=fixture.audit_id, focus=R("items", "itm_lem"),
                                cursor=first["next_cursor"])
 
+    def test_full_inventory_over_one_hundred_tasks_and_fresh_listing_after_write(self):
+        fixture = self.fixture(mode="full")
+        with fixture.open() as db:
+            fixture.apply(db, [fixture.item_edit(f"itm_extra_{i}", "theorem", f"Extra result {i}",
+                                                "anc_thm", "anc_thm_proof") for i in range(101)])
+            expected = work.derive_work(db, audit_id=fixture.audit_id)
+            self.assertGreater(len(expected["tasks"]), 100)
+            first = work.list_work(db, audit_id=fixture.audit_id, limit=100)
+            self.assertEqual(100, len(first["tasks"]))
+            self.assertIsNotNone(first["next_cursor"])
+
+            fixture.apply(db, [fixture.item_edit("itm_added_later", "theorem", "Later result",
+                                                "anc_thm", "anc_thm_proof")])
+            rows = list(first["tasks"])
+            cursor = first["next_cursor"]
+            while cursor is not None:
+                page = work.list_work(db, audit_id=fixture.audit_id, limit=100, cursor=cursor)
+                self.assertEqual(first["revision"], page["revision"])
+                rows.extend(page["tasks"])
+                cursor = page["next_cursor"]
+            self.assertEqual([task["id"] for task in expected["tasks"]], [task["id"] for task in rows])
+            self.assertFalse(any(task["target"] == R("items", "itm_added_later") for task in rows))
+
+            fresh = work.list_work(db, audit_id=fixture.audit_id, focus=R("items", "itm_added_later"))
+            self.assertGreater(fresh["revision"], first["revision"])
+            remaining = self.task(fresh, "items", "itm_added_later", "composition")
+            self.assertEqual("needs_coordinator", remaining["state"])
+            self.assertFalse(fresh["progress"]["process_complete"])
+
     def test_assignment_limits_are_units_not_record_count(self):
         fixture = self.fixture()
         result = self.derive(fixture)

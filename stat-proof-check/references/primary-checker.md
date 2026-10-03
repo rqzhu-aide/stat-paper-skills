@@ -1,31 +1,30 @@
 # Primary checker
 
-Use your packet, scaffold and generated guidance with
+Use the packet, scaffold and generated guidance with
 [mathematical-checking.md](mathematical-checking.md) and
-[evidence-and-verdicts.md](evidence-and-verdicts.md). Add relevant domain/external guidance as needed.
+[evidence-and-verdicts.md](evidence-and-verdicts.md). Add relevant domain/external guidance.
 
-Compare the saved statement and setup against source. Source fidelity and proof validity are
-separate. Historical wording shows changes; it supplies no verdict on the new statement.
+Carry source comparison, primary reasoning and coverage in one context where useful. Compare saved
+statements/setup with source; fidelity is not validity. Send mismatches for authorized coordinator
+correction, then continue affected work with the updated assignment. Historical wording supplies no verdict.
 
-Examine every substantive assigned inference. Save the actual equation chain or logical step,
-inputs, substitutions, side conditions, source evidence, and outcome. Keep applications,
-joint derivation, and final composition distinct even when one response examines them together.
-Do not repeat a supplier's proof for an ordinary application; borrowed proof reasoning needs
-the relevant proof passage and a distinct examination. Check source coverage against complete
-reviewed boundaries, including internally originating reasoning and written alternative routes.
-Record missing load-bearing external facts, cited or uncited, as discoveries naming the fact,
-its use, and needed source. A rule name is not verification. Distinguish inspected external
-results from self-contained derivations.
+Examine every substantive assigned inference with explicit reasoning, inputs, substitutions, conditions,
+evidence and outcome. Keep applications, joint derivation and final composition distinct within the
+response. Ordinary applications need not repeat supplier proofs; borrowed reasoning needs its proof
+passage and examination. Coverage follows complete reviewed boundaries, including internal reasoning
+and written alternatives. Record missing external facts, cited or uncited, with their use and needed source. Rule names
+are not verification; distinguish inspected results from self-contained derivations.
 
-Preserve meaningful partial work as a draft with a next action.
-Use `replaces` only for an explicitly selected same-reviewer draft; preserve its `supersedes`
-pin. A completed judgment changes through a reasoned successor, never a silent overwrite.
+Save partial reasoning with evidence and next action. Use `replaces` only for a selected same-reviewer
+draft, preserving `supersedes`; completed judgments need reasoned successors. A new owner identifies
+itself accurately, retaining earlier authorship.
 
-Coverage offsets are zero-based half-open character intervals in the anchor excerpt. Structural
-spans have empty claim/check arrays; substantive spans link the examined claims and checks.
-`check_task_ids` refers to checks in this response; existing work uses pinned check references.
-The controller does not infer coverage from a complete check.
+Coverage uses zero-based half-open character offsets in the anchor excerpt. Structural spans have empty claim/check arrays;
+substantive spans link examined claims and checks. `check_task_ids` names this response's checks;
+existing work uses pinned references. Save coverage with supporting checks or before final composition;
+a complete check alone implies no coverage.
 
-Discoveries and counterexamples belong in reasoning/findings with their scope. Explain missing
-source or graph structure to the coordinator; do not invent anchors, alter graph records, or
-silently omit a failed route. Save the requested response file, then return its path.
+Preserve scoped discoveries and counterexamples in reasoning/findings. Report missing source/structure;
+never invent anchors, edit the graph or omit failed routes. Save each response with its packet identity;
+return its path and remaining questions. Gaps need no invented repair. [Reconciliation](reconciler.md)
+compares actual opinions; it need not repeat the full examination.

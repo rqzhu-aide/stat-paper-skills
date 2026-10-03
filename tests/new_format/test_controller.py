@@ -67,6 +67,29 @@ class ControllerTests(unittest.TestCase):
         self.assertTrue(all(t["state"] == "satisfied" for t in next_work["tasks"] if t["required"]),
                         next_work["tasks"])
 
+    def test_explicit_requests_explain_prerequisites_then_return_to_requested_work(self):
+        view = controller.derive_work(self.db, audit_id=self.fx.audit_id, focus=R("items", "itm_lem"))
+        requested = [t["id"] for t in view["tasks"] if t["kind"] in ("derivation", "composition")]
+        first = self.prepare(task_ids=requested, max_units=1)
+        guidance = first["task_selection"]
+        self.assertEqual(sorted(requested), guidance["requested_task_ids"])
+        self.assertFalse(set(requested) & set(first["assigned_task_ids"]))
+        self.assertTrue(all(row["assigned_prerequisite_task_ids"] for row in guidance["requests"]))
+        self.assertEqual(first["assigned_task_ids"], guidance["assigned_task_ids"])
+        self.assertEqual("accepted", self.submit(self.envelope(first), self.completed(first))["state"])
+        second = self.prepare(task_ids=requested)
+        self.assertTrue(set(requested) <= set(second["assigned_task_ids"]))
+        self.assertTrue(all(row["assigned"] for row in second["task_selection"]["requests"]))
+
+    def test_explicit_request_guidance_uses_final_packet_after_size_failure(self):
+        view = controller.derive_work(self.db, audit_id=self.fx.audit_id)
+        task = next(t for t in view["tasks"] if t["kind"] == "composition" and t["role"] == "primary")
+        result = controller.prepare_work(self.db, audit_id=self.fx.audit_id, mode="primary",
+                                         task_ids=[task["id"]], max_bytes=1)
+        self.assertFalse(result["prepared"])
+        self.assertEqual([], result["task_selection"]["assigned_task_ids"])
+        self.assertFalse(result["task_selection"]["requests"][0]["assigned"])
+
     def test_one_bad_included_result_retains_bytes_and_commits_nothing(self):
         packet = self.prepare()
         worker = self.completed(packet)
@@ -155,6 +178,7 @@ class ControllerTests(unittest.TestCase):
         invalid["results"][-1]["task_id"] = "obl_unassigned"
         rejected = self.submit(envelope, invalid)
         self.assertTrue(rejected["stored"])
+        self.assertEqual("author_response_correction", rejected["recovery"][0]["operation"])
         self.assertIn("saved receipt", " ".join(rejected["next_actions"]))
         self.assertIn("new request ID", " ".join(rejected["next_actions"]))
         self.assertEqual(rejected, self.submit(envelope, invalid))
@@ -162,16 +186,154 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual("REQUEST_ID_REUSED", changed["error"]["code"])
         corrected = self.submit(dict(envelope, request_id=self.fx.request_id()), worker)
         self.assertEqual("accepted", corrected["state"], corrected)
-        self.assertEqual(rejected, controller.inspect_work(self.db, request_id=envelope["request_id"])["result"])
+        inspected = controller.inspect_work(self.db, request_id=envelope["request_id"])
+        self.assertEqual(rejected, inspected["result"])
+        self.assertEqual("CURRENT_ASSIGNED_WORK_SATISFIED", inspected["current"]["recovery"][0]["reason_code"])
+        self.assertTrue(inspected["current"]["analysis_complete"])
+        self.assertTrue(all(t["state"] == "satisfied" for t in inspected["current"]["assigned_tasks"]))
+
+    def test_packet_disagreement_requires_pairing_in_both_directions(self):
+        original, other = self.prepare(), self.prepare("itm_thm", allow_provisional=True)
+        worker = self.completed(original)
+        wrong_worker = dict(worker, packet_id=other["packet_id"])
+        revision = self.db.max_revision()
+        for envelope, response in ((self.envelope(other), worker), (self.envelope(original), wrong_worker)):
+            with self.subTest(envelope=envelope["packet_id"]):
+                rejected = self.submit(envelope, response)
+                self.assertEqual("PACKET_MISMATCH", rejected["error"]["code"])
+                action = rejected["recovery"][0]
+                self.assertEqual("inspect_assignment", action["operation"])
+                self.assertEqual(envelope["packet_id"], action["envelope_packet_id"])
+                self.assertEqual(response["packet_id"], action["worker_packet_id"])
+                retained = self.db.work_submission(envelope["request_id"])
+                self.assertEqual(canonical_bytes(response), self.db.get_blob(retained["response_sha256"]))
+                self.assertEqual(revision, self.db.max_revision())
+                self.assertEqual(rejected, self.submit(envelope, response))
+                inspected = controller.inspect_work(self.db, request_id=envelope["request_id"])
+                self.assertEqual("inspect_assignment", inspected["current"]["recovery"][0]["operation"])
+        accepted = self.submit(self.envelope(original), worker)
+        self.assertEqual("accepted", accepted["state"], accepted)
+        # Satisfying one side does not authorize guessing which packet the author examined.
+        inspected = controller.inspect_work(self.db, request_id=envelope["request_id"])
+        self.assertEqual("inspect_assignment", inspected["current"]["recovery"][0]["operation"])
+
+    def test_missing_or_nonobject_worker_identity_is_an_authoring_problem(self):
+        packet = self.prepare()
+        for worker in ([], {}, {"packet_id": None}, {"packet_id": []}, {"packet_id": ""}):
+            with self.subTest(worker=worker):
+                rejected = self.submit(self.envelope(packet), worker)
+                self.assertEqual("needs_revision", rejected["state"])
+                self.assertEqual("author_response_correction", rejected["recovery"][0]["operation"])
+                self.assertNotEqual("PACKET_MISMATCH", rejected["error"]["code"])
+
+    def rejected_complete_response(self):
+        packet = self.prepare()
+        worker, envelope = self.completed(packet), self.envelope(packet)
+        malformed = copy.deepcopy(worker)
+        del malformed["results"][-1]["outcome"]
+        rejected = self.submit(envelope, malformed)
+        self.assertEqual("needs_revision", rejected["state"], rejected)
+        return packet, worker, envelope, malformed, rejected
+
+    def test_rejected_attempt_current_advice_retains_adverse_completed_evidence(self):
+        packet, worker, envelope, malformed, rejected = self.rejected_complete_response()
+        outcomes = iter(("gap", "refuted"))
+        for row in worker["results"]:
+            if row["type"] == "check":
+                row.update(outcome=next(outcomes), reasoning="Synthetic adverse examination preserved.")
+        self.assertEqual("accepted", self.submit(self.envelope(packet), worker)["state"])
+        revision = self.db.max_revision()
+        inspected = controller.inspect_work(self.db, request_id=envelope["request_id"])
+        current = inspected["current"]
+        self.assertEqual("CURRENT_ASSIGNED_WORK_SATISFIED", current["recovery"][0]["reason_code"])
+        self.assertEqual({"gap", "refuted"}, {t["outcome"] for t in current["assigned_tasks"] if t["kind"] != "source_fidelity"})
+        self.assertTrue(all(t["judgment_refs"] for t in current["assigned_tasks"] if t["role"] == "primary" and t["kind"] != "source_fidelity"))
+        self.assertIn("unresolved scientific concerns", current["recovery"][0]["message"])
+        self.assertEqual(revision, self.db.max_revision())
+        self.assertEqual(rejected, inspected["result"])
+        self.assertEqual(rejected, self.submit(envelope, malformed))
+
+    def test_rejected_attempt_partial_success_and_drafts_still_show_remaining_work(self):
+        packet, worker, envelope, _, _ = self.rejected_complete_response()
+        source_rows = [row for row in worker["results"] if row["type"] == "source_fidelity"]
+        partial = dict(worker, results=source_rows, coverage=[])
+        self.assertEqual("accepted", self.submit(self.envelope(packet), partial)["state"])
+        current = controller.inspect_work(self.db, request_id=envelope["request_id"])["current"]
+        self.assertEqual("CURRENT_ASSIGNED_WORK_REMAINS", current["recovery"][0]["reason_code"])
+        self.assertGreater(current["remaining_task_count"], 0)
+        self.assertTrue(any(t["state"] == "satisfied" for t in current["assigned_tasks"]))
+        checks = [dict(row, state="draft", outcome=None, next_action="Finish the saved reasoning.")
+                  for row in worker["results"] if row["type"] == "check"]
+        self.assertEqual("accepted", self.submit(self.envelope(packet), dict(worker, results=checks, coverage=[]))["state"])
+        current = controller.inspect_work(self.db, request_id=envelope["request_id"])["current"]
+        self.assertEqual("CURRENT_ASSIGNED_WORK_REMAINS", current["recovery"][0]["reason_code"])
+        self.assertTrue(any(t["judgment_refs"] for t in current["assigned_tasks"] if t["state"] != "satisfied"))
+
+    def test_rejected_attempt_source_changes_and_conflicting_checks_keep_work_open(self):
+        packet, worker, envelope, _, _ = self.rejected_complete_response()
+        self.assertEqual("accepted", self.submit(self.envelope(packet), worker)["state"])
+        self.fx.apply(self.db, [self.fx.check_edit("chk_conflicting", R("groups", "grp_lem"), "derivation",
+                      evidence=("anc_lem_proof",), reviewer="other-primary", outcome="gap")], mode="primary")
+        current = controller.inspect_work(self.db, request_id=envelope["request_id"])["current"]
+        self.assertEqual("CURRENT_ASSIGNED_WORK_REMAINS", current["recovery"][0]["reason_code"])
+        disputed = next(t for t in current["assigned_tasks"] if t["kind"] == "derivation")
+        self.assertEqual("inconclusive", disputed["outcome"])
+        self.assertEqual(2, disputed["judgment_count"])
+        item = self.db.head("items", "itm_lem")
+        self.fx.apply(self.db, [edit("replace", "items", item.id,
+            dict(item.body, statement={"form": "synopsis", "text": "A different mathematical claim"}), item.version)], mode="primary")
+        current = controller.inspect_work(self.db, request_id=envelope["request_id"])["current"]
+        self.assertEqual("CURRENT_ASSIGNED_WORK_REMAINS", current["recovery"][0]["reason_code"])
+        self.assertTrue(any(t["freshness"] == "needs_review" for t in current["assigned_tasks"]), current)
+
+    def test_rejected_attempt_incomplete_or_missing_current_tasks_are_not_completion(self):
+        _, _, envelope, _, _ = self.rejected_complete_response()
+        view = controller.derive_work(self.db, audit_id=self.fx.audit_id)
+        for facts, reason in ((dict(view, analysis_complete=False, tasks=[]), "CURRENT_ANALYSIS_INCOMPLETE"),
+                              (dict(view, tasks=[]), "ASSIGNMENT_RELEVANCE_UNKNOWN")):
+            with self.subTest(reason=reason), patch.object(controller, "derive_work", return_value=facts):
+                current = controller.inspect_work(self.db, request_id=envelope["request_id"])["current"]
+                self.assertEqual(reason, current["recovery"][0]["reason_code"])
+                self.assertGreater(current["unknown_task_count"], 0)
+        audit = self.db.head("audits", self.fx.audit_id)
+        self.fx.apply(self.db, [edit("replace", "audits", audit.id,
+            dict(audit.body, targets=[R("items", "itm_thm")]), audit.version)], mode="primary")
+        current = controller.inspect_work(self.db, request_id=envelope["request_id"])["current"]
+        self.assertFalse(current["assignment_scope_current"])
+        self.assertEqual("ASSIGNMENT_RELEVANCE_UNKNOWN", current["recovery"][0]["reason_code"])
 
     def test_pre_intake_failure_does_not_consume_an_unused_id(self):
         packet = self.prepare()
         envelope, worker = self.envelope(packet), self.completed(packet)
         rejected = self.submit(dict(envelope, unknown_field=True), worker)
         self.assertFalse(rejected["stored"])
+        self.assertEqual("correct_envelope", rejected["recovery"][0]["operation"])
         self.assertIn("did not reserve", rejected["next_actions"][0])
         self.assertIsNone(self.db.work_submission(envelope["request_id"]))
         self.assertEqual("accepted", self.submit(envelope, worker)["state"])
+
+    def test_rejected_current_inspection_uses_one_revision_despite_intervening_write(self):
+        packet, worker, envelope, _, _ = self.rejected_complete_response()
+        self.assertEqual("accepted", self.submit(self.envelope(packet), worker)["state"])
+        revision = self.db.max_revision()
+        derive = controller.derive_work
+
+        def change_scope(db, **kwargs):
+            audit = db.head("audits", self.fx.audit_id)
+            self.fx.apply(db, [edit("replace", "audits", audit.id,
+                dict(audit.body, targets=[R("items", "itm_thm")]), audit.version)], mode="primary")
+            return derive(db, **kwargs)
+
+        with patch.object(controller, "derive_work", side_effect=change_scope):
+            current = controller.inspect_work(self.db, request_id=envelope["request_id"])["current"]
+        self.assertGreater(self.db.max_revision(), revision)
+        self.assertEqual(revision, current["revision"])
+        self.assertTrue(current["assignment_scope_current"])
+        self.assertEqual("CURRENT_ASSIGNED_WORK_SATISFIED", current["recovery"][0]["reason_code"])
+        fresh = controller.inspect_work(self.db, request_id=envelope["request_id"])["current"]
+        self.assertEqual(self.db.max_revision(), fresh["revision"])
+        self.assertFalse(fresh["assignment_scope_current"])
+        self.assertEqual("ASSIGNMENT_RELEVANCE_UNKNOWN", fresh["recovery"][0]["reason_code"])
 
     def test_other_command_id_requires_new_id_without_work_inspection(self):
         packet = self.prepare()
@@ -238,6 +400,7 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(row["state"], "received")
         inspected = controller.inspect_work(self.db, request_id=envelope["request_id"])
         self.assertIsNone(inspected["result"])
+        self.assertEqual("replay_saved_submission", inspected["current"]["recovery"][0]["operation"])
         result = self.submit(envelope, worker)
         self.assertEqual(result["state"], "accepted", result)
 
@@ -286,6 +449,24 @@ class ControllerTests(unittest.TestCase):
             controller.write_artifacts(self.db, info, out)
         history = controller.inspect_work(self.db, audit_id=self.fx.audit_id)
         self.assertTrue(any(row["id"] == packet["packet_id"] for row in history["entries"]))
+
+    def test_history_paging_does_not_load_worker_blobs(self):
+        first = self.prepare(max_units=1)
+        self.submit(self.envelope(first), self.completed(first))
+        second = self.prepare()
+        before = self.db.max_revision()
+        entries, cursor = [], None
+        with patch.object(self.db, "get_blob", side_effect=AssertionError("history must be metadata only")):
+            while True:
+                page = controller.inspect_work(self.db, audit_id=self.fx.audit_id, limit=1, cursor=cursor)
+                self.assertLessEqual(len(page["entries"]), 1)
+                entries.extend(page["entries"])
+                cursor = page["next_cursor"]
+                if cursor is None:
+                    break
+        self.assertEqual(len(entries), len({row["key"] for row in entries}))
+        self.assertTrue({first["packet_id"], second["packet_id"]} <= {row["id"] for row in entries})
+        self.assertEqual(before, self.db.max_revision())
 
     def test_old_minified_packet_is_preserved_and_recovered_to_fresh_directory(self):
         packet = self.prepare()

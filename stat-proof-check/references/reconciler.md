@@ -1,5 +1,8 @@
 # Exact-target reconciliation
 
+The primary owner normally carries out this comparison with coordinator support. This role does not
+require a third complete examination or a separate worker; investigate specific unresolved differences.
+
 Read the reconciliation packet, scaffold, worker guidance, coordinator guidance and
 [evidence-and-verdicts.md](evidence-and-verdicts.md). Compare the actual primary and accepted
 independent reasoning after preserving the independent response. Reopen mathematical guidance
@@ -27,6 +30,8 @@ Submit the batch through `work submit`, matching packet/request IDs in the coord
 Do not manufacture agreement to close work. If genuine independent execution is unavailable,
 save an honest working result and reviewer handoff. If support depends on substantive new
 mathematics absent from the original review, arrange the exact supplied-route review first.
+When both examinations identify the same gap, record their reasons and continue the remaining audit.
+An unresolved difference stays explicit; repeated requests for favorable opinions do not resolve it.
 
 Keep local outcomes, freshness, statement availability, and process completion separate in the
 report. A completed negative audit may release; stale work, missing required parts, and compromised

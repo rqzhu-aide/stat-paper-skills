@@ -34,8 +34,9 @@ DB_COMMANDS = frozenset({
     "migrate-overview", "qualification record", "release", "review map", "review reconcile",
     "review submit", "source anchor", "source capture", "source review", "source diagnostics", "status", "telemetry record",
     "telemetry summary", "validate", "migrate", "work list", "work prepare", "work submit", "work inspect",
-    "template", "review mapping-template", "work extend"})
-NO_DB_COMMANDS = frozenset({"ids", "import-legacy", "version"})
+    "template", "review mapping-template", "work extend", "stage1 status", "stage1 prepare",
+    "stage2 status", "stage2 prepare", "stage2 finalize"})
+NO_DB_COMMANDS = frozenset({"ids", "import-legacy", "version", "stage3 build"})
 
 
 def at(millisecond: int) -> str:

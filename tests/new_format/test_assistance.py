@@ -91,6 +91,88 @@ class AssistanceTests(TempCase):
         self.assertIn("direct stored coverage uses check_ids", guidance["coverage_note"])
         self.assertIn("same ID in the submission envelope", assistance.worker_guidance("reconcile")["note"])
 
+    def test_primary_templates_support_mixed_response_with_adverse_finding(self):
+        fx = self.fixture().audit(independent_required=False)
+        with fx.open() as db:
+            prepared = controller.prepare_work(db, audit_id=fx.audit_id, mode="primary", focus=R("items", "itm_lem"))
+            self.assertTrue(prepared["prepared"], prepared)
+            guidance = prepared["worker_guidance"]
+            worker = copy.deepcopy(prepared["scaffold"])
+            self.assertEqual([], worker["coverage"])
+            self.assertEqual([], worker["findings"])
+            self.assertNotIn("task_table", worker)
+            for row in worker["results"]:
+                if row["type"] == "source_fidelity":
+                    row.update(result="matched", note="Compared the stated target with its source.", evidence_refs=["anc_lem"])
+                else:
+                    row.update(state="complete", outcome="gap", reasoning="Synthetic examination identifies an unsupported base case.",
+                               evidence_refs=["anc_lem_proof"])
+            derivation = next(t for t in prepared["manifest"]["work"]["tasks"] if t["kind"] == "derivation")
+            coverage = copy.deepcopy(guidance["coverage_row_template"])
+            finding = copy.deepcopy(guidance["finding_row_template"])
+            self.assertEqual("", coverage["classification"])
+            self.assertIsNone(coverage["start_offset"])
+            self.assertIsNone(coverage["replaces"])
+            self.assertEqual("", finding["category"])
+            self.assertEqual({"collection": "", "id": ""}, finding["target"])
+            self.assertTrue(contract.validate_shape(contract.WORK_COVERAGE, coverage))
+            self.assertTrue(contract.validate_shape(contract.WORK_FINDING, finding))
+            coverage.update(argument_id="arg_lem", anchor_id="anc_lem_proof", start_offset=0,
+                end_offset=len(db.head("anchors", "anc_lem_proof").body["excerpt"]), classification="substantive",
+                claim_refs=[R("items", "itm_lem")], check_task_ids=[derivation["id"]], note="Examined the entire written route.")
+            finding.update(target=R("groups", "grp_lem"), category="proof_gap", description="The base case is not established.",
+                evidence_refs=["anc_lem_proof"], related_task_ids=[derivation["id"]], impact_reason="The induction needs this premise.")
+            worker.update(coverage=[coverage], findings=[finding])
+            self.assertEqual([], contract.validate_shape(contract.WORK_PRIMARY_RESPONSE, worker))
+            envelope = dict(prepared["submission_envelope_template"], reviewer="primary-1")
+            result = controller.submit_work(db, envelope_bytes=canonical_bytes(envelope), response_bytes=canonical_bytes(worker))
+            self.assertEqual("accepted", result["state"], result)
+            check_pin = result["record_map"][derivation["id"]]
+            self.assertEqual("gap", db.head("checks", check_pin["id"]).body["outcome"])
+            saved_finding = db.heads("findings")[0]
+            self.assertEqual("proof_gap", saved_finding.body["category"])
+            self.assertEqual([check_pin], saved_finding.body["check_refs"])
+            self.assertEqual([check_pin["id"]], db.heads("coverage")[0].body["check_ids"])
+            self.assertEqual([], guidance["finding_row_template"]["related_task_ids"])
+
+    def test_primary_task_labels_keep_original_pins_after_source_labels_change(self):
+        fx = self.fixture().audit(independent_required=False)
+        with fx.open() as db:
+            prepared = controller.prepare_work(db, audit_id=fx.audit_id, mode="primary", focus=R("items", "itm_lem"))
+            manifest = prepared["manifest"]
+            before = canonical_bytes(manifest)
+            table = assistance.primary_task_table(db, manifest)
+            self.assertEqual([t["id"] for t in manifest["work"]["tasks"]], [r["task_id"] for r in table])
+            self.assertEqual({"source_fidelity", "check"}, {r["result_type"] for r in table})
+            labels = {r["target"]["id"]: r["target_label"] for r in table}
+            self.assertEqual("Lemma 1", labels["itm_lem"])
+            self.assertEqual("groups for Lemma 1", labels["grp_lem"])
+            lemma = db.head("items", "itm_lem")
+            fx.apply(db, [edit("replace", "items", lemma.id, dict(lemma.body, label="Changed later"), lemma.version)])
+            with patch.object(db, "head", side_effect=AssertionError("must not read current labels")):
+                self.assertEqual(table, assistance.primary_task_table(db, manifest))
+                limited = copy.deepcopy(manifest)
+                limited["read_set"] = [p for p in limited["read_set"] if p["id"] != "itm_lem"]
+                limited_labels = {r["target"]["id"]: r["target_label"] for r in assistance.primary_task_table(db, limited)}
+            self.assertEqual("items:itm_lem", limited_labels["itm_lem"])
+            self.assertEqual("groups for items:itm_lem", limited_labels["grp_lem"])
+            self.assertEqual(before, canonical_bytes(manifest))
+
+    def test_primary_assignment_help_is_not_available_to_independent_or_reconciliation_roles(self):
+        fx = self.fixture().audit(independent_required=False)
+        with fx.open() as db:
+            prepared = controller.prepare_work(db, audit_id=fx.audit_id, mode="primary", focus=R("items", "itm_lem"))
+            for mode in ("independent", "reconcile"):
+                guidance = assistance.worker_guidance(mode)
+                for key in ("task_table", "coverage_row_template", "finding_row_template"):
+                    self.assertNotIn(key, guidance)
+                manifest = copy.deepcopy(prepared["manifest"])
+                manifest["mode"] = mode
+                with patch.object(db, "version", side_effect=AssertionError("private data must not be read")):
+                    with self.assertRaisesRegex(InvalidRequest, "primary work assignment"):
+                        assistance.primary_task_table(db, manifest)
+            self.assertNotIn("task_table", assistance.worker_guidance("primary"))
+
     def test_drafts_keep_distinct_owners_and_intended_predecessors(self):
         fx = self.fixture().audit(independent_required=False)
         with fx.open() as db:

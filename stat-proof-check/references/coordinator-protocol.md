@@ -1,5 +1,4 @@
-# Coordinator scope and dispatch
-
+# Coordinator inventory and scope
 
 Start from the requested audit scope, captured sources, and major-item inventory. Distinguish
 declarations, assumptions, definitions with well-posedness claims, locally proved results, and
@@ -18,6 +17,9 @@ For Full, reconcile all proof-required declarations and written arguments agains
 supplements. For Focused, discover the target's exact internal prerequisites. Start new audits from
 the manuscript in their own proof-check database. When resuming, a previously registered graph is
 a starting point, not proof of inventory completeness.
+Perform this inventory and the primary examination in Stage 1, incorporating known source and
+representation corrections before routine Stage 2 review. Stage 2 repeats the inventory comparison
+at final integration to account for discoveries; it does not routinely repeat unchanged examinations.
 For each substantive inference, identify its justification as a declared premise, an in-paper
 derivation, or an external result. An uncited load-bearing fact still needs its supplier and actual
 use recorded: for example, closedness of a finite-dimensional subspace or the projection theorem.
@@ -28,7 +30,10 @@ Attach the exact audited specification to the same item/part identity, with its 
 A matched synopsis does not certify newly added exact content. Explicitly reuse a previous source
 comparison only when it actually covered that same exact statement, setup, and source versions.
 
-Register a draft argument for each in-scope written route. Expose intermediate nodes for meaningful
+Keep a manuscript-wide inventory of results, sources, dependencies and written routes. Register each
+in-scope route and develop its detailed intermediate records as examination reaches that proof; a fully
+elaborated graph of the whole paper is not a prerequisite to useful checking. Preserve undispatched
+work and extend the inventory when discoveries require it. Expose intermediate nodes for meaningful
 bounds, events, constructions, reductions, limits, disputed assertions, or reusable checkpoints. Use
 source coverage for headings and structural text. Several routine algebraic lines can belong to one
 meaningful derivation. Add a node when it gives a useful assertion, scope boundary, reusable result,
@@ -38,36 +43,13 @@ While the proof is in context, save its short `proof_idea` and each supplier's c
 restrictions through ordinary authoring. Follow [Reader explanations](graph-records.md#reader-explanations);
 this adds no separate review or completion gate.
 
-Use [controller-workflow.md](controller-workflow.md) to list and prepare work from prerequisites
-toward the target. Ready work seeds an ordered assignment that can include local successor units
-and final composition. One response may contain many observations/checks; source comparisons,
-applications and joint reasoning do not require separate calls merely because they have separate
-record IDs. A current negative examination is examined work, not an endless scheduling wait.
+Use [controller-workflow.md](controller-workflow.md) for the proof-owner sequence, execution capabilities,
+dispatch, recovery and delivery. Keep enough surrounding definitions, source context and full quantifiers
+for each bounded assignment. Split long proofs only at meaningful claims with explicit final integration.
 
 A local derivation can be examined under declared premises before a supplier's full audit finishes;
 request provisional work explicitly and label its support conditional. Do not call the theorem
 established on that basis. A known-false required supplier gives no establishment through that route;
 do not describe that state merely as pending review. If a checker discovers an omitted dependency
-or scope distinction, save
-the discovery, refine the graph, and revisit affected obligations. The controller can diagnose
-inconsistency in recorded structure but cannot discover a premise absent from that structure.
-
-Assign one bounded argument or coherent subsection at a time. Supply the primary packet, exact
-target, allowed operations, and expected saved output. Do not require every role to reread the whole
-paper. Keep enough surrounding definitions, source context, and full quantifiers to make the bounded
-assignment valid. Split long proofs only at meaningful claims and retain an explicit final
-integration task.
-
-After an informative derivation, identified defect, or unresolved obstacle, save it. Before yielding
-or changing target, save reasoning, examined evidence, remaining questions, and next action as a
-draft. A valid partial save must not depend on complete proof coverage, all findings being resolved,
-or final report publication. Regenerate working reports at meaningful checkpoints.
-Finalize global examinations after substantive statement, source-boundary and graph edits settle.
-Early global work can reveal problems; later changes may require renewal.
-At a stopping boundary, follow the [handoff checklist](database-audit.md#stop-and-hand-off).
-Saved reasoning outside the review workflow does not count as recorded independent completion.
-
-Submit the worker response unchanged using the envelope and recovery rules in
-[controller-workflow.md](controller-workflow.md). The coordinator supplies actual reviewer
-identity, qualification, and exposure. For the optional direct interface, use
-[review-mapping.md](review-mapping.md).
+or scope distinction, save the discovery, refine the graph, and revisit affected obligations. The controller
+can diagnose inconsistency in recorded structure but cannot discover a premise absent from that structure.

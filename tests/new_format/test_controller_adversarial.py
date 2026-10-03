@@ -70,6 +70,47 @@ class ControllerAdversarialTests(TempCase):
         stored = self.db.work_submission(envelope["request_id"])
         self.assertEqual(canonical_bytes(worker), self.db.get_blob(stored["response_sha256"]))
         self.assertEqual("needs_revision", self.db.head("responses", result["response_id"]).body["state"])
+        self.assertEqual("map_saved_response", result["recovery"][0]["operation"])
+
+    def test_partial_mapping_current_inspection_preserves_negative_work_and_receipt(self):
+        packet = self.prepare(mode="independent")
+        worker = self.independent_worker(packet)
+        worker["judgments"][0].update(outcome="gap", reasoning="The written composition leaves a required inference unjustified.")
+        worker["judgments"].append(dict(worker["judgments"][0], kind="derivation",
+                                        reasoning="The local deduction has the same missing justification."))
+        result, envelope = self.submit(packet, worker)
+        original_receipt = self.db.work_submission(envelope["request_id"])["result"]
+        original_bytes = canonical_bytes(worker)
+        generic = self.fx.packet(self.db, "items:itm_lem", mode="primary")
+        def map_row(index, target):
+            return review.map_response(self.db, mapping={"contract_version": 4,
+                "request_id": self.fx.request_id(), "packet_id": generic["packet_id"],
+                "response_id": result["response_id"], "reviewer": "coordinator",
+                "entries": [{"judgment_index": index, "target": target,
+                             "rationale": "The source passage identifies this exact written inference."}]})
+        map_row(0, R("arguments", "arg_lem"))
+        partial = controller.inspect_work(self.db, request_id=envelope["request_id"])["current"]["response"]
+        self.assertEqual([1], partial["pending_judgment_indexes"])
+        self.assertEqual("needs_revision", partial["state"])
+        self.assertEqual(0, partial["eligible_independent_check_count"])
+        map_row(1, R("groups", "grp_lem"))
+        before = self.db.max_revision()
+        final = controller.inspect_work(self.db, response_id=result["response_id"])
+        self.assertEqual("accepted", final["state"])
+        self.assertEqual([], final["pending_judgment_indexes"])
+        self.assertEqual({"gap"}, {check["outcome"] for check in final["checks"]})
+        self.assertEqual(before, self.db.max_revision())
+        from support import run_cli
+        cli_view, _ = run_cli("work", "inspect", self.fx.path, "--response", result["response_id"], "--limit", "1")
+        self.assertEqual(1, cli_view["details_limit"])
+        self.assertEqual(1, len(cli_view["checks"]))
+        self.assertTrue(cli_view["details_truncated"])
+        self.assertEqual(before, self.db.max_revision())
+        self.assertEqual(original_receipt, self.db.work_submission(envelope["request_id"])["result"])
+        saved = self.db.head("responses", result["response_id"])
+        self.assertEqual(original_bytes, self.db.get_blob(saved.body["original_blob"]))
+        self.assertEqual(result, controller.submit_work(self.db, envelope_bytes=canonical_bytes(envelope),
+                                                        response_bytes=original_bytes))
 
     def test_later_mapping_preserves_original_intake_receipt_and_replay(self):
         packet = self.prepare(mode="independent")
@@ -107,7 +148,30 @@ class ControllerAdversarialTests(TempCase):
         result, envelope = self.submit(packet, self.independent_worker(packet), reviewer="another-reviewer")
         self.assertFalse(result["stored"])
         self.assertEqual("QUALIFICATION_INVALID", result["error"]["code"])
+        self.assertEqual("verify_provenance", result["recovery"][0]["operation"])
         self.assertIsNone(self.db.work_submission(envelope["request_id"]))
+
+    def test_wrong_envelope_with_extended_context_gets_pairing_advice_before_rebase_advice(self):
+        original = self.prepare(mode="independent")
+        extended = packets.extend_work_assignment(self.db, packet_id=original["packet_id"], request={
+            "source_refs": [self.db.head("anchors", "anc_thm").pinned],
+            "reason": "Additional neutral source examined by this worker"})
+        worker = self.independent_worker(extended, source_target=False)
+        raw = canonical_bytes(worker)
+        envelope = self.envelope(original, rebase_packet_id=extended["packet_id"])
+        result = controller.submit_work(self.db, envelope_bytes=canonical_bytes(envelope), response_bytes=raw)
+        self.assertFalse(result["stored"])
+        self.assertEqual("NEW_CONTEXT_RESPONSE_REQUIRED", result["error"]["code"])
+        self.assertIsNone(self.db.work_submission(envelope["request_id"]))
+        advice = result["recovery"][0]
+        self.assertEqual("PACKET_MISMATCH", advice["reason_code"])
+        self.assertEqual("inspect_assignment", advice["operation"])
+        self.assertEqual(original["packet_id"], advice["envelope_packet_id"])
+        self.assertEqual(extended["packet_id"], advice["worker_packet_id"])
+        corrected = self.envelope(extended)
+        accepted = controller.submit_work(self.db, envelope_bytes=canonical_bytes(corrected), response_bytes=raw)
+        self.assertEqual("accepted", accepted["state"], accepted)
+        self.assertEqual(raw, self.db.get_blob(self.db.work_submission(corrected["request_id"])["response_sha256"]))
 
     def test_coordinator_exposure_cannot_be_overridden_by_worker_self_report(self):
         packet = self.prepare(mode="independent")
@@ -116,6 +180,27 @@ class ControllerAdversarialTests(TempCase):
         self.assertEqual("accepted", result["state"], result)
         response = self.db.head("responses", result["response_id"])
         self.assertEqual("compromised", response.body["exposure"])
+
+    def test_rejected_attempt_does_not_count_compromised_successor_as_required_independence(self):
+        packet = self.prepare(mode="independent")
+        worker = self.independent_worker(packet)
+        malformed = copy.deepcopy(worker)
+        malformed["judgments"][0]["reasoning"] = ""
+        rejected, envelope = self.submit(packet, malformed)
+        self.assertEqual("needs_revision", rejected["state"])
+        self.assertNotIn("response_id", rejected)
+        successor, _ = self.submit(packet, worker, exposure="compromised", exposure_note="Shared primary reasoning")
+        context = self.fx.packet(self.db, "items:itm_lem", mode="primary")
+        review.map_response(self.db, mapping={"contract_version": 4,
+            "request_id": self.fx.request_id(), "packet_id": context["packet_id"],
+            "response_id": successor["response_id"], "reviewer": "coordinator",
+            "entries": [{"judgment_index": 0, "target": R("arguments", "arg_lem"),
+                         "rationale": "The preserved source judgment examines this written route."}]})
+        self.assertEqual("accepted", self.db.head("responses", successor["response_id"]).body["state"])
+        inspected = controller.inspect_work(self.db, request_id=envelope["request_id"])
+        self.assertEqual(rejected, inspected["result"])
+        self.assertEqual("CURRENT_ASSIGNED_WORK_REMAINS", inspected["current"]["recovery"][0]["reason_code"])
+        self.assertGreater(inspected["current"]["remaining_task_count"], 0)
 
     def test_recovered_independent_worker_artifact_preserves_original_source_only_payload(self):
         packet = self.prepare(mode="independent")
@@ -210,6 +295,7 @@ class ControllerAdversarialTests(TempCase):
         sources.capture_sources(self.db, files=["paper.tex"])
         result, envelope = self.submit(packet, worker)
         self.assertEqual("conflict", result["state"], result)
+        self.assertEqual("renew_affected_work", result["recovery"][0]["operation"])
         self.assertTrue(result["stored"])
         self.assertEqual(canonical_bytes(worker), self.db.get_blob(self.db.work_submission(envelope["request_id"])["response_sha256"]))
 

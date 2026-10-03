@@ -137,6 +137,18 @@ conditional even with all examinations complete. Choose the intended setup befor
 examination; null is valid when no named premise context is intended. Scope changes can reopen
 source comparison and dependent checks; investigate unexpected support using current status.
 
+Distinguish a reusable conditional result from a temporary proof premise:
+
+- A lemma asserting \(H(X)\Rightarrow C(X)\) for every \(X\) carries its hypotheses in the assertion.
+  Each application establishes \(H\) for its chosen \(X\). Do not confine the reusable lemma to a
+  sibling proof's temporary assumptions.
+- A fact established under a temporary premise remains local until the applicable discharge.
+  For example, a denominator bound proved under \(\omega\in E\) does not become an unconditional
+  bound for every outcome when the event implication is discharged.
+
+Preserve the source's exact hypotheses and check scope and applicability at each use. Do not clear
+scope IDs or add an absent manuscript hypothesis to make support available.
+
 For a new target, the simplest sequence is to save its final item/part and registered exact
 specification with `fidelity_ref: null`, then compare that specification through its prepared
 source-fidelity task. This directly checks the statement, setup, and captured source together;

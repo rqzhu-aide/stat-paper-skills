@@ -440,6 +440,30 @@
   {
    "new_test": "tests/new_format/test_mechanical_improvements.py",
    "reason": "Transport, receipt and recovery regressions cover the existing packet workflow, while bounded display diagnostics preserve scientific records and completion. These tests replace no legacy test."
+  },
+  {
+   "new_test": "tests/new_format/test_review_recovery.py",
+   "reason": "Current response inspection distinguishes typed mapping, source, authorship and freshness problems while preserving independent eligibility, historical receipts and original bytes. These additive workflow regressions replace no legacy test."
+  },
+  {
+   "new_test": "tests/new_format/test_stages.py",
+   "reason": "Derived stage boundaries and coherent assignment selection preserve canonical scientific credit and add no legacy workflow replacement."
+  },
+  {
+   "new_test": "tests/new_format/test_stage_cli.py",
+   "reason": "Public stage commands, executable retries and frozen delivery continuation extend the existing CLI while keeping its low-level paths."
+  },
+  {
+   "new_test": "tests/new_format/test_finalization.py",
+   "reason": "Consistent scientific snapshots and separate rendering preserve current record contracts and publication guarantees."
+  },
+  {
+   "new_test": "tests/new_format/test_release_resume_adversarial.py",
+   "reason": "Interrupted compatibility release must recover its frozen revision and preserve unrelated or changed artifacts."
+  },
+  {
+   "new_test": "tests/new_format/test_three_stage_reliability.py",
+   "reason": "Pending judgment accounting, selected global context, neutral extension and recovery diagnostics are prerequisites for reliable staged scheduling."
   }
  ]
 }

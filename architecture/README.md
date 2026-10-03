@@ -18,6 +18,15 @@ These notes preserve decisions and evidence. Current workflow instructions remai
 
 | Note | Status |
 |---|---|
+| [Three stage revision handoff](proofcheck-three-stage-handoff.md) | Implemented October 2 revision: stage-specific preparation, fixed audit snapshots, and separate Archify HTML delivery |
+| [Three stage implementation validation](proofcheck-three-stage-validation.md) | Integration tests, preserved-case comparisons, continuation evidence and release status |
+| [Three stage plan validation](proofcheck-three-stage-plan-audit.md) | Historical pre-implementation review and disposable probes that informed the final design |
+| [Local recovery audit](proofcheck-local-recovery-audit.md) | October 2 focused recheck, fresh reproductions, and remaining context/navigation findings |
+| [Targeted local recovery handoff](proofcheck-local-recovery-handoff.md) | Six targeted repairs implemented in the working tree; release remains separate |
+| [Targeted local recovery validation](proofcheck-local-recovery-validation.md) | October 2 regression evidence, preserved-case preparation replay and bounded continuation exercise |
+| [Agent-independent workflow revision handoff](proofcheck-agent-workflow-revision-handoff.md) | Implemented in the working tree: portable ownership, ordered examination and specific recovery |
+| [Agent-independent workflow validation](proofcheck-agent-workflow-revision-validation.md) | October 2 implementation evidence, behavioral checks and remaining full-run validation limit |
+| [Proof audit workflow design](proofcheck-proof-workflow-design.md) | Design rationale for the implemented workflow revision |
 | [Workflow revision handoff](proofcheck-workflow-revision-handoff.md) | Implemented scope for preserving examinations, coherent independent reviews, and precise PDF coverage |
 | [Workflow revision validation](proofcheck-workflow-revision-validation.md) | October 1 implementation, compatibility, installation, and live-test limitation |
 | [Targeted reliability fixes](proofcheck-targeted-fixes-handoff.md) | Implemented; retained scope of the September 27 fixes |

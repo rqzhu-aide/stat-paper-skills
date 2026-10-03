@@ -35,7 +35,8 @@ class RevisionInterfacesTests(unittest.TestCase):
             "worker-packet.json", "response-scaffold.json", "worker-guidance.json"])
         self.assertNotIn("submission-envelope-template.json", result["worker_delivery_files"])
         guide = json.loads((self.root / "assignment/worker-guidance.json").read_text(encoding="utf-8"))
-        self.assertNotIn("itm_lem", json.dumps(guide))
+        self.assertEqual(set(result["assigned_task_ids"]), {row["task_id"] for row in guide["task_table"]})
+        self.assertTrue(all(row["target_label"] for row in guide["task_table"]))
 
     def test_authoring_template_is_uncommitted_and_does_not_overwrite(self):
         with self.fx.open() as db:

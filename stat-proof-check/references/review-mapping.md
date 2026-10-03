@@ -23,13 +23,16 @@ Here `itm_ID` owns the argument; use a part target where appropriate. Replace `p
 the packet ID returned in `work/authoring/mapping-context.json`. Obtain broader context through `get` if B
 lacks a needed canonical record.
 
-Author only the generated `template` member as `work/authoring/mapping.json`, filling reviewer, exact canonical
+Read the current response guidance alongside the generated template, including additional blockers.
+Author only the `template` member as `work/authoring/mapping.json`, filling reviewer, exact canonical
 targets and source-grounded rationales. Use zero-based judgment indexes; `review mapping-template --judgment N`
 selects particular rows. B's read set must contain each mapped record. Original reviewed scope and source
 overlap remain tied to A. Neither mapping nor a corrected envelope can change a judgment's kind,
 reasoning, outcome, evidence, or actual coverage. Wrong kinds, incompatible combined targets, malformed
 content, or judgments outside the assigned scope require a reviewer-authored correction. Preserve
-original bytes and actual continuity; a corrected envelope cannot supply scientific corrections.
+original bytes and actual continuity; a corrected envelope cannot supply scientific corrections. If the
+author cannot continue, follow the [replacement-examiner rule](controller-workflow.md#choose-available-execution-contexts)
+instead of changing its scientific content or assigning its work to a new identity.
 For a correctly identified inference missing from the graph, refine from source and map where permissible
 through a current B. Do not invent records merely to accept a response or retire a legitimate refinement
 to restore freshness. Missing neutral source uses `work extend` and actual examination of the new packet.
@@ -44,7 +47,8 @@ Privately compare the examined reasoning with required routes and arrange focuse
 missing. Keep this coordinator inventory out of source-only worker delivery.
 
 The current response may become accepted while its original submission receipt remains
-`needs_revision`. Inspect current record state separately from that historical transport receipt.
+`needs_revision`. Use `work inspect AUDIT.db --response rsp_ID` for current guidance without changing that
+historical receipt. Response acceptance alone does not establish freshness or qualifying independence.
 One pending judgment keeps the whole response unaccepted. Retain the original and preserve unresolved
 substantive concerns in corrected reasoning and a saved finding or unresolved issue. Relevant accepted
 extra opinions still require reconciliation; a correction cannot erase a counterexample.

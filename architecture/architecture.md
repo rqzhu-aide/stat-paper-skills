@@ -10,7 +10,7 @@ The skill supports triage, focused audits, and full audits. A focused audit exam
 
 The maintained backend is [`shared/paper_core`](../shared/paper_core). [`tools/build_paper_core_bundles.py`](../tools/build_paper_core_bundles.py) copies it into `stat-proof-check/scripts/paper_core/` and the sibling `../proof-graphify/scripts/paper_core/` checkout. These bundles must be byte-identical. Each installed skill runs its own bundle and does not import from a neighboring repository or download runtime code.
 
-The current core reports version `2.3.7`, SQLite storage format `4`, and record contract `4`. [`schema.sql`](../shared/paper_core/schema.sql), [`contract.py`](../shared/paper_core/contract.py), and the acceptance and validation modules define the executable data contract. Older readable storage formats and the v1.5 audit import have explicit compatibility paths. A historical format identifier remains historical even though the skill's invocation name is now `stat-proof-check`.
+The current core reports version `2.3.8`, SQLite storage format `4`, and record contract `4`. [`schema.sql`](../shared/paper_core/schema.sql), [`contract.py`](../shared/paper_core/contract.py), and the acceptance and validation modules define the executable data contract. Older readable storage formats and the v1.5 audit import have explicit compatibility paths. A historical format identifier remains historical even though the skill's invocation name is now `stat-proof-check`.
 
 ## From manuscript to assessment
 
@@ -24,6 +24,8 @@ Manuscript and supplements
 ```
 
 The SQLite database is the authority. JSON batches are proposed edits or exports; HTML and Markdown are derived views. The source layer records file identity and passages. The acceptance layer validates records, references, permissions, and atomic changes. The controller prepares bounded work and saves progress, while the coordinator and checkers interpret the mathematics. Software checks record shape and provenance; mathematical validity requires an actual derivation and justified use of its premises.
+
+The normal workflow has three stages: prepare evidence and primary examination; review, reconcile and finalize; then produce HTML. [`stages.py`](../shared/paper_core/stages.py) derives scheduling readiness from the existing obligations and current source comparisons. [`finalization.py`](../shared/paper_core/finalization.py) freezes one consistent report snapshot. [`publish.py`](../shared/paper_core/publish.py) builds that snapshot without reopening scientific examination. Submission and recovery stay in the shared controller; there is no stored stage lock or second completion ledger. See the [workflow instructions](../stat-proof-check/references/controller-workflow.md).
 
 The initial independent reviewer receives source material without the coordinator's private assessment. Its original response is preserved before reconciliation. Local argument validity, availability of upstream support, statement status, and completion of the declared audit remain separate judgments. A proof gap does not establish that the theorem is false, and a proposed repair does not silently replace the manuscript's written proof.
 
