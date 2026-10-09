@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { BOX, layoutGraph, renderProjection } from './render_projection.mjs';
-import { scanHtml, textOf } from './html_scan.mjs';
+import { scanHtml, textOf, decodeEntities } from './html_scan.mjs';
 import { readerFixture } from './selftest.mjs';
 
 function disconnectedLayout() {
@@ -38,26 +38,27 @@ function disconnectedLayout() {
     mixed_components:graph.components.length, stable_layout:true};
 }
 
-function runFixture(name, withWork = false, withReader = false) {
+function runFixture(name, withWork = false, withReader = false, buildKind = null) {
   const input = withReader ? readerFixture() : JSON.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8'));
+  if (buildKind) input.build.kind = buildKind;
   if (withWork) {
     input.projection.projection_version = 2;
     const target = input.projection.records.find(row => row.body.kind === 'intermediate_result') ||
       input.projection.records.find(row => row.ref.collection === 'uses');
-    const ownerId = target.body.owner_id || input.projection.nodes[input.projection.nodes.length - 1].id;
-    const detailKey = 'item:' + ownerId;
+    const location = input.projection.record_locations.find(row => row.ref.id === target.ref.id && row.ref.collection === target.ref.collection);
+    const detailKey = location.detail_key;
     const detail = input.projection.details[detailKey];
-    const section = detail.sections.find(row => row.record_refs.some(ref => ref.id === target.ref.id)) || detail.sections[0];
+    const section = detail.sections.find(row => row.key === location.section_key);
     const baseObligation = input.projection.obligations[0];
     const tasks = [];
     for (let index = 0; index < 25; index++) {
       const id = 'obl_work_' + index;
       input.projection.obligations.push({...baseObligation, id, target:{collection:target.ref.collection, id:target.ref.id}});
       section.obligation_ids.push(id);
-      tasks.push({id, target:{collection:target.ref.collection, id:target.ref.id}, role:'primary', required:true,
+      tasks.push({id, target:{collection:target.ref.collection, id:target.ref.id}, kind:'derivation', role:'primary', required:true,
         label:'Hidden bound: local derivation ' + index, state:index ? 'waiting' : 'ready',
         waiting_on:index ? ['obl_work_0'] : [], next_action:index ? null : 'Read the last inequality.',
-        outcome:null, freshness:null, dependency_support:'conditional',
+        outcome:index < 2 ? 'gap' : null, freshness:index === 0 ? 'current' : index === 1 ? 'needs_review' : null, dependency_support:'conditional',
         location:{ref:target.ref, detail_key:detailKey, section_key:section.key, obligation_id:id}});
     }
     input.projection.worklist = {revision:input.projection.snapshot_revision, analysis_complete:true, tasks,
@@ -66,6 +67,13 @@ function runFixture(name, withWork = false, withReader = false) {
   input.projection.summary.limitations = ['Coverage incomplete: a < b & c.'];
   const { html } = renderProjection(Buffer.from(JSON.stringify(input)));
   const scan = scanHtml(html);
+  const reportState = scan.elements.find(e => Object.hasOwn(e.attrs, 'data-reader-report-state'));
+  const openingText = textOf(scan, reportState);
+  const completion = input.projection.summary.progress.process_complete ? 'Registered examinations complete.' : 'Registered examinations incomplete.';
+  assert(openingText.includes(completion), 'The opening state must identify registered examination completion.');
+  assert(openingText.startsWith(input.build.kind === 'release' ? 'Release report' : 'Working report'), 'The opening must retain the frozen report kind.');
+  assert.equal(openingText.includes('This working report does not establish completion of the promised audit scope.'), input.build.kind === 'working',
+    'A working report must state that promised audit coverage is not established.');
   const scripts = scan.elements.filter(e => e.tag === 'script' && e.attrs.type !== 'application/json');
   scripts.forEach((script, i) => new vm.Script(script.text, { filename: `generated-${i}.js` }));
   const native = scripts.find(s => s.text.includes('var Archify = {}')).text;
@@ -157,7 +165,13 @@ function runFixture(name, withWork = false, withReader = false) {
     focus() { document.activeElement = this; }
     click() { dispatch(this, { type: 'click' }); }
   }
-  const row = el => ({ tag: el.tag, attrs: el.attrs, text: el.tag === 'script' || el.tag === 'style' ? el.text : '', children: el.children.map(row) });
+  const directText = el => {
+    if (el.tag === 'script' || el.tag === 'style') return el.text;
+    let cursor = el.openEnd, text = '';
+    for (const child of el.children) { text += scan.html.slice(cursor,child.start); cursor = child.closeEnd; }
+    return decodeEntities((text + scan.html.slice(cursor,el.closeStart)).replace(/<[^>]*>/g,''));
+  };
+  const row = el => ({ tag: el.tag, attrs: el.attrs, text: directText(el), children: el.children.map(row) });
   document = new Element(row(scan.root));
   document.documentElement = document.querySelector('html'); document.body = document.querySelector('body');
   document.getElementById = id => document.querySelector('#' + id);
@@ -194,30 +208,31 @@ function runFixture(name, withWork = false, withReader = false) {
   const context = vm.createContext({ document, window: { Archify, addEventListener(type,callback) { windowEvents.set(type,callback); } }, location: { hash: '' },
     MutationObserver: class { constructor(callback) { this.callback = callback; } observe(target, options) { observers.push({ callback: this.callback, options }); } },
     requestAnimationFrame: schedule, setTimeout: schedule, clearTimeout: id => callbacks.delete(id) });
+  const stateBeforeInteraction = document.querySelector('[data-reader-report-state]').textContent;
   const runtime = scripts.find(s => s.attrs.id === 'proof-runtime');
   vm.runInContext(runtime.text, context); flush();
   assert.equal(centers, 0, 'Opening a report must retain the complete graph instead of zooming into an arbitrary node.');
   const detail = key => document.querySelector(`[data-proof-detail="${key}"]`);
   if (withWork) {
-    const panel = document.getElementById('proof-work-list'), more = document.getElementById('proof-work-more');
-    assert.equal(panel.children.length, 20, 'The worklist initially creates only twenty rows.');
-    assert.equal(more.hidden, false);
-    assert(panel.children[0].textContent.includes('Primary checker'), 'Work rows explain who performs the examination.');
-    assert(panel.children[1].textContent.includes('Waiting for:'), 'Waiting rows name recorded prerequisites.');
-    assert(panel.children[0].textContent.includes('Premise support: conditional'), 'Readiness must not replace proof support.');
-    panel.querySelector('[data-work-task="obl_work_0"]').click(); flush();
-    assert.equal(document.querySelector('.is-target').getAttribute('data-obligation-id'), 'obl_work_0',
-      'A work row must focus the exact obligation rather than its nearby record.');
+    assert.equal(document.getElementById('proof-work-panel'), null, 'The coordinator queue must not enter the scientific reader.');
+    const limits = document.querySelectorAll('[data-proof-review-limit]');
+    assert.equal(limits.length,25,'Every unfinished saved examination needs its scientific consequence.');
+    assert(limits[0].textContent.includes('Initial assessment: gap. Examination remains incomplete for the current material.'),
+      'A partial current opinion must not imply a completed current examination.');
+    assert(limits[1].textContent.includes('Earlier initial assessment: gap.'), 'Stale saved opinions need their historical context.');
+    assert(limits[0].textContent.includes('Premise support: conditional'), 'Readiness must not replace proof support.');
+    assert(limits.every(row => !row.textContent.includes('obl_work_') && !row.textContent.includes('Waiting for:')),
+      'Review limits must omit scheduling identifiers and instructions.');
+    const evidenceLink = limits[0].querySelector('[data-jump-record]');
+    evidenceLink.click(); flush();
+    assert.equal(document.querySelector('.is-target').getAttribute('data-record-ref'), evidenceLink.getAttribute('data-jump-record'),
+      'An incomplete-examination notice must reach the affected scientific material.');
     if (svg) assert.equal(active, input.projection.worklist.tasks[0].location.detail_key.slice('item:'.length),
-      'Worklist navigation selects the existing major owner.');
-    more.click(); flush(); assert.equal(panel.children.length, 25); assert.equal(more.hidden, true);
+      'Review-limit navigation selects the existing major owner.');
     const search = document.getElementById('proof-search'); search.value = 'obl_work_24';
     dispatch(search, {type:'input'}); flush();
     const hit = document.getElementById('proof-search-results').querySelector('button');
-    assert(hit, 'A copied obligation ID must be searchable.'); hit.click(); flush();
-    assert.equal(document.querySelector('.is-target').getAttribute('data-obligation-id'), 'obl_work_24');
-    assert(document.getElementById('proof-work-status').textContent.includes('Snapshot '),
-      'The pending list names its immutable snapshot.');
+    assert.equal(hit,null, 'Scheduling IDs must not supply ordinary scientific search results.');
   }
   const first = input.projection.nodes[0];
   if (svg) {
@@ -303,6 +318,8 @@ function runFixture(name, withWork = false, withReader = false) {
         'Blocking support must link to the exact application or scope evidence.');
     }
   }
+  assert.equal(document.querySelector('[data-reader-report-state]').textContent, stateBeforeInteraction,
+    'Navigation and printing must preserve registered completion and the working scope limitation.');
   const notices = scan.elements.filter(e => Object.hasOwn(e.attrs, 'data-proof-limitation'));
   assert.deepEqual(notices.map(e => textOf(scan, e)), input.projection.summary.limitations);
   return { fixture: name, compiled_scripts: scripts.length, canonical_reader_bridge: true, worklist:withWork, contextual_reader:withReader, print_state_restored:true };
@@ -313,4 +330,5 @@ console.log(JSON.stringify([
   ...['dag_small.json', 'index_fallback.json', 'long_math.json'].map(name => runFixture(name)),
   runFixture('dag_small.json', true), runFixture('index_fallback.json', true),
   runFixture('dag_small.json', false, true),
+  runFixture('long_math.json', false, false, 'release'),
 ]));

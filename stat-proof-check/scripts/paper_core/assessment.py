@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 from collections import defaultdict, deque
 
-from .bindings import binding_changes, record_binding_changes
+from .bindings import binding_changes
 from .canonical import compact_json, digest
 from .contract import INTERMEDIATE_KINDS, MAJOR_KINDS, extract_refs
 from .errors import ConflictError, InvalidRequest
@@ -19,7 +19,7 @@ from .refs import RELATIONS, facet_digests
 from .storage import Database, Record
 from .support_semantics import SupportClosure
 from .semantics import has_evidence
-from .proof_spans import reviewed_spans, uncovered_spans, review_covers_added_anchor
+from .coherent import LocalBasis, enabled as coherent_enabled, examination_complete, unit_targets
 
 PROOF_KINDS = ("lemma", "proposition", "theorem", "corollary")
 PROOF_CHECK_KINDS = ("derivation", "application", "composition", "case_coverage", "scope_discharge",
@@ -32,16 +32,12 @@ OBLIGATION_KINDS = PROOF_CHECK_KINDS + ("global_consistency", "adversarial", "me
                                         "source_fidelity", "reconciliation")
 
 COVERAGE_CAUSES = {
-    "proof_boundary_required": ("The written proof has no complete current source-boundary review.",
-                                "Review the full proof and record its current source-boundary selection before routine review."),
     "missing_coverage": ("No coverage row accounts for these proof spans.",
                          "Classify the spans and add coverage with the responsible primary work, or use an authoring packet if no checks remain."),
     "missing_anchor": ("The required proof anchor is unavailable.",
                        "Restore the source anchor and review the affected proof boundary."),
     "boundary_source_pin": ("The boundary review does not include the captured source version for this anchor.",
                             "Inspect that source, record the review with its source/version pin, and renew the boundary's review reference; then check remaining work."),
-    "boundary_spans": ("The boundary does not retain a complete selection for this argument's proof inputs.",
-                       "Review every proof segment and continuation, pin its argument and anchors in a new source review, and renew the boundary reference."),
     "empty_text_evidence": ("The proof boundary contains only blank text passages.",
                             "Locate the written proof, rebind its anchors, and review the corrected boundary."),
     "missing_claims": ("A substantive coverage row has no claimed statements.",
@@ -372,7 +368,7 @@ def judgment_freshness(snap: Snapshot, record: Record, *, superseded: bool, reus
                 info.update(freshness="needs_review", changes=context_changes, context_changed=True)
                 return info
     info["context_changed"] = bound.get("source_context_digest") not in (None, snap.source_context_digest())
-    changes = record_binding_changes(snap, record, bound)
+    changes = binding_changes(snap, bound)
     info["context_changed"] = info["context_changed"] or any(
         change["ref"]["collection"] == "sources" for change in changes["records"])
     if not changes["records"] and not changes["relations"]:
@@ -428,6 +424,8 @@ def reduce(constituents: list, *, independent: str = "not_required") -> dict:
             "independent_review": independent}
 
     def satisfied(c):
+        if "work_satisfied" in c:
+            return c["work_satisfied"]
         return c["state"] == "complete" and c.get("freshness") == "current" and not c.get("disputed")
 
     for c in constituents:
@@ -579,6 +577,8 @@ class _AuditScope:
         The proof-required flag is context-sensitive: seeing a claim first as a
         local assumption cannot hide a later unconditional use of that claim.
         """
+        if coherent_enabled(self.audit):
+            return self._coherent_scope_statements()
         snap, audit = self.snap, self.audit
         excluded = {key_of(e["target"]) for e in audit.body["exclusions"] if e.get("target")}
         self.required_establishment = set()
@@ -591,8 +591,6 @@ class _AuditScope:
             record = snap.get(target)
             if record is not None and record.collection == "items" and record.body["kind"] in INTERMEDIATE_KINDS:
                 self.problems.append(f"audit target {key_of(target)} is an intermediate result")
-                self.scope_diagnostics.append({"code": "invalid_scope_target", "target_refs": [target],
-                    "message": self.problems[-1], "required": True})
             else:
                 pending.append((target, True))
         if audit.body["mode"] == "full":
@@ -628,8 +626,6 @@ class _AuditScope:
             statement = snap.get(ref)
             if statement is None:
                 self.problems.append(f"required target {skey} is not live at revision {snap.revision}")
-                self.scope_diagnostics.append({"code": "missing_scope_target", "target_refs": [ref],
-                    "message": self.problems[-1], "required": True})
                 continue
             if statement.collection not in ("items", "parts"):
                 continue
@@ -693,6 +689,98 @@ class _AuditScope:
                                                    "message": message, "required": True})
         return ordered
 
+    def _coherent_scope_statements(self):
+        """Inventory declared routes; graph detail does not commission more work."""
+        snap, audit = self.snap, self.audit
+        excluded = {key_of(e["target"]) for e in audit.body["exclusions"] if e.get("target")}
+        declared = list(audit.body["targets"])
+        if audit.body["mode"] == "full":
+            declared.extend(ref_of(r) for r in snap.all("items") if r.body["kind"] in MAJOR_KINDS)
+        self.required_establishment = set()
+        self.scope_routes, self.scope_groups, self.scope_uses = (defaultdict(set) for _ in range(3))
+        self.scope_diagnostics = []
+        self.required_units = set()
+        self.declared_statements = set()
+        ordered, seen, explored = [], set(), set()
+        pending = deque((ref, True) for ref in declared)
+
+        def excluded_ref(ref):
+            record = snap.get(ref)
+            return key_of(ref) in excluded or (record is not None and record.collection == "parts"
+                and key_of({"collection": "items", "id": record.body["item_id"]}) in excluded)
+
+        def consume(use, skey, argument=None):
+            self.scope_uses[skey].add(use.id)
+            app = snap.application(use)
+            group = snap.live("groups", app.get("group_id"))
+            scope = app.get("scope_id") or (group.body["scope_id"] if group else None)
+            if scope is None and argument is not None:
+                scope = argument.body["scope_id"]
+            assumptions = snap.scope_assumptions(scope)
+            supplier = snap.get(use.body["from"])
+            # Focused review includes necessary supplied-paper results, not
+            # the unrelated owning theorem of a borrowed local inference.
+            examine = audit.body["mode"] == "focused" and supplier is not None \
+                and supplier.collection in ("items", "parts") and snap.kind_of(use.body["from"]) in PROOF_KINDS \
+                and supplier.body["origin"] == "source" and key_of(use.body["from"]) not in assumptions
+            pending.append((use.body["from"], examine))
+            pending.extend((r, False) for r in assumptions.values())
+
+        while pending:
+            ref, declared_target = pending.popleft()
+            skey = key_of(ref)
+            if excluded_ref(ref) or (skey, declared_target) in explored:
+                continue
+            explored.add((skey, declared_target))
+            snap.visit_relations(1, skey)
+            statement = snap.get(ref)
+            if statement is None:
+                self.problems.append(f"required target {skey} is not live at revision {snap.revision}")
+                continue
+            if statement.collection not in ("items", "parts"):
+                continue
+            if skey not in seen:
+                ordered.append(statement)
+                seen.add(skey)
+            kind = snap.kind_of(ref)
+            pending.extend((r, False) for r in snap.scope_assumptions(snap.exact_scope(ref)).values())
+            if declared_target:
+                self.declared_statements.add(skey)
+            proof_required = declared_target and kind not in ("assumption", "definition", "external_result")
+            if proof_required:
+                self.required_establishment.add(skey)
+            arguments = [a for a in snap.member_records("arguments_for_target", ref)
+                         if a.body["lifecycle"] != "retired"] if declared_target else []
+            # An explanatory intermediate is traversed to find its suppliers,
+            # without requiring a new examination of its containing argument.
+            groups = snap.groups_for_conclusion(ref) if kind in INTERMEDIATE_KINDS or statement.collection == "parts" else []
+            for group in groups:
+                argument = snap.live("arguments", group.body["argument_id"])
+                if argument is None or argument.body["lifecycle"] != "registered":
+                    continue
+                self.scope_groups[skey].add(group.id)
+                for use in snap.member_records("uses_in_group", ref_of(group)):
+                    consume(use, skey, argument)
+            for argument in arguments:
+                self.scope_routes[skey].add(argument.id)
+                if argument.body["lifecycle"] == "registered":
+                    self.required_units.add(argument.id)
+                pending.extend((r, False) for r in snap.scope_assumptions(argument.body["scope_id"]).values())
+                for group in snap.member_records("groups_in_argument", ref_of(argument)):
+                    self.scope_groups[skey].add(group.id)
+                    pending.append((group.body["conclusion"], False))
+                    for scope_id in [group.body["scope_id"], *group.body["case_scope_ids"], *group.body["discharges"]]:
+                        pending.extend((r, False) for r in snap.scope_assumptions(scope_id).values())
+                    for use in snap.member_records("uses_in_group", ref_of(group)):
+                        consume(use, skey, argument)
+            if declared_target or kind in INTERMEDIATE_KINDS or statement.collection == "parts":
+                for use in snap.member_records("incoming_uses", ref):
+                    if snap.application(use).get("group_id") is None:
+                        consume(use, skey)
+            # A supplied claim with no written proof still receives examination.
+            # Its absence is not an instruction to invent an establishment route.
+        return ordered
+
 
 class _Derivation(_AuditScope):
     def __init__(self, snap: Snapshot, audit: Record | None):
@@ -706,6 +794,7 @@ class _Derivation(_AuditScope):
         self.judgments: dict = {}            # "checks:ID" -> info
         self.judgment_changes: dict = {}    # internal freshness explanations, not a public record dump
         self.support_closure = SupportClosure(self)
+        self.local_basis = LocalBasis(self) if coherent_enabled(audit) else None
         self.statements: list = []           # in-scope items/parts records
         self.routes: dict = {}               # statement key -> list of argument ids
         self.route_records: dict = {}        # statement key -> set of keys (arguments/groups/uses)
@@ -773,6 +862,14 @@ class _Derivation(_AuditScope):
                      "response_state": None if response is None else response.body["state"],
                      "exposure": None if response is None else response.body["exposure"],
                      "revision": check.revision})
+        if self.local_basis is not None and check.body["kind"] == "composition" \
+                and (check.body.get("protocol_version") != self.audit.body["protocol_version"]
+                     or not examination_complete(check.body)):
+            info.update(state="draft", substantive=bool(check.body["reasoning"].strip()))
+        if self.local_basis is not None and check.body.get("protocol_version") != self.audit.body["protocol_version"]:
+            info.update(state="draft")
+        info["extent"] = check.body.get("extent")
+        info["omissions"] = check.body.get("omissions", "")
         changes = info.pop("changes", None)
         if changes:
             self.judgment_changes[key] = changes
@@ -805,6 +902,8 @@ class _Derivation(_AuditScope):
         return oid
 
     def derive_obligations(self):
+        if self.local_basis is not None:
+            return self._derive_coherent_obligations()
         snap, audit = self.snap, self.audit
         self.statements = self.scope_statements()
         independent_required = bool(audit.body["independent_required"])
@@ -864,6 +963,49 @@ class _Derivation(_AuditScope):
         for task in audit.body["global_tasks"]:
             self.add_obligation(ref_of(audit), task["kind"], "primary", required=task["applicability"] == "required")
 
+    def _derive_coherent_obligations(self):
+        snap, audit = self.snap, self.audit
+        self.statements = self.scope_statements()
+        independent = audit.body["independent_required"]
+        for statement in self.statements:
+            target, skey = ref_of(statement), key_of(ref_of(statement))
+            kind = snap.kind_of(target)
+            route_keys = set()
+            argument_ids = sorted(self.scope_routes.get(skey, ()))
+            for argument_id in argument_ids:
+                argument = snap.live("arguments", argument_id)
+                required = argument_id in self.required_units
+                route_keys.add(key_of(ref_of(argument)))
+                self.add_obligation(ref_of(argument), "composition", "primary", required=required)
+                if independent:
+                    self.add_obligation(ref_of(argument), "composition", "independent", required=required)
+                    self.add_obligation(ref_of(argument), "reconciliation", "coordinator", required=required)
+            route_keys.update(f"groups:{i}" for i in self.scope_groups.get(skey, ()))
+            route_keys.update(f"uses:{i}" for i in self.scope_uses.get(skey, ()))
+            if skey in self.required_establishment and not any(i in self.required_units for i in argument_ids):
+                self.add_obligation(target, "composition", "primary", required=True)
+                if independent:
+                    self.add_obligation(target, "composition", "independent", required=True)
+                    self.add_obligation(target, "reconciliation", "coordinator", required=True)
+            if kind == "external_result":
+                self.add_obligation(target, "external_source", "primary", required=True)
+            # Source statements and exact targets can share one faithful match.
+            # Internal source-located detail is resolved through its examination.
+            if statement.body["origin"] == "source" and (skey in self.declared_statements or kind in MAJOR_KINDS):
+                self.add_obligation(target, "source_fidelity", "primary", required=audit.body["mode"] != "triage")
+                spec = snap.target_spec(target)
+                if spec is not None:
+                    self.add_obligation(ref_of(spec), "source_fidelity", "primary", required=audit.body["mode"] != "triage")
+            self.routes[skey], self.route_records[skey] = argument_ids, route_keys
+        # Preserve local results without deriving a job for every graph record.
+        visible = {key_of(ref_of(s)) for s in self.statements}
+        visible.update(key for keys in self.route_records.values() for key in keys)
+        for check in self.all_checks:
+            if key_of(check.body["target"]) in visible:
+                self.add_obligation(check.body["target"], check.body["kind"], check.body["role"], required=False)
+        for task in audit.body["global_tasks"]:
+            self.add_obligation(ref_of(audit), task["kind"], "primary", required=task["applicability"] == "required")
+
     # -- obligation status -------------------------------------------------
     @staticmethod
     def _observation_order(record) -> tuple:
@@ -886,8 +1028,12 @@ class _Derivation(_AuditScope):
             if not observations and target is not None and target.collection == "target_specs":
                 fidelity = target.body.get("fidelity_ref")
                 observation = self.snap.get(fidelity)
-                if observation is not None and observation.version == fidelity["version"]:
+                if observation is not None and observation.version == fidelity["version"] and (
+                        self.local_basis is None or observation.body["target"] == ref_of(target)
+                        or self.local_basis.synopsis_matches_exact(target.body["target"], target)):
                     observations = [observation]
+                elif self.local_basis is not None and self.local_basis.synopsis_matches_exact(target.body["target"], target):
+                    observations = self.observations_by_target.get(key_of(target.body["target"]), [])
             return sorted(observations, key=self._observation_order)
         if kind == "reconciliation":
             return []
@@ -953,9 +1099,19 @@ class _Derivation(_AuditScope):
         constituent["finding_refs"] = self.finding_refs(
             target_key, check_ids, use_id=obligation["target"]["id"] if obligation["target"]["collection"] == "uses"
             else None)
-        satisfied = constituent["state"] == "complete" and constituent["freshness"] == "current" \
-            and not constituent["disputed"]
+        performed = constituent["state"] == "complete" and constituent["freshness"] == "current"
+        satisfied = performed and (self.local_basis is not None or not constituent["disputed"])
+        if self.local_basis is not None and kind == "composition" and obligation["required"]:
+            satisfied = satisfied and any(info.get("extent") == "whole_unit" for info in current)
+        if self.local_basis is not None and kind == "source_fidelity":
+            satisfied = satisfied and constituent["outcome"] == "supported"
+        if self.local_basis is not None and constituent.get("unaccounted"):
+            satisfied = False
+        constituent["performed"] = performed
+        if self.local_basis is not None:
+            constituent["work_satisfied"] = satisfied
         obligation.update({"state": constituent["state"], "satisfied": satisfied,
+                           "performed": performed,
                            "freshness": constituent["freshness"], "outcome": constituent["outcome"],
                            "check_refs": constituent["check_refs"],
                            "explanation": self._explain_obligation(obligation, constituent)})
@@ -1083,6 +1239,23 @@ class _Derivation(_AuditScope):
                       key=lambda r: (r.revision, r.id))
 
     def independent_indicator(self, statement_key: str) -> str:
+        if self.local_basis is not None:
+            collection, ident = statement_key.split(":", 1)
+            argument_ids = ([ident] if collection == "arguments" else self.routes.get(statement_key, ()))
+            argument_ids = [i for i in argument_ids if i in self.required_units]
+            if not self.audit.body["independent_required"]:
+                return "not_required"
+            targets = [{"collection": "arguments", "id": i} for i in argument_ids]
+            statement_target = {"collection": collection, "id": ident}
+            if not targets and self.obligation_for(statement_target, "composition", "independent"):
+                targets.append(statement_target)
+            if not targets:
+                return "not_required"
+            indicators = [self._coherent_integration(target)["indicator"] for target in targets]
+            for indicator in ("compromised", "pending", "disputed"):
+                if indicator in indicators:
+                    return indicator
+            return "complete"
         if self.audit is None or not self.audit.body["independent_required"]:
             return "not_required"
         if self.snap.kind_of({"collection": statement_key.split(":")[0], "id": statement_key.split(":", 1)[1]}) \
@@ -1142,6 +1315,19 @@ class _Derivation(_AuditScope):
         return "pending"
 
     def _reconciliation_status(self, obligation: dict, constituent: dict):
+        if self.local_basis is not None:
+            target = obligation["target"]
+            if target["collection"] not in ("arguments", "items", "parts"):
+                return
+            result = self._coherent_integration(target)
+            constituent.update(state=result["state"], freshness=result["freshness"],
+                               outcome="inconclusive" if result["indicator"] == "disputed" else "supported",
+                               disputed=result["indicator"] == "disputed",
+                               substantive=bool(result["check_refs"]), check_refs=result["check_refs"])
+            if result.get("limitation"):
+                constituent["evidence_limitation"] = result["limitation"]
+            constituent["unaccounted"] = result.get("unaccounted", False)
+            return
         statement_key = key_of(obligation["target"])
         indicator = self.independent_indicator(statement_key)
         reconciliations = self._reconciliations_for(statement_key)
@@ -1169,6 +1355,133 @@ class _Derivation(_AuditScope):
             if reasons:
                 constituent["evidence_limitation"] = "; ".join(dict.fromkeys(reasons))
 
+    def integration_eligible(self, info):
+        """Current opinions to compare, separate from retained judgment history."""
+        return info["audit_id"] == self.audit.id and info["state"] == "complete" \
+            and info["freshness"] == "current" and not info["superseded"] \
+            and (info["role"] != "independent" or self.independent_usable(info))
+
+    def _coherent_integration(self, argument_id):
+        """One performed comparison per unit, including unresolved disagreement."""
+        target = argument_id if isinstance(argument_id, dict) else {"collection": "arguments", "id": argument_id}
+        base = {"indicator": "pending", "state": "missing", "freshness": None, "check_refs": []}
+        primary = self.obligation_for(target, "composition", "primary")
+        independent = self.obligation_for(target, "composition", "independent")
+        if primary is None or independent is None:
+            return base
+        p = self.constituent_for(primary["id"])
+        i = self.constituent_for(independent["id"])
+        if i.get("compromised"):
+            return dict(base, indicator="compromised", limitation=i.get("evidence_limitation"))
+        if not primary["satisfied"] or not independent["satisfied"]:
+            return dict(base, limitation="the promised primary or independent whole-unit examination is unfinished")
+        required_primary = {(r["id"], r["version"]) for r in p["check_refs"]
+                            if self.integration_eligible(self.judgment_info(self.snap.get(r)))}
+        required_independent = {(r["id"], r["version"]) for r in i["check_refs"]
+                                if self.integration_eligible(self.judgment_info(self.snap.get(r)))}
+        # Additional material independent judgments belong in the same integration.
+        argument = self.snap.get(target)
+        unit_keys = {key_of(ref) for ref in unit_targets(self.snap, target)}
+        pending_responses = {}
+        for key in unit_keys:
+            for check in self.checks_by_target.get(key, ()):
+                info = self.judgment_info(check)
+                if info["role"] == "independent" and self.integration_eligible(info):
+                    required_independent.add((check.id, check.version))
+                    response = self.responses.get(check.body["response_id"])
+                    if response is not None and response.body.get("pending_judgments"):
+                        pending_responses[response.id] = response
+        keys = {key_of(target)}
+        if target["collection"] == "arguments":
+            keys.add(key_of(argument.body["target"]))
+        candidates = sorted((r for r in self.reconciliations if key_of(r.body["target"]) in keys
+                             and r.id not in self.superseded_reconciliations), key=lambda r: (r.revision, r.id))
+        latest_stale = None
+        for rec in reversed(candidates):
+            info = judgment_freshness(self.snap, rec, superseded=False)
+            primary_pins = {(r["id"], r["version"]) for r in rec.body["primary_checks"] + rec.body["successor_checks"]}
+            independent_pins = {(r["id"], r["version"]) for r in rec.body["independent_checks"] + rec.body["successor_checks"]}
+            if info["freshness"] != "current" or not required_primary <= primary_pins \
+                    or not required_independent <= independent_pins:
+                latest_stale = rec
+                continue
+            indicator = "disputed" if rec.body["decision"] == "unresolved" else "complete"
+            if any(not self.local_basis.pending_accounted(response, rec) for response in pending_responses.values()):
+                return {"indicator": "pending", "state": "complete", "freshness": "current",
+                        "check_refs": [pinned_of(rec)], "unaccounted": True,
+                        "limitation": "preserved independent response content still needs local disposition"}
+            return {"indicator": indicator, "state": "complete", "freshness": "current", "check_refs": [pinned_of(rec)]}
+        if latest_stale is not None:
+            return dict(base, state="complete", freshness="needs_review", check_refs=[pinned_of(latest_stale)],
+                        limitation="integration does not compare the current unit examinations")
+        return base
+
+    def _integrated_checks(self, target, kind):
+        """Effective saved opinions, without rewriting either original examination."""
+        if self.local_basis is None or kind != "composition":
+            return None
+        integration = self._coherent_integration(target)
+        if integration["indicator"] != "complete" or integration["freshness"] != "current" \
+                or integration.get("unaccounted"):
+            return None
+        record = self.snap.get(integration["check_refs"][0])
+        if record.body["decision"] not in ("primary_revised", "independent_revised"):
+            return None
+        checks = [self.snap.get(pin) for pin in record.body["successor_checks"]]
+        if not checks or any(check is None or check.body["target"] != target or check.body["kind"] != kind
+                             or check.body.get("extent") != "whole_unit"
+                             or self.judgment_info(check)["state"] != "complete"
+                             or self.judgment_info(check)["freshness"] != "current"
+                             or self.judgment_info(check)["superseded"]
+                             or (check.body["role"] == "independent"
+                                 and not self.independent_usable(self.judgment_info(check))) for check in checks):
+            return None
+        return checks
+
+    def _effective_constituent(self, constituent):
+        if constituent["role"] not in ("primary", "independent"):
+            return constituent
+        checks = self._integrated_checks(constituent["target"], constituent["kind"])
+        if checks is None:
+            return constituent
+        if constituent["role"] == "independent":
+            return dict(constituent, disputed=False)
+        outcomes = {check.body["outcome"] for check in checks}
+        return dict(constituent, outcome=next(iter(outcomes)) if len(outcomes) == 1 else "inconclusive",
+                    disputed=len(outcomes) != 1, check_refs=[check.pinned for check in checks])
+
+    def _coherent_source_problems(self):
+        """Located passages and explicit boundaries, without a character ledger."""
+        problems, snap = [], self.snap
+        if self.audit.body["mode"] == "triage":
+            return problems
+        for argument_id in sorted(self.required_units):
+            argument = snap.live("arguments", argument_id)
+            target = snap.get(argument.body["target"])
+            anchors = set(argument.body["evidence_refs"])
+            if target is not None:
+                anchors.update(p["anchor_id"] for p in target.body.get("passages", ()) if p["role"] == "proof")
+            boundaries = snap.proof_boundaries(argument_id)
+            if any(b.body["state"] == "unresolved" for b in boundaries):
+                problems.append(f"proof boundary for arguments:{argument_id} remains unresolved")
+            for boundary in boundaries:
+                if boundary.body["state"] == "complete":
+                    anchors.update(p["id"] for p in boundary.body["anchor_refs"])
+                    if any(snap.get(p) is None or snap.get(p).version != p["version"]
+                           for p in boundary.body["anchor_refs"]):
+                        problems.append(f"located proof passage for arguments:{argument_id} changed")
+            if not anchors and argument.body["origin"] == "source":
+                problems.append(f"written proof for arguments:{argument_id} has no located source passages")
+            for anchor_id in sorted(anchors):
+                anchor = snap.live("anchors", anchor_id)
+                source = snap.live("sources", anchor.body["source_id"]) if anchor else None
+                if anchor is None or source is None or source.version != anchor.body["source_version"] \
+                        or not has_evidence(snap, [anchor_id]):
+                    problems.append(f"written proof for arguments:{argument_id} has unavailable source passage {anchor_id}")
+                    self.coverage_diagnostics.append({"code": "missing_anchor", "argument_ids": [argument_id],
+                                                       "anchor_id": anchor_id})
+        return problems
+
     def coverage_problems(self) -> list:
         """Account for declared written passages without interpreting their mathematics.
 
@@ -1179,14 +1492,12 @@ class _Derivation(_AuditScope):
         # Keep compact facts for focused work preparation. Public assessment
         # expands only a bounded sample with the shared cause/action text.
         self.coverage_diagnostics = []
-        self.reviewed_boundaries = {}
-        self.unresolved_explicit_boundaries = set()
+        if self.local_basis is not None:
+            return self._coherent_source_problems()
         if self.audit is None or self.audit.body["mode"] not in ("full", "focused"):
             return []
         snap = self.snap
         requirements = {}
-        selections = {}
-        self.reviewed_boundaries = selections
         problems = []
         examined_boundaries = set()
         excluded = {anchor for e in self.audit.body["exclusions"] for anchor in e["source_anchor_ids"]}
@@ -1212,14 +1523,11 @@ class _Derivation(_AuditScope):
                         requirements[(argument.id, anchor)] = {argument.id}
                     if argument.id not in examined_boundaries:
                         examined_boundaries.add(argument.id)
-                        boundary_spans = self._reviewed_boundary(argument)
-                        selections[argument.id] = boundary_spans
-                        if boundary_spans is None:
+                        boundary_anchors = self._reviewed_boundary(argument)
+                        if boundary_anchors is None:
                             problems.append(f"proof boundary for {argument.id}: complete current source-boundary review required")
-                            self.coverage_diagnostics.append({"code": "proof_boundary_required",
-                                "argument_ids": [argument.id], "target_ref": ref_of(argument)})
                         else:
-                            for anchor in boundary_spans:
+                            for anchor in boundary_anchors:
                                 requirements[(argument.id, anchor)] = {argument.id}
                 if member.body["origin"] == "source":
                     for passage in member.body["passages"]:
@@ -1227,7 +1535,7 @@ class _Derivation(_AuditScope):
                             # A declared proof cannot disappear by omitting its
                             # evidence from the argument record.
                             requirements[(key_of(ref_of(member)), passage["anchor_id"])] = {
-                                a.id for a in (written or arguments)}
+                                a.id for a in arguments}
         coverages = defaultdict(list)
         for cov in snap.all("coverage"):
             coverages[cov.body["anchor_id"]].append(cov)
@@ -1314,12 +1622,19 @@ class _Derivation(_AuditScope):
         usable = {cov.id: completed(cov) for rows in coverages.values() for cov in rows}
         reported = set()
 
+        def uncovered(intervals, end):
+            cursor, missing = 0, []
+            for start, stop in sorted(intervals):
+                if start < 0 or stop > end or stop < start:
+                    continue
+                if start > cursor:
+                    missing.append([cursor, start])
+                cursor = max(cursor, stop)
+            if cursor < end:
+                missing.append([cursor, end])
+            return missing
+
         for (owner, anchor_id), argument_ids in sorted(requirements.items()):
-            # An explicit but unusable selector means boundary recovery, not a
-            # request to check neighboring text on the same captured page.
-            argument_ids = argument_ids - self.unresolved_explicit_boundaries
-            if not argument_ids:
-                continue
             if anchor_id in excluded:
                 continue
             anchor = snap.live("anchors", anchor_id)
@@ -1329,17 +1644,9 @@ class _Derivation(_AuditScope):
                                                   "owner": owner, "anchor_id": anchor_id})
                 continue
             end = len(anchor.body["excerpt"])
-            required = []
-            for argument_id in argument_ids:
-                selected = selections.get(argument_id)
-                if selected is not None:
-                    required.extend(selected.get(anchor_id, []))
-            if not required:
-                required = [(0, end)]
             relevant = [c for c in coverages.get(anchor_id, []) if c.body["argument_id"] in argument_ids]
-            valid = [c for c in relevant if 0 <= c.body["start_offset"] <= c.body["end_offset"] <= end]
-            missing = uncovered_spans(((c.body["start_offset"], c.body["end_offset"])
-                                       for c in valid if usable[c.id]), required)
+            missing = uncovered(((c.body["start_offset"], c.body["end_offset"])
+                                 for c in relevant if usable[c.id]), end)
             if missing:
                 spans = ", ".join(f"[{a}, {b})" for a, b in missing)
                 problems.append(f"proof coverage for {owner}, anchor {anchor_id}: "
@@ -1352,7 +1659,7 @@ class _Derivation(_AuditScope):
                         continue
                     self.coverage_diagnostics.extend(rejected[cov.id])
                     reported.add(cov.id)
-                absent = uncovered_spans(((c.body["start_offset"], c.body["end_offset"]) for c in valid), required)
+                absent = uncovered(((c.body["start_offset"], c.body["end_offset"]) for c in relevant), end)
                 identity = (anchor_id, tuple(sorted(argument_ids)), tuple(map(tuple, absent)))
                 if absent and identity not in reported:
                     self.coverage_diagnostics.append({"code": "missing_coverage", "argument_ids": sorted(argument_ids),
@@ -1370,17 +1677,13 @@ class _Derivation(_AuditScope):
         missing_sources = []
         for boundary in snap.proof_boundaries(argument.id):
             body = boundary.body
-            review_pin = body["source_review_ref"]
-            review = snap.get(review_pin)
-            if review is not None and "proof_spans" in review.body:
-                self.unresolved_explicit_boundaries.add(argument.id)
             if body["state"] != "complete" or body["target"] != argument.body["target"]:
                 continue
             anchor_pins = body["anchor_refs"]
-            additional = declared - {p["id"] for p in anchor_pins}
-            if not anchor_pins or review is None or any(
-                    not review_covers_added_anchor(snap, review, argument, identity) for identity in additional):
+            if not anchor_pins or not declared <= {p["id"] for p in anchor_pins}:
                 continue
+            review_pin = body["source_review_ref"]
+            review = snap.get(review_pin)
             if review is None or review.version != review_pin["version"] \
                     or review.body["decision"] != "accepted" or review.body["purpose"] != "proof_boundary":
                 continue
@@ -1407,14 +1710,7 @@ class _Derivation(_AuditScope):
                                     "boundary_ref": pinned_of(boundary), "source_review_ref": review_pin,
                                     "anchor_ids": [pin["id"] for pin in anchor_pins]})
                 if not missing:
-                    spans = reviewed_spans(snap, review, argument, anchor_pins)
-                    if spans is not None:
-                        self.unresolved_explicit_boundaries.discard(argument.id)
-                        return spans
-                    missing.append({"code": "boundary_spans", "argument_ids": [argument.id],
-                                    "anchor_id": anchor_pins[0]["id"],
-                                    "boundary_ref": pinned_of(boundary), "source_review_ref": review_pin,
-                                    "anchor_ids": [pin["id"] for pin in anchor_pins]})
+                    return [pin["id"] for pin in anchor_pins]
                 missing_sources.extend(missing)
         # A valid alternative certifies the boundary. Stale segments need the
         # existing general recovery, not an instruction to insert source pins.
@@ -1426,15 +1722,37 @@ class _Derivation(_AuditScope):
         return self.obligations.get(obligation_id(self.audit_id, target, kind, role))
 
     def _obligation_supported(self, target: dict, kind: str) -> str:
+        if self.local_basis is not None:
+            return self.local_basis.resolve(target, kind)
+        return self._explicit_local_basis(target, kind)
+
+    def _check_conditions_current(self, check, target):
+        record = self.snap.get(target)
+        scope_id = None if record is None else record.body.get("scope_id")
+        if record is not None and record.collection == "uses":
+            application = self.snap.application(record)
+            group = self.snap.live("groups", application.get("group_id"))
+            scope_id = application.get("scope_id") or (group.body["scope_id"] if group else None)
+        elif record is not None and record.collection in ("items", "parts"):
+            scope_id = self.snap.exact_scope(target)
+        conditions = {condition for _, scope in self.support_closure.ancestry(scope_id)
+                      if scope is not None for condition in scope.body["conditions"]}
+        return all(condition in conditions for condition in check.body["conditions"])
+
+    def _explicit_local_basis(self, target: dict, kind: str) -> str:
         """supported | defect | open for a primary obligation's current state."""
         if self.audit is not None and self.audit.body["mode"] == "triage":
             return "open"
         obligation = self.obligation_for(target, kind)
         if obligation is None:
             return "open"
-        c = self.constituents.get(obligation["id"]) or self.status(obligation)
+        c = self._effective_constituent(self.constituents.get(obligation["id"]) or self.status(obligation))
         if c["state"] == "complete" and c["freshness"] == "current" and not c["disputed"]:
             if c["outcome"] == "supported":
+                if self.local_basis is not None and kind == "composition" and not any(
+                        self.snap.get(check_ref).body.get("extent") == "whole_unit" for check_ref in c["check_refs"]
+                        if self.snap.get(check_ref) is not None):
+                    return "open"
                 record = self.snap.get(target)
                 scope_id = None if record is None else record.body.get("scope_id")
                 if record is not None and record.collection == "uses":
@@ -1461,7 +1779,7 @@ class _Derivation(_AuditScope):
         """A synopsis alone is not an exact mathematical checking target."""
         spec = self.snap.target_spec(ref)
         if spec is None or spec.body["state"] != "registered":
-            return False
+            return self.local_basis is not None and spec is None and self.local_basis.source_basis(ref)
         pin = spec.body.get("statement_ref")
         if pin is not None:
             statement = self.snap.get(pin)
@@ -1480,12 +1798,18 @@ class _Derivation(_AuditScope):
                 and judgment_freshness(self.snap, latest, superseded=False)["freshness"] == "current"
         if fidelity is not None:
             observation = self.snap.get(fidelity)
+            if self.local_basis is not None and observation is not None \
+                    and observation.body["target"] != ref_of(spec) \
+                    and not self.local_basis.synopsis_matches_exact(ref, spec):
+                return False
             return observation is not None and observation.version == fidelity["version"] \
                 and observation.body.get("result") == "matched" \
                 and self._source_match_has_evidence(spec) \
                 and self._source_match_has_evidence(self.snap.get(observation.body["target"])) \
                 and judgment_freshness(self.snap, observation, superseded=False)["freshness"] == "current"
         record = self.snap.get(ref)
+        if self.local_basis is not None and self.local_basis.source_basis(ref, spec):
+            return True
         # Reconstructions have no source statement to compare. A source target
         # requires an explicit current comparison of its exact saved form.
         return record is not None and record.body.get("origin") != "source"
@@ -1522,6 +1846,10 @@ class _Derivation(_AuditScope):
             c = dict(self.constituent_for(oid))
             c["support"] = self.use_support(use)
             out.append(c)
+        if self.local_basis is not None and not any(c["role"] == "primary" for c in out):
+            c = self._local_basis_constituent(ref_of(use), "application")
+            c["support"] = self.use_support(use)
+            out.append(c)
         if not out:
             out.append({"obligation_id": None, "required": False, "kind": "application", "role": "primary",
                         "target": ref_of(use), "state": "missing", "substantive": False, "outcome": None,
@@ -1530,36 +1858,80 @@ class _Derivation(_AuditScope):
                         "compromised": False})
         return out
 
+    def _local_basis_constituent(self, target, kind):
+        """Expose derived local basis without fabricating a saved edge judgment."""
+        basis = self.local_basis.resolve(target, kind)
+        refs = []
+        for argument in self.local_basis.arguments_for(target):
+            record = self.snap.get(target)
+            refs.extend(pinned_of(check) for check in self.local_basis.whole_checks(argument)
+                        if record is not None and self.local_basis.grounded(record, argument, check))
+        return {"obligation_id": None, "required": True, "kind": kind, "role": "primary", "target": target,
+                "state": "complete" if basis != "open" else "missing", "substantive": bool(refs),
+                "outcome": "supported" if basis == "supported" else "gap" if basis == "defect" else None,
+                "freshness": "current" if basis != "open" else None, "reused": False, "support": None,
+                "check_refs": refs, "finding_refs": self.finding_refs(key_of(target)), "disputed": False,
+                "compromised": False, "basis": "coherent_examination"}
+
     def use_assessment(self, use: Record):
         constituents = self.use_constituents(use)
+        if self.local_basis is not None:
+            constituents = [dict(c, required=True) for c in constituents]
         local = reduce([dict(c, support=None) for c in constituents])
         assessment = reduce(constituents)
         assessment.update(availability=self.use_support(use), local_state=local["state"], local_label=local["label"])
         return _triage_assessment(assessment) if self.audit is not None and self.audit.body["mode"] == "triage" else assessment
 
+    def _examined_display(self, record: Record, assessment: dict) -> dict:
+        """Describe examined content without supplying a separate local verdict."""
+        if self.local_basis is None or assessment["state"] != "gray" or assessment["label"] != "unassessed":
+            return assessment
+        for argument in self.local_basis.arguments_for(ref_of(record)):
+            for check in self.checks_by_target.get(key_of(ref_of(argument)), ()):
+                if check.body["kind"] != "composition" or check.body["role"] != "primary" \
+                        or check.body.get("extent") != "whole_unit":
+                    continue
+                info = self.judgment_info(check)
+                if info["state"] == "complete" and info["freshness"] == "current" \
+                        and self.local_basis.grounded(record, argument, check):
+                    result = dict(assessment, label="examined in proof",
+                                  explanation="Included in the recorded proof examination; no separate local verdict. "
+                                              "See proof reasoning.")
+                    if result.get("local_state") == "gray" and result.get("local_label") == "unassessed":
+                        result["local_label"] = "examined in proof"
+                    return result
+        return assessment
+
     def group_constituents(self, group: Record, *, with_uses: bool = True) -> list:
         out = [dict(self.constituent_for(oid)) for oid in self.by_target.get(key_of(ref_of(group)), [])]
+        if self.local_basis is not None:
+            if not any(c["role"] == "primary" for c in out):
+                out.append(self._local_basis_constituent(ref_of(group), "derivation"))
+            # Required here describes the local assessment's represented
+            # reasoning; saved work obligations remain optional in the ledger.
+            out = [dict(c, required=True, obligation_id=None) for c in out]
         if with_uses:
             for use in self.snap.member_records("uses_in_group", ref_of(group)):
                 out.extend(self.use_constituents(use))
         return out
 
     def argument_constituents(self, argument: Record) -> list:
-        out = [dict(self.constituent_for(oid)) for oid in self.by_target.get(key_of(ref_of(argument)), [])]
+        out = [dict(self._effective_constituent(self.constituent_for(oid)))
+               for oid in self.by_target.get(key_of(ref_of(argument)), [])]
         for group in self.snap.member_records("groups_in_argument", ref_of(argument)):
             out.extend(self.group_constituents(group))
         return out
 
     def statement_constituents(self, statement: Record) -> list:
         skey = key_of(ref_of(statement))
-        out = [dict(self.constituent_for(oid)) for oid in self.by_target.get(skey, [])]
+        out = [dict(self._effective_constituent(self.constituent_for(oid))) for oid in self.by_target.get(skey, [])]
         seen = {c["obligation_id"] for c in out}
         for key in sorted(self.route_records.get(skey, ())):
             for oid in self.by_target.get(key, []):
                 if oid in seen:
                     continue
                 seen.add(oid)
-                c = dict(self.constituent_for(oid))
+                c = dict(self._effective_constituent(self.constituent_for(oid)))
                 if key.startswith("uses:"):
                     use = self.snap.live("uses", key.split(":", 1)[1])
                     if use is not None:
@@ -1639,6 +2011,10 @@ class _Derivation(_AuditScope):
         if self.audit is not None:
             akey = key_of(ref_of(self.audit))
             assessments[akey] = reduce([dict(self.constituent_for(oid)) for oid in self.by_target.get(akey, [])])
+        for key, value in assessments.items():
+            collection, identity = key.split(":", 1)
+            if collection in ("groups", "uses"):
+                assessments[key] = self._examined_display(snap.live(collection, identity), value)
         if self.audit is not None and self.audit.body["mode"] == "triage":
             assessments = {key: _triage_assessment(value) for key, value in assessments.items()}
         return assessments
@@ -1740,7 +2116,7 @@ def derive_full(db: Database, *, revision: int | None = None, audit_id: str | No
                 unbound += 1
     disputed = any(v == "disputed" for v in indicators.values())
     process_complete = audit is not None and bool(required) and len(satisfied) == len(required) \
-        and not source_limits and not disputed and not derivation.problems
+        and not source_limits and (coherent_enabled(audit) or not disputed) and not derivation.problems
     if mode == "triage":
         process_complete = False
     if audit is not None and mode in ("full", "focused") and not derivation.statements:

@@ -40,8 +40,11 @@ function checkHashes(results) {
       results.push({ check: `hash:${row.file}`, ok: false, error: 'vendored file missing' });
       continue;
     }
-    const actual = sha256(readFileSync(target));
-    results.push({ check: `hash:${row.file}`, ok: actual === row.sha256, expected: row.sha256, actual });
+    const bytes = readFileSync(target), actual = sha256(bytes);
+    // Git may check out these vendored text assets with CRLF on Windows.
+    const normalized = sha256(Buffer.from(bytes.toString('utf8').replace(/\r\n/g,'\n'),'utf8'));
+    results.push({ check: `hash:${row.file}`, ok: actual === row.sha256 || normalized === row.sha256,
+      expected: row.sha256, actual, newline_normalization:actual !== row.sha256 && normalized === row.sha256 });
   }
 }
 
@@ -159,12 +162,15 @@ function checkReader(results) {
   delete input.display.refs[`${node.item_ref.collection}:${node.item_ref.id}:${node.item_ref.version}`];
   node.assessment.label = 'stale'; node.assessment.explanation = 'stale';
   const missing = renderProjection(Buffer.from(JSON.stringify(input))).html;
-  results.push({check:'reader:missing-strategy',ok:missing.includes('Proof-strategy summary not recorded.') && (missing.match(/proof-muted proof-stale-hint/g) || []).length === 1 && missing.includes('This status summary does not identify which change made the work stale.')});
+  results.push({check:'reader:missing-strategy',ok:!missing.includes('Proof-strategy summary not recorded.') && !missing.includes('<h4>Main proof strategy</h4>') && (missing.match(/proof-muted proof-stale-hint/g) || []).length === 1 && missing.includes('The earlier opinion does not establish a completed current examination.')});
 }
 
 function checkReaderClutter(results) {
   const input = readerFixture(), projection = input.projection, summary = projection.summary;
-  const diagnostics = Array.from({length: 80}, (_, i) => `register establishment for items:itm_internal_${i}: no exact proof route`);
+  const target = projection.records.find(row => row.ref.collection === 'items' && row.body.kind === 'theorem');
+  const diagnostics = [`register establishment for items:${target.ref.id}: no exact registered proof route or local group`];
+  const mixed = 'For the literal 0xdeadbeef, the request_id condition still requires x > 0.';
+  diagnostics.push(mixed);
   summary.limitations = diagnostics;
   summary.progress.process_complete = false;
   summary.factual = {
@@ -178,27 +184,113 @@ function checkReaderClutter(results) {
     independent_review: {state: 'pending', qualification_limitations: ['Independent review is unavailable.']},
   };
   projection.worklist = {revision: projection.snapshot_revision, analysis_complete: true, tasks: [],
-    coordinator_actions: diagnostics.map(message => ({message}))};
+    coordinator_actions: [{message:'Schedule coordinator request_id for the next worker.'}]};
   const saved = JSON.stringify(projection), {html, receipt} = renderProjection(Buffer.from(JSON.stringify(input)));
   const scan = scanHtml(html), problems = [];
   const opening = scan.elements.find(row => Object.hasOwn(row.attrs, 'data-reader-report-state'));
   const openingText = textOf(scan, opening);
-  if (openingText.includes('itm_internal_')) problems.push('technical record IDs still precede the graph');
-  for (const text of ['Audit process incomplete.', 'The final proof page is unavailable.', 'Independent review is unavailable.'])
+  if (openingText.includes(target.ref.id)) problems.push('technical record IDs still precede the graph');
+  for (const text of ['Registered examinations incomplete.', 'The final proof page is unavailable.', 'Independent review is unavailable.', 'no exact establishing argument is registered.', mixed])
     if (!openingText.includes(text)) problems.push(`reader lost a material limitation: ${text}`);
   const diagnosticRows = scan.elements.filter(row => Object.hasOwn(row.attrs, 'data-proof-limitation'));
   const isFolded = row => { for (let parent = row.parent; parent; parent = parent.parent)
     if (parent.tag === 'details' && !Object.hasOwn(parent.attrs, 'open')) return true; return false; };
-  if (JSON.stringify(diagnosticRows.map(row => textOf(scan, row))) !== JSON.stringify(diagnostics)
-      || !diagnosticRows.every(isFolded)) problems.push('completion diagnostics were lost or expanded by default');
+  if (!diagnosticRows.some(row => textOf(scan,row) === mixed) || diagnosticRows.some(isFolded))
+    problems.push('current review qualifications were changed or initially hidden');
   const panel = scan.elements.find(row => row.attrs.id === 'proof-work-panel');
-  if (panel?.tag !== 'details' || Object.hasOwn(panel.attrs, 'open')) problems.push('work queue expands before the reader asks for it');
+  if (panel || scan.elements.some(row => row.attrs['data-proof-count'])) problems.push('administrative queue or counters entered the reader');
   const targets = scan.elements.find(row => Object.hasOwn(row.attrs, 'data-proof-scope-targets'));
   if (textOf(scan, targets).includes('items:')) problems.push('scope targets still display internal references');
   const embedded = scan.elements.find(row => row.attrs.id === 'proof-projection');
   if (JSON.stringify(JSON.parse(embedded.text)) !== saved || receipt.nodes !== projection.nodes.length)
     problems.push('reader cleanup changed the saved evidence or omitted graph nodes');
   results.push({check: 'reader:clutter-preserves-evidence-and-limitations', ok: !problems.length, problems});
+}
+
+function checkReportStates(results) {
+  const workingLimit = 'This working report does not establish completion of the promised audit scope.';
+  const cases = [
+    {name:'working-complete', fixture:'long_math.json', kind:'working', complete:true},
+    {name:'working-incomplete', fixture:'dag_small.json', kind:'working', complete:false},
+    {name:'release', fixture:'long_math.json', kind:'release', complete:true},
+  ];
+  for (const entry of cases) {
+    const input = JSON.parse(readFileSync(path.join(FIXTURES, entry.fixture), 'utf8'));
+    input.build.kind = entry.kind;
+    const saved = JSON.stringify(input.projection), rendered = renderProjection(Buffer.from(JSON.stringify(input)));
+    const scan = scanHtml(rendered.html), problems = [];
+    const completion = entry.complete ? 'Registered examinations complete.' : 'Registered examinations incomplete.';
+    const opposite = entry.complete ? 'Registered examinations incomplete.' : 'Registered examinations complete.';
+    const opening = scan.elements.find(row => Object.hasOwn(row.attrs, 'data-reader-report-state'));
+    const process = scan.elements.find(row => Object.hasOwn(row.attrs, 'data-proof-process-complete'));
+    const rejectChange = (element, original, replacement, diagnostic, label) => {
+      const body = rendered.html.slice(element.openEnd, element.closeStart);
+      if (!body.includes(original)) { problems.push(`missing mutation target: ${label}`); return; }
+      const changed = rendered.html.slice(0, element.openEnd) + body.replace(original, replacement) + rendered.html.slice(element.closeStart);
+      const receipt = representationReceipt(rendered.model, scanHtml(changed));
+      if (receipt.status !== 'fail' || !receipt.diagnostics.includes(diagnostic))
+        problems.push(`${label} passed its representation check`);
+    };
+    for (const [label, element, diagnostic] of [
+      ['headline', opening, 'the always-visible report state and limitations differ from the saved snapshot'],
+      ['summary', process, 'the visible audit scope, exclusions or completion text differs from the saved summary'],
+    ]) {
+      if (!element) { problems.push(`missing ${label}`); continue; }
+      const text = textOf(scan, element);
+      if (!text.includes(completion) || text.includes(opposite) || text.includes('Required examinations'))
+        problems.push(`${label} misstated registered examination completion`);
+      if (text.includes(workingLimit) !== (entry.kind === 'working'))
+        problems.push(`${label} misstated the working scope limitation`);
+      rejectChange(element, completion, opposite, diagnostic, `${label}: altered registered completion`);
+      if (entry.kind === 'working')
+        rejectChange(element, ' ' + workingLimit, '', diagnostic, `${label}: omitted working scope limitation`);
+    }
+    if (!textOf(scan, opening).startsWith(entry.kind === 'release' ? 'Release report' : 'Working report'))
+      problems.push('report kind label changed');
+    const embedded = scan.elements.find(row => row.attrs.id === 'proof-projection');
+    if (input.projection.summary.progress.process_complete !== entry.complete || JSON.stringify(JSON.parse(embedded.text)) !== saved)
+      problems.push('report wording changed saved completion or scientific evidence');
+    results.push({check:`reader:report-state:${entry.name}`, ok:!problems.length, problems});
+  }
+}
+
+function checkScientificRecords(results) {
+  const input = readerFixture();
+  const application = input.projection.records.find(row => row.ref.id === 'app_reader');
+  application.body.needed_form.form = 'synopsis';
+  application.body.substitutions = [{symbol:'x',value:'0xdeadbeef',condition:'request_id is a mathematical symbol and x > 0'}];
+  const check = input.projection.records.find(row => row.ref.collection === 'checks');
+  check.body.reasoning = 'Under x > 0, the uniform bound follows; 0xdeadbeef is the chosen literal.';
+  check.body.outcome = 'gap';
+  check.body.request_id = 'internal_request_secret';
+  const rendered = renderProjection(Buffer.from(JSON.stringify(input))), scan = scanHtml(rendered.html);
+  const problems = [];
+  const marked = scan.elements.find(row => row.attrs['data-scientific-ref'] === 'application_details:app_reader:1'
+    && row.attrs['data-scientific-path'] === '["substitutions",0,"condition"]');
+  if (!marked || textOf(scan,marked) !== application.body.substitutions[0].condition)
+    problems.push('structured application condition was not preserved independently');
+  const templates = scan.elements.filter(row => row.tag === 'template');
+  const templateText = templates.map(row => textOf(scan,row)).join(' ');
+  if (!templateText.includes(check.body.reasoning) || templateText.includes('internal_request_secret'))
+    problems.push('scientific reasoning or administrative selection failed');
+  if (!templateText.includes('Saved synopsis')) problems.push('the saved form was presented as an exact transcription');
+  const search = JSON.parse(scan.elements.find(row => row.attrs.id === 'proof-reader-search').text);
+  if (!search.some(row => row.text.includes(application.body.substitutions[0].condition))
+      || search.some(row => row.text.includes('internal_request_secret')))
+    problems.push('search does not share scientific selection');
+  if (marked) {
+    const changed = rendered.html.slice(0,marked.openEnd) + 'Condition removed.' + rendered.html.slice(marked.closeStart);
+    if (representationReceipt(rendered.model,scanHtml(changed)).status !== 'fail')
+      problems.push('removing the consequential nested condition passed acceptance');
+  }
+  const assessment = scan.elements.find(row => row.attrs['data-scientific-ref'] === `${check.ref.collection}:${check.ref.id}:${check.ref.version}`
+    && row.attrs['data-scientific-path'] === '["outcome"]');
+  if (assessment) {
+    const changed = rendered.html.slice(0,assessment.openEnd) + 'supported' + rendered.html.slice(assessment.closeStart);
+    if (check.body.outcome !== 'supported' && representationReceipt(rendered.model,scanHtml(changed)).status !== 'fail')
+      problems.push('altering the saved scientific outcome passed acceptance');
+  }
+  results.push({check:'reader:selected-evidence-search-and-tampering',ok:!problems.length,problems});
 }
 
 function checkFixtures(results, workdir) {
@@ -262,6 +354,8 @@ export function main() {
     checkFixtures(results, workdir);
     checkReader(results);
     checkReaderClutter(results);
+    checkReportStates(results);
+    checkScientificRecords(results);
   } finally {
     rmSync(workdir, { recursive: true, force: true });
   }

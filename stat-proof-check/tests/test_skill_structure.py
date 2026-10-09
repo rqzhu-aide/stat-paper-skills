@@ -8,7 +8,7 @@ from pathlib import Path
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 REPO = SKILL_ROOT.parent
 REFERENCES = SKILL_ROOT / "references"
-sys.path.insert(0, str(REPO / "shared"))
+sys.path.insert(0, str(SKILL_ROOT / "scripts"))
 from paper_core import CORE_VERSION, PROTOCOL_VERSION
 from paper_core.assistance import ROLE_REFERENCES, worker_guidance
 
@@ -36,7 +36,7 @@ class SkillStructureTests(unittest.TestCase):
         metadata = (SKILL_ROOT / "agents/openai.yaml").read_text(encoding="utf-8")
         self.assertRegex(metadata, r"allow_implicit_invocation:\s*false")
         skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("Use only when the user explicitly invokes $stat-proof-check", skill)
+        self.assertIn("Use only when explicitly invoked as $stat-proof-check", skill)
 
     def test_dispatch_contract_includes_scientific_core_without_coordinator_material(self):
         private = {"database-audit.md", "controller-workflow.md", "database-qualification.md",
@@ -53,7 +53,8 @@ class SkillStructureTests(unittest.TestCase):
         # Existing entrypoint included conservatively, even when a delegated worker
         # receives only its brief. Actual packets/scaffolds are measured separately.
         entry = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
-        limits = {"primary": 3574, "independent": 3809}
+        # Explicit baseline for the promoted 3.0.11 role set, replacing the inherited v2 budget.
+        limits = {"primary": 4572, "independent": 4777}
         for mode, limit in limits.items():
             materials = [entry, *( (REFERENCES / name).read_text(encoding="utf-8")
                                   for name in ROLE_REFERENCES[mode]),

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Command entry for the paper audit database (implementation-handoff 5).
 
-Runs the ``paper_core`` bundle shipped next to this file. The bundle is generated
-by ``tools/build_paper_core_bundles.py`` from ``shared/paper_core`` and is never
-edited by hand. This wrapper never imports the legacy monolith, never looks up a
+Runs the isolated v3 ``paper_core`` shipped next to this file. Its manifest is
+maintained with ``scripts/build_manifest.py``. This wrapper never imports the legacy monolith, never looks up a
 sibling skill, and never imports from the repository tree.
 """
 import os

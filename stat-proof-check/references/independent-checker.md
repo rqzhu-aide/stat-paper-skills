@@ -1,48 +1,17 @@
-# Independent checker
+# Independent examiner
 
-Receive only the worker packet, response scaffold, generated worker guidance, this brief,
-[mathematical-checking.md](mathematical-checking.md), and
-[evidence-and-verdicts.md](evidence-and-verdicts.md), plus relevant domain/external guidance.
-Do not seek the coordinator manifest, database, working report, primary reconstruction,
-judgments, repairs, or calibration keys. Report any possible exposure honestly.
-Related source-only assignments may share your own neutral context; keep each packet's response separate.
-A role change or resumed conversation containing primary reasoning does not make that context independent.
+For an ordinary written proof, work from the delivered source-only packet, its exact neutral question and source passages. The owning theorem may supply context; it does not replace a local assigned conclusion. Preserve the supplied question_id. An explicitly supplied-route assignment instead asks you to evaluate the visible proposed route and records route_provided exposure.
 
-Independently normalize the requested target and reconstruct its substantive inferences from source,
-including omitted dependencies. A composition judgment's reasoning must examine the route's applications,
-intermediate inferences, cases, scope transitions, and final integration. These steps need not each
-become a judgment record. Separate judgments suit distinct conclusions/routes or local outcomes needing
-separate treatment. There is no row quota; do not merge different outcomes to reduce records.
+A reviewer group can contain several ordinary packets. Examine them in the same independent source context if useful and save a separate response for each packet. Return completed responses even if another packet needs context. Do not write the shared database, read coordinator-only manifests or recruit additional reviewers as an assumed duty.
 
-An invoked supplier's statement may be enough to check its application under that premise.
-If exact setup, a statement, continuation, or borrowed proof passage is absent, name the needed
-source and preserve what remains unfinished. The coordinator can extend a source-only assignment.
-After examining added context, author a new response naming the new packet. An old response
-cannot acquire new evidence by a packet-ID substitution or rebase.
+Examine the actual mathematical question with its conditions and continuations. Use mathematical-checking.md. Give reasoning and a supported, gap, refuted or inconclusive outcome. Coverage is separate: whole_unit has empty omissions; partial names unexamined assigned material. Put concerns about the assigned conclusion in judgment reasoning and outcome, and other concerns in coverage_note. Follow [evidence-and-verdicts.md](evidence-and-verdicts.md) for coverage and citation handling.
 
-Use `worker-guidance.json` for response/judgment shapes. Keep the original packet ID and actual
-covered targets. Use packet item/part IDs and supplied anchor IDs. For a hidden argument/intermediate,
-use `SourceTarget: {source_anchor_id, description}` naming the conclusion and precise written route;
-the coordinator maps the unchanged judgment.
-The generated kind-to-target table describes canonical target collections, not hidden record IDs.
-For example, a `composition` of a written proof uses a source target for its hidden argument,
-not the visible item ID of the conclusion. Global checks target an audit only when separately assigned.
-Choose the kind by the inference: `composition` checks how a route establishes its conclusion;
-`case_coverage`, whether actual branches exhaust the possibilities; `scope_discharge`, how closing
-a temporary hypothesis/scope justifies the enclosing conclusion. Retained theorem hypotheses are
-not discharges. `external_source` checks an external result, not a whole route. Global kinds require
-separately scoped global work.
+Include the important connections assigned to the consuming proof. Use [external-result-verification.md](external-result-verification.md) for non-trivial external applications. An omitted argument or unresolved question may finish as a finding; constructing a missing proof, repairing the mathematics or finding a counterexample is not required.
 
-Write substantive reasoning even when inconclusive. Put extra prerequisite concerns in `coverage_note`;
-if they undermine the assigned conclusion, reflect them in its reasoning and outcome too. State counterexamples
-explicitly in reasoning and `coverage_note`, including through corrections. Do not refute a valid conditional
-application merely because its supplier fails. Checking selected parts does not establish the whole theorem.
+For source-only review, do not consult primary judgments or suggested solutions before the initial response. Matching original sources, source-only page images and role references are permitted. The generated source-navigation.json locates packet passages across sources, including prerequisites and continuations; it creates no additional examination requirement. If a consequential symbol is unreadable, identify the affected step and request that passage or retain the limitation; do not infer it from corrupted extraction. If exposed to prior judgments, report the exposure accurately. Never claim source-only independence for a shared primary context. Ordinary v3 examination requires no calibration. Commissioning follows the coordinator's [same-model policy](controller-workflow.md#stage-2-review-and-integrate), which is usable with any provider.
 
-Use `supersedes: null` unless an exact permissible predecessor was supplied. Continuing your own
-review may use its coordinator-provided pin after the original response is preserved; disclose
-that continuity, and do not claim a new blind launch. Never import another reviewer's judgment
-into source-only work. Substantive new supplied reasoning uses
-[supplied-route review](supplied-route-review.md), with its actual exposure identified.
+Fill the generated response-scaffold.json using worker-guidance.json, keeping its fields and question_id. Save it at the assigned response path; if you cannot write there, return the same filled scaffold through stdout or the individual return channel for the coordinator to capture. Preserve all concerns in the supported fields; the coordinator handles formal finding records during integration. If the source is incomplete, identify the affected inference rather than silently broadening or narrowing the assignment. A useful adverse observation outside the requested scope should remain explicit; it is not a reason to recheck the whole paper.
 
-Save one JSON response file unchanged before any reconciliation. Do not author reviewer identity,
-qualification, or coordinator exposure fields. Report your own possible exposure in the response.
+For a newly noticed dependency, give its source location and consequence in reasoning or coverage notes. Missing graph bookkeeping is not itself a mathematical gap. The coordinator resolves shared identities and provides needed neutral source context; continue unaffected work. A materially changed question or newly needed evidence calls for only affected continuation, reusing current reasoning. Unrelated discoveries do not expand the assignment.
+
+The coordinator integrates the saved response. Do not repeatedly review unchanged mathematics merely to obtain agreement or satisfy record formatting.

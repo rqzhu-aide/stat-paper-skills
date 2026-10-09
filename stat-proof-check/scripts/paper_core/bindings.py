@@ -9,178 +9,152 @@ from __future__ import annotations
 
 from .refs import facet_digests, membership_digest, relation_members, setup_digest
 from .semantics import application, target_spec, boundaries
-from .errors import ConflictError, InvalidRequest
+from .canonical import digest
 
-BOUND_COLLECTIONS = ("checks", "observations", "reconciliations", "reuse_decisions", "source_reviews")
-
-# Private, forward-only comparison metadata. Ordinary facet digests and pins
-# remain intact so a reader that does not recognize this policy stays strict.
-EVIDENCE_MAINTENANCE_VERSION = 1
-_EVIDENCE_FACETS = {"arguments": "proof", "groups": "inference", "uses": "application",
-                    "scopes": "scope", "target_specs": "statement"}
+COHERENT_PROTOCOL = "coherent-proof-audit/1"
 
 
-def _anchor_extent(anchor, selected):
-    """Candidate excerpt offsets inside a pinned selection anchor, or unknown."""
-    if (anchor.body["source_id"], anchor.body["source_version"]) != (
-            selected.body["source_id"], selected.body["source_version"]):
-        return None
-    loc, prior = anchor.body["locator"], selected.body["locator"]
-    if loc["page"] is not None or prior["page"] is not None:
-        if loc["page"] != prior["page"] or anchor.body["excerpt"] != selected.body["excerpt"]:
-            return None
-        return 0, len(selected.body["excerpt"])
-    start, end = loc["start_line"], loc["end_line"]
-    left, right = prior["start_line"], prior["end_line"]
-    if any(type(value) is not int for value in (start, end, left, right)) or not left <= start <= end <= right:
-        return None
-    lines = selected.body["excerpt"].split("\n")
-    if len(lines) != right - left + 1:
-        return None
-    begin = sum(len(line) + 1 for line in lines[:start - left])
-    stop = begin + len("\n".join(lines[start - left:end - left + 1]))
-    return (begin, stop) if selected.body["excerpt"][begin:stop] == anchor.body["excerpt"] else None
-
-
-def _selection_covers(state, selections, anchor):
-    from .proof_spans import uncovered_spans
-    for selection in selections:
-        pin, source_pin = selection["anchor_ref"], selection["source_ref"]
-        prior = state.version("anchors", pin["id"], pin["version"])
-        current = state.live("anchors", pin["id"])
-        source = state.live("sources", source_pin["id"])
-        if prior is None or prior.retired or current is None or source is None \
-                or source.version != source_pin["version"] \
-                or facet_digests("sources", source.body)["source"] != selection["source_digest"] \
-                or facet_digests("anchors", current.body)["source"] != selection["anchor_digest"]:
-            continue
-        extent = _anchor_extent(anchor, prior)
-        if extent is not None and extent[0] < extent[1] \
-                and not uncovered_spans(selection["intervals"], [extent]):
-            return True
-    return False
-
-
-def evidence_maintenance_compatible(state, entry, live):
-    """Prove an append-only link addition from original consumed source extent."""
-    policy = entry.get("evidence_maintenance")
-    if not isinstance(policy, dict) or policy.get("version") != EVIDENCE_MAINTENANCE_VERSION \
-            or set(policy) != {"version", "selections"} or not policy["selections"] \
-            or entry["facet"] != _EVIDENCE_FACETS.get(live.collection) \
-            or any(key in entry for key in ("global_proof_selection_digest", "proof_span_selection_digest")):
-        return False
-    pin = entry["ref"]
-    original = state.version(pin["collection"], pin["id"], pin["version"])
-    if original is None or original.retired or "evidence_refs" not in original.body:
-        return False
-    if entry["digest"] != facet_digests(original.collection, original.body).get(entry["facet"]):
-        return False
-    if "setup_digest" in entry and (entry.get("source_passage_selection") != 1 or entry["setup_digest"] !=
-            setup_digest(original.collection, original.body, include_evidence=True)):
-        return False
-    before, after = original.body["evidence_refs"], live.body.get("evidence_refs")
-    if not isinstance(after, list) or after[:len(before)] != before or len(after) <= len(before) \
-            or len(after) != len(set(after)) \
-            or {k: v for k, v in original.body.items() if k != "evidence_refs"} != {
-                k: v for k, v in live.body.items() if k != "evidence_refs"}:
-        return False
-    try:
-        for identity in after[len(before):]:
-            anchor = state.live("anchors", identity)
-            if anchor is None or not _selection_covers(state, policy["selections"], anchor):
-                return False
-    except (KeyError, TypeError, ValueError):
-        return False
-    return True
-
-
-def _maintenance_selections(state, rows, packet, *, spans=None):
-    """Only anchors both delivered and consumed can authorize future additions."""
-    manifest = (packet or {}).get("manifest", packet or {})
-    delivered = {(ref["collection"], ref["id"], ref["version"]) for ref in manifest.get("read_set", [])}
-    selections = []
-    for row in rows:
-        pin = row["ref"]
-        if pin["collection"] != "anchors" or ("anchors", pin["id"], pin["version"]) not in delivered:
-            continue
-        anchor = state.version("anchors", pin["id"], pin["version"])
-        if anchor is None or anchor.retired:
-            continue
-        source_pin = {"collection": "sources", "id": anchor.body["source_id"], "version": anchor.body["source_version"]}
-        if ("sources", source_pin["id"], source_pin["version"]) not in delivered:
-            continue
-        source = state.version("sources", source_pin["id"], source_pin["version"])
-        intervals = (spans or {}).get(pin["id"], []) if spans is not None else [(0, len(anchor.body["excerpt"]))]
-        if source is None or source.retired or not intervals:
-            continue
-        selection = {"anchor_ref": pin, "source_ref": source_pin,
-                     "source_digest": facet_digests("sources", source.body)["source"],
-                     "anchor_digest": facet_digests("anchors", anchor.body)["source"],
-                     "intervals": [list(interval) for interval in intervals]}
-        if selection not in selections:
-            selections.append(selection)
-    return selections
-
-
-def _argument_selection(state, argument_id):
-    """Restrict consumed page anchors to an actual explicit route certificate."""
-    from .proof_spans import reviewed_spans
+def coherent_unit_inputs(state, argument_id):
+    """Substantive unit inputs, independent of optional graph detail and coverage."""
     argument = state.live("arguments", argument_id)
-    explicit = False
+    if argument is None:
+        return None
+    b = _Builder(state)
+    b.statement(argument.body["target"])
+    b.scope_chain(argument.body["scope_id"])
+    anchor_ids = set(argument.body["evidence_refs"])
+    suppliers, visited, application_inputs, inference_inputs = [], set(), [], []
+    for c, identity, _ in state.relation_members("groups_in_argument", argument.ref):
+        group = state.live(c, identity)
+        if group is None:
+            continue
+        inference_inputs.append({"ref": group.pinned, "digest": coherent_group_digest(state, group)})
+        # A selected local derivation includes its exact conclusion and located
+        # evidence. Ownership and consuming applications alone select no proof.
+        if group.body["conclusion"] != argument.body["target"]:
+            conclusion = state.live(group.body["conclusion"]["collection"], group.body["conclusion"]["id"])
+            if conclusion is not None:
+                anchor_ids.update(p["anchor_id"] for p in conclusion.body["passages"]
+                                  if p["role"] in ("statement", "definition"))
+            anchor_ids.update(group.body["evidence_refs"])
+        b.scope_chain(group.body["scope_id"])
+        for scope_id in group.body["case_scope_ids"] + group.body["discharges"]:
+            b.scope_chain(scope_id)
+        suppliers.extend(state.live(uc, ui) for uc, ui, _ in state.relation_members("uses_in_group", group.ref))
+    while suppliers:
+        use = suppliers.pop()
+        if use is None or use.key in visited:
+            continue
+        visited.add(use.key)
+        application_inputs.append({"ref": use.pinned, "digest": coherent_application_digest(state, use)})
+        ref = use.body["from"]
+        supplier = state.live(ref["collection"], ref["id"])
+        if supplier is None:
+            continue
+        from .contract import MAJOR_KINDS
+        if supplier.collection == "parts" or supplier.body["kind"] in MAJOR_KINDS:
+            b.statement(ref)
+            if use.body["type"] == "proof_argument":
+                b.borrowed_proof(ref)
+        else:
+            if use.body["type"] == "proof_argument":
+                b.borrowed_proof(ref)
+            b.scope_chain(supplier.body.get("scope_id"))
+            suppliers.extend(state.live(c, i) for c, i, _ in state.relation_members("incoming_uses", ref))
+            for c, i, _ in state.relation_members("arguments_for_target", ref):
+                route = state.live(c, i)
+                if route is None:
+                    continue
+                for gc, gi, _ in state.relation_members("groups_in_argument", route.ref):
+                    group = state.live(gc, gi)
+                    if group:
+                        suppliers.extend(state.live(uc, ui) for uc, ui, _ in state.relation_members("uses_in_group", group.ref))
+    target = state.live(argument.body["target"]["collection"], argument.body["target"]["id"])
+    if target:
+        anchor_ids.update(p["anchor_id"] for p in target.body["passages"])
+    selections = []
+    from .proof_spans import reviewed_spans
     for boundary in boundaries(state, argument_id):
         pin = boundary.body["source_review_ref"]
         review = state.version("source_reviews", pin["id"], pin["version"])
-        if review is None or "proof_spans" not in review.body:
-            continue
-        explicit = True
-        if boundary.body["state"] == "complete" and review.body["decision"] == "accepted":
-            spans = reviewed_spans(state, review, argument, boundary.body["anchor_refs"])
-            if spans is not None:
-                return spans
-    return {} if explicit else None
+        spans = reviewed_spans(state, review, argument, boundary.body["anchor_refs"]) if review else None
+        selections.append({"state": boundary.body["state"], "spans": spans,
+                           "anchors": boundary.body["anchor_refs"]})
+        anchor_ids.update(ref["id"] for ref in boundary.body["anchor_refs"])
+    b.anchors(sorted(anchor_ids), "source")
+    inputs = b.result(None)["records"]
+    scientific = [[row["ref"]["collection"], row["ref"]["id"], row["facet"], row["digest"]] for row in inputs]
+    return {"argument_ref": argument.pinned, "target_ref": argument.body["target"],
+            "scientific_inputs_digest": digest({"target": argument.body["target"],
+                "origin": argument.body["origin"], "scope_id": argument.body["scope_id"],
+                "inputs": scientific, "selections": selections}),
+            "application_inputs": sorted(application_inputs, key=lambda row: row["ref"]["id"]),
+            "inference_inputs": sorted(inference_inputs, key=lambda row: row["ref"]["id"]),
+            "final_inference_digest": coherent_group_digest(state, state.live("groups", argument.body["final_group_id"]))
+                if argument.body["final_group_id"] else None,
+            "source_evidence_refs": [state.live("anchors", aid).pinned for aid in sorted(anchor_ids)
+                                     if state.live("anchors", aid) is not None],
+            "consumed_inputs": inputs}
 
 
-def _mark_evidence_maintenance(state, result, collection, body, packet):
-    spans = None
-    if collection == "source_reviews":
-        if "proof_spans" not in body or body["decision"] != "accepted" or body["purpose"] != "proof_boundary":
-            return
-    else:
-        target = body.get("target", {})
-        record = state.live(target.get("collection"), target.get("id")) if target else None
-        argument_id = None
-        if record is not None:
-            if record.collection == "arguments":
-                argument_id = record.id
-            elif record.collection == "groups":
-                argument_id = record.body["argument_id"]
-            elif record.collection == "uses":
-                group = state.live("groups", application(state, record).get("group_id"))
-                argument_id = group.body["argument_id"] if group else None
-        if argument_id is not None:
-            spans = _argument_selection(state, argument_id)
-    # The private neutral closure transports source context but does not say
-    # which passages an actual returned judgment examined. Require its own
-    # explicit evidence, or a source review's certified selection.
-    consumed_ids = {span["anchor_ref"]["id"] for span in body.get("proof_spans", [])} \
-        if collection == "source_reviews" else set(body.get("evidence_refs", []))
-    consumed_rows = [row for row in result["records"] if row["ref"]["collection"] == "anchors"
-                     and row["ref"]["id"] in consumed_ids]
-    for row in result["records"]:
-        pin = row["ref"]
-        if row["facet"] != _EVIDENCE_FACETS.get(pin["collection"]):
-            continue
-        selected = spans
-        if collection == "source_reviews":
-            if pin["collection"] != "arguments":
-                continue
-            selected = {}
-            for span in body["proof_spans"]:
-                if span["argument_ref"] == pin:
-                    selected.setdefault(span["anchor_ref"]["id"], []).append((span["start_offset"], span["end_offset"]))
-        selections = _maintenance_selections(state, consumed_rows, packet, spans=selected)
-        if selections:
-            row["evidence_maintenance"] = {"version": EVIDENCE_MAINTENANCE_VERSION, "selections": selections}
+def coherent_application_digest(state, use):
+    def statement_meaning(ref):
+        statement = state.live(ref["collection"], ref["id"])
+        if statement is None:
+            return None
+        spec = target_spec(state, ref)
+        exact = spec.body["statement"] if spec else None
+        if spec and exact is None and spec.body["statement_ref"]:
+            pin = spec.body["statement_ref"]
+            original = state.version(pin["collection"], pin["id"], pin["version"])
+            exact = original.body["statement"] if original else None
+        return exact or statement.body["statement"]
+    detail = application(state, use)
+    return digest({"from": statement_meaning(use.body["from"]), "to": statement_meaning(use.body["to"]),
+        "type": use.body["type"], "needed_form": detail.get("needed_form"),
+        "substitutions": detail.get("substitutions", []), "regime": use.body.get("regime")})
+
+
+def coherent_group_digest(state, group):
+    if group is None:
+        return None
+    def scope_meaning(scope_id):
+        result, seen = [], set()
+        while scope_id and scope_id not in seen:
+            seen.add(scope_id)
+            scope = state.live("scopes", scope_id)
+            if scope is None:
+                result.append(None)
+                break
+            assumptions = []
+            for ref in scope.body["assumptions"]:
+                record = state.live(ref["collection"], ref["id"])
+                assumptions.append(record.body["statement"] if record else None)
+            result.append({"conditions": scope.body["conditions"], "binders": scope.body["binders"],
+                           "assumptions": assumptions})
+            scope_id = scope.body["parent_id"]
+        return result
+    ref = group.body["conclusion"]
+    conclusion = state.live(ref["collection"], ref["id"])
+    spec = target_spec(state, ref)
+    exact = spec.body["statement"] if spec else None
+    if spec and exact is None and spec.body["statement_ref"]:
+        pin = spec.body["statement_ref"]
+        original = state.version(pin["collection"], pin["id"], pin["version"])
+        exact = original.body["statement"] if original else None
+    return digest({"kind": group.body["kind"], "conclusion": exact or (conclusion.body["statement"] if conclusion else None),
+        "scope": scope_meaning(group.body["scope_id"]),
+        "cases": [scope_meaning(identity) for identity in group.body["case_scope_ids"]],
+        "discharges": [scope_meaning(identity) for identity in group.body["discharges"]]})
+
+
+def _coherent_check(b, body):
+    return body.get("kind") == "composition" and body["target"]["collection"] == "arguments" \
+        and (body.get("protocol_version") == COHERENT_PROTOCOL or
+             ((audit := b.state.live("audits", body.get("audit_id"))) is not None
+              and audit.body["protocol_version"] == COHERENT_PROTOCOL))
+
+BOUND_COLLECTIONS = ("checks", "observations", "reconciliations", "reuse_decisions", "source_reviews")
 
 
 class _Builder:
@@ -190,7 +164,6 @@ class _Builder:
         self.relations = {}
         self.statements_seen = set()
         self.scopes_seen = set()
-        self.global_proof_selections = {}
 
     def add(self, collection, id, facet, *, version=None):
         if id is None:
@@ -369,10 +342,6 @@ class _Builder:
     def result(self, packet):
         records = [{"ref": {"collection": c, "id": i, "version": v}, "facet": f, "digest": d}
                    for (c, i, v, f), d in sorted(self.records.items())]
-        for row in records:
-            key = row["ref"]["collection"], row["ref"]["id"]
-            if row["facet"] == "proof" and key in self.global_proof_selections:
-                row["global_proof_selection_digest"] = self.global_proof_selections[key]
         relations = [{"relation": r, "key": {"collection": c, "id": i}, "digest": d}
                      for (r, c, i), d in sorted(self.relations.items())]
         manifest = (packet or {}).get("manifest") or {}
@@ -388,9 +357,19 @@ def _bind_check(b: _Builder, body: dict):
     elif kind in ("derivation", "case_coverage", "scope_discharge"):
         b.group(target["id"])
     elif kind == "composition":
-        b.argument(target["id"])
+        if target["collection"] in ("items", "parts"):
+            b.source_statement(target, exact=True)
+            b.relation("arguments_for_target", target)
+        elif _coherent_check(b, body):
+            selected = coherent_unit_inputs(b.state, target["id"])
+            if selected:
+                b.coherent_scope = {key: value for key, value in selected.items() if key != "consumed_inputs"}
+                for row in selected["consumed_inputs"]:
+                    b.add_ref(row["ref"], row["facet"])
+        else:
+            b.argument(target["id"])
     elif kind == "external_source":
-        b.source_statement(target, exact=True)
+        b.statement(target)
     else:
         audit = b.add("audits", target["id"], "proof" if body.get("role") == "primary" else "full")
         if audit is not None:
@@ -401,15 +380,18 @@ def _bind_check(b: _Builder, body: dict):
                                  b.state.relation_members("audit_scope", target)]
             for audit_target in audit_targets:
                 b.statement(audit_target)
-                from .packets import global_proof_selection
-                selected = global_proof_selection(b.state, audit_target)
-                for record in selected["statements"] + selected["arguments"]:
-                    b.add_ref(record.ref, "proof")
-                if selected["statements"]:
-                    b.global_proof_selections[(audit_target["collection"], audit_target["id"])] = selected["digest"]
-                b.anchors(selected["anchor_ids"], "source")
                 b.relation("arguments_for_target", audit_target)
-                b.relation("incoming_uses", audit_target)
+                if audit.body["protocol_version"] == COHERENT_PROTOCOL:
+                    from .packets import selected_proof_context
+                    selected = selected_proof_context(b.state, audit_target)
+                    b.anchors(pin["id"] for pin in selected["anchor_refs"])
+                    for entry in selected["consumed_inputs"]:
+                        b.add_ref(entry["ref"], entry["facet"])
+                    if not hasattr(b, "coherent_scopes"):
+                        b.coherent_scopes = []
+                    b.coherent_scopes.extend(selected["coherent_scopes"])
+                else:
+                    b.relation("incoming_uses", audit_target)
     b.anchors(body["evidence_refs"])
     if body["supersedes"] is not None:
         b.add_ref(body["supersedes"], "full")
@@ -447,6 +429,32 @@ def binding_changes(state, binding: dict) -> dict:
     where ``actual`` is None when the bound record is no longer live.
     """
     records, relations = [], []
+    scopes = binding.get("coherent_scopes", []) + ([binding["coherent_scope"]] if binding.get("coherent_scope") else [])
+    for scope in scopes:
+        actual = coherent_unit_inputs(state, scope["argument_ref"]["id"])
+        if actual is None or actual["scientific_inputs_digest"] != scope["scientific_inputs_digest"]:
+            records.append({"ref": scope["argument_ref"], "facet": "coherent_unit",
+                            "expected": scope["scientific_inputs_digest"],
+                            "actual": None if actual is None else actual["scientific_inputs_digest"]})
+        for entry in scope.get("application_inputs", []):
+            ref = entry["ref"]
+            use = state.live(ref["collection"], ref["id"])
+            meaning = coherent_application_digest(state, use) if use else None
+            if use is None and actual is not None and any(row["digest"] == entry["digest"] for row in actual["application_inputs"]):
+                continue
+            if meaning != entry["digest"]:
+                records.append({"ref": ref, "facet": "examined_application", "expected": entry["digest"], "actual": meaning})
+        for entry in scope.get("inference_inputs", []):
+            ref = entry["ref"]
+            group = state.live(ref["collection"], ref["id"])
+            meaning = coherent_group_digest(state, group)
+            if group is None and actual is not None and any(row["digest"] == entry["digest"] for row in actual["inference_inputs"]):
+                continue
+            if meaning != entry["digest"]:
+                records.append({"ref": ref, "facet": "examined_inference", "expected": entry["digest"], "actual": meaning})
+        if actual is not None and "final_inference_digest" in scope and actual["final_inference_digest"] != scope["final_inference_digest"]:
+            records.append({"ref": scope["argument_ref"], "facet": "final_inference",
+                "expected": scope["final_inference_digest"], "actual": actual["final_inference_digest"]})
     if binding.get('overview_context'):
         from .overview import comparison_context
         context = binding['overview_context']
@@ -458,22 +466,13 @@ def binding_changes(state, binding: dict) -> dict:
         ref = entry["ref"]
         live = state.live(ref["collection"], ref["id"])
         actual = None
-        expected = entry.get("global_proof_selection_digest", entry.get("proof_span_selection_digest", entry.get("setup_digest", entry["digest"])))
+        expected = entry.get("setup_digest", entry["digest"])
         if live is not None:
             facets = facet_digests(live.collection, live.body)
-            if "global_proof_selection_digest" in entry:
-                from .packets import global_proof_selection
-                actual = global_proof_selection(state, live.ref)["digest"]
-            elif "proof_span_selection_digest" in entry:
-                from .proof_spans import boundary_selection_digest
-                actual = boundary_selection_digest(state, live)
-            else:
-                actual = (setup_digest(live.collection, live.body,
-                                      include_evidence=entry.get("source_passage_selection") == 1) if "setup_digest" in entry
-                          else facets.get(entry["facet"]) or facets["full"])
+            actual = (setup_digest(live.collection, live.body,
+                                  include_evidence=entry.get("source_passage_selection") == 1) if "setup_digest" in entry
+                      else facets.get(entry["facet"]) or facets["full"])
         if actual != expected:
-            if live is not None and evidence_maintenance_compatible(state, entry, live):
-                continue
             records.append({"ref": ref, "facet": entry["facet"], "expected": expected, "actual": actual,
                             "live_version": None if live is None else live.version})
     for entry in binding["relations"]:
@@ -491,103 +490,6 @@ def binding_changes(state, binding: dict) -> dict:
             relations.append({"relation": entry["relation"], "key": entry["key"], "expected": entry["digest"],
                               "actual": actual})
     return {"records": records, "relations": relations}
-
-
-def _source_only_work_manifest(state, body):
-    """Identify eligible review provenance, never from a binding's policy marker."""
-    if body.get("role") != "independent" or not body.get("response_id"):
-        return None
-    response = state.live("responses", body["response_id"])
-    if response is None or response.body["state"] != "accepted" \
-            or response.body["exposure"] != "source_only" \
-            or any(response.body[key] != body[key] for key in ("audit_id", "reviewer")):
-        return None
-    qualification = state.live("qualifications", response.body["qualification_id"])
-    if qualification is None or not qualification.body["qualified"] \
-            or qualification.body["reviewer"] != response.body["reviewer"] \
-            or qualification.body["protocol_version"] != body["protocol_version"]:
-        return None
-    original = state.db.packet(response.body["packet_id"])
-    if original is None or not state.db.has_blob(response.body["original_blob"]):
-        raise InvalidRequest("original independent packet or response is unavailable", code="SOURCE_CONTEXT_UNAVAILABLE")
-    manifest = original["manifest"]
-    work = manifest.get("work")
-    if original["packet_version"] != 2 or manifest.get("mode") != "independent" \
-            or manifest.get("review_basis", "source_only") != "source_only" \
-            or not isinstance(work, dict) or work.get("mode") != "independent" \
-            or work.get("audit_id") != body["audit_id"]:
-        return None
-    return manifest
-
-
-def _without_coordinator_coverage(binding):
-    # Boundary certificates also have a "coverage" facet. Only the coordinator's
-    # coverage collection/relation is irrelevant to a source-only examination.
-    result = {**binding,
-        "records": [row for row in binding["records"] if row["ref"]["collection"] != "coverage"],
-        "relations": [row for row in binding["relations"] if row["relation"] != "coverage_in_argument"]}
-    if "semantic_memberships" in binding:
-        result["semantic_memberships"] = [row for row in binding["semantic_memberships"]
-                                          if row["relation"] != "coverage_in_argument"]
-    return result
-
-
-def record_binding_changes(state, record, binding):
-    """Current mathematical drift, with narrow read-only recovery of old checks.
-
-    Generic binding_changes remains strict for transaction/reuse validation.
-    Saved bindings and original response bytes are never rewritten.
-    """
-    changes = binding_changes(state, binding)
-    if record.collection == "checks" and record.body["target"]["collection"] == "audits":
-        historical = _legacy_global_selection_changes(state, record.body["target"], binding)
-        changes["records"].extend(historical["records"])
-        changes["relations"].extend(historical["relations"])
-    coverage_changed = any(row["ref"]["collection"] == "coverage" for row in changes["records"]) \
-        or any(row["relation"] == "coverage_in_argument" for row in changes["relations"])
-    # Do not introduce new review gates where this correction grants no exemption.
-    # In particular, local group checks retain their existing mapped bindings.
-    if record.collection == "checks" and coverage_changed:
-        try:
-            manifest = _source_only_work_manifest(state, record.body)
-            if manifest is not None:
-                from .packets import independent_context_binding
-                neutral = independent_context_binding(state, manifest)
-                if neutral is not None:
-                    context_changes = binding_changes(state, neutral)
-                    if context_changes["records"] or context_changes["relations"]:
-                        return changes
-                    return binding_changes(state, _without_coordinator_coverage(binding))
-        except (ConflictError, InvalidRequest):
-            # Missing/insufficient original provenance cannot recover old credit.
-            return changes
-    return changes
-
-
-def _legacy_global_selection_changes(state, target, binding, *, manifest=None):
-    """Compare old global inputs read-only, using the existing bounded historical adapter."""
-    if any("global_proof_selection_digest" in row for row in binding["records"]):
-        return {"records": [], "relations": []}
-    from .packets import MAX_WORK_BYTES, _ContextLimit, _legacy_extension_setup
-    original = state.db.packet(binding.get("packet_id")) if binding.get("packet_id") else None
-    manifest = manifest or (original["manifest"] if original else None)
-    unknown = {"ref": target, "facet": "global_proof_selection", "expected": "captured proof selection",
-               "actual": None, "reason": "historical global proof selection is unknown; inspect saved assignment provenance"}
-    if manifest is None or type(manifest.get("base_revision")) is not int:
-        return {"records": [unknown], "relations": []}
-    # The adapter reads only the original audit's shallow consumed closure. It
-    # neither loads worker blobs nor changes the original binding or receipt.
-    task = {"target": target, "kind": "global_consistency", "role": "primary", "action": "check"}
-    historical_manifest = {**manifest, "work": {"tasks": [task],
-        "limits": {"max_bytes": manifest.get("work", {}).get("limits", {}).get("max_bytes", MAX_WORK_BYTES)}}}
-    try:
-        inputs, relations = _legacy_extension_setup(state.db, historical_manifest, state, verify=False)
-        if not any("global_proof_selection_digest" in row for row in inputs):
-            return {"records": [unknown], "relations": []}
-        return binding_changes(state, {"records": inputs, "relations": relations, "semantic_memberships": relations})
-    except (_ContextLimit, InvalidRequest) as exc:
-        unknown["reason"] += f" ({getattr(exc, 'code', 'WORK_CONTEXT_LIMIT')})"
-        return {"records": [unknown], "relations": []}
 
 
 def task_binding(state, task: dict) -> dict:
@@ -610,7 +512,10 @@ def task_binding(state, task: dict) -> dict:
         elif target["collection"] == "groups":
             b.group(target["id"])
         elif target["collection"] == "arguments":
-            b.argument(target["id"])
+            from . import PROTOCOL_VERSION
+            _bind_check(b, {"kind": "composition", "target": target, "role": task["role"],
+                "protocol_version": task.get("protocol_version", PROTOCOL_VERSION),
+                "evidence_refs": [], "supersedes": None})
         elif target["collection"] == "uses":
             b.use(target["id"])
         else:
@@ -622,9 +527,11 @@ def task_binding(state, task: dict) -> dict:
                 _bind_check(b, check.body)
                 b.relation("checks_or_findings_for_target", check.body["target"])
     else:
+        from . import PROTOCOL_VERSION
         _bind_check(b, {"kind": task["kind"], "target": target, "role": task["role"],
+                        "protocol_version": task.get("protocol_version", PROTOCOL_VERSION),
                         "evidence_refs": [], "supersedes": None})
-    if task["kind"] == "composition":
+    if task["kind"] == "composition" and not hasattr(b, "coherent_scope"):
         for ref in task.get("prerequisite_judgment_refs", []):
             b.add_ref(ref, "full")
     # Work guards protect mathematical membership, not presentation-only member
@@ -632,7 +539,12 @@ def task_binding(state, task: dict) -> dict:
     # can distinguish changed membership from a relabelled existing member.
     _semantic_members(b)
     result = b.result(None)
-    return {"consumed_inputs": result["records"], "membership_guards": result["relations"]}
+    result = {"consumed_inputs": result["records"], "membership_guards": result["relations"]}
+    if hasattr(b, "coherent_scope"):
+        result["coherent_scope"] = b.coherent_scope
+    if hasattr(b, "coherent_scopes"):
+        result["coherent_scopes"] = b.coherent_scopes
+    return result
 
 
 def task_binding_changes(state, task: dict, *, evidence_refs=(), packet=None) -> dict:
@@ -644,6 +556,10 @@ def task_binding_changes(state, task: dict, *, evidence_refs=(), packet=None) ->
     """
     binding = {"records": list(task["consumed_inputs"]),
                "relations": list(task["membership_guards"])}
+    if task.get("coherent_scope"):
+        binding["coherent_scope"] = task["coherent_scope"]
+    if task.get("coherent_scopes"):
+        binding["coherent_scopes"] = task["coherent_scopes"]
     missing_scope = missing_full_audit_scope(state, task["target"], binding)
     if missing_scope is not None:
         return {"records": [missing_scope], "relations": []}
@@ -667,10 +583,12 @@ def task_binding_changes(state, task: dict, *, evidence_refs=(), packet=None) ->
         binding["records"].append({"ref": pin, "facet": facet,
                                    "digest": facet_digests("anchors", original.body)[facet]})
     result = binding_changes(state, binding)
-    if task["target"]["collection"] == "audits":
-        historical = _legacy_global_selection_changes(state, task["target"], binding, manifest=manifest)
-        result["records"].extend(historical["records"])
-        result["relations"].extend(historical["relations"])
+    if task.get("neutral_question"):
+        from .packets import neutral_question
+        actual = neutral_question(state, task, allow_proposed=manifest.get("review_basis") == "route_provided")
+        if actual != task["neutral_question"]:
+            result["records"].append({"ref": task["target"], "facet": "neutral_question",
+                "expected": digest(task["neutral_question"]), "actual": digest(actual)})
     revision = manifest.get("base_revision")
     if revision is not None and hasattr(state, "db"):
         changed_relations = []
@@ -707,6 +625,8 @@ def _work_composition_checks(b, body, packet):
     Earlier results in the same response now have real generated IDs in the
     prospective state. Applications/derivations do not consume these siblings.
     """
+    if _coherent_check(b, body):
+        return
     manifest = (packet or {}).get("manifest", packet or {})
     if not manifest.get("work") or body["kind"] != "composition" or body["role"] != "primary":
         return
@@ -763,14 +683,12 @@ def compute_bindings(state, collection: str, body: dict, *, packet=None) -> dict
                                      'digest':comparison_context(state,body['target'],selection_id)}}
     b = _Builder(state)
     neutral_context = None
-    maintenance_packet = packet
     if collection == "checks":
         _bind_check(b, body)
         _work_composition_checks(b, body, packet)
         if body.get('role') == 'independent' and body.get('response_id'):
             response = state.live('responses', body['response_id'])
             original = state.db.packet(response.body['packet_id']) if response else None
-            maintenance_packet = original
             manifest = original['manifest'] if original else {}
             from .packets import independent_context_binding
             neutral_context = independent_context_binding(state, manifest)
@@ -804,6 +722,8 @@ def compute_bindings(state, collection: str, body: dict, *, packet=None) -> dict
     elif collection == "reconciliations":
         for ref in body["primary_checks"] + body["independent_checks"] + body["successor_checks"]:
             b.add_ref(ref, "full")
+        for disposition in body.get("response_dispositions", []):
+            b.add_ref(disposition["response_ref"], "full")
         if body["target"]["collection"] in ("items", "parts"):
             b.statement(body["target"])
         else:
@@ -822,8 +742,6 @@ def compute_bindings(state, collection: str, body: dict, *, packet=None) -> dict
             b.add_ref(ref, "source")
         for ref in body["anchor_refs"]:
             b.add_ref(ref, "source")
-        for span in body.get("proof_spans", []):
-            b.add_ref(span["argument_ref"], "proof")
     manifest = (packet or {}).get("manifest", packet or {})
     if collection == 'checks' or _semantic_membership_origin(state, collection, body, manifest):
         identities = _semantic_members(b)
@@ -835,6 +753,10 @@ def compute_bindings(state, collection: str, body: dict, *, packet=None) -> dict
     else:
         identities = None
     result = b.result(packet)
+    if hasattr(b, "coherent_scope"):
+        result["coherent_scope"] = b.coherent_scope
+    if hasattr(b, "coherent_scopes"):
+        result["coherent_scopes"] = b.coherent_scopes
     if neutral_context is not None:
         result["neutral_setup_validated"] = 1
         consumed = {(row["ref"]["collection"], row["ref"]["id"], row["ref"]["version"], row["facet"],
@@ -859,13 +781,8 @@ def compute_bindings(state, collection: str, body: dict, *, packet=None) -> dict
     result['source_context_digest'] = None
     if identities is not None:
         result["semantic_memberships"] = identities
-    if collection == "checks" and neutral_context is not None \
-            and _source_only_work_manifest(state, body) is not None:
-        result = _without_coordinator_coverage(result)
-    if collection in ("checks", "observations", "source_reviews"):
-        _mark_evidence_maintenance(state, result, collection, body, maintenance_packet)
     return result
 
 
-__all__ = ["BOUND_COLLECTIONS", "MATHEMATICAL_FACETS", "binding_changes", "record_binding_changes", "compute_bindings",
-           "task_binding", "task_binding_changes"]
+__all__ = ["BOUND_COLLECTIONS", "MATHEMATICAL_FACETS", "binding_changes", "compute_bindings",
+           "task_binding", "task_binding_changes", "coherent_unit_inputs"]

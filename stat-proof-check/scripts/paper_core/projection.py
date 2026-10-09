@@ -14,6 +14,7 @@ from . import PROJECTION_VERSION
 from .assessment import PROOF_CHECK_KINDS, PROOF_KINDS, ROLES, _triage_assessment, derive_full, key_of, pinned_of, reduce, ref_of
 from .canonical import compact_json
 from .contract import INTERMEDIATE_KINDS, MAJOR_KINDS
+from .errors import InvalidRequest
 from .storage import Database, Record
 
 INDICATOR_RANK = {"not_required": 0, "complete": 1, "pending": 2, "compromised": 3, "disputed": 4}
@@ -1227,9 +1228,13 @@ def _find_cycle(nodes: list, outgoing: dict) -> list:
     return []
 
 
-def project(db: Database, *, revision: int | None = None, audit_id: str | None = None, derived=None) -> tuple:
+def project(db: Database, *, revision: int | None = None, audit_id: str | None = None,
+            derived=None) -> tuple:
     """Build the projection and a report ``{problems, counts}`` for one snapshot."""
     derivation, result = derived if derived is not None else derive_full(db, revision=revision, audit_id=audit_id)
+    if derived is not None and ((revision is not None and result["revision"] != revision)
+            or (audit_id is not None and result["audit_id"] != audit_id)):
+        raise InvalidRequest("the supplied assessment describes another revision or audit")
     projection, report = _Projector(db, derivation, result).build()
     if derivation.audit is not None:
         from .work import build_work

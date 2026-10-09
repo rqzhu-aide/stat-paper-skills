@@ -8,13 +8,14 @@ from __future__ import annotations
 import re
 
 from .ids import COLLECTIONS, valid_id
+from . import PROTOCOL_VERSION
 
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 CHECK_KINDS = ("derivation", "application", "composition", "case_coverage",
                "scope_discharge", "external_source", "global_consistency",
                "adversarial", "method_interface")
 CHECK_TARGETS = {
-    "derivation": ("groups",), "application": ("uses",), "composition": ("arguments",),
+    "derivation": ("groups",), "application": ("uses",), "composition": ("arguments", "items", "parts"),
     "case_coverage": ("groups",), "scope_discharge": ("groups",),
     "external_source": ("items", "parts"), "global_consistency": ("audits",),
     "adversarial": ("audits",), "method_interface": ("audits",),
@@ -360,7 +361,7 @@ def _audits_local(v):
     kinds = [task["kind"] for task in v["global_tasks"]]
     if len(set(kinds)) != len(kinds):
         yield "global task kinds must be distinct"
-    if v["mode"] in ("full", "focused") and sorted(kinds) != sorted(GLOBAL_TASK_KINDS):
+    if v["protocol_version"] != PROTOCOL_VERSION and v["mode"] in ("full", "focused") and sorted(kinds) != sorted(GLOBAL_TASK_KINDS):
         yield "full/focused audits list exactly the three global tasks"
     if len({(t["collection"], t["id"]) for t in v["targets"]}) != len(v["targets"]):
         yield "audit targets must be distinct"
@@ -374,6 +375,13 @@ def _checks_local(v):
             yield "a complete check needs a non-null outcome"
         if not v["reasoning"].strip():
             yield "a complete check needs nonempty reasoning"
+        if v["protocol_version"] == PROTOCOL_VERSION and v["kind"] == "composition":
+            if v.get("extent") not in ("whole_unit", "partial"):
+                yield "a complete coherent composition declares extent whole_unit or partial"
+            if v.get("extent") == "partial" and not v.get("omissions", "").strip():
+                yield "a partial examination names its omissions"
+            if v.get("extent") == "whole_unit" and v.get("omissions", "").strip():
+                yield "an examination with omissions has partial extent"
     if v["role"] == "independent" and v["response_id"] is None:
         yield "an independent check carries its response_id"
     if v["role"] == "primary" and v["response_id"] is not None:
@@ -516,7 +524,9 @@ BODY_SCHEMAS = {
                    "outcome": Enum(OUTCOMES, nullable=True),
                    "reasoning": Str(), "evidence_refs": Arr(Id("anchors")), "conditions": Arr(Str(nonempty=True)),
                    "next_action": Str(nullable=True), "response_id": Id("responses", nullable=True),
-                   "supersedes": RefT(("checks",), pinned=True, nullable=True)}, local=_checks_local),
+                   "supersedes": RefT(("checks",), pinned=True, nullable=True),
+                   "extent": Enum(("whole_unit", "partial")), "omissions": Str()},
+                  optional=("extent", "omissions"), local=_checks_local),
     "findings": Obj({"audit_id": Id("audits"), "target": REF,
                      "category": Enum(("presentation", "proof_gap", "dependency_mismatch",
                                        "statement_refutation", "inconclusive")),
@@ -534,10 +544,12 @@ BODY_SCHEMAS = {
                            "evidence_blob": Hash(), "qualified": Bool(), "limitations": Arr(Str(nonempty=True))},
                           local=_qualifications_local),
     "responses": Obj({"audit_id": Id("audits"), "packet_id": Str(nonempty=True), "reviewer": Str(nonempty=True),
-                      "qualification_id": Id("qualifications"), "original_blob": Hash(),
+                      "qualification_id": Id("qualifications", nullable=True), "original_blob": Hash(),
                       "covered_targets": Arr(TARGET), "coverage_note": Str(),
                       "exposure": Enum(("source_only", "route_provided", "compromised")), "exposure_note": Str(),
-                      "state": Enum(("accepted", "needs_revision"))}, local=_responses_local),
+                      "state": Enum(("accepted", "needs_revision")),
+                      "intake_diagnostics": Arr(Str()), "pending_judgments": Arr(Int(0))},
+                     optional=("intake_diagnostics", "pending_judgments"), local=_responses_local),
     "reconciliations": Obj({"audit_id": Id("audits"), "target": REF,
                             "primary_checks": Arr(RefT(("checks",), pinned=True)),
                             "independent_checks": Arr(RefT(("checks",), pinned=True)),
@@ -545,7 +557,12 @@ BODY_SCHEMAS = {
                             "rationale": Str(nonempty=True), "evidence_refs": Arr(Id("anchors")),
                             "successor_checks": Arr(RefT(("checks",), pinned=True)),
                             "supersedes": RefT(("reconciliations",), pinned=True, nullable=True),
-                            "adjudicator": Str(nonempty=True)}, local=_reconciliations_local),
+                            "adjudicator": Str(nonempty=True),
+                            "response_dispositions": Arr(Obj({
+                                "response_ref": RefT(("responses",), pinned=True),
+                                "judgment_indexes": Arr(Int(0), nonempty=True),
+                                "rationale": Str(nonempty=True)}))},
+                           optional=("response_dispositions",), local=_reconciliations_local),
     "reuse_decisions": Obj({"check_ref": RefT(("checks",), pinned=True), "source_review_id": Id("source_reviews"),
                             "decision": Enum(("reusable", "recheck")), "rationale": Str(nonempty=True),
                             "evidence_refs": Arr(Id("anchors"))}),
@@ -560,11 +577,14 @@ assert set(BODY_SCHEMAS) == set(COLLECTIONS)
 JUDGMENT = Obj({"target": OneOf([REF_OBJECT, SOURCE_TARGET]), "kind": Enum(CHECK_KINDS),
                 "state": Enum(("draft", "complete")), "outcome": Enum(OUTCOMES, nullable=True),
                 "reasoning": Str(), "evidence_refs": Arr(Id("anchors")), "conditions": Arr(Str(nonempty=True)),
-                "next_action": Str(nullable=True), "supersedes": RefT(("checks",), pinned=True, nullable=True)})
+                "next_action": Str(nullable=True), "supersedes": RefT(("checks",), pinned=True, nullable=True),
+                "extent": Enum(("whole_unit", "partial")), "omissions": Str(),
+                "question_id": Str(nonempty=True)},
+               optional=("extent", "omissions", "question_id"))
 WORKER_RESPONSE = Obj({"packet_id": Str(nonempty=True), "covered_targets": Arr(TARGET), "coverage_note": Str(),
                        "exposure_report": EXPOSURE_REPORT, "judgments": Arr(JUDGMENT)})
 SUBMISSION = Obj({"contract_version": RequestVersion(), "request_id": Str(nonempty=True), "packet_id": Str(nonempty=True),
-                  "reviewer": Str(nonempty=True), "qualification_id": Id("qualifications"),
+                  "reviewer": Str(nonempty=True), "qualification_id": Id("qualifications", nullable=True),
                   "exposure": Enum(("source_only", "route_provided", "compromised")), "exposure_note": Str()})
 MAPPING_REQUEST = Obj({"contract_version": RequestVersion(), "request_id": Str(nonempty=True), "packet_id": Str(nonempty=True),
                        "response_id": Id("responses"),
@@ -581,8 +601,24 @@ EDIT_REPLACE = Obj({"op": Const("replace"), "collection": Enum(COLLECTIONS), "id
                     "expected_version": Int(1), "body": Any()})
 EDIT_RETIRE = Obj({"op": Const("retire"), "collection": Enum(COLLECTIONS), "id": Id(),
                    "expected_version": Int(1), "reason": Str(nonempty=True)})
+
+
+class _EditOperation(OneOf):
+    def _pick(self, value):
+        if isinstance(value, dict):
+            return next((option for option in self.options
+                         if value.get("op") == option.fields["op"].expected), None)
+        return None
+
+    def check(self, value, path, errors):
+        if isinstance(value, dict) and self._pick(value) is None:
+            errors.append(f"{path}/op: must be one of {['create', 'replace', 'retire']}")
+            return
+        super().check(value, path, errors)
+
+
 BATCH = Obj({"contract_version": RequestVersion(), "request_id": Str(nonempty=True), "packet_id": Str(nonempty=True),
-             "edits": Arr(OneOf([EDIT_CREATE, EDIT_REPLACE, EDIT_RETIRE]))})
+             "edits": Arr(_EditOperation([EDIT_CREATE, EDIT_REPLACE, EDIT_RETIRE]))})
 
 # The controller supplies administrative fields from its immutable assignment.
 # Workers author judgments and coverage, never arbitrary graph edits.
@@ -598,7 +634,8 @@ WORK_CHECK = Obj({
     "conditions": Arr(Str(nonempty=True)), "next_action": Str(nullable=True),
     "replaces": RefT(("checks",), pinned=True, nullable=True),
     "supersedes": RefT(("checks",), pinned=True, nullable=True),
-})
+    "extent": Enum(("whole_unit", "partial")), "omissions": Str(),
+}, optional=("extent", "omissions"))
 WORK_COMPARISON = Obj({"type": Const("source_fidelity"), "task_id": Str(nonempty=True),
                        "result": Enum(("matched", "needs_attention")), "note": Str(),
                        "evidence_refs": Arr(Id("anchors"))})

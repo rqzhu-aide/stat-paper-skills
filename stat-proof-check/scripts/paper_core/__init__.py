@@ -1,18 +1,18 @@
-"""Shared proofcheck core: storage format 4, record contract 4.
+"""Isolated v3 proofcheck core: storage format 4, record contract 4.
 
-One maintained source lives at ``shared/paper_core``. Skill packages receive
-byte-identical generated bundles built by ``tools/build_paper_core_bundles.py``.
+This candidate maintains its core locally; build_manifest.py records its identity.
 New-format code never imports the legacy ``proofcheck.py`` monolith.
 """
 from __future__ import annotations
 
-CORE_VERSION = "2.3.9"
+CORE_VERSION = "3.0.11"
 STORAGE_FORMAT = 4
 CONTRACT_VERSION = 4
 CONTRACT_NAME = "proofcheck-records/4"
 PACKET_VERSION = 2
 PROJECTION_VERSION = 2
-PROTOCOL_VERSION = "item-audit/1"
+PROTOCOL_VERSION = "coherent-proof-audit/1"
+COHERENT_EXAMINATIONS_FEATURE = "coherent-examinations/1"
 # Feature names a database may require; every open checks the stored list is a
 # subset of what this core supports. Compare names, never bare digits.
 DEFAULT_FEATURES = (
@@ -30,6 +30,7 @@ DEFAULT_FEATURES = (
     "sql-superset/1",
     "records/4",
     "route-review/1",
+    COHERENT_EXAMINATIONS_FEATURE,
 )
 WORK_CONTEXT_EXTENSION_FEATURE = "work-context-extension/1"
 AUDIT_SCOPE_BINDING_FEATURE = "audit-scope-binding/1"

@@ -24,6 +24,7 @@ IMMUTABLE_ONCE_CREATED = ("observations", "reconciliations", "qualifications")
 
 # Per command: collections that may be created / replaced / retired.
 COMMANDS = {
+    "unit": {"create": STRUCTURAL + ("source_reviews", "source_issues", "observations"), "replace": (), "retire": ()},
     "overview": {"create": ("sources", "anchors", "items", "parts", "groups", "uses", "observations", "overview_selections"),
                  "replace": ("papers", "sources", "anchors", "items", "parts", "groups", "uses", "overview_selections"),
                  "retire": ()},
@@ -489,10 +490,16 @@ def _semantic(state: State, p: Planned, errors: list, command: str):
         if anchor is not None and body["end_offset"] > len(anchor.body["excerpt"]):
             err("coverage offsets exceed the anchor excerpt")
     elif c == "audits":
+        from . import PROTOCOL_VERSION
+        if p.index >= 0 and body["protocol_version"] != PROTOCOL_VERSION:
+            err("new candidate audits use coherent-proof-audit/1; historical audits retain their compatible reader")
         for excl in body["exclusions"]:
             if excl["target"] is not None and live(excl["target"]["collection"], excl["target"]["id"]) is None:
                 err("exclusion target is not a live record")
     elif c == "checks":
+        audit = live("audits", body["audit_id"])
+        if audit is not None and body["protocol_version"] != audit.body["protocol_version"]:
+            err("check protocol must match its audit")
         if body["role"] == "independent" and command not in INDEPENDENT_CHECK_COMMANDS:
             err("independent checks are recorded only through review submit")
         target = live(body["target"]["collection"], body["target"]["id"])
@@ -590,6 +597,10 @@ def _semantic(state: State, p: Planned, errors: list, command: str):
             if argument is not None and (argument.retired or argument.body["origin"] != "source"):
                 err(f"proof_spans/{index}: argument_ref must identify a written source argument")
     elif c == "responses":
+        from . import PROTOCOL_VERSION
+        audit = live("audits", body["audit_id"])
+        if body["qualification_id"] is None and (audit is None or audit.body["protocol_version"] != PROTOCOL_VERSION):
+            err("historical independent responses require their actual qualification evidence")
         if not state.has_blob(body["original_blob"]):
             err("original response blob is not stored")
     elif c == "qualifications":
@@ -599,6 +610,11 @@ def _semantic(state: State, p: Planned, errors: list, command: str):
             if not state.has_blob(case["response_blob"]):
                 err(f"calibration response blob {case['case_id']} is not stored")
     elif c == "reconciliations":
+        from . import PROTOCOL_VERSION
+        from .coherent import unit_targets
+        audit = live("audits", body["audit_id"])
+        coherent = audit is not None and audit.body["protocol_version"] == PROTOCOL_VERSION
+        members = unit_targets(state, body["target"]) if coherent else [body["target"]]
         if body["target"]["collection"] not in ("items", "parts", "uses", "groups", "arguments", "audits"):
             err("reconciliations target assessed records")
         for field, role in (("primary_checks", "primary"), ("independent_checks", "independent"),
@@ -607,7 +623,8 @@ def _semantic(state: State, p: Planned, errors: list, command: str):
                 check = state.version("checks", ref["id"], ref["version"])
                 if check is None or check.retired:
                     continue
-                if check.body["audit_id"] != body["audit_id"] or check.body["target"] != body["target"]:
+                targets = members if field == "independent_checks" else [body["target"]]
+                if check.body["audit_id"] != body["audit_id"] or check.body["target"] not in targets:
                     err(f"{field} entry {ref['id']} has another audit or target")
                 if role is not None and check.body["role"] != role:
                     err(f"{field} entry {ref['id']} has role {check.body['role']}")
@@ -616,7 +633,26 @@ def _semantic(state: State, p: Planned, errors: list, command: str):
                     if response is None or response.body["state"] != "accepted":
                         err(f"{field} entry {ref['id']} belongs to an independent response that is not accepted")
         listed = {ref["id"] for ref in body["independent_checks"]}
-        for response in state.live_all("responses"):
+        from . import PROTOCOL_VERSION
+        audit = live("audits", body["audit_id"])
+        for disposition in body.get("response_dispositions", []):
+            if audit is None or audit.body["protocol_version"] != PROTOCOL_VERSION:
+                err("response dispositions require the coherent examination protocol")
+            pin = disposition["response_ref"]
+            response = state.version("responses", pin["id"], pin["version"])
+            current = state.live("responses", pin["id"])
+            if response is None or current is None or current.version != pin["version"]:
+                err("response disposition must identify the current preserved response")
+                continue
+            if response.body["audit_id"] != body["audit_id"] or not any(
+                    (check := state.version("checks", ref["id"], ref["version"])) is not None
+                    and check.body["response_id"] == response.id for ref in body["independent_checks"]):
+                err("response disposition must concern an included independent opinion")
+            indexes = disposition["judgment_indexes"]
+            if len(set(indexes)) != len(indexes) or not set(indexes) <= set(response.body.get("pending_judgments", [])):
+                err("response disposition indexes must identify preserved pending judgments")
+        historical_responses = state.live_all("responses") if audit is None or audit.body["protocol_version"] != PROTOCOL_VERSION else []
+        for response in historical_responses:
             if response.body["audit_id"] != body["audit_id"] or not _response_covers(state, response, body["target"]):
                 continue
             if response.body["state"] != "accepted":
@@ -719,13 +755,17 @@ def _immutability(state: State, p: Planned, errors: list, command: str):
         errors.append(f"{where}: {p.collection} records are immutable once recorded")
     elif p.collection == "checks" and prev.body["state"] == "complete":
         errors.append(f"{where}: completed checks are immutable; record a successor check with supersedes")
-    elif p.collection == "responses" and prev.body["state"] == "accepted":
+    elif p.collection == "responses" and prev.body["state"] == "accepted" \
+            and not (command == "review_map" and prev.body.get("pending_judgments")):
         errors.append(f"{where}: accepted responses are immutable")
     elif p.collection == "source_reviews" and prev.body["decision"] == "accepted":
         errors.append(f"{where}: accepted source reviews are immutable")
     if p.op == "replace" and p.collection == "responses":
         changed = [k for k in prev.body if prev.body[k] != p.body.get(k)]
-        if command != "review_map" or changed not in ([], ["state"]):
+        from . import PROTOCOL_VERSION
+        audit = state.live("audits", prev.body["audit_id"])
+        allowed = {"state", "pending_judgments", "intake_diagnostics"} if audit and audit.body["protocol_version"] == PROTOCOL_VERSION else {"state"}
+        if command != "review_map" or set(changed) - allowed:
             errors.append(f"{where}: a response only advances its state through review map (changed {changed})")
 
 

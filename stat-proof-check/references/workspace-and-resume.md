@@ -1,3 +1,5 @@
+> Historical v2 reference retained from the baseline. Its workflow and completion requirements do not govern v3. Use [the v3 workflow](controller-workflow.md) and [graph authoring](graph-records.md).
+
 # Legacy v1.5: Workspace and Resume
 
 Canonical rules for portable setup, source state, checkpoints, resumption, and blocked work. See [issues-and-repairs.md](issues-and-repairs.md) for repair and [reporting-and-release.md](reporting-and-release.md) for release.

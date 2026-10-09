@@ -18,6 +18,7 @@ from . import (CONTRACT_VERSION, CORE_VERSION, DEFAULT_FEATURES, LEGACY_OVERVIEW
 from .canonical import canonical_bytes, digest, sha256_bytes
 from .errors import ConflictError, IncompatibleError, InvalidRequest, SourceUnavailable
 from .ids import new_id
+from .paths import resolve_path
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 INIT_METADATA = {
@@ -70,7 +71,7 @@ def _row_record(row) -> Record:
 
 
 def _open(path: Path, *, write: bool) -> sqlite3.Connection:
-    uri = path.resolve().as_uri() + ("?mode=rw" if write else "?mode=ro")
+    uri = resolve_path(path).as_uri() + ("?mode=rw" if write else "?mode=ro")
     conn = sqlite3.connect(uri, uri=True, timeout=10, autocommit=True)
     conn.row_factory = sqlite3.Row
     conn.create_function('proofcheck_writer_format', 0, lambda: STORAGE_FORMAT)
@@ -105,6 +106,11 @@ def _validate_metadata(meta: dict, path, *, write: bool):
     unsupported = sorted(set(features) - set(SUPPORTED_FEATURES))
     if unsupported:
         raise IncompatibleError(f"database requires unsupported features {unsupported}")
+    if write and meta.get("protocol_version") != PROTOCOL_VERSION:
+        raise IncompatibleError(
+            "Version 3 writes fresh coherent-proof-audit/1 stores only. "
+            "Use the compatible historical skill to continue this audit; no automatic recertification is performed.",
+            code="LEGACY_PROTOCOL_READ_ONLY")
     return meta
 
 
@@ -112,7 +118,7 @@ class Database:
     """A supported database opened read-only or read-write, never silently migrated."""
 
     def __init__(self, path, *, write: bool = False):
-        self.path = Path(path)
+        self.path = resolve_path(path)
         if not self.path.is_file():
             raise InvalidRequest(f"database not found: {self.path}")
         self.write = write
@@ -578,6 +584,9 @@ def migrate_database(path, *, backup) -> dict:
         except sqlite3.DatabaseError as exc:
             raise IncompatibleError(f"{path} is not a proofcheck database: {exc}") from exc
         _validate_metadata(meta, path, write=False)
+        if meta.get("protocol_version") != PROTOCOL_VERSION:
+            raise IncompatibleError("use the historical runtime for native migration; v3 does not convert old audit protocols",
+                                    code="LEGACY_PROTOCOL_READ_ONLY")
         if int(meta["storage_format"]) == STORAGE_FORMAT:
             return {"database": str(path), "storage_format": STORAGE_FORMAT, "migrated": False,
                     "already_current": True, "backup": None}
@@ -687,8 +696,10 @@ def migrate_database(path, *, backup) -> dict:
 
 def initialize(path, *, source_root, title: str, allow_missing_source_root=False) -> dict:
     """Create a new database with the initialization commit (revision 1) holding the paper record."""
-    path = Path(path)
-    root = Path(source_root)
+    # Preserve the final directory entry until exclusive creation. Resolving a
+    # dangling destination symlink first would bypass O_EXCL's refusal.
+    path = Path(path).absolute()
+    root = resolve_path(source_root)
     if not isinstance(title, str) or not title.strip():
         raise InvalidRequest("title must be nonempty text")
     if not root.is_dir() and not allow_missing_source_root:
@@ -708,7 +719,7 @@ def initialize(path, *, source_root, title: str, allow_missing_source_root=False
         conn.execute('INSERT INTO metadata(key,value) VALUES (?,?)', ('generation',new_id('request')))
         conn.execute("INSERT INTO metadata (key, value) VALUES (?, ?)", ("created_at", now_iso()))
         paper_id = new_id("papers")
-        body = {"title": title, "source_root": root.resolve().as_posix(), "main_items": [], "report_paths": []}
+        body = {"title": title, "source_root": root.as_posix(), "main_items": [], "report_paths": []}
         request_id = new_id("request")
         request = {"command": "init", "title": title, "source_root": body["source_root"]}
         receipt = {"request_id": request_id, "revision": 1, "rebased_from": None,

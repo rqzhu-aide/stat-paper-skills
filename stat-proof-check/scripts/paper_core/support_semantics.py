@@ -80,6 +80,13 @@ class SupportClosure:
             return [("conditional", ())]
         if kind == "external_result":
             return [(self._local(ref, ["external_source"]), ())]
+        from .contract import INTERMEDIATE_KINDS
+        if self.d.local_basis is not None and (collection == "parts" or kind in INTERMEDIATE_KINDS):
+            # A concern about the shared result itself applies to every use.
+            # Concerns targeting a particular derivation stay on that route.
+            limit = self.d.local_basis.local_finding(ref) or self.d.local_basis.independent_limit(ref)
+            if limit is not None:
+                return [("unavailable" if limit == "defect" else "conditional", ())]
         rules = []
         arguments = self.snap.member_records("arguments_for_target", ref)
         for argument in arguments:
@@ -88,7 +95,6 @@ class SupportClosure:
                 rules.append(("available", (("argument", argument.id),)))
         # An internal equation has its own derivation. Its owner's final
         # composition is not an input, even if the owner has a false conclusion.
-        from .contract import INTERMEDIATE_KINDS
         groups = self.snap.groups_for_conclusion(ref) if collection == "parts" or kind in INTERMEDIATE_KINDS else []
         for group in groups:
             argument = self.snap.live("arguments", group.body["argument_id"])

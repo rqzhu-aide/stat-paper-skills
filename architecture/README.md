@@ -4,11 +4,12 @@ This folder describes the current `stat-proof-check` architecture and retains la
 
 | Source | Responsibility |
 |---|---|
-| [Architecture](architecture.md) | Data flow, authority, review, rendering, and compatibility |
-| [`shared/paper_core`](../shared/paper_core) | Maintained database, validation, controller, assessment, and renderer source |
-| [`stat-proof-check`](../stat-proof-check) | Self-contained skill package and generated core bundle |
-| [`tests/new_format`](../tests/new_format) | Shared-core behavior and packaging checks |
-| [`tools`](../tools) | Bundle builder and proof-check installer |
+| [V3 implementation](../stat-proof-check/IMPLEMENTATION.md) | Current ownership, workflow contract and revision history |
+| [V3 validation](../stat-proof-check/VALIDATION.md) | Tested behavior and release limitations |
+| [`stat-proof-check/scripts/paper_core`](../stat-proof-check/scripts/paper_core) | Maintained v3 database, controller, assessment and renderer |
+| [`stat-proof-check/tests`](../stat-proof-check/tests) | V3 behavior and package checks |
+| [V2 architecture](architecture.md), [`shared/paper_core`](../shared/paper_core), [`tests/new_format`](../tests/new_format) | Retained legacy shared-backend design and tests |
+| [`tools`](../tools) | Proof-check installer and legacy bundle builder, which no longer targets proof-check |
 
 The companion [Proof Graphify repository](https://github.com/rqzhu-aide/proof-graphify) owns its skill and architecture. Its local checkout is a sibling at `../proof-graphify/` for cross-package development. The two repositories have separate Git histories and remotes.
 
@@ -18,7 +19,9 @@ These notes preserve decisions and evidence. Current workflow instructions remai
 
 | Note | Status |
 |---|---|
-| [2.3.8 workflow defect tracker](proofcheck-v238-defect-tracker.md) | Confirmed defects, implementation status, contributing mistakes and closure evidence |
+| [V3 baseline rebuild](proofcheck-baseline-rebuild-handoff.md) | Implemented baseline rebuild, now promoted into the formal package |
+| [3.0.11 reviewer and recovery handoff](proofcheck-v310-reviewer-recovery-handoff.md) | Implemented same-model commissioning and saved-return recovery |
+| [2.3.8 workflow defect tracker](proofcheck-v238-defect-tracker.md) | Historical v2 defects, implementation status, contributing mistakes and closure evidence |
 | [Workflow reliability revision handoff](proofcheck-v238-reliability-handoff.md) | Implemented agent/model-neutral corrections within the existing three stages |
 | [2.3.9 reliability validation](proofcheck-v239-reliability-validation.md) | Integration corrections, preserved cases, behavioral evidence and release validation |
 | [Three stage revision handoff](proofcheck-three-stage-handoff.md) | Implemented October 2 revision: stage-specific preparation, fixed audit snapshots, and separate Archify HTML delivery |

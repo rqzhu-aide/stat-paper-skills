@@ -1,27 +1,25 @@
 # Detailed mathematical checking
 
-Use the assigned packet, role brief and relevant [domain checks](domain-risk-checks.md).
-Show substantive inferences; routine lines need no separate node.
+Use the assigned packet, role brief, and relevant [domain checks](domain-risk-checks.md).
+Examine the full assigned unit, recording decisive reasoning and material exceptions. Routine lines need no separate node.
+
+Assess the supplied argument using the provided material and mathematical knowledge. Short calculations and routine reasoning may clarify a judgment; constructing a missing proof, repairing the argument or finding a counterexample is not required. When substantive assessment cannot resolve a step, record what needs further verification and continue.
 
 ## Mathematical text and JSON
 
 Use `$...$`/`\(...\)` inline or `$$...$$`/`\[...\]` display.
-Preserve raw excerpts; undelimited math stays plain. Serialize Python raw strings to JSON,
-which doubles backslashes (`"$\\theta$"`).
-
-For new transcriptions, use already source-established standard notation, e.g. `\bx=\mathbf{x}`.
-Do not search macros solely for display or guess `\T`. Unsupported notation stays literal.
-Display notes require no audited-target rewrite or re-examination; actual source mismatches
-or uncertain meaning still need scientific treatment.
+Undelimited math stays plain; preserve source excerpts. JSON requires doubled backslashes,
+including dollar-delimited commands: `"$\\theta$"`. Prefer a JSON serializer with Python raw strings.
 
 ## Establish the source and exact target
 
-Read the complete statement, setup, definitions, proof, continuations, supplement, and relevant macros.
-Visually verify consequential PDF symbols, subscripts, powers, signs, inverses, and domains
-(PyMuPDF `page.get_pixmap()` can render pages). State inaccessible or ambiguous material before
-claiming source fidelity or complete coverage.
+Read the complete statement, applicable setup, definitions, proof, continuations,
+supplement, and relevant macros. For PDF material, verify consequential symbols,
+subscripts, powers, signs, inverses, and domains visually. An available PyMuPDF
+`page.get_pixmap()` can render a page for inspection. State inaccessible or ambiguous
+material before claiming source fidelity or complete coverage.
 
-Normalize without changing the assertion. Preserve:
+Normalize the assertion without strengthening or weakening it. Preserve:
 
 - Objects, types, domains, ordered quantifiers, and which quantities are fixed or random.
 - Explicit and inherited hypotheses, including numerical caps and conjunctions.
@@ -36,24 +34,23 @@ when a bound must be uniform in the specified \(M\). Likewise,
 |R_n(\theta)|\le C_\theta n^{-1}
 \]
 does not supply a single constant uniform over \(\theta\).
-Keep exact targets separate from overview synopses. Compare saved targets and setup with source;
-review notes cannot repair inaccurate assertions.
+Retain the exact target separately from a short overview synopsis. Compare the
+actual saved target and its setup with source; an accurate review note cannot
+repair an inaccurate assertion.
 
-## Reconstruct inspectable transitions
+## Assess decisive transitions
 
 For
 \[
 \Gamma,A_1,\ldots,A_m\Longrightarrow C,
 \]
 examine the decisive written transition using actual inputs, substitutions, scope,
-operation, rule, side conditions, and source location. Show its calculation or logical derivation
-and outcome in reasoning;
+operation, rule, side conditions, and source location. Explain the basis for the judgment, with a calculation or logical derivation where useful;
 a familiar final formula or “standard algebra” does not justify an invalid transition.
 
-Split where a new premise, operation, event, measure, quantifier, regime, or scope
-needs a distinct justification. Expose a useful intermediate bound, equation,
-construction, limit, disputed assertion, or reusable claim. Keep routine consecutive
-algebra together when the displayed chain makes each transition inspectable.
+Separate a consequential change of premise, operation, event, measure, quantifier,
+regime or scope when it needs a distinct judgment. Record useful intermediate bounds
+or disputed assertions within the examination. Keep routine consecutive algebra together.
 
 For example, with \(a,b>0\),
 \[
@@ -81,19 +78,20 @@ Two valid applications do not imply a valid joint inference. If
 \Pr(E_1\cap E_2)\ge1-\Pr(E_1^c)-\Pr(E_2^c)\ge1-2\delta.
 \]
 A claim of \(1-\delta\) requires a different allocation or further reasoning.
-Record the correct applications separately from the defective combination.
+Distinguish the correct applications from the defective combination in the examination's reasoning. Separate local check records are optional when that distinction needs its own displayed outcome.
 
 ## Premises, definitions, and witnesses
 
 A theorem's asserted conclusion is not its own premise. Use its hypotheses,
 meaning-determining definitions, authorized setup, or actually available earlier
-results. Ordinary algebraic and logical rules belong in the justification; a
-nontrivial theorem used as a rule still needs source verification and applicability.
+results. Ordinary algebraic and logical rules belong in the justification and need no
+separate source investigation. For a non-trivial use of an external result, follow
+[external-result-verification.md](external-result-verification.md).
 
 Definitions introduce notation, not unproved mathematical properties. Defining
 \(\hat\theta\in\arg\min_{\theta\in\Theta}f(\theta)\) does not establish nonempty
 argmin, uniqueness, or measurability. If a later step needs one of these properties,
-give it an obligation or identify an authorized assumption that supplies it.
+examine why it holds or identify the missing premise within the current examination.
 For example, \(\inf_{x>0}x=0\) has no minimizer in its stated domain.
 
 Respect witness dependence. From \(\forall x\,\exists y:P(x,y)\), a witness
@@ -135,7 +133,7 @@ without an independent foundation supplies no proof.
 
 ## Constants, rates, probability, and limits
 
-Recompute the algebra and asymptotic comparison under the exact regime. Identify
+Check consequential algebra and asymptotic comparisons under the exact regime. Identify
 constants depending on dimension, distribution, confidence, or tuning parameters.
 If a theorem lets \(p=p_n\) grow, a fixed-\(p\) bound does not automatically remain
 valid. Divide by a vanishing normalization only with a corresponding bound on
@@ -152,21 +150,25 @@ and data-dependent choices. When exchanging limits, integrals, expectations,
 derivatives, suprema, or infima, name the applicable justification and verify
 its needed regularity in this problem.
 
+Within the same examination, note direct, material restrictions that consequential assumptions impose on the claimed application. Distinguish a valid conditional theorem from an unsupported application. Routine reasoning may clarify a restriction or a common event; do not require a predetermined gap verdict, a proof reconstruction, or a separate nonvacuity investigation for every assumption.
+
 ## Origins, completion, and repairs
 
 Distinguish the written argument, reconstruction of routine details, and proposed
 repairs. Do not silently substitute corrected expressions for printed ones. A borrowed
 internal bound can survive a false owner theorem; examine its own inputs.
 
-Complete the route backward from its final target, checking conjunctions, cases,
-quantifiers, and discharged scopes. Separately inspect all in-scope written material,
+Assess whether the written route reaches its final target, considering conjunctions,
+cases, quantifiers and discharged scopes. Inspect all in-scope written material,
 including unused defective routes. Do not call the audit complete just because
 one route establishes the target or every registered excerpt has coverage.
 
+If the manuscript omits the argument, assess what is actually supplied and record the omission or uncertainty. Do not invent a route to fill it. This is different from leaving an available proof unread.
+
 Use [evidence-and-verdicts.md](evidence-and-verdicts.md) for outcome and
-counterexample standards. Preserve defects when supplying a repair. A new route
+counterexample standards when a refutation is actually claimed. Repairs are optional; preserve defects when supplying one. A new route
 for the unchanged statement has its own provenance; a restricted statement has
 its own target. A candidate repair remains provisional until the claimed
 mathematics and required independent review are completed.
 
-Optional: [multi-step probability authoring example](probability-example.md).
+Record these mathematical distinctions within the coherent proof examination. Use graph-records.md for v3 authoring; the older probability fixture is historical.

@@ -1,55 +1,19 @@
-# Coordinator inventory and scope
+# Coordinator
 
-Start from the requested audit scope, captured sources, and major-item inventory. Distinguish
-declarations, assumptions, definitions with well-posedness claims, locally proved results, and
-external restatements. Review source-selection limitations before assigning mathematical work.
-Locate complete statement and proof passages, including supplements and relevant macros.
-An unavailable proof of a requested result remains a source limitation or unresolved examination
-in scope. Excluding the result removes its required work; missing material alone does not authorize
-narrowing the request.
-Confirm their boundaries against the actual source, including continuations and written alternatives,
-and record the reviewed boundary basis before claiming full coverage. Coverage of every registered
-character is insufficient when the proposed source unit omits part of the proof.
-Match differently numbered supplementary proofs using their content and hypotheses, following
-[graph-records.md](graph-records.md); preserve mismatches rather than silently merging targets.
+Use controller-workflow.md for the normal path. Declare the requested scope, account for sources and written proofs, and keep a stable owner per proof where useful.
 
-For Full, reconcile all proof-required declarations and written arguments against the manuscript and
-supplements. For Focused, discover the target's exact internal prerequisites. Start new audits from
-the manuscript in their own proof-check database. When resuming, a previously registered graph is
-a starting point, not proof of inventory completeness.
-Perform this inventory and the primary examination in Stage 1, incorporating known source and
-representation corrections before routine Stage 2 review. Stage 2 repeats the inventory comparison
-at final integration to account for discoveries; it does not routinely repeat unchanged examinations.
-For each substantive inference, identify its justification as a declared premise, an in-paper
-derivation, or an external result. An uncited load-bearing fact still needs its supplier and actual
-use recorded: for example, closedness of a finite-dimensional subspace or the projection theorem.
-Use [external-result-verification.md](external-result-verification.md) for that fact. A familiar name
-in `rule_names` does not replace source inspection or application checking. Keep routine algebra
-together; this is not a requirement to create a node for every identity.
-Attach the exact audited specification to the same item/part identity, with its source setup.
-A matched synopsis does not certify newly added exact content. Explicitly reuse a previous source
-comparison only when it actually covered that same exact statement, setup, and source versions.
+You are the sole shared-database writer. During Phase 1, workers may independently produce local items, connections and primary examinations. After a proof group's returns, consolidate the same source claim and context into one shared record, retaining distinct uses, all source locations and each worker's reasoning. Workers need no canonical IDs or approval per equation. Follow [phase1-drafts.md](phase1-drafts.md); a delayed return need not block unrelated groups.
 
-Keep a manuscript-wide inventory of results, sources, dependencies and written routes. Register each
-in-scope route and develop its detailed intermediate records as examination reaches that proof; a fully
-elaborated graph of the whole paper is not a prerequisite to useful checking. Preserve undispatched
-work and extend the inventory when discoveries require it. Expose intermediate nodes for meaningful
-bounds, events, constructions, reductions, limits, disputed assertions, or reusable checkpoints. Use
-source coverage for headings and structural text. Several routine algebraic lines can belong to one
-meaningful derivation. Add a node when it gives a useful assertion, scope boundary, reusable result,
-or review checkpoint, not merely because a new source line exists.
+Create coherent assignments with exact questions and sufficient source. Put important uses of other results in the consuming proof's assignment, for primary examination and independent review. Reserve separate cross-proof assignments for material questions that do not fit a unit. Use [controller-workflow.md](controller-workflow.md#stage-2-review-and-integrate) to establish a separate review route once and reuse it while its capability is unchanged. The protocol is not model-specific.
 
-While the proof is in context, save its short `proof_idea` and each supplier's contribution and
-restrictions through ordinary authoring. Follow [Reader explanations](graph-records.md#reader-explanations);
-this adds no separate review or completion gate.
+Integrate saved responses before commissioning another. Keep relevant adverse concerns and distinguish a material scientific disagreement from a wrong field or mapping. Adopting a saved finding does not require re-examination, and integration can retain unresolved disagreement. No additional proof is required merely to make the result favorable. Use [reconciler.md](reconciler.md) for this decision.
 
-Use [controller-workflow.md](controller-workflow.md) for the proof-owner sequence, execution capabilities,
-dispatch, recovery and delivery. Keep enough surrounding definitions, source context and full quantifiers
-for each bounded assignment. Split long proofs only at meaningful claims with explicit final integration.
+Scripts produce IDs, pins and bookkeeping. Use stage1 add-unit for proofs, stage1 add-record for ordinary setup/shared records, and generated response scaffolds. Do not build per-edge agreement or character-coverage ledgers.
 
-A local derivation can be examined under declared premises before a supplier's full audit finishes;
-request provisional work explicitly and label its support conditional. Do not call the theorem
-established on that basis. A known-false required supplier gives no establishment through that route;
-do not describe that state merely as pending review. If a checker discovers an omitted dependency
-or scope distinction, save the discovery, refine the graph, and revisit affected obligations. The controller
-can diagnose inconsistency in recorded structure but cannot discover a premise absent from that structure.
+Map saved primary drafts into the consolidated graph's response scaffolds when they address the same questions, preserving actual authorship and scope. Resolve mechanical identity differences yourself. Do not request a fresh examination merely to format it. When consolidation exposes a materially different claim, context or unexamined use, seek only that affected continuation or retain its limitation.
+
+In Phase 2, a few independent reviewers can each process a coherent group of packets. Use `stage2 prepare-group` and exclude previously assigned groups to avoid duplicate dispatch. Give reviewers only the named delivery files and source context, retaining coordinator manifests privately. Submit each returned response separately so a missing or malformed packet does not discard useful work from the group. Integrate saved returns; seek affected continuation only for materially changed or previously unexamined in-scope content.
+
+Correct material representation errors. If a correction changes the claim, conditions or evidence, record that the corrected version needs verification or obtain the affected examination before claiming support. Registering equivalent explanatory detail does not create new required work. Preserve the written proof's defect when noting an alternative argument.
+
+Finish with the actual findings, scope, review level, source limits and output links, following [reporting-and-release.md](reporting-and-release.md). Assessed proof omissions and external-source limitations can be completed findings; missing promised review or unexamined supplied material makes the delivery working, not a completed Full audit.

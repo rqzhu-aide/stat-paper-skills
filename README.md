@@ -7,7 +7,7 @@ This repository maintains four skills for statistical and machine-learning paper
 | `stat-write-style` | v1.6.1 | Draft and revise manuscript exposition and presentation |
 | `stat-paper-review` | v1.2.1 | Give a critical, evidence-backed manuscript review |
 | `stat-proof-write` | v0.3.1 | Draft or clarify a mathematical proof |
-| `stat-proof-check` | v2.3.9 | Audit written mathematical arguments without silently repairing them |
+| `stat-proof-check` | v3.0.11 | Audit written mathematical arguments without silently repairing them |
 
 Use `$stat-write-style`, `$stat-paper-review`, `$stat-proof-write`, or `$stat-proof-check` to invoke the corresponding skill. Their `agents/openai.yaml` files disable implicit invocation. Proof writing and proof checking are separate tasks: drafting a proof does not provide an independent audit.
 
@@ -19,18 +19,18 @@ stat-paper-skills/                 local grouping folder
     stat-write-style/             skill
     stat-paper-review/            skill
     stat-proof-write/             skill
-    stat-proof-check/             skill
-    shared/paper_core/            maintained common backend
+    stat-proof-check/             v3 skill and maintained backend
+    shared/paper_core/            retained v2 shared backend
     architecture/                current proof-check architecture
-    tests/new_format/            shared backend and package tests
-    tools/                       bundle builder and installer
+    tests/new_format/            legacy shared backend tests
+    tools/                       legacy bundle builder and installer
     archived/                    local historical material, ignored by Git
   proof-graphify/                 separate Git repository and skill
 ```
 
 This repository maps to [stat-paper-skills](https://github.com/rqzhu-aide/stat-paper-skills). The sibling `../proof-graphify/` checkout maps to its own [proof-graphify repository](https://github.com/rqzhu-aide/proof-graphify), which owns that skill and its `architecture/` folder. The two repositories have separate Git histories and remotes. The sibling checkout supports cross-package development; installed skills do not require it.
 
-The [proof-check architecture index](architecture/README.md) describes the shared backend and audit workflow and labels retained change records and proposals. Proof Graphify's [architecture](https://github.com/rqzhu-aide/proof-graphify/tree/main/architecture) describes its selective overview and reader. Older plans, audits, receipts, and superseded designs are kept in the local `archived/` folder, outside the remote and skill discovery.
+The [proof-check architecture index](architecture/README.md) identifies the maintained v3 package and labels retained change records and proposals. Proof Graphify's [architecture](https://github.com/rqzhu-aide/proof-graphify/tree/main/architecture) describes its selective overview and reader. Local backups and experiment outputs stay outside the remote and skill discovery.
 
 ## Skill use and installation
 
@@ -52,18 +52,18 @@ The installer checks the bundle, stages the package, and verifies each installed
 
 ## Backend and validation
 
-[`shared/paper_core`](shared/paper_core) is the maintained source of the common SQLite backend. [`tools/build_paper_core_bundles.py`](tools/build_paper_core_bundles.py) builds byte-identical, self-contained bundles for `stat-proof-check` and the separate Proof Graphify checkout. Do not edit a generated bundle by hand.
+[`stat-proof-check/scripts/paper_core`](stat-proof-check/scripts/paper_core) is the maintained v3 backend. The formal `stat-proof-check` directory replaces the former `stat-proof-check-v3` development directory. Refresh its content manifest after runtime edits with `python -B stat-proof-check/scripts/build_manifest.py`; use `--check` for read-only verification. The [implementation boundary](stat-proof-check/IMPLEMENTATION.md) and [validation record](stat-proof-check/VALIDATION.md) document the current release.
 
-For cross-package development, check out Proof Graphify at `../proof-graphify/` and run:
+Run the current proof-check release checks with a shared Python installation:
 
 ```text
-python -B tools/build_paper_core_bundles.py --check
-python -B -m unittest discover -s tests/new_format
-python -B -m unittest discover -s stat-proof-check/tests
+python -B stat-proof-check/scripts/build_manifest.py --check
+python -B -m unittest discover -s stat-proof-check/tests -p "test_v3*.py"
+python -B -m unittest discover -s stat-proof-check/tests -p test_skill_structure.py
 python -B -m unittest discover -s tools -p test_install_proofcheck.py
-python -B -m unittest discover -s ../proof-graphify/tests
+python -B -m unittest discover -s tools -p test_bundle_targets.py
 ```
 
-The backend and package checks assess software behavior. A complete mathematical audit and live browser review require separate evidence. The two repositories can move together without requiring either installed skill to import runtime code from the other checkout.
+The retained `shared/paper_core`, `tests/new_format` and shared-bundle command describe the older common backend. Their byte-equality checks are not v3 release checks, and that builder no longer targets proof-check. Proof Graphify is maintained separately. The backend and package checks assess software behavior; mathematical accuracy and whole-paper performance require separate evidence.
 
 [MIT license](LICENSE)

@@ -4,20 +4,21 @@ Read only the sections matching the assigned argument, together with
 [mathematical-checking.md](mathematical-checking.md). Record the actual relevant
 calculation, conditions, and outcome in the current check's reasoning. These
 questions guide scientific examination; they do not require a stored risk row
-for every aspect or source line. Existing v1.5 ledger requirements remain in
-[line-by-line-protocol.md](line-by-line-protocol.md).
+for every aspect or source line. Record material differences within the coherent
+examination; this reference creates no additional required tasks or ledgers.
 
 ## Estimated nuisance and algorithm interfaces
 
 Apply this section when the user requests method-to-implementation verification,
 the implementation targets a different population quantity, or the paper claims
 that its method establishes more than an assumed oracle condition. In database
-audits, record the reason in the audit's `method_interface` global task.
+audits, explain the relevant interface in the affected proof examination or a
+deliberately selected global examination.
 
 - Write the exact population target, measure, support, and equality notion.
 - Write every fitting-sample law. For a density ratio, write numerator and denominator laws, not labels such as target density and behavior density.
 - Identify which marginals are equal, which conditionals change, why any cancellation is valid, and whether domination or positivity and evaluation support hold. Equal reference laws do not require literal reuse of the same finite observations.
-- Record the evaluation law or exact evaluation points and every downstream equation, theorem, or algorithm that receives the fitted values.
+- Record the evaluation law or exact evaluation points and the material downstream uses within the declared scope.
 - Check whether sample reuse or dependence changes the variance, asymptotic, or finite-sample argument even when it preserves the population target.
 - Separate the documented estimator-to-target relation, code-to-documented-estimator relation, code-to-required-target relation, and execution provenance.
 - Treat configuration that changes estimator semantics as implementation evidence. Treat revision, run configuration, preprocessing, inputs, and output linkage used to identify a reported run as execution-provenance evidence.
@@ -33,7 +34,7 @@ audits, record the reason in the audit's `method_interface` global task.
   floors, truncation, or other stabilization at the theorem's normalization
   scale. Propagate that error through approximation, studentization, coverage,
   and any claimed limiting distribution.
-- If multiple readings are plausible, derive the consequence of each and search all authoritative manuscript sections before classifying the interface.
+- If plausible readings change the conclusion, compare their consequences using the relevant manuscript sections. Unresolved ambiguity is a reportable limitation.
 
 ## Probability and concentration
 

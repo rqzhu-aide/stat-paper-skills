@@ -1,3 +1,5 @@
+> Historical v2 reference retained from the baseline. Its workflow and completion requirements do not govern v3. Use [the v3 workflow](controller-workflow.md) and [graph authoring](graph-records.md).
+
 # Legacy v1.5: Independent Verification Protocol
 
 Every unit in `audit_scope.in_scope_units` needs a fresh independent check.

@@ -1,276 +1,149 @@
-# Proof workflow and bounded controller
+# Three-stage execution
 
-The coordinator owns graph construction, dispatch and scientific decisions. The controller records
-explicit work; it never calls models or decides that the graph includes every mathematical premise.
-Use [database-audit.md](database-audit.md) for setup and [coordinator-protocol.md](coordinator-protocol.md)
-for inventory and scope. This is the canonical operating sequence and recovery procedure.
+Use the script in this package. Do not mix v2 commands, schemas or qualification instructions into a v3 audit.
 
-## Carry one proof forward
+Preparation selects a batch of useful work, which may cover only part of the declared scope. The coordinator records returned work and uses the saved responses and status to select remaining assignments. A reused packet is the same pending assignment, not a request to examine the proof again. No separate stage checklist is needed.
 
-A proof unit is one exact conclusion, one written route, its setup and complete source passages.
-It uses existing records, not a new storage object. The coordinator is its default primary owner:
-keep source comparison, primary examination, coverage and later reconciliation in one continuing
-context when useful. Delegate coherent mathematical work when it needs a separate context, rather
-than launching a worker for each record type. Reconciliation compares the examinations; it does not
-routinely require a third complete examination. Existing role permissions still govern every write.
+Use a fresh output directory for each new batch, such as primary-01 followed by primary-02. Reuse an already exported pending assignment when its files are available. If an export reports OUTPUT_CONFLICT, export the saved packet to a fresh directory; no examination needs repeating. Another directory does not supply a missing response.
 
-At startup or resume, inspect database state and known saved outputs before commissioning more work.
+## Stage 1: prepare and examine
 
-| Stage | Work and next operation |
-|---|---|
-| 1 Prepare and examine | Inventory source, compare statements/setup, establish the argument's final group and actual source links, then certify complete proof boundaries and save primary examination with coverage. Use `stage1 status` and `stage1 prepare`. |
-| 2 Review and finalize | Obtain independent examination, integrate unchanged responses, map source targets and reconcile actual reasoning. Finish applicable global checks and the final inventory comparison, then `stage2 finalize`. |
-| 3 Produce HTML | Use `stage3 build` on the frozen snapshot. Check presentation and navigation without reexamining unchanged mathematics. |
+Capture evidence and assign coherent proof groups. During ordinary source reading, include meaningful footnote and remark claims by their mathematical role, within a coherent examination or as explicitly selected results. Routine graph children need no separate examination. Workers can independently draft needed items, connections and primary examinations from their sources. They need no canonical IDs. After the group's returns, the coordinator consolidates shared identities and registers meaningful proof units. See [phase1-drafts.md](phase1-drafts.md) for the procedure and optional consolidation helper. Direct authoring is also available when one examiner is doing the work.
 
-The normal Stage 2 preparation checks Stage 1 readiness across the declared audit scope. Required local
-primary examinations must be current and accounted for, with usable source grounding for required written
-routes and known representation problems settled. Grounding connects actual applications and inferences
-to their sources; it does not preassign an independent judgment or certify its correspondence.
-Current required source comparisons must be `matched`: a comparison marked `needs_attention` can be
-counted as examined while still needing correction. Use current `get`/`compare` and authorized authoring
-to settle it; do not repeatedly request an already satisfied task. Completed mathematical gaps or
-refutations can advance. Missing source and unfinished drafts remain incomplete.
+Use stage1 add-unit for a written proof, or stage1 add-record for ordinary setup and shared intermediate results, following [graph-records.md](graph-records.md). These helpers generate the paired records and save source judgments under the actual examiner's identity; they do not manufacture mathematical verdicts. A selected intermediate derivation can belong to the owner's ordinary examination without another assignment. Finish its known consuming links before preparing that examination. If the supplied manuscript omits a proof, record and examine that omission without inventing a proof route.
 
-If proof B is blocked, explicitly use `stage2 prepare --mode independent --ready-subset --focus items:itm_A` to review a
-ready proof A. Its actual primary prerequisite closure must be ready. Ordinary `--focus`, exclusions,
-or provisional options do not bypass the boundary; global work cannot use the subset exception. The
-declared audit scope and its unfinished work remain unchanged. Do not require independent qualification
-to finish Stage 1. Arrange qualification before independent dispatch.
+The consuming proof owns examination of its important connections. If B uses A, B's examination checks whether A supplies what B needs; A's examination assesses A's own reasoning. Include known questions about shared assumptions, joint probability, limits or method interfaces in these assignments and their ordinary independent review. Use a separate cross-proof inspection only for a substantive question that does not fit an existing unit; its primary examination belongs in Stage 1. Record its actual review coverage rather than implying it received independent review through the standalone assignment.
 
-Global consistency, adversarial and method-interface tasks belong to Stage 2 even though their stored
-role is primary. Use `stage2 prepare --mode global` after local review and reconciliation settle.
-When Stage 2 discovers a substantive correction, revisit the affected records and current change
-diagnostics. Preserve unrelated examinations and original responses. Save and integrate useful returns
-before expanding the worker pool. A negative result is not a reason to seek repeated favorable reviews.
+~~~text
+AUDIT stage1 add-unit audit.db --input unit.json
+AUDIT stage1 status audit.db --audit AUDIT_ID
+AUDIT stage1 prepare audit.db --audit AUDIT_ID --out work/primary-01
+~~~
 
-These stage boundaries govern normal preparation, not the eligibility of previously valid reviews.
-Submission, inspection, mapping and recovery remain available throughout. The existing `work prepare`
-interface uses the same ordering. For a specific exceptional investigation, supply both
-`--exception-purpose` and `--exception-limitations`. `--route` already declares supplied-route review
-and records its scope limitations. Exceptions waive no scientific or independence requirement.
-Three stages do not mean three giant assignments.
+Read the returned packet and fill the generated response scaffold by row type: source_fidelity records the source comparison; check records mathematical reasoning and outcome. Keep each generated task_id and row type unchanged. The coordinator may map saved draft examinations into these rows when the consolidated question and evidence match what the worker examined. Preserve its reasoning, scope, limitations and actual reviewer identity; this is intake, not a second proof examination. A materially changed question needs only affected continuation or an explicit limitation. Leave optional coverage and advanced bookkeeping alone unless needed. For a composition, extent is whole_unit only when the whole assigned source question was examined, including an assessed manuscript omission; otherwise use partial and name unexamined material. No character ledger or one-result-per-edge certificate is needed.
 
-## Choose available execution contexts
+Submit through the stage command using the actual packet, reviewer and response. Scripts generate the administrative envelope and a stable request ID; corrected response bytes get a new ID. An unchanged replay is a historical receipt, performs no new work, and may contain an old remaining-task list. When deciding what still needs doing after a replay, use current stage status or preparation. Manual envelopes are for recovery or advanced use.
 
-At setup/resume, identify exposed isolated-worker, clean-session/process and existing external-return
-routes using available tools/help. Reuse a verified route while its configuration is unchanged; otherwise
-check one plausible, already configured and authorized route. Record available, unavailable with the
-observed failure, or unknown in the existing run note. Missing native subagents alone proves no broader
-unavailability. Do not repeat unchanged probes, install tools, establish accounts/services/billing or
-solicit another person merely for discovery.
+~~~text
+AUDIT stage1 examine audit.db --packet PACKET_ID --reviewer REVIEWER --response work/primary-01/response.json
+~~~
 
-Plan the actual available reviewer configuration before dispatch. Arrange [qualification](database-qualification.md)
-once and reuse it across fresh contexts while provider, model, effort, tools and isolation are unchanged.
-A genuine configuration change requires new calibration. Verify actual isolation and exposure for each review.
+A unit can proceed to review once its source question and primary examination are saved. A source mismatch requires correcting the affected representation or disclosing the limitation. A mathematical gap is a valid finding. Neither is a reason to repeat unrelated proofs.
 
-| Capability or interruption | Action |
-|---|---|
-| Isolated workers are available | Use source-only independent contexts; parallelize unrelated primary work when useful. |
-| No subagents, but a clean session or another reviewer is available | Deliver the same neutral files sequentially and submit the unchanged return with actual provenance. |
-| No verifiable independent context | Preserve primary work and a reviewer handoff. Required independence remains unfinished; do not disable it to claim Full or Focused completion. |
-| Primary context is lost | A successor identifies itself accurately and continues from saved reasoning, evidence and remaining questions. It cannot replace another reviewer's draft as its own. |
-| Original independent author cannot continue | Preserve the response and issue. A new examiner authors its own response and performs the examination needed to support it; it cannot impersonate or silently edit the original author. |
+To include a later meaningful registered claim in the same Full audit, use the current `audit.version` from `status`, not the database revision:
 
-A role prompt, compaction or fork containing primary reasoning does not create isolation. Related neutral
-assignments may share the independent examiner's own source context while retaining separate packet responses
-and truthful continuity. Use supported equivalent file/command tools; if source inspection or submission is
-unavailable, save a precise handoff rather than claiming unseen examination or an unmade database update.
+~~~text
+AUDIT status audit.db --audit AUDIT_ID
+AUDIT stage1 add-targets audit.db --audit AUDIT_ID --expected-version AUDIT_VERSION --target items:ITEM_ID
+~~~
 
-## Prepare and dispatch
+Repeat `--target` for other deliberately selected items. Read `ineffective_targets` for excluded claims; the command preserves exclusions and records no examination. Prepare the added question with its item focus. Unchanged local assignments remain usable; materially changed questions retain their normal freshness rules. A claim without a separate argument keeps its statement examination, including a possible gap or uncertainty. If several exact proof routes are available, select the intended argument or task. This operation adds scope without restarting the audit or waiting for unrelated reviewers.
 
-Paths follow the [folder rules](database-audit.md#choose-the-work-folder); run from the audit root
-or use absolute paths. Keep each assignment under
-`work/assignments/<role>-<result>-<number>/`, using a fresh name for new assignments.
-`primary-result-1` below is an illustrative assignment name.
+## Stage 2: review and integrate
 
-```text
-paper_audit.py stage1 prepare AUDIT.db --audit aud_ID --focus items:itm_ID --out work/assignments/primary-result-1
-```
+Commission independent review with the coordinator's effective provider and model in a separate source-only context. Native delegation may use established model inheritance without the primary conversation. For a fresh subprocess, use the host's same-model launch recipe from the actual root configuration, including overrides and configured reasoning settings when available. A different provider or model requires explicit user authorization. Preparation exports work and submission records returns; neither launches reviewers.
 
-An assignment groups coherent context for one argument/result and role, normally five units
-(`--max-units 1..10`). Applications, joint derivation, coverage and composition can share a worker
-call while retaining distinct records. Repeated `--task` selects requested work with necessary joint
-context and prerequisites; `task_selection` explains requested versus actually assigned tasks.
-`--exclude-task` excludes work assigned elsewhere. There is no background queue. `--allow-provisional` permits
-explicit conditional local work, never missing-source or independence bypasses.
-`work list --limit` accepts 1..100 tasks per page. Pass a non-null `next_cursor` to `--cursor` with
-the same audit and focus to inspect the remaining inventory. After writes, start a fresh listing
-without the old cursor, which retains its earlier snapshot. Do not infer completion from the
-visible rows; local work need not wait for a scan of every page.
+Trusted launch configuration or established native inheritance is sufficient; unavailable backend identity or optional effort metadata creates no new verification task. Record the configured and any returned identity in existing reviewer/run evidence. If returned metadata contradicts the intended model, preserve the actual identity and response without counting it as the required same-model review. Establish the known route once and reuse it while its configuration and capability are unchanged. Correct a concrete local launch error if possible; if that route is unavailable, retain the missing-review limitation and finish working output. Do not search unrelated CLIs or substitute the primary context to obtain completion.
 
-A successful assignment can defer other units:
-`different_context` and `unit_limit` mean remaining scheduled work, not a repair. Proceed with
-the valid assignment; preserve existing scheduling of other contexts. Size deferrals retain
-measured contributors and the applicable limits; do not split a unit or repeatedly guess sizes.
+Continue unfinished work in the same identified source-only reviewer context where supported. Otherwise use a fresh same-model context with that reviewer's source-only saved work. A generic most-recent-session flag does not establish that it resumes the reviewer rather than the coordinator.
 
-Preparation writes the files below plus coordinator manifest, guidance and an envelope template. Its
-`worker_delivery_files` receipt lists files to deliver. Primary `worker-guidance.json` includes a
-`task_table` of assigned identities, labels, kinds and result types, plus blank coverage/finding row
-templates. Fill only rows justified by the examination; keep explanatory metadata outside the response.
-Preserve scaffold IDs and use the generated shapes. Deliver the listed files for each role:
+~~~text
+AUDIT stage2 prepare audit.db --audit AUDIT_ID --mode independent --out work/review-01
+~~~
 
-| Role | Deliver |
-|---|---|
-| Primary | worker-packet.json, response-scaffold.json, worker-guidance.json, [primary-checker.md](primary-checker.md), [mathematical-checking.md](mathematical-checking.md), [evidence-and-verdicts.md](evidence-and-verdicts.md) |
-| Independent | Same three worker files, [independent-checker.md](independent-checker.md), the same two scientific references; source-only context with verified isolation/continuity |
-| Reconcile | worker-packet.json, response-scaffold.json, worker-guidance.json, coordinator-guidance.json, [reconciler.md](reconciler.md), [evidence-and-verdicts.md](evidence-and-verdicts.md); examine compared judgments |
+For several ready proofs, you may prepare a few disjoint reviewer groups and run them concurrently where the host permits; sequential execution remains valid. Each group contains normal packets; no combined response is required:
 
-Add domain/external guidance only when needed. A supplied-route independent assignment additionally
-loads [supplied-route-review.md](supplied-route-review.md). Keep mapping, qualification, envelopes,
-telemetry, and coordinator manifests out of independent delivery. Do not reload the whole entrypoint
-or schema manual when these materials were supplied. Generated shapes have no scientific verdicts.
+~~~text
+AUDIT stage2 prepare-group audit.db --audit AUDIT_ID --max-packets 3 --out work/reviewer-a
+AUDIT stage2 prepare-group audit.db --audit AUDIT_ID --exclude-group work/reviewer-a/group-index.json --out work/reviewer-b
+~~~
 
-`prepared:false` with exit 0 is a diagnostic, not completion. Stage readiness and current work facts
-explain what remains; they are not proof that every manuscript result was discovered. The CLI's `preparation` summary reports
-assessed completion separately from a size, prerequisite or coordinator blocker and supplies next commands.
-Finish the named prerequisite, choose another focus, or inspect the meaningful boundary. For size failures,
-`preparation.size_action` supplies a bounded retry when supported or identifies context to inspect; a byte
-lower bound does not guarantee the retry fits. Packets default to 131,072 bytes, allow
-`--max-bytes` up to 1,048,576, and cap records at 2,048. Never truncate a joint argument to fit.
+Give each reviewer its `reviewer-delivery.json` and the worker files named there, not the coordinator's entire directory. Keep `group-index.json` and manifests private. One reviewer can reuse its own source context across its packets. Save one response per packet at its assigned response path. A reviewer without write access returns the filled generated scaffold through stdout or its individual return channel; the coordinator/host captures that original before aggregate formatting or clipping. Do not invent another response schema. A combined status message is only a notification, not the sole copy of completed work.
 
-## Save work
+Provide relevant role references and matching original source passages or source-only images. Use the existing proof records and source navigation to supply the exact statement, applicable setup and known proof segments, including supplied continuations, from their actual files. Match differently numbered results by their statements and hypotheses, following [graph-records.md](graph-records.md). Preparation includes `source-navigation.json`, an optional index of public packet anchors with source identity and version, including prerequisites and continuations; no manual index preparation or validation is required. Keep primary judgments and suggested solutions out of source-only delivery. Reuse readable TeX/text and existing renders; for ambiguous consequential PDF symbols, provide the relevant original passage/image or retain that local limitation. No page sweep, PDF merging or per-proof image preparation or capability test is required.
 
-Save an informative derivation, defect or unresolved question while its reasoning is in context.
-A partial save does not require complete coverage, resolved findings or publication. Retain its examined
-evidence and next action before yielding or changing target.
+Submit the saved group in a finite pass with the actual common reviewer and exposure:
 
-Fill the generated `submission-envelope-template.json`, preserving its initial request and packet IDs
-and supplying the actual reviewer. It is coordinator-only first-attempt assistance, not completed
-provenance. Independent work also needs the actual qualification/exposure; other modes use null.
-For reconciliation, preserve the response scaffold's `request_id` and use that same ID in the
-envelope. A different envelope ID does not identify that response.
-Save authored envelope and response copies in the assignment directory. A revised response, changed reviewer/provenance,
-or explicit rebase needs a fresh request ID; use `ids --kind request` and, for reconciliation, author
-that same new ID in the new response before submission. Never change previously submitted bytes.
+~~~text
+AUDIT stage2 submit-group audit.db --audit AUDIT_ID --group-index work/reviewer-a/group-index.json --reviewer REVIEWER --exposure source_only
+~~~
 
-```text
-paper_audit.py work submit AUDIT.db --submission work/assignments/primary-result-1/submission.json --response work/assignments/primary-result-1/response.json
-```
+This command records each usable return separately and continues past local missing or malformed files. It reuses saved outcomes after interruption, reports current remaining work and stops; it does not launch reviewers, repeat pending examinations or mark the audit complete. Use `--response PACKET_ID RESPONSE_PATH` for an explicitly chosen repaired or prior return; otherwise it uses the group's recorded response_path. `stage2 review` remains available for one response, and integration corrections use their existing commands. Preparation does not reserve tasks: exclude all already assigned groups (repeat `--exclude-group`) or task IDs. Repeated generic preparation can return an existing pending packet and must not trigger duplicate dispatch.
 
-Preserve worker bytes unchanged. One request ID identifies those bytes and its envelope; an identical
-retry returns the original receipt. Changed input or explicit rebase needs a new ID. Intake precedes
-parsing/freshness checks. Included mathematical edits commit atomically; untouched scaffold rows are
-omitted and remain unfinished. A scaffold-only return is retained as `NO_AUTHORED_WORK` without scientific
-writes. Informative drafts need reasoning and a next action; missing evidence can itself be the documented
-question. Coverage/findings must reference actual saved checks, never an omitted placeholder.
-For a saved terminal rejection, inspect current obligations before reviving the failed submission.
-Follow the specific correction below where work is still needed, then use a fresh ID;
-unchanged replay only returns that rejection. An unused ID rejected
-before intake remains available. Inspect when artifacts or intake state are unclear.
-Read `stored`, `state`, `committed_revision`, saved/unchanged check references, omitted task IDs and
-satisfied/remaining assigned tasks separately. An accepted save can preserve useful partial work without
-completing an obligation. An unchanged authorized draft continuation creates no new version; changed
-consumed inputs require specific recovery. Follow the
-specific operation and its required inputs; saving a review awaiting mapping is not a request to redispatch it. Accepted gaps
-or inconclusive examinations are not transport errors. Envelope/response limits are 65,536/2,097,152 bytes.
+Use repeated `--task TASK_ID` to select particular independent tasks, or `--focus items:ITEM_ID` to narrow selection. Packet and byte limits bound preparation, not scientific obligations. Read `unassigned` reasons and remaining work; the helper can skip blocked or oversized work and still export later ready packets. It does not retry scientific work automatically.
 
-## Recover only affected work
+To re-export saved membership after an interrupted delivery, use a fresh output directory:
 
-Inspect retained intake and explicitly known assignment/delivery directories. Database history cannot
-discover an unsubmitted file. Match packet identities and exact response bytes or hashes to saved attempts,
-not descriptive folder names. Files are recovery candidates, not accepted evidence. Preserve old attempts.
+~~~text
+AUDIT stage2 prepare-group audit.db --audit AUDIT_ID --resume-group work/reviewer-a/group-index.json --out work/reviewer-a-recovered
+~~~
 
-| Situation | Action |
-|---|---|
-| Valid response file has no intake | Check original packet identity, actual provenance and current applicability; submit it or follow its specific recovery diagnostic. A missing task alone does not require another examination. |
-| Interrupted intake is still `received` | Inspect by request ID and replay the exact saved envelope/response unchanged. |
-| Envelope and worker response name different packets | Inspect both identities and establish the actual assignment before choosing mapping, extension, rebase or authored repair. Correct only an established envelope error; preserve worker bytes. |
-| Terminal rejection remains in history | Inspect the original assignment's current obligations and applicable evidence. If all original obligations remain identifiable and satisfied, continue remaining work after comparing unresolved concerns in the saved response. Otherwise recover only work still needed; incomplete or ambiguous current analysis does not establish completion. |
-| Administrative envelope error only | Correct the envelope with actual provenance and a fresh request ID when required; preserve worker bytes. No mathematical redispatch is needed. |
-| Saved independent response only needs source-target correspondence | [Map the unchanged response](review-mapping.md) using private coordinator context. Do not commission another review solely to supply identities. |
-| Wrong worker-authored kind, incompatible target or malformed/scientifically incorrect response | Obtain an authored correction, preserving the original and unresolved concerns. Use genuine author continuity when available; otherwise follow the new-examiner rule above. |
-| More reasoning on a saved draft | Select its exact same-reviewer `replaces` pin from coordinator guidance; preserve `supersedes`. |
-| Retained reasoning needs current authorization, consumed mathematics unchanged | Keep original packet identity; explicitly rebase authorization in a new envelope. |
-| Saved completed judgment, consumed mathematics changed | Pass the affected current predecessor from coordinator guidance in the assignment brief. The worker reexamines, authors `supersedes`, and saves the response unchanged. Do not renew already superseded ancestors. |
-| Missing neutral source in source-only independent work | Capture/anchor it, then `work extend`; examine it and author a new response naming C. |
+Omit selection and capacity options with `--resume-group`. Completed responses stay accepted; re-export is not a request to repeat them. A stale packet needs only its affected current assignment. Saved group membership does not silently change when new work becomes ready.
 
-Several problems can coexist. Mapping cannot remedy absent source, changed inputs, wrong scientific content
-or compromised provenance. A new envelope cannot turn unexamined material into evidence. Negative outcomes
-and disagreements require their actual reconciliation, not repeated attempts to make the paper pass.
+Report the actual reviewer and exposure, using the returned model identity when available rather than assuming it matches the coordinator. No calibration is required. Follow [evidence-and-verdicts.md](evidence-and-verdicts.md) for registered citations and newly needed evidence. Preserve the original returned bytes and submit through stage2 review. The neutral question and returned question_id identify the actual assignment; do not map a whole-theorem answer onto a hidden local task.
 
-`WRITE_SCOPE` identifies the affected field/reference and its remedy: missing context, a wrong
-pin, or an unauthorized edit. Reading a record does not authorize replacing it. `work extend`
-supplies independent neutral source context; it is not general primary repair authorization.
+For a review actually performed in a separate source-only context:
 
-For an already saved primary/global response missing context, inspect the named reference and obtain
-an appropriate current direct `get --mode primary` packet. Extend that direct packet if needed, then
-use generated `template` shapes to author a permitted direct check and `apply` it. This is not a
-controller rebase: a direct packet has no controller assignment. Preserve the original response and
-receipt. The original examiner can author the direct check from saved reasoning without repeating
-unchanged mathematics. A different examiner records its own identity and examines enough evidence to
-support its judgment. A coordinator or serializer may prepare the files but does not silently become
-the scientific author. Newly supplied source requires examination; rebasing cannot invent that evidence.
+~~~text
+AUDIT stage2 review audit.db --packet PACKET_ID --reviewer REVIEWER --exposure source_only --response work/review-01/response.json
+~~~
 
-Draft and renewal guidance includes the pinned prior outcome, conditions, reasoning and evidence,
-plus available changed-input diagnostics. These are previous examinations, not renewed proof credit.
-Pass only the allowed predecessor context needed for the assigned primary work. Keep gaps and
-restrictions visible unless the examiner explicitly revises them after reexamination.
+A saved response may still leave work unfinished. Read the receipt's reason and next action. A compromised review requires a fresh independent context, not another same-session examination. Ordinary preparation defers that attempt; after arranging a fresh reviewer, select the named task with stage2 prepare --mode independent --task TASK_ID. Other useful work can continue.
 
-```text
-paper_audit.py work inspect AUDIT.db --request req_ID --out work/recovery/request-1
-paper_audit.py work inspect AUDIT.db --packet pkt_ID --out work/recovery/assignment-1
-paper_audit.py work inspect AUDIT.db --response rsp_ID
-paper_audit.py work extend AUDIT.db --packet pkt_A --request work/authoring/context.json --out work/assignments/independent-result-2
-```
+~~~text
+AUDIT stage2 prepare audit.db --audit AUDIT_ID --mode integration --out work/integration-01
+~~~
 
-The extension request is `{source_refs: [{collection, id, version}], reason: nonempty string}`.
-Use live captured anchors or source-origin items/parts. A selected item supplies its statement/setup;
-an explicit proof anchor supplies a borrowed passage. Group known additions into one request.
-The reason stays private. C retains A's tasks, targets and prior context, including after an
-inconclusive completed review; it does not add supplier-review obligations. Changed prior mathematics
-needs renewed ordinary work. Oversize context creates no packet. Deliver C once, not full A plus C.
+Integrate saved responses before asking for replacements. Explain agreement or material differences, preserving all relevant adverse concerns. Use the generated task table and match its exact target to reconciliation_candidates in coordinator-guidance.json; a worker's source question and its canonical argument can have different identities. Do not derive one from item/argument prefixes or labels. Scripts choose current pins; scientific decisions belong to the coordinator. Submit the generated response with stage2 integrate audit.db --packet PACKET_ID --reviewer REVIEWER --response RESPONSE_PATH. Adopting a reviewer's finding is integration, not a new examination. A genuine unresolved disagreement is a valid integrated finding.
 
-A new response must name C. Rebase cannot claim newly supplied independent evidence. Existing
-judgments survive until an explicit successor; newest does not win automatically. Disclose actual
-same-reviewer continuation. See [mapping/provenance](review-mapping.md) when a source target or
-permissible predecessor pin is needed. `get --extend` remains for direct packets only; its request
-is `{targets: [Ref], source_anchor_ids: [ID], source_paths: [string], reason: string}`.
+For a new finding, use the optional finding example in worker-guidance.json and the response's top-level `findings` array. Keep its assigned target and related task IDs; write the concern, evidence and consequence. Integration supplies the current check references and returns `finding_refs`. Leave findings empty when there is nothing new. When integration changes the disposition of an existing finding, update that identified record as described in [reconciler.md](reconciler.md); a rationale alone does not change its status. A restriction on applicability does not by itself refute the conditional theorem.
 
-Packet inspection lists saved attempts; choose `--request` to recover exact envelope/response bytes and
-original IDs. Initial templates do not replace an authored attempt. `--response` gives current direct or
-controller review guidance without `--out`; it does not manufacture a controller intake for direct review.
-Request inspection keeps the historical `result` separate from `current` response/recovery guidance.
-Accepted intake or a response does not establish current qualifying evidence. Artifact-write errors identify
-the saved packet: inspect it instead of preparing duplicate work. Terminal receipts remain historical.
-Same-byte artifact output may be reused; different output requires a new directory. Coordinator guidance
-reflects current eligibility and may change after another commit; keep the old files and inspect into
-a fresh directory rather than freezing obsolete advice or overwriting an authored response.
-Notes/check-link edits need not stale mathematics. Adding coverage or changing its spans/claims can
-reopen primary composition while local derivations remain current; changed source or scope can also reopen work.
-Controller coverage uses `check_task_ids`, `existing_check_refs`, and `replaces`; direct stored coverage uses
-`check_ids`, with replacement in
-the enclosing edit. Generate the relevant shape rather than copying fields between these interfaces.
-Use bounded change diagnostics instead of repeating unaffected checks. Resolve the named blocker or
-change the relevant input, evidence or state; otherwise stop that branch and continue other useful work.
-A new filename, request ID, worker or identical draft alone does not make progress.
+If an otherwise usable response contains malformed or extra rows, the integration scaffold lists those preserved rows for local disposition. Explain how their concerns are incorporated, why they are outside scope, or why they add no scientific claim. Retain substantive unresolved concerns in the integration decision and findings. This does not create an independent verdict for an unperformed examination, and the original response remains unchanged.
 
-## Review and finish
+The ordinary proof review includes its assigned cross-proof questions. Integrate those responses and any separately recorded inspections with their actual review coverage; there is no compulsory new sweep or fixed set of global jobs. A concern discovered during integration may finish as a finding or stated uncertainty, with its consequences reflected in the affected conclusions. It does not automatically reopen completed examinations. If a scientific correction changes the claim, conditions or evidence, examine the affected question before claiming support for the corrected version, or leave that support unresolved.
 
-Use `stage2 prepare --mode independent` for independent work and `stage2 prepare --mode reconcile`
-after its saved response is accepted, including any required mapping.
-Use generated exact-target eligible pins and [reconciliation rules](reconciler.md).
+To revise a completed integration of unchanged, current examinations, use its coordinator task ID from `stage2 status audit.db --audit AUDIT_ID`:
 
-After local integration, finish required `stage2 prepare --mode global` work and compare the full
-inventory with the manuscript. Freeze results before presentation:
+~~~text
+AUDIT stage2 prepare audit.db --audit AUDIT_ID --mode integration --correct --task TASK_ID --out work/integration-correction-01
+~~~
 
-```text
-paper_audit.py stage2 finalize AUDIT.db --audit aud_ID --out work/finalized/result-1
-paper_audit.py stage3 build work/finalized/result-1 --out report.html
-```
+Submit the corrected comparison through stage2 integrate as usual. Preparation supplies the current predecessor and preserves earlier decisions. For several requested corrections, handle the returned assigned_task_ids and deferred selections; an empty remaining_task_ids describes ordinary audit completion, not whether every requested correction was returned. After a concurrent correction, prepare the affected task again before submitting a different decision. Ordinary preparation leaves completed work alone.
 
-Use `stage2 finalize --partial` for an explicitly working snapshot when completion or settled source
-representation is unavailable. It still requires a successful complete assessment of the recorded
-facts. If analysis itself fails, retain diagnostics and the database instead of inventing counts.
-An HTML build cannot upgrade working output to a completed release. If rendering fails, keep the
-frozen bundle and retry Stage 3 only; do not dispatch another examiner. An optional `checkpoint`
-can preview progress, but is not required after every save.
+~~~text
+AUDIT stage2 finalize audit.db --audit AUDIT_ID --out frozen
+~~~
 
-When a gap or disagreement is characterized, record it and continue remaining audit work. Reexamine only a
-specific unresolved scientific question; a proposed repaired proof needs its own target/route and review.
-At a stopping boundary follow the [handoff checklist](database-audit.md#stop-and-hand-off), including saved
-outputs awaiting integration. Report the proof, current operation, meaningful result and next unresolved need.
-Distinguish examined/current work, recoverable files, additional examination and unavailable required review.
+Finalize when the planned examinations and integration are done, or remaining limitations prevent useful progress. Finalization creates a consistent snapshot and summary. Completed promised work can produce a release containing gaps or inconclusive/disputed conclusions, including assessed proof omissions or unavailable external sources. Missing promised examinations, review or supplied material produces working output. Counts cover registered work; if known meaningful in-scope review was never registered or performed, explain it in the existing scope notes and use `stage2 finalize ... --partial` to retain a working label. This does not require a second manuscript sweep. Never claim a working result is a completed Full audit.
 
-Preparation selects unfinished work. To correct an already satisfied primary check, use a current
-`get --mode primary` packet and `apply` with a full successor-check body, or an authorized reconciliation
-batch. `--task` does not reopen completed work. Back up SQLite for recovery; JSON exports omit intake/history.
+## Stage 3: present
+
+~~~text
+AUDIT stage3 build frozen --out report.html
+~~~
+
+This command uses only the frozen bundle. Present the paper's statements, source passages and dependency uses separately from examination reasoning, findings and limitations. Administrative tracking stays in the saved audit artifacts. Use existing explanations; omit empty optional sections without requesting another summary or examination. Check displayed claims, source navigation, findings and limitations. A formula-display failure may fall back to readable literal source. Keep cosmetic prose polish in the presentation without changing scientific meaning; do not rewrite examined database records merely to improve wording. A scientific correction returns only affected work to the live audit and produces a new snapshot. A presentation retry uses the same scientific snapshot.
+
+## Stop and recover
+
+After interruption or aggregate truncation, recover individual originals from their assigned paths or retained returns before selecting more work. Keep unchanged completed work; continue only missing, unexamined or materially changed questions under the normal freshness rules. A saved file, successful process or parseable response does not establish completion: use existing coverage and current remaining-work status. If no complete original survives, retain the affected limitation or continue only that missing work; do not reconstruct discarded reasoning or relaunch unrelated groups.
+
+Read the first concrete error and correct only the affected field or response. Preserve the original returned bytes before making a corrected response. Usable primary rows can be submitted as a subset with their existing task IDs, row types and actual judgments; omit unanswered scaffold rows rather than filling defaults. For an already authored native primary response with separable malformed rows, optional `stage1 intake-response audit.db --packet PACKET_ID --response ORIGINAL --out CANDIDATE` writes a candidate subset and reports deferred originals with their JSON paths. It keeps the original file and database unchanged, supplies no scientific defaults, and leaves final acceptance to `stage1 examine`. Retain omitted adverse rows and findings linked to them for local intake repair or an explicit unresolved limitation. Accepting a subset does not integrate those deferred concerns. Keep separate reviewers' returns separate.
+
+For example, `exposure` belongs in `stage2 review --exposure source_only`, not as an extra response field; the generated response has its own `exposure_report`. Correct that envelope mistake locally without removing adverse concerns, guessing outcomes or moving a finding to another target. An empty extra field may be removed in the corrected copy; preserve a nonempty concern in the supported reasoning/coverage fields and account for it during integration. Ordinary v3 review uses null qualification when no calibration exists; do not manufacture calibration or clear a genuine failed claim to obtain acceptance. A malformed return does not require resubmitting the batch.
+
+If no new response or local correction is available, retain the pending assignment and exclude its task IDs with repeated --exclude-task while selecting other ready work. An unchanged replay ends that repeated submission, not all work. Read current status after replay; its saved remaining-task list may be historical. A reused packet can still accept a changed response answering its remaining question. Neither reuse nor an unrelated database revision is evidence of progress. When no useful work remains, finalize with the actual limitations.
+
+For an accepted partial examination, continue its remaining question from the saved reasoning. For independent review, submit that actual continuation through `stage2 review` on the current prepared packet; a reused pending packet needs no invented supersession fields. For primary work, use the generated successor/supersession route; draft-only replacement does not replace a completed partial judgment.
+
+Use `template --id` for a current record replacement and `stage1 correct-claim` for an ordinary claim with a direct exact specification, as described in [graph-records.md](graph-records.md). A graph correction during active review may change consumed inputs. Preserve the old return and prepare only the affected current question; changing its packet ID does not establish that new material was examined. `work extend` is for additional neutral source context on an unchanged independent question, not a general graph repair or primary extension command. Deliver the extended packet and obtain a response naming it. Reuse current reasoning and already examined passages; examine only material still unexamined or materially changed. Retain unresolved support when that examination cannot be done.
+
+If the saved item is already corrected and only its direct specification is stale:
+
+~~~text
+AUDIT stage1 correct-claim audit.db --item itm_theorem_1 --expected-version CURRENT_VERSION --sync-current
+~~~
+
+If a targeted correction still cannot make the operation work, deliver the last valid database and findings with the failed operation stated. Do not keep retrying the same input. A failed HTML build leaves the database and frozen summary available.
+
+Use --help rather than guessing flags. Additional detail in the database does not itself create more required science.

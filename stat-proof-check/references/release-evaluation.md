@@ -1,3 +1,5 @@
+> Historical v2 reference retained from the baseline. Its workflow and completion requirements do not govern v3. Use [the v3 workflow](controller-workflow.md) and [graph authoring](graph-records.md).
+
 # Release evaluation
 
 Use `evals/release_eval.py` to compare actual proof-checking behavior across skill releases or against a direct expert-style review. This is an offline, standard-library harness. It does not call a model, assign mathematical rationale scores, purchase anything, or estimate financial cost.

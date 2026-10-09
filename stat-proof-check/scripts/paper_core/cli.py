@@ -11,12 +11,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 import os
 import sys
 import time
 import traceback
-import uuid
 from pathlib import Path
 
 from . import CONTRACT_NAME, CONTRACT_VERSION, CORE_VERSION, PACKET_VERSION, PROJECTION_VERSION, STORAGE_FORMAT
@@ -24,14 +22,15 @@ from .acceptance import apply_batch
 from .errors import CoreError, InvalidRequest, PublicationError
 from .export_import import import_legacy, migrate_overview, write_export
 from .ids import COLLECTIONS, PREFIXES, new_id
-from .packets import MAX_WORK_BYTES, MAX_WORK_RECORDS, MODES, get_packet
+from .packets import MODES, get_packet
+from .paths import resolve_path
 from .projection import build_projection
 from .publish import publish_report
 from .queries import changes as query_changes
 from .queries import status as query_status
 from .queries import validate_snapshot
 from .review import compare, map_response, reconcile, record_qualification, submit_review
-from .sources import anchor_sources, capture_sources, review_sources, source_diagnostics
+from .sources import anchor_sources, capture_sources, review_sources
 from .storage import Database, initialize, paper_record
 from .telemetry import STAGES, events, record_event, summarize
 
@@ -64,12 +63,8 @@ def _write_json(path, payload) -> dict:
     p.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(payload, indent=1, sort_keys=True, ensure_ascii=False)
     staged = p.with_name(p.name + f".tmp-{os.getpid()}")
-    try:
-        staged.write_text(text, encoding="utf-8", newline="\n")
-        os.replace(staged, p)
-    finally:
-        if staged.exists():
-            staged.unlink()
+    staged.write_text(text, encoding="utf-8", newline="\n")
+    os.replace(staged, p)
     return {"path": str(p), "bytes": len(text.encode("utf-8"))}
 
 
@@ -89,7 +84,7 @@ def _write_template(path, payload):
 
 
 def _protect_template_destination(db, path):
-    destination = Path(path).resolve()
+    destination = resolve_path(path)
     protected = {db.path.resolve()}
     for source in db.heads("sources"):
         paper = db.head("papers", source.body["paper_id"])
@@ -106,7 +101,7 @@ def cmd_template(args):
         _protect_template_destination(db, args.out)
         if db.packet(args.packet) is None:
             raise InvalidRequest(f"unknown packet {args.packet}", code="PACKET_UNKNOWN")
-        result = authoring_template(args.collection, packet_id=args.packet, record_id=args.id)
+        result = authoring_template(args.collection, packet_id=args.packet, record_id=args.id, db=db)
     return {"command": "template", "file": _write_template(args.out, result),
             "next_action": "author the template's scientific fields; submit only its template member"}
 
@@ -116,7 +111,7 @@ def cmd_review_mapping_template(args):
     from .contract import WORKER_RESPONSE, validate_shape
     from .acceptance import COMMAND_MODES
     from .packets import load_packet
-    from .review import _mapped_indexes, classify_judgments, inspect_response
+    from .review import _mapped_indexes, classify_judgments
     with Database(args.db) as db:
         _protect_template_destination(db, args.out)
         response = db.head("responses", args.response)
@@ -145,10 +140,8 @@ def cmd_review_mapping_template(args):
             raise InvalidRequest("judgment indexes must identify saved response rows")
         result = mapping_template(source_packet_id=response.body["packet_id"], mapping_packet_id=args.packet,
                                   response_id=args.response, judgment_indexes=indexes)
-        result["current_response"] = inspect_response(db, response_id=args.response)
     return {"command": "review mapping-template", "file": _write_template(args.out, result),
-            "recovery": result["current_response"].get("recovery", []),
-            "next_action": "Inspect current response guidance, then author only applicable target mappings; keep the worker bytes unchanged."}
+            "next_action": "author exact target and rationale for each selected row; keep the worker bytes unchanged"}
 
 
 def _parse_target(text: str) -> dict:
@@ -244,12 +237,6 @@ def cmd_source_review(args):
     return {"command": "source review", "receipt": result}
 
 
-def cmd_source_diagnostics(args):
-    with Database(args.db, write=False) as db:
-        result = source_diagnostics(db, degraded=args.degraded)
-    return {"command": "source diagnostics", **result}
-
-
 def cmd_ids(args):
     if args.kind not in ID_KINDS:
         raise InvalidRequest(f"unknown id kind {args.kind!r}; choose one of {list(ID_KINDS)}", code="USAGE")
@@ -261,7 +248,6 @@ def cmd_ids(args):
 def _packet_summary(packet: dict) -> dict:
     return {"packet_id": packet["packet_id"], "packet_version": packet["packet_version"], "mode": packet["mode"],
             "base_revision": packet["base_revision"], "targets": packet["targets"], "records": len(packet["records"]),
-            "record_count": len(packet["records"]),
             "write_scope": len(packet["write_scope"]), "extends": packet.get("extends"),
             "omitted": len(packet.get("omitted") or []), "truncated": packet.get("truncated", False)}
 
@@ -356,7 +342,7 @@ def cmd_changes(args):
 
 def cmd_status(args):
     with Database(args.db) as db:
-        result = query_status(db, audit_id=args.audit, revision=_revision_arg(args.snapshot), include_stages=True)
+        result = query_status(db, audit_id=args.audit, revision=_revision_arg(args.snapshot))
     result["command"] = "status"
     return result
 
@@ -376,7 +362,7 @@ def cmd_work_list(args):
 
 def _compact_work(result):
     return {k: v for k, v in result.items()
-            if k not in ("packet", "manifest", "scaffold", "worker_guidance", "coordinator_guidance",
+            if k not in ("packet", "manifest", "scaffold", "worker_guidance", "coordinator_guidance", "source_navigation",
                          "submission_envelope_template")}
 
 
@@ -385,27 +371,18 @@ def _work_commands(db, audit_id):
     return [[PROG, "work", "list", *flags], [PROG, "status", *flags]]
 
 
-def _preparation_diagnostic(db, result, audit_id, args=None):
+def _preparation_diagnostic(db, result, audit_id):
     """Explain an empty selection using existing assessment and selection diagnostics."""
     if result.get("prepared"):
         return
-    stage_state = result.get("stage_status")
-    state = {"revision": stage_state["revision"],
-             "process_complete": stage_state["progress"]["process_complete"]} if stage_state else \
-            query_status(db, audit_id=audit_id)
-    codes = {row.get("code") for row in result.get("diagnostics", []) + result.get("selection_diagnostics", [])}
-    requests = result.get("task_selection", {}).get("requests", [])
-    not_required = requests and all(row.get("state") == "not_required" for row in requests)
+    state = query_status(db, audit_id=audit_id)
+    codes = {row.get("code") for row in result.get("diagnostics", [])}
     deferred = result.get("deferred_reasons", result.get("deferred", []))
     reasons = {row.get("reason") for row in deferred if isinstance(row, dict)}
-    if "OVERSIZED_CONTEXT" in codes or "packet_size_limit" in reasons:
-        reason = "packet_size_limit"
-    elif result.get("reason_code") == "TASK_NOT_REQUIRED" or not_required or "NOT_REQUIRED" in codes or "not_required" in reasons:
-        reason = "not_required"
-    elif state["process_complete"]:
+    if state["process_complete"]:
         reason = "recorded_scope_complete"
-    elif stage_state:
-        reason = result.get("reason_code", "stage_work_or_remaining_prerequisites").lower()
+    elif "OVERSIZED_CONTEXT" in codes or "packet_size_limit" in reasons:
+        reason = "packet_size_limit"
     elif result.get("coordinator_actions") or "needs_coordinator" in reasons:
         reason = "coordinator_work"
     else:
@@ -413,42 +390,6 @@ def _preparation_diagnostic(db, result, audit_id, args=None):
     result["preparation"] = {"reason": reason, "revision": state["revision"],
                              "process_complete": state["process_complete"],
                              "next_commands": _work_commands(db, audit_id)}
-    if stage_state and args is not None and args.command in ("stage1", "stage2"):
-        result["preparation"]["next_commands"] = [
-            [PROG, args.command, "status", str(db.path.resolve()), "--audit", audit_id]]
-    if reason == "packet_size_limit" and args is not None:
-        oversized = [row for row in result.get("diagnostics", []) if row.get("code") == "OVERSIZED_CONTEXT"]
-        retryable = (args.max_bytes < MAX_WORK_BYTES and oversized and all(
-            row.get("measured_or_lower_bound_bytes", 0) <= MAX_WORK_BYTES
-            and row.get("unique_record_count", 0) <= MAX_WORK_RECORDS for row in oversized))
-        if retryable:
-            group = args.command if stage_state else "work"
-            command = [PROG, group, "prepare", str(db.path.resolve()), "--audit", audit_id]
-            if group != "stage1":
-                command.extend(["--mode", args.mode])
-            command += ["--max-units", str(args.max_units),
-                       "--max-bytes", str(MAX_WORK_BYTES), "--out", str(args.out)]
-            for flag, value in (("--focus", args.focus), ("--route", getattr(args, "route", None)),
-                                ("--exception-purpose", getattr(args, "exception_purpose", None)),
-                                ("--exception-limitations", getattr(args, "exception_limitations", None))):
-                if value:
-                    command.extend([flag, value])
-            for flag, values in (("--task", args.task), ("--exclude-task", args.exclude_task)):
-                for value in values or ():
-                    command.extend([flag, value])
-            if args.allow_provisional:
-                command.append("--allow-provisional")
-            if getattr(args, "ready_subset", False):
-                command.append("--ready-subset")
-            result["preparation"]["size_action"] = {
-                "operation": "retry_supported_limit", "max_bytes": MAX_WORK_BYTES,
-                "command": command,
-                "note": "Retry the same intact context at the supported maximum. The measurement can be a lower bound; fit is not guaranteed."}
-            result["preparation"]["next_commands"].insert(0, command)
-        else:
-            result["preparation"]["size_action"] = {
-                "operation": "inspect_context_boundary",
-                "note": "The context cannot fit the current supported limits. Inspect the named contributors and a meaningful boundary; do not truncate the proof or repeat the same size request."}
 
 
 def _write_work_artifacts(db, result, directory):
@@ -470,60 +411,12 @@ def cmd_work_prepare(args):
         result = prepare_work(db, audit_id=args.audit, mode=args.mode,
                               focus=_parse_target(args.focus) if args.focus else None, task_ids=args.task,
                               exclude_task_ids=args.exclude_task, max_units=args.max_units,
-                              max_bytes=args.max_bytes, allow_provisional=args.allow_provisional, route_id=args.route,
-                              exception_purpose=getattr(args, "exception_purpose", None),
-                              exception_limitations=getattr(args, "exception_limitations", None))
+                              max_bytes=args.max_bytes, allow_provisional=args.allow_provisional, route_id=args.route)
         if result.get("prepared"):
             result["files"] = _write_work_artifacts(db, result, args.out)
-            if result.get("deferred"):
-                result["continuation_note"] = (
-                    "Proceed with this assignment. Deferred units remain available to ordinary scheduling; "
-                    "different_context and unit_limit require no repair or immediate inspection.")
         else:
-            _preparation_diagnostic(db, result, args.audit, args)
-        result["packet_limits"] = {"max_bytes": args.max_bytes, "max_records": MAX_WORK_RECORDS}
+            _preparation_diagnostic(db, result, args.audit)
     return {"command": "work prepare", **_compact_work(result)}
-
-
-def cmd_stage_status(args):
-    from .stages import stage_status
-    with Database(args.db) as db:
-        result = stage_status(db, audit_id=args.audit, stage=args.stage,
-                              revision=_revision_arg(args.snapshot),
-                              focus=_parse_target(args.focus) if args.focus else None)
-    return {"command": f"stage{args.stage} status", **result}
-
-
-def cmd_stage_prepare(args):
-    from .stages import prepare_stage
-    with Database(args.db, write=True) as db:
-        result = prepare_stage(db, audit_id=args.audit, stage=args.stage, mode=args.mode,
-                               focus=_parse_target(args.focus) if args.focus else None,
-                               ready_subset=getattr(args, "ready_subset", False), task_ids=args.task,
-                               exclude_task_ids=args.exclude_task, max_units=args.max_units,
-                               max_bytes=args.max_bytes, allow_provisional=args.allow_provisional)
-        if result.get("prepared"):
-            result["files"] = _write_work_artifacts(db, result, args.out)
-            if result.get("deferred"):
-                result["continuation_note"] = (
-                    "Proceed with this assignment. Deferred units remain for later stage preparation; "
-                    "different_context and unit_limit require no repair.")
-        else:
-            _preparation_diagnostic(db, result, args.audit, args)
-        result["packet_limits"] = {"max_bytes": args.max_bytes, "max_records": MAX_WORK_RECORDS}
-    return {"command": f"stage{args.stage} prepare", **_compact_work(result)}
-
-
-def cmd_stage_finalize(args):
-    from .finalization import finalize_audit
-    with Database(args.db) as db:
-        result = finalize_audit(db, audit_id=args.audit, output=args.out, partial=args.partial)
-    return {"command": "stage2 finalize", **result}
-
-
-def cmd_stage_build(args):
-    from .publish import publish_frozen
-    return {"command": "stage3 build", **publish_frozen(args.bundle, output=args.out)}
 
 
 def cmd_work_extend(args):
@@ -554,10 +447,10 @@ def cmd_work_submit(args):
 
 def cmd_work_inspect(args):
     from .controller import inspect_work
-    if (args.audit or args.response) and args.out:
-        raise InvalidRequest("history/response inspection has no payload output; choose a request or packet")
+    if args.audit and args.out:
+        raise InvalidRequest("history inspection has no payload output; choose a request or packet")
     with Database(args.db) as db:
-        result = inspect_work(db, request_id=args.request, packet_id=args.packet, response_id=args.response, audit_id=args.audit,
+        result = inspect_work(db, request_id=args.request, packet_id=args.packet, audit_id=args.audit,
                               limit=args.limit, cursor=args.cursor)
         if args.out:
             result["files"] = _write_work_artifacts(db, result, args.out)
@@ -566,6 +459,188 @@ def cmd_work_inspect(args):
             result["assignment"] = {"audit_id": manifest["work"]["audit_id"], "mode": manifest["mode"],
                                     "task_ids": [t["id"] for t in manifest["work"]["tasks"]]}
     return {"command": "work inspect", **_compact_work(result)}
+
+
+def cmd_stage_scope(args):
+    from .authoring import create_audit
+    with Database(args.db, write=True) as db:
+        result = create_audit(db, mode=args.mode, targets=[_parse_target(t) for t in args.target],
+                              report_path=args.report_path)
+    return {"command": "stage1 scope", **result}
+
+
+def cmd_stage_add_unit(args):
+    from .authoring import create_unit
+    definition = _load_json(args.input, what="proof unit definition")
+    with Database(args.db, write=True) as db:
+        result = create_unit(db, definition)
+    return {"command": "stage1 add-unit", **result}
+
+
+def cmd_stage_add_targets(args):
+    from .authoring import add_targets
+    with Database(args.db, write=True) as db:
+        result = add_targets(db, audit_id=args.audit, expected_version=args.expected_version,
+                             targets=[_parse_target(target) for target in args.target])
+    return {"command": "stage1 add-targets", **result}
+
+
+def cmd_stage_add_record(args):
+    from .authoring import create_record
+    definition = _load_json(args.input, what="graph record definition")
+    with Database(args.db, write=True) as db:
+        result = create_record(db, definition)
+    return {"command": "stage1 add-record", **result}
+
+
+def cmd_stage_consolidate_drafts(args):
+    from .drafts import consolidate_drafts
+    bundles = [_load_json(path, what="local Phase 1 draft") for path in args.input]
+    result = consolidate_drafts(bundles)
+    return {"command": "stage1 consolidate-drafts", "file": _write_template(args.out, result),
+            "next_action": "Coordinator confirms shared identities and authors the proposed graph; "
+                           "preserve returned examinations and their actual authors."}
+
+
+def cmd_stage_correct_claim(args):
+    from .authoring import correct_claim
+    from .correction_feedback import compact_receipt, sync_current
+    correction = _load_json(args.correction, what="claim correction") if args.correction else None
+    with Database(args.db, write=True) as db:
+        result = (sync_current(db, args.item, args.expected_version) if args.sync_current
+                  else correct_claim(db, args.item, args.expected_version, correction))
+        result = compact_receipt(db, result)
+    return {"command": "stage1 correct-claim", **result}
+
+
+def cmd_stage_prepare_group(args):
+    from .review_groups import prepare_group, reexport_group
+    selectors = (args.task, args.exclude_task, args.exclude_group, args.focus,
+                 args.max_packets, args.max_units, args.max_bytes)
+    if args.resume_group and any(value is not None for value in selectors):
+        raise InvalidRequest("--resume-group re-exports fixed membership; omit selection and capacity options",
+                             code="USAGE")
+    with Database(args.db, write=True) as db:
+        if args.resume_group:
+            result = reexport_group(db, audit_id=args.audit, index_path=args.resume_group, output=args.out)
+        else:
+            result = prepare_group(db, audit_id=args.audit, output=args.out, task_ids=args.task,
+                exclude_task_ids=args.exclude_task or (), exclude_groups=args.exclude_group or (),
+                focus=_parse_target(args.focus) if args.focus else None,
+                max_packets=3 if args.max_packets is None else args.max_packets,
+                max_units=5 if args.max_units is None else args.max_units,
+                max_bytes=131072 if args.max_bytes is None else args.max_bytes)
+    return {"command": "stage2 prepare-group", **result}
+
+
+def cmd_stage_status(args):
+    from .stage1 import stage_status
+    with Database(args.db) as db:
+        result = stage_status(db, audit_id=args.audit, stage=args.stage_number,
+                              revision=_revision_arg(args.snapshot),
+                              focus=_parse_target(args.focus) if args.focus else None)
+    return {"command": f"stage{args.stage_number} status", **result}
+
+
+def cmd_stage_intake_response(args):
+    from .controller import RESPONSE_LIMIT, read_bounded
+    from .intake import intake_response
+    original = resolve_path(args.response)
+    destination = resolve_path(args.out)
+    if destination == original:
+        raise InvalidRequest("keep the original response; choose a different candidate path", code="OUTPUT_CONFLICT")
+    raw = read_bounded(original, RESPONSE_LIMIT)
+    with Database(args.db) as db:
+        _protect_template_destination(db, destination)
+        result = intake_response(db, packet_id=args.packet, response_bytes=raw)
+    candidate = result.pop("response")
+    output = None
+    if candidate is not None and any(candidate.get(key) for key in ("results", "coverage", "findings")):
+        output = _write_template(destination, candidate)
+    return {"command": "stage1 intake-response", **result, "candidate_file": output,
+            "original_response_path": str(original),
+            "next_action": "Submit a usable candidate through stage1 examine with the original examiner. "
+                           "Deferred concerns remain for local repair or an explicit limitation; shape is not acceptance."
+                           if output else "No candidate written. Repair the named local input; keep the original response."}
+
+
+def cmd_stage_submit_group(args):
+    from .review_groups import submit_group
+    overrides = {}
+    for packet_id, path in args.response or []:
+        if packet_id in overrides:
+            raise InvalidRequest("select only one response override per packet", code="GROUP_INPUT", records=[packet_id])
+        overrides[packet_id] = str(resolve_path(path))
+    with Database(args.db, write=True) as db:
+        result = submit_group(db, audit_id=args.audit, index_path=args.group_index,
+                              reviewer=args.reviewer, exposure=args.exposure,
+                              exposure_note=args.exposure_note, response_paths=overrides)
+    return {"command": "stage2 submit-group", **result}
+
+
+def cmd_stage_prepare(args):
+    from .stage1 import prepare_stage
+    mode = {"integration": "reconcile", "global": "primary"}.get(args.mode, args.mode)
+    with Database(args.db, write=True) as db:
+        result = prepare_stage(db, audit_id=args.audit, stage=args.stage_number, mode=mode,
+            focus=_parse_target(args.focus) if args.focus else None, task_ids=args.task,
+            exclude_task_ids=args.exclude_task, max_units=args.max_units, max_bytes=args.max_bytes,
+            allow_provisional=args.allow_provisional, correct=args.correct)
+        if result.get("prepared") and args.out:
+            result["files"] = _write_work_artifacts(db, result, args.out)
+    return {"command": f"stage{args.stage_number} prepare", **_compact_work(result)}
+
+
+def cmd_stage_submit(args):
+    from .canonical import canonical_bytes
+    from .controller import ENVELOPE_LIMIT, RESPONSE_LIMIT, read_bounded, stage_submission_envelope, submit_work
+    response = read_bounded(args.response, RESPONSE_LIMIT)
+    if args.submission:
+        envelope = read_bounded(args.submission, ENVELOPE_LIMIT)
+        submission = _load_json(args.submission, what="submission envelope")
+    else:
+        if not args.packet or not args.reviewer:
+            raise InvalidRequest("supply --packet and --reviewer, or an existing --submission envelope", code="USAGE")
+        submission = stage_submission_envelope(packet_id=args.packet, reviewer=args.reviewer,
+            response_bytes=response, exposure=args.exposure, exposure_note=args.exposure_note,
+            request_id=args.request_id)
+        envelope = canonical_bytes(submission)
+    with Database(args.db, write=True) as db:
+        packet = db.packet(submission.get("packet_id"))
+        expected = {"examine": "primary", "review": "independent", "integrate": "reconcile"}.get(args.subcommand)
+        if packet is None or not isinstance(packet["manifest"].get("work"), dict):
+            raise InvalidRequest("stage submission requires a saved work assignment", code="WORK_PACKET_REQUIRED")
+        if expected is not None and packet["mode"] != expected:
+            raise InvalidRequest("the packet belongs to another stage action", code="PACKET_MODE")
+        previous = db.work_submission(submission.get("request_id"))
+        result = submit_work(db, envelope_bytes=envelope, response_bytes=response)
+        if packet["manifest"].get("protocol_version") == "coherent-proof-audit/1":
+            # Invocation feedback is not part of the immutable saved receipt.
+            replayed = bool(previous and previous["state"] != "received" and previous["result"] == result)
+            result = {**result, "replayed": replayed}
+            if replayed:
+                result["next_actions"] = [
+                    "This unchanged input replays a historical saved receipt and saves no new work. Stop resubmitting it.",
+                    "Its remaining_task_ids describe that saved receipt, not current unfinished work. Check current stage status before deciding what remains."]
+            if result.get("state") in ("needs_revision", "conflict") and not replayed and not args.submission and not args.request_id:
+                result["next_actions"] = [
+                    "Correct the named row, field or context and resubmit through this stage command; it derives the request ID.",
+                    "Unchanged input replays this saved outcome and does not perform new work."]
+    return {"command": f"stage{args.stage_number} {args.subcommand}", **result}
+
+
+def cmd_stage_finalize(args):
+    from .finalization import finalize_audit
+    with Database(args.db) as db:
+        result = finalize_audit(db, audit_id=args.audit, output=args.out,
+                                partial=args.partial, include_export=args.export)
+    return {"command": "stage2 finalize", **result}
+
+
+def cmd_stage_render(args):
+    from .stage3 import render
+    result = render(args.bundle, output=args.out, receipt_output=args.receipt_out)
+    return {"command": "stage3 render", **result}
 
 
 def cmd_validate(args):
@@ -591,149 +666,16 @@ def cmd_checkpoint(args):
     return result
 
 
-def _release_directory(path) -> Path:
-    directory = Path(path)
-    if directory.exists():
-        if not directory.is_dir():
-            raise InvalidRequest(f"release output {directory} exists and is not a directory")
-        if any(directory.iterdir()):
-            raise InvalidRequest(f"release output directory {directory} is not empty")
-    else:
-        directory.mkdir(parents=True)
-    return directory
-
-
 def cmd_release(args):
-    from .canonical import sha256_bytes
-    from .finalization import finalize_audit, load_finalization, protected_destination
+    """Compatibility convenience using the same frozen pipeline as the three stages."""
+    from .finalization import finalize_audit
     from .publish import publish_frozen
-
-    directory = Path(args.out).resolve()
-    resume = getattr(args, "resume", None)
-    preparation = Path(resume).resolve() if resume else directory.with_name(
-        f".{directory.name}.release-{uuid.uuid4().hex}")
-    with Database(args.db, write=True) as db:
-        if not resume:
-            if directory.exists() and (not directory.is_dir() or any(directory.iterdir())):
-                _release_directory(directory)  # Preserve the existing nonempty-output refusal.
-            try:
-                finalize_audit(db, audit_id=args.audit, output=preparation, include_export=True,
-                               release_output=directory)
-            except InvalidRequest as exc:
-                if exc.code != "RELEASE_BLOCKED":
-                    raise
-                # Keep the legacy diagnostic shape without deriving the audit again.
-                diagnostic_paths = [record["diagnostic_path"] for record in exc.records
-                                    if isinstance(record, dict) and "diagnostic_path" in record]
-                exc.records = [record for record in exc.records
-                               if not isinstance(record, dict) or "diagnostic_path" not in record]
-                for index, record in enumerate(exc.records):
-                    if not isinstance(record, dict):
-                        continue
-                    code = record.get("code")
-                    if code == "required_examination":
-                        exc.records[index] = {"kind": "obligation", "id": record["task_id"]}
-                    elif code == "assessment_problem":
-                        exc.records[index] = {"kind": "problem", "detail": record["message"]}
-                    elif code == "source_limit":
-                        exc.records[index] = {"kind": "source_limit", "detail": record["target_ref"]}
-                    elif code == "review_disagreement":
-                        ref = record["target_ref"]
-                        exc.records[index] = {"kind": "independent_review", "target": f"{ref['collection']}:{ref['id']}",
-                                              "indicator": "disputed"}
-                if any(isinstance(row, dict) and row.get("kind") == "obligation" for row in exc.records):
-                    exc.message = f"release refused: audit {args.audit} is not process-complete"
-                checkpoint = [PROG, "checkpoint", str(db.path.resolve()), "--audit", args.audit]
-                exc.retry = {"next_commands": [_work_commands(db, args.audit)[0]]}
-                if diagnostic_paths:
-                    exc.retry["diagnostic_paths"] = diagnostic_paths
-                if args.checkpoint_out is not None:
-                    exc.retry["next_commands"].insert(0, checkpoint + ["--out", str(Path(args.checkpoint_out).resolve())])
-                else:
-                    exc.retry["checkpoint"] = {"command": checkpoint, "required_options": ["--out"],
-                        "instruction": "Choose this audit's working-report path, or report.html in a new proof-check folder, and supply it with --out. Preserve other audits' reports."}
-                raise
-        snapshot, frozen = load_finalization(preparation)
-        if (snapshot["audit_id"] != args.audit or snapshot["database_path"] != str(db.path.resolve()) or
-                snapshot.get("release_output") != str(directory) or snapshot["kind"] != "release" or
-                "export" not in frozen):
-            raise InvalidRequest("release resume does not match the frozen audit, database, output or release kind",
-                                 code="FINALIZATION_CONFLICT")
-        revision = snapshot["revision"]
-        protected = snapshot["protected_paths"] + [str(p) for p in preparation.iterdir()]
-        for name in ("report.html", "export.json", "receipt.json"):
-            protected_destination(directory / name, protected, what="release output")
-        if resume and directory.exists():
-            allowed = {"report.html", "export.json", "receipt.json"}
-            if not directory.is_dir() or any(p.name not in allowed or not p.is_file() for p in directory.iterdir()):
-                raise InvalidRequest("release resume output contains unrelated artifacts", code="FINALIZATION_CONFLICT")
-            if (directory / "report.html").exists():
-                built = _load_json(preparation / "build-receipt.json", what="retained build receipt")
-                if (not isinstance(built, dict) or built.get("snapshot_sha256") != frozen["snapshot_sha256"] or
-                        built.get("artifact_sha256") != sha256_bytes((directory / "report.html").read_bytes())):
-                    raise InvalidRequest("release resume report differs from the retained build", code="FINALIZATION_CONFLICT")
-            if (directory / "export.json").exists() and sha256_bytes((directory / "export.json").read_bytes()) != frozen["export"]["sha256"]:
-                raise InvalidRequest("release resume export differs from the frozen export", code="FINALIZATION_CONFLICT")
-            if (directory / "receipt.json").exists():
-                raise InvalidRequest("release output already has its final receipt; preserve and inspect the completed artifacts",
-                                     code="FINALIZATION_CONFLICT")
-        directory.mkdir(parents=True, exist_ok=True)
-        stage = "report"
-        try:
-            built = publish_frozen(preparation, output=directory / "report.html", db=db,
-                                   receipt_output=preparation / "build-receipt.json")
-            published = {key: built[key] for key in ("publication_id", "revision", "kind", "state", "output_path",
-                                                    "artifact_sha256", "receipt")}
-            stage = "export"
-            staged = directory / f".export-{uuid.uuid4().hex}.tmp"
-            try:
-                staged.write_bytes((preparation / "export.json").read_bytes())
-                os.replace(staged, directory / "export.json")
-            finally:
-                if staged.exists():
-                    staged.unlink()
-            exported = {key: value for key, value in frozen["export"].items() if key != "file"}
-            exported["output"] = str(directory / "export.json")
-            receipt = {"command": "release", "core_version": snapshot["producer"]["core_version"],
-                       "storage_format": STORAGE_FORMAT, "contract": CONTRACT_NAME,
-                       "projection_version": snapshot["producer"]["projection_version"], "revision": revision,
-                       "audit_id": args.audit, "paper_id": snapshot["paper_id"], "process_complete": True,
-                       "representation_settled": snapshot["representation_settled"],
-                       "snapshot_sha256": frozen["snapshot_sha256"], "publication": published, "export": exported,
-                       "validation": {"ok": True, "warnings": frozen["validation"]["warnings"]}, "status": snapshot["status"]}
-            stage = "receipt"
-            _write_json(directory / "receipt.json", receipt)
-        except (CoreError, OSError) as exc:
-            retry = [PROG, "release", str(db.path.resolve()), "--audit", args.audit, "--out", str(directory),
-                     "--resume", str(preparation)]
-            failure = {"delivery_complete": False, "stage": stage, "directory": str(directory),
-                       "preparation_directory": str(preparation), "revision": revision, "resume_command": retry,
-                       "available_files": [name for name in ("report.html", "export.json", "receipt.json")
-                                           if (directory / name).is_file()],
-                       "next_action": "Retry the given resume command to deliver this frozen revision without rechecking the audit."}
-            if isinstance(exc, CoreError):
-                exc.records.append(failure)
-                raise
-            raise PublicationError(f"release {stage} could not be written: {exc}", records=[failure]) from exc
-        for name in ("report.html", "export.json", "receipt.json"):
-            try:
-                os.chmod(directory / name, 0o444)
-            except OSError:  # pragma: no cover - platform dependent
-                pass
-        # Remove only the known private files after the complete public receipt exists.
-        # Unexpected files are retained rather than recursively deleting a supplied path.
-        known = {"report-snapshot.json", "finalization.json", "export.json", "build-receipt.json"}
-        if preparation.parent == directory.parent and preparation.name.startswith(f".{directory.name}.release-"):
-            try:
-                if all(p.name in known and p.is_file() for p in preparation.iterdir()):
-                    for name in known:
-                        (preparation / name).unlink(missing_ok=True)
-                    preparation.rmdir()
-            except OSError:
-                pass  # The release is complete; retaining private inputs is harmless.
-    receipt["directory"] = str(directory)
-    receipt["files"] = ["report.html", "export.json", "receipt.json"]
-    return receipt
+    directory = resolve_path(args.out)
+    with Database(args.db) as db:
+        frozen = finalize_audit(db, audit_id=args.audit, output=directory, include_export=True)
+    publication = publish_frozen(directory, output=directory / "report.html")
+    return {"command": "release", **frozen, "publication": publication,
+            "delivery_complete": True, "files": sorted(p.name for p in directory.iterdir() if p.is_file())}
 
 
 def cmd_export(args):
@@ -804,6 +746,124 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
     sub.required = True
 
+    for number in (1, 2):
+        stage = sub.add_parser(f"stage{number}", help="prepare and perform declared work" if number == 1
+                               else "review, integrate and freeze saved work").add_subparsers(
+            dest="subcommand", metavar="ACTION", required=True)
+        if number == 1:
+            p = stage.add_parser("intake-response", help="prepare a native primary response subset without changing saved work")
+            _db_arg(p, run_id=False)
+            p.add_argument("--packet", required=True)
+            p.add_argument("--response", required=True)
+            p.add_argument("--out", required=True, metavar="CANDIDATE")
+            p.set_defaults(func=cmd_stage_intake_response, stage_number=1)
+            p = stage.add_parser("scope", help="declare one finite audit scope")
+            _db_arg(p)
+            p.add_argument("--mode", choices=("full", "focused", "triage"), default="full")
+            p.add_argument("--target", action="append", default=[])
+            p.add_argument("--report-path", default="report.html")
+            p.set_defaults(func=cmd_stage_scope, stage_number=1)
+            p = stage.add_parser("add-targets", help="append explicit item targets to the same Full audit")
+            _db_arg(p)
+            p.add_argument("--audit", required=True)
+            p.add_argument("--expected-version", required=True, type=int)
+            p.add_argument("--target", action="append", required=True, metavar="items:ID")
+            p.set_defaults(func=cmd_stage_add_targets, stage_number=1)
+            p = stage.add_parser("add-unit", help="save an exact claim and its coherent written route")
+            _db_arg(p)
+            p.add_argument("--input", required=True, metavar="JSON")
+            p.set_defaults(func=cmd_stage_add_unit, stage_number=1)
+            p = stage.add_parser("add-record", help="save ordinary setup, shared results or proof units")
+            _db_arg(p)
+            p.add_argument("--input", required=True, metavar="JSON")
+            p.set_defaults(func=cmd_stage_add_record, stage_number=1)
+            p = stage.add_parser("consolidate-drafts", help="combine local proposals without changing a database")
+            p.add_argument("--input", action="append", required=True, metavar="JSON",
+                           help="one worker's local draft; repeat for other returns")
+            p.add_argument("--out", required=True, metavar="JSON")
+            p.set_defaults(func=cmd_stage_consolidate_drafts, stage_number=1)
+            p = stage.add_parser("correct-claim", help="correct an ordinary claim and its direct exact specification")
+            _db_arg(p)
+            p.add_argument("--item", required=True)
+            p.add_argument("--expected-version", required=True, type=int)
+            correction = p.add_mutually_exclusive_group(required=True)
+            correction.add_argument("--correction", metavar="JSON")
+            correction.add_argument("--sync-current", action="store_true",
+                                    help="align the direct exact specification with the saved current statement")
+            p.set_defaults(func=cmd_stage_correct_claim, stage_number=1)
+        p = stage.add_parser("status", help="account for this stage's saved work")
+        _db_arg(p)
+        p.add_argument("--audit", required=True)
+        p.add_argument("--focus")
+        p.add_argument("--snapshot")
+        p.set_defaults(func=cmd_stage_status, stage_number=number)
+        p = stage.add_parser("prepare", help="return one current assignment or explain that none is useful")
+        _db_arg(p)
+        p.add_argument("--audit", required=True)
+        if number == 2:
+            p.add_argument("--mode", choices=("independent", "integration", "global"), default="independent")
+        else:
+            p.set_defaults(mode="primary")
+        p.add_argument("--focus")
+        p.add_argument("--task", action="append", default=None)
+        p.add_argument("--exclude-task", action="append", default=[])
+        p.add_argument("--max-units", type=int, default=5)
+        p.add_argument("--max-bytes", type=int, default=131072)
+        p.add_argument("--allow-provisional", action="store_true")
+        p.add_argument("--out", metavar="DIRECTORY")
+        p.add_argument("--correct", action="store_true",
+                       help="optionally correct completed current integrations named by --task; stage2 integration only")
+        p.set_defaults(func=cmd_stage_prepare, stage_number=number)
+        for action in (("examine",) if number == 1 else ("review", "integrate", "submit")):
+            p = stage.add_parser(action, help="preserve the actual response and generate routine record associations")
+            _db_arg(p)
+            p.add_argument("--response", required=True)
+            p.add_argument("--submission", help="existing coordinator envelope, when recovering a saved attempt")
+            p.add_argument("--packet")
+            p.add_argument("--reviewer")
+            p.add_argument("--request-id")
+            p.add_argument("--exposure", choices=("source_only", "route_provided", "compromised"))
+            p.add_argument("--exposure-note", default="")
+            p.set_defaults(func=cmd_stage_submit, stage_number=number)
+        if number == 2:
+            p = stage.add_parser("submit-group", help="consume saved reviewer-group responses once, using existing intake history")
+            _db_arg(p)
+            p.add_argument("--audit", required=True)
+            p.add_argument("--group-index", required=True)
+            p.add_argument("--reviewer", required=True)
+            p.add_argument("--exposure", required=True, choices=("source_only", "route_provided", "compromised"))
+            p.add_argument("--exposure-note", default="")
+            p.add_argument("--response", action="append", nargs=2, metavar=("PACKET_ID", "PATH"),
+                           help="explicit response path override for one member (repeatable)")
+            p.set_defaults(func=cmd_stage_submit_group, stage_number=2)
+            p = stage.add_parser("prepare-group", help="deliver distinct ordinary packets to one independent reviewer")
+            _db_arg(p)
+            p.add_argument("--audit", required=True)
+            p.add_argument("--out", required=True, metavar="DIRECTORY")
+            p.add_argument("--task", action="append", default=None)
+            p.add_argument("--exclude-task", action="append", default=None)
+            p.add_argument("--exclude-group", action="append", default=None, metavar="INDEX")
+            p.add_argument("--focus")
+            p.add_argument("--max-packets", type=int, default=None)
+            p.add_argument("--max-units", type=int, default=None)
+            p.add_argument("--max-bytes", type=int, default=None)
+            p.add_argument("--resume-group", metavar="INDEX", help="re-export fixed saved membership")
+            p.set_defaults(func=cmd_stage_prepare_group, stage_number=2)
+            p = stage.add_parser("finalize", aliases=["freeze"], help="freeze this assessed revision with an honest delivery label")
+            _db_arg(p)
+            p.add_argument("--audit", required=True)
+            p.add_argument("--out", required=True, metavar="DIRECTORY")
+            p.add_argument("--partial", action="store_true", help="explicitly retain a working label")
+            p.add_argument("--export", action="store_true", help="include the saved database export and captured blobs")
+            p.set_defaults(func=cmd_stage_finalize, stage_number=2)
+    stage = sub.add_parser("stage3", help="render saved frozen input without a live database").add_subparsers(
+        dest="subcommand", metavar="ACTION", required=True)
+    p = stage.add_parser("render", aliases=["build"], help="build or retry HTML from the same frozen scientific bytes")
+    p.add_argument("bundle", help="directory containing the frozen snapshot and finalization receipt")
+    p.add_argument("--out", required=True, metavar="HTML")
+    p.add_argument("--receipt-out", metavar="JSON")
+    p.set_defaults(func=cmd_stage_render)
+
     p = sub.add_parser("init", help="create a database with its paper record")
     _db_arg(p)
     p.add_argument("--source-root", required=True)
@@ -825,45 +885,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--backup", required=True)
     p.set_defaults(func=cmd_migrate)
 
-    for number in (1, 2):
-        stage = sub.add_parser(f"stage{number}", help="prepare and examine" if number == 1 else
-                               "review, reconcile and finalize").add_subparsers(
-                                   dest="subcommand", metavar="ACTION", required=True)
-        p = stage.add_parser("status", help="derive stage readiness from recorded work")
-        _db_arg(p)
-        p.add_argument("--audit", required=True)
-        p.add_argument("--focus")
-        p.add_argument("--snapshot")
-        p.set_defaults(func=cmd_stage_status, stage=number)
-        p = stage.add_parser("prepare", help="prepare one coherent assignment within this stage")
-        _db_arg(p)
-        p.add_argument("--audit", required=True)
-        if number == 2:
-            p.add_argument("--mode", choices=("independent", "reconcile", "global"), required=True)
-            p.add_argument("--ready-subset", action="store_true",
-                           help="review an explicitly focused ready subset while other primary work is blocked")
-        p.add_argument("--focus")
-        p.add_argument("--task", action="append", default=[])
-        p.add_argument("--exclude-task", action="append", default=[])
-        p.add_argument("--max-units", type=int, default=5)
-        p.add_argument("--max-bytes", type=int, default=131072)
-        p.add_argument("--allow-provisional", action="store_true")
-        p.add_argument("--out", required=True)
-        p.set_defaults(func=cmd_stage_prepare, stage=number, **({"mode": "primary"} if number == 1 else {}))
-        if number == 2:
-            p = stage.add_parser("finalize", help="freeze audit results before rendering")
-            _db_arg(p)
-            p.add_argument("--audit", required=True)
-            p.add_argument("--out", required=True, metavar="DIRECTORY")
-            p.add_argument("--partial", action="store_true", help="save a working snapshot with its actual limitations")
-            p.set_defaults(func=cmd_stage_finalize)
-    stage = sub.add_parser("stage3", help="build HTML from frozen audit results").add_subparsers(
-        dest="subcommand", metavar="ACTION", required=True)
-    p = stage.add_parser("build", help="render and check the frozen report snapshot")
-    p.add_argument("bundle", help="directory produced by stage2 finalize")
-    p.add_argument("--out", required=True, metavar="HTML")
-    p.set_defaults(func=cmd_stage_build, run_id=None)
-
     work = sub.add_parser("work", help="bounded work preparation, submission and inspection").add_subparsers(
         dest="subcommand", metavar="ACTION", required=True)
     p = work.add_parser("list", help="derive current tasks and coordinator actions")
@@ -871,7 +892,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--audit", required=True)
     p.add_argument("--focus")
     p.add_argument("--snapshot")
-    p.add_argument("--limit", type=int, default=20, help="1..100 tasks (default: 20)")
+    p.add_argument("--limit", type=int, default=20)
     p.add_argument("--cursor")
     p.set_defaults(func=cmd_work_list)
     p = work.add_parser("prepare", help="prepare one coherent assignment without dispatching a model")
@@ -880,13 +901,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--mode", choices=("primary", "independent", "reconcile"), required=True)
     p.add_argument("--focus")
     p.add_argument("--route", help="exact argument for supplied-route independent review")
-    p.add_argument("--exception-purpose", help="explicit investigation outside ordinary stage ordering; requires --exception-limitations")
-    p.add_argument("--exception-limitations", help="bounded limitations of that investigation; waives no scientific requirements")
     p.add_argument("--task", action="append", default=[])
     p.add_argument("--exclude-task", action="append", default=[])
-    p.add_argument("--max-units", type=int, default=5, help="1..10 coherent units (default: 5)")
-    p.add_argument("--max-bytes", type=int, default=131072,
-                   help="1..1048576 packet bytes (default: 131072); at most 2048 records; units stay whole")
+    p.add_argument("--max-units", type=int, default=5)
+    p.add_argument("--max-bytes", type=int, default=131072)
     p.add_argument("--allow-provisional", action="store_true")
     p.add_argument("--out", required=True)
     p.set_defaults(func=cmd_work_prepare)
@@ -906,19 +924,18 @@ def build_parser() -> argparse.ArgumentParser:
     choice = p.add_mutually_exclusive_group(required=True)
     choice.add_argument("--request")
     choice.add_argument("--packet")
-    choice.add_argument("--response")
     choice.add_argument("--audit")
     p.add_argument("--limit", type=int, default=20)
     p.add_argument("--cursor")
     p.add_argument("--out")
     p.set_defaults(func=cmd_work_inspect)
 
-    source = sub.add_parser("source", help="capture, anchor, review and inspect sources").add_subparsers(dest="subcommand",
+    source = sub.add_parser("source", help="capture, anchor and review sources").add_subparsers(dest="subcommand",
                                                                                                  metavar="ACTION")
     source.required = True
     p = source.add_parser("capture", help="capture listed files under the source root")
     _db_arg(p)
-    p.add_argument("--files", required=True, help="JSON array of relative paths")
+    p.add_argument("--files", required=True, help="path to a JSON file containing an array of relative source paths")
     p.add_argument("--request-id", default=None)
     p.set_defaults(func=cmd_source_capture)
     p = source.add_parser("anchor", help="create or rebind anchors from a locator request")
@@ -929,10 +946,6 @@ def build_parser() -> argparse.ArgumentParser:
     _db_arg(p)
     p.add_argument("--request", required=True)
     p.set_defaults(func=cmd_source_review)
-    p = source.add_parser("diagnostics", help="read current PDF extraction limitations and affected records (coordinator)")
-    _db_arg(p)
-    p.add_argument("--degraded", action="store_true", help="return only PDF anchors with detected replacement characters")
-    p.set_defaults(func=cmd_source_diagnostics)
 
     p = sub.add_parser("ids", help="mint identifiers")
     p.add_argument("--kind", required=True, help=f"one of {', '.join(ID_KINDS)}")
@@ -949,9 +962,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("get", help="assemble a packet")
     _db_arg(p)
-    p.add_argument("--target", action="append", default=[],
-                   help="papers:ID, items:ID, parts:ID, or audits:ID (repeatable); for a use, group, "
-                        "or argument, request its owning item or part")
+    p.add_argument("--target", action="append", default=[], help="COLLECTION:ID (repeatable; required unless --extend is used)")
     p.add_argument("--mode", default="author", help=f"one of {', '.join(MODES)}")
     p.add_argument("--extend", default=None, metavar="PACKET_ID")
     p.add_argument("--request", default=None, metavar="CONTEXT.json")
@@ -1027,14 +1038,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--audit", default=None)
     p.set_defaults(func=cmd_checkpoint)
 
-    p = sub.add_parser("release", help="render the release report and export for a process-complete audit")
+    p = sub.add_parser("release", help="freeze and render with an honest release or working label")
     _db_arg(p)
     p.add_argument("--audit", required=True)
     p.add_argument("--out", required=True, metavar="DIRECTORY")
     p.add_argument("--checkpoint-out", metavar="HTML",
-                   help="working-report path for recovery guidance if release is blocked; does not change release output")
-    p.add_argument("--resume", metavar="PREPARATION_DIR",
-                   help="finish delivery from retained frozen preparation after an interrupted release")
+                   help="accepted for older callers; delivery now keeps its working label in the chosen bundle")
     p.set_defaults(func=cmd_release)
 
     p = sub.add_parser("export", help="write the export JSON of a snapshot")
@@ -1079,19 +1088,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 # -- entry ------------------------------------------------------------------------------
 def _emit(payload):
-    try:
-        sys.stdout.write(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
-        sys.stdout.flush()
-    except BrokenPipeError:
-        # The consumer deliberately stopped reading. Keep the command's result,
-        # and redirect any buffered shutdown flush instead of emitting again.
-        try:
-            descriptor = sys.stdout.fileno()
-        except (AttributeError, OSError, ValueError):  # substituted streams, e.g. embedded callers
-            sys.stdout = open(os.devnull, "w", encoding="utf-8")
-        else:
-            with open(os.devnull, "wb") as sink:
-                os.dup2(sink.fileno(), descriptor)
+    sys.stdout.write(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
 
 
 def _record_command_event(args, *, started, exit_code, error_code=None):
@@ -1111,8 +1109,6 @@ def _record_command_event(args, *, started, exit_code, error_code=None):
 
 
 def main(argv=None) -> int:
-    # Keep routine PDF repair chatter out of CLI transcripts; errors and recorded limits remain.
-    logging.getLogger("pypdf").setLevel(logging.ERROR)
     if hasattr(sys.stdout, "reconfigure"):
         try:
             sys.stdout.reconfigure(encoding="utf-8")
@@ -1125,7 +1121,7 @@ def main(argv=None) -> int:
         args = parser.parse_args(argv)
         payload = args.func(args)
         _emit(payload)
-        exit_code = payload.get("exit_code", 0) if args.command == "work" else 0
+        exit_code = payload.get("exit_code", 0) if args.command in ("work", "stage1", "stage2") else 0
         if args.command == "validate" and not payload.get("ok", True):
             exit_code = 2
         _record_command_event(args, started=started, exit_code=exit_code)

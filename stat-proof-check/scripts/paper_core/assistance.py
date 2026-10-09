@@ -1,8 +1,7 @@
 """Uncommitted authoring assistance derived from the live validation contract.
 
 These views supply shapes and candidate identities, never mathematical decisions.
-Role guidance is independent of the private assignment manifest. Primary task
-labels are a separate view of the original packet's pinned records.
+Worker guidance is deliberately independent of the private assignment manifest.
 """
 from __future__ import annotations
 
@@ -10,7 +9,7 @@ from copy import deepcopy
 
 from . import CONTRACT_VERSION
 from . import contract as c
-from .errors import InvalidRequest
+from .errors import ConflictError, InvalidRequest
 from .ids import new_id, valid_id
 
 
@@ -92,8 +91,8 @@ def _identifier(value, name):
         raise InvalidRequest(f"{name} must be a nonempty identifier", code="ASSISTANCE_INPUT")
 
 
-def authoring_template(collection, *, packet_id, record_id=None):
-    """Return one create envelope and its selected body's current contract shape.
+def authoring_template(collection, *, packet_id, record_id=None, db=None):
+    """Return an uncommitted create or current-record replacement envelope.
 
     Blank fields are intentional, not a valid or completed scientific assertion.
     Application-detail identity must be selected by the caller, since it shares
@@ -107,14 +106,47 @@ def authoring_template(collection, *, packet_id, record_id=None):
                              code="ASSISTANCE_IDENTITY")
     identifier = new_id(collection) if record_id is None else record_id
     _identifier(identifier, "record_id")
-    body = skeleton(c.BODY_SCHEMAS[collection])
-    if collection == "application_details":
-        body["use_id"] = identifier
-    entry = skeleton(c.EDIT_CREATE)
+    current = db.head(collection, identifier) if db is not None and record_id is not None else None
+    if current is not None and current.retired:
+        raise InvalidRequest(f"{collection}:{identifier} is retired; identifiers are not reused",
+                             code="ASSISTANCE_RETIRED", records=[current.pinned])
+    if current is not None:
+        from .acceptance import _guard_changes, _read_set_conflicts
+        from .packets import source_context_digest
+        packet = db.packet(packet_id)
+        target = current.ref if collection in ("papers", "items", "parts", "audits") else current.body.get("target")
+        if not isinstance(target, dict) or target.get("collection") not in ("items", "parts"):
+            target = current.ref if collection in ("papers", "items", "parts", "audits") else db.heads("papers")[0].ref
+        edit_mode = "reconcile" if collection == "findings" else "author"
+        retry = {"command": f"get DB --target {target['collection']}:{target['id']} --mode {edit_mode} --out PACKET.json",
+                 "targets": [target], "mode": edit_mode}
+        manifest = packet["manifest"] if packet else {}
+        allowed_modes = ("author", "primary", "reconcile") if collection == "findings" else ("author", "primary")
+        authorized = (manifest.get("mode") in allowed_modes and not manifest.get("work")
+                      and current.ref in manifest.get("write_scope", [])
+                      and current.pinned in manifest.get("read_set", []))
+        if not authorized:
+            raise ConflictError(f"the packet cannot authorize this current replacement; request a current {edit_mode} packet",
+                                code="ASSISTANCE_PACKET", records=[current.pinned], retry=retry)
+        conflicts = []
+        _read_set_conflicts(db, manifest, conflicts)
+        if conflicts or _guard_changes(db, manifest) or manifest["source_context_digest"] != source_context_digest(db):
+            raise ConflictError("the packet's inputs changed; refresh it before editing current contents",
+                                code="ASSISTANCE_PACKET", records=conflicts, retry=retry)
+        body = deepcopy(current.body)
+        entry = skeleton(c.EDIT_REPLACE)
+        entry["expected_version"] = current.version
+    else:
+        body = skeleton(c.BODY_SCHEMAS[collection])
+        if collection == "application_details":
+            body["use_id"] = identifier
+        entry = skeleton(c.EDIT_CREATE)
     entry.update(collection=collection, id=identifier, body=body)
     batch = skeleton(c.BATCH)
     batch.update(request_id=new_id("request"), packet_id=packet_id, edits=[entry])
-    note = ("Uncommitted template. Fill blank scientific fields and references before submission. "
+    note = (f"Uncommitted {entry['op']} template. " +
+            ("Edit only the intended fields in the saved current body. " if current is not None else
+             "Fill blank scientific fields and references before submission. ") +
             "All displayed fields are required unless listed as optional; nullable does not mean optional.")
     if collection == "audits":
         note += (" Excluding an item removes that result and its parts from required work. "
@@ -133,13 +165,36 @@ ROLE_REFERENCES = {
 def worker_guidance(mode, *, composition=False):
     guidance = _response_guidance(mode)
     guidance["reference_files"] = list(ROLE_REFERENCES[mode])
+    if (mode == "primary" and composition) or mode == "independent":
+        guidance["examination_note"] = (
+            "Extent is coverage, not outcome. After examining all assigned supplied material, including a proof "
+            "omission (outcome=gap), use whole_unit and empty omissions. proof_gap is a primary finding category. "
+            "Assessed external unavailability may finish inconclusive. For unexamined assigned material, "
+            "including necessary unreadable passages, use partial and name it in omissions. Follow scaffold types. "
+            "Keep conditions, adverse reasoning and limitations; never "
+            "clear omissions for acceptance. "
+            + ("Put conclusion concerns in judgment reasoning and outcome, others in coverage_note. " if mode == "independent" else
+               "Put defects and uncertainty in reasoning or findings. ") +
+            "No proof, repair or counterexample construction is required. Unrelated discoveries do not expand "
+            "scope; relevant dependencies may need coordinator attention.")
     if mode == "primary" and composition:
-        guidance["coverage_note"] = (
-            "Link coverage claims to statements the checks actually examined, not merely cited anchors. "
-            "Use check_task_ids for this response or existing_check_refs for saved checks in the same argument. "
-            "Keep replaces present (null for new coverage). These are controller response fields; "
-            "direct stored coverage uses check_ids and replacement in its enclosing edit instead. "
-            "Save partial work when coverage remains unfinished.")
+        guidance["examination_note"] += (
+            " Assess important applications together; distinguish meaningful local outcomes and missing suppliers. "
+            "Local checks and coverage rows are optional; do not invent omitted-proof routes.")
+    if mode == "independent":
+        guidance["evidence_note"] = (
+            "source-navigation.json optionally locates all packet anchors by source and version, including "
+            "prerequisites and continuations. Use only packet-registered IDs in evidence_refs. Other inspected "
+            "material may be cited by traceable locators in reasoning or coverage_note; that prose does not bind "
+            "evidence or establish support. Fix harmless citation formatting locally. When support relies on "
+            "newly consumed evidence, ask the coordinator to capture and extend context for the unchanged question. "
+            "Return a response naming the extended packet; reuse current reasoning and already examined passages. "
+            "Examine only material still unexamined or materially changed, or leave support unresolved.")
+    if mode == "primary":
+        guidance["authoring_note"] = (
+            "The coordinator alone writes the shared database. Source-based local drafts may precede canonical "
+            "graph IDs. Report a missing dependency by its source locator in reasoning or a separate draft; "
+            "do not invent unknown typed references. A missing graph identity alone is not a mathematical gap.")
     return guidance
 
 
@@ -158,80 +213,65 @@ def _response_guidance(mode):
                                                  for kind, collections in c.CHECK_TARGETS.items()},
                 "source_target_example": {
                     "kind": "composition",
-                    "target": {"source_anchor_id": "<supplied proof anchor ID>",
-                               "description": "The complete written route establishing the requested conclusion."}},
-                "note": "Keep required nullable scaffold fields. covered_targets names reviewed source conclusions; "
-                        "composition uses a source target describing its conclusion and written route. Replace "
-                        "the example anchor and author scientific fields. Examine every substantive inference "
-                        "in route reasoning; separate judgments suit distinct targets/routes or local outcomes "
-                        "needing separate treatment, with no row quota. Put extra prerequisite concerns in "
-                        "coverage_note; concerns undermining the conclusion also belong in its reasoning/outcome. "
-                        "Preserve counterexamples through corrections; never silently add hypotheses. "
-                        "Context extension retains the obligation; an out-of-scope target needs another assignment."}
+                    "target": {"source_anchor_id": "<supplied statement or proof anchor ID>",
+                               "description": "The supplied reasoning for the requested conclusion, including any omission."}},
+                "note": "Use the scaffold; required nullable fields stay present. "
+                        "Answer the exact neutral question and preserve its question_id; the enclosing theorem "
+                        "supplies context. "
+                         "The scaffold's source target is mapped by the script to that exact assignment. "
+                         "Delivery may also include matching original source pages, source-only images and role reference files. "
+                         "Source-only excludes primary judgments, not original sources. Reuse readable evidence; "
+                         "if a consequential symbol remains unreadable, identify the local limitation or seek clarification. "
+                        "Replace the example's anchor placeholder and author all scientific fields. "
+                        "The coordinator maps your unchanged response. Preserve extra prerequisite concerns "
+                        "in coverage_note; concerns undermining the assigned conclusion belong in its reasoning "
+                        "and outcome. Do not silently add hypotheses. Context extension keeps the same obligation; "
+                        "a new target outside scope is a disclosed finding, not an automatic new assignment. "
+                        "An unresolved judgment needs a reason, not a newly constructed proof or counterexample."}
     if mode == "primary":
         return {"mode": mode, "response_shape": describe(c.WORK_PRIMARY_RESPONSE),
-                "coverage_row_template": skeleton(c.WORK_COVERAGE),
-                "finding_row_template": skeleton(c.WORK_FINDING),
-                "note": "Use assigned task IDs; keep required nullable fields. "
-                        "Untouched scaffold results are omitted, and a scaffold-only return saves no scientific work. "
-                        "A useful draft needs authored reasoning and a concrete remaining question or next_action; "
-                        "explain missing source evidence when evidence_refs is empty. "
-                        "check_task_ids/related_task_ids link this response's checks, never source_fidelity "
-                        "observations; existing_check_refs pins saved checks. Author judgments; cite existing "
-                        "findings during renewal. Renewed checks alone do not resolve findings. "
-                        "Row templates are unfinished examples outside the response scaffold. Fill only "
-                        "rows justified by the examination; author their classifications, evidence, links "
-                        "and descriptions. Coverage replaces is null for new rows; saved check references "
-                        "must be permissible pinned checks from the packet. Coverage links stay in the "
-                        "same argument."}
+                "optional_finding_example": _finding_example(),
+                "note": "Use assigned task IDs; required nullable fields stay present. "
+                        "Keep each scaffold row's type: source_fidelity uses result, note and evidence_refs; "
+                        "check uses state, outcome, reasoning and its check fields. Do not fill source rows as checks. "
+                        "Return the rows actually examined; leave missing work pending rather than filling defaults. "
+                        "Author the judgments. Finding rows create new issues; cite unchanged existing findings "
+                        "during renewal instead of recreating them. A renewed check alone does not resolve a finding."}
     if mode == "reconcile":
-        return {"mode": mode, "row_shape": describe(c.BODY_SCHEMAS["reconciliations"]),
-                "note": "Choose exact-target pins from coordinator guidance; author the decision and rationale. "
-                        "Preserve the scaffold request_id and use that same ID in the submission envelope. "
-                        "An empty pin list or template is not completed reconciliation."}
+        from .controller import INTEGRATION_RESPONSE
+        return {"mode": mode, "response_shape": describe(INTEGRATION_RESPONSE),
+                "optional_finding_example": _finding_example(),
+                "note": "Use the integration scaffold's unit task IDs; scripts select current opinion references. "
+                         "Match each generated task's exact target to coordinator reconciliation candidates, not label or ID prefixes. "
+                         "Compare saved reasoning and conditions and author the decision and rationale. "
+                         "Adopting a saved finding is integration; disagreement does not require another examination. "
+                         "Use primary_revised to adopt the saved independent conclusion, independent_revised to "
+                         "retain the saved primary conclusion, agree for compatible opinions, or unresolved. "
+                         "Scripts select the adopted saved opinion references. "
+                         "Optional top-level findings use the example and related integration task IDs; scripts link current opinions. "
+                         "Omit findings or leave it empty when none is new. A changed disposition of an existing finding "
+                         "also needs that identified finding updated through review reconcile; a rationale alone does not update it. "
+                        "Stage 2 generates the submission envelope. If response_dispositions are listed, explain "
+                        "how the preserved extra rows are handled, retaining material unresolved concerns. "
+                        "Do not fabricate an independent examination to repair a peripheral response field."}
     raise InvalidRequest(f"unknown assistance mode {mode!r}", code="ASSISTANCE_MODE")
 
 
-def primary_task_table(db, manifest):
-    """Label only assigned primary tasks, using the original packet's read set.
-
-    This helper is intentionally separate from role-only worker_guidance. Never
-    attach its private decomposition to independent delivery.
-    """
-    if manifest.get("mode") != "primary" or manifest.get("work", {}).get("mode") != "primary":
-        raise InvalidRequest("a primary task table requires a primary work assignment", code="ASSISTANCE_MODE")
-    from .work import record_label
-
-    class PinnedLabels:
-        def __init__(self):
-            self.pins = {(p["collection"], p["id"]): p for p in manifest["read_set"]}
-            self.records = {}
-
-        def get(self, ref):
-            key = (ref["collection"], ref["id"])
-            pin = self.pins.get(key)
-            if pin is None or ref.get("version", pin["version"]) != pin["version"]:
-                return None
-            if key not in self.records:
-                self.records[key] = db.version(*key, pin["version"])
-            return self.records[key]
-
-        def live(self, collection, identifier):
-            return self.get({"collection": collection, "id": identifier})
-
-    labels = PinnedLabels()
-    return [{"task_id": task["id"], "target": deepcopy(task["target"]),
-             "target_label": record_label(labels, task["target"]), "kind": task["kind"],
-             "result_type": (c.WORK_COMPARISON if task["action"] == "compare_source"
-                             else c.WORK_CHECK).fields["type"].expected}
-            for task in manifest["work"]["tasks"]]
+def _finding_example():
+    """Optional scientific content; this example is never a required response row."""
+    return {"target": {"collection": "arguments", "id": "<assigned target ID>"},
+            "category": "inconclusive", "description": "<the new material concern>",
+            "evidence_refs": [], "related_task_ids": ["<related task ID>"],
+            "existing_check_refs": [], "affected_uses": [],
+            "impact_reason": "<its consequence for the assigned conclusion>"}
 
 
 def _opinion(record, pin):
     """Reference material from the named version, never a new check or verdict."""
     return {"ref": deepcopy(pin), **{field: deepcopy(record.body[field]) for field in (
         "target", "kind", "role", "reviewer", "state", "outcome", "reasoning", "conditions",
-        "evidence_refs", "next_action", "supersedes")}}
+        "evidence_refs", "next_action", "supersedes")},
+        **{key: deepcopy(record.body[key]) for key in ("extent", "omissions") if key in record.body}}
 
 
 def coordinator_guidance(db, manifest, *, assessed=None):
@@ -253,12 +293,6 @@ def coordinator_guidance(db, manifest, *, assessed=None):
             if record is None or record.collection != "checks" or record.body["state"] != "draft":
                 continue
             result["draft_candidates"].append({"task_id": task["id"], **_opinion(record, pin)})
-    if result["draft_candidates"]:
-        result["draft_note"] = (
-            "For replaces, choose the assigned task's same-reviewer draft ref and preserve that draft's "
-            "supersedes. An identical continuation with unchanged consumed inputs keeps the saved draft "
-            "and reports no change. Changed inputs require examination before continuation. "
-            "A completed predecessor is not a replaces candidate. No candidate is selected here.")
     audit_id = manifest.get("work", {}).get("audit_id")
     renewal_checks = []
     if mode == "primary":
@@ -304,14 +338,17 @@ def coordinator_guidance(db, manifest, *, assessed=None):
             result["renewal_candidates"] = candidates
             result["renewal_note"] = (
                 "These completed checks consumed changed inputs. Their pinned opinions are reference material, "
-                "not renewed proof credit. Each candidate's ref is its possible supersedes pin, not replaces. "
-                "Pass only the needed predecessor context to the assigned primary "
+                "not renewed proof credit. Pass only the needed predecessor context to the assigned primary "
                 "checker, who re-examines the affected work and authors explicit supersedes before saving. "
                 "Preserve negative outcomes, conditions and reasoning unless the examiner explicitly revises "
                 "them. Submit the response unchanged; keep this inventory out of independent delivery.")
     if mode != "reconcile":
         return result
     rows = {}
+    coherent = derivation.audit.body["protocol_version"] == "coherent-proof-audit/1"
+    from .coherent import unit_targets
+    units = [(task["target"], unit_targets(derivation.snap, task["target"]))
+             for task in tasks if coherent and task["kind"] == "reconciliation"]
 
     def candidate(target):
         key = (target["collection"], target["id"])
@@ -325,18 +362,38 @@ def coordinator_guidance(db, manifest, *, assessed=None):
                 or info["audit_id"] != audit_id or info["state"] != "complete" \
                 or info["freshness"] != "current" or info["superseded"]:
             continue
-        if info["role"] == "independent" and not derivation.independent_usable(info):
+        if coherent and not derivation.integration_eligible(info):
+            continue
+        if not coherent and info["role"] == "independent" and not derivation.independent_usable(info):
             continue
         row = candidate(info["target"])
         row[f"{info['role']}_checks"].append(deepcopy(pin))
         record = db.version("checks", pin["id"], pin["version"])
         row[f"{info['role']}_opinions"].append(_opinion(record, pin))
+        if info["role"] == "independent" and record.body["response_id"]:
+            response = db.head("responses", record.body["response_id"])
+            if response and (response.body.get("pending_judgments") or response.body["coverage_note"].strip()):
+                row.setdefault("retained_concerns", []).append({"response_ref": response.pinned,
+                    "pending_judgments": response.body.get("pending_judgments", []),
+                    "coverage_note": response.body["coverage_note"],
+                    "intake_diagnostics": response.body.get("intake_diagnostics", []),
+                    "original_blob": response.body["original_blob"]})
+        if info["role"] == "independent":
+            for unit, members in units:
+                if info["target"] == unit or info["target"] not in members:
+                    continue
+                owner = candidate(unit)
+                owner["required_other_opinions"].append({**_opinion(record, pin),
+                    "freshness": info["freshness"], "superseded": info["superseded"], "exposure": info["exposure"]})
+                for concern in row.get("retained_concerns", []):
+                    if concern not in owner.setdefault("retained_concerns", []):
+                        owner["retained_concerns"].append(concern)
     # Reconciliation validation requires every accepted opinion on the exact
     # target, including an explicitly superseded predecessor. Inclusion records
     # the history; it does not make that opinion current or qualifying support.
     from .validation import _response_covers
     visible_targets = {(collection, identifier) for collection, identifier, _ in readable}
-    for info in assessment["judgments"].values():
+    for info in (() if coherent else assessment["judgments"].values()):
         target, pin = info["target"], info["ref"]
         if info["role"] != "independent" or info["audit_id"] != audit_id \
                 or info["response_state"] != "accepted" \
@@ -370,6 +427,11 @@ def coordinator_guidance(db, manifest, *, assessed=None):
         row["required_other_opinions"].sort(key=lambda entry: (entry["ref"]["id"], entry["ref"]["version"]))
         row["has_both_roles"] = bool(row["primary_checks"] and row["independent_checks"])
         result["reconciliation_candidates"].append(row)
+    if coherent:
+        result["note"] = ("These are current eligible opinions on each exact unit. Scripts attach their references "
+            "when the integration scaffold is submitted. Compare the reasoning and conditions, preserve retained "
+            "concerns, and state unresolved disagreements. Matching outcome labels alone do not establish agreement.")
+        return result
     result["note"] = "primary_checks and independent_checks are current eligible evidence on the exact target. " \
         "required_other_opinions are accepted historical or otherwise nonqualifying opinions that validation " \
         "also requires in the authored independent_checks list; their inclusion does not restore current support. " \
@@ -397,7 +459,4 @@ def mapping_template(*, source_packet_id, mapping_packet_id, response_id, judgme
             "note": "A is the original source-only worker packet; preserve its response unchanged. "
                     "B is the private current coordinator packet authorizing mapped targets in its read set. "
                     "Choose each target and source-overlap rationale explicitly. Mapping never changes the "
-                    "worker's kind, outcome, reasoning, evidence or reviewed scope. Wrong kinds or incompatible "
-                    "targets need a reviewer-authored correction, preserving unresolved concerns. Refine a "
-                    "missing inference from source; never invent records only to accept a response. "
-                    "All required routes and relevant accepted opinions still need examination and reconciliation."}
+                    "worker's kind, outcome, reasoning, evidence or reviewed scope."}

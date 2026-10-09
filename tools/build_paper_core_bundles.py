@@ -1,13 +1,14 @@
-"""Generate identical ``scripts/paper_core/`` bundles inside both skill packages (implementation-handoff 8).
+"""Build Proof Graphify's bundle from the legacy shared backend.
 
-The single maintained source is ``shared/paper_core/``. This builder copies it (without caches or
-byte-compiled files) into ``stat-proof-check/scripts/paper_core/`` and
-``../proof-graphify/scripts/paper_core/``, writes ``bundle-manifest.json`` into each copy, and then
-verifies that both bundles are byte-identical. Generated bundles are never edited by hand.
+The maintained legacy source is ``shared/paper_core/``. This builder copies it (without caches or
+byte-compiled files) into ``../proof-graphify/scripts/paper_core/``, writes
+``bundle-manifest.json``, and verifies the bundle against that source.
+``stat-proof-check`` maintains its own runtime and uses ``scripts/build_manifest.py``;
+it is not a target of this builder. Generated Graphify bundles are never edited by hand.
 
 Commands::
 
-    python tools/build_paper_core_bundles.py                  # rebuild both bundles, then verify
+    python tools/build_paper_core_bundles.py                  # rebuild Graphify's bundle, then verify
     python tools/build_paper_core_bundles.py --check          # verify only (exit 1 on any mismatch)
     python tools/build_paper_core_bundles.py --release-manifest PATH
         # also record both repository revisions and dirty-file content identities (handoff 8)
@@ -28,7 +29,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "shared" / "paper_core"
 PACKAGES = {
-    "stat-proof-check": ROOT / "stat-proof-check",
     "proof-graphify": ROOT.parent / "proof-graphify",
 }
 REPOSITORIES = {

@@ -20,13 +20,14 @@ from .canonical import compact_json, sha256_bytes
 from .errors import InvalidRequest, PublicationError
 from .ids import new_id
 from .math_render import render_text
+from .paths import resolve_path
+from .staging import staging_directory
 from .storage import Database, now_iso, paper_record
 
 RENDERER = Path(__file__).resolve().parent / "renderer" / "render_projection.mjs"
 RENDER_TIMEOUT = 120
 FRAGMENT_FIELDS = ("label", "statement", "reason", "needed_form", "rationale", "conditions", "reasoning", "description",
                    "proof_idea", "regime", "uncertainty", "impact_reason")
-COUNT_NAMES_STATES = ("green", "red", "gray", "amber")
 
 
 def _node_executable() -> str:
@@ -36,56 +37,31 @@ def _node_executable() -> str:
     return node
 
 
-def display_fragments(projection: dict, diagnostics=None) -> dict:
+def display_fragments(projection: dict) -> dict:
     """Escaped prose plus MathML for the text fields the renderer replaces; keyed by pinned ref."""
     refs = {}
     for entry in projection["records"]:
         ref, body = entry["ref"], entry["body"]
         fragments = {}
-        def render(value, field):
-            local = [] if diagnostics is not None else None
-            markup = render_text(value, diagnostics=local)
-            if local:
-                diagnostics.extend({**row, "ref": dict(ref), "field": field} for row in local)
-            return markup
         for field in FRAGMENT_FIELDS:
             value = body.get(field)
-            path = field
             if field in ("statement", "needed_form") and isinstance(value, dict):
                 value = value.get("text")
-                path += ".text"
             if value is None:
                 continue
             if field == "conditions":
                 if isinstance(value, list) and all(isinstance(v, str) for v in value):
-                    fragments["conditions_html"] = [render(v, f"conditions/{i}") for i, v in enumerate(value)]
+                    fragments["conditions_html"] = [render_text(v) for v in value]
                 continue
             if isinstance(value, str):
-                fragments[f"{field}_html"] = render(value, path)
+                fragments[f"{field}_html"] = render_text(value)
         if fragments:
             refs[f"{ref['collection']}:{ref['id']}:{ref['version']}"] = fragments
     return refs
 
 
-def summarize_math_diagnostics(entries) -> dict:
-    """Bound presentation output while counting failures in saved fields once."""
-    groups = {}
-    for row in entries:
-        group = groups.setdefault((row["kind"], row["reason"]),
-                                  {"kind": row["kind"], "reason": row["reason"], "count": 0, "samples": []})
-        group["count"] += 1
-        if len(group["samples"]) < 3:
-            sample = {key: row[key] for key in ("ref", "field", "excerpt")}
-            if sample not in group["samples"]:
-                group["samples"].append(sample)
-    return {"count": len(entries), "count_basis": "expression occurrences in saved record fields",
-            "nonblocking": True, "groups": list(groups.values())[:5], "groups_truncated": len(groups) > 5}
-
-
 def render_input(db: Database, projection: dict, *, release: bool, source_identity: str) -> dict:
     paper = paper_record(db)
-    diagnostics = []
-    fragments = display_fragments(projection, diagnostics)
     return {
         "render_input_version": 1,
         "title": paper.body["title"],
@@ -98,7 +74,7 @@ def render_input(db: Database, projection: dict, *, release: bool, source_identi
             "kind": "release" if release else "working",
         },
         "projection": projection,
-        "display": {"refs": fragments, "math_diagnostics": summarize_math_diagnostics(diagnostics)},
+        "display": {"refs": display_fragments(projection)},
     }
 
 
@@ -112,8 +88,6 @@ class _Scan(HTMLParser):
         self.node_ids, self.edge_ids, self.index_items, self.index_connections = [], [], [], []
         self.node_states, self.edge_states = {}, {}
         self.findings, self.limits, self.process = [], [], []
-        self.limitations, self.limitation_open = [], False
-        self.count_open, self.counts = None, {}
         self.external = []
         self.elements, self.stack = [], []
 
@@ -146,14 +120,8 @@ class _Scan(HTMLParser):
             self.findings.append(a["data-proof-finding"])
         if "data-proof-source-limit" in a:
             self.limits.append(a["data-proof-source-limit"])
-        if "data-proof-limitation" in a:
-            self.limitations.append("")
-            self.limitation_open = True
         if "data-proof-process-complete" in a:
             self.process.append(a["data-proof-process-complete"])
-        if "data-proof-count" in a:
-            self.count_open = a["data-proof-count"]
-            self.counts[self.count_open] = ""
         for name in ("src", "href"):
             value = a.get(name)
             if value and value.lower().startswith(("http://", "https://", "//")) and not (tag == "a" and name == "href"):
@@ -166,37 +134,297 @@ class _Scan(HTMLParser):
                 break
         if tag == "script":
             self.script_id = None
-        if tag == "span" and self.count_open is not None:
-            self.count_open = None
-        if tag == "li":
-            self.limitation_open = False
 
     def handle_data(self, data):
         for element in self.stack:
             element["text"].append(data)
         if self.script_id is not None:
             self.scripts[self.script_id].append(data)
-        if self.count_open is not None:
-            self.counts[self.count_open] += data
-        if self.limitation_open:
-            self.limitations[-1] += data
 
 
 def _multiset_equal(a, b) -> bool:
     return sorted(a) == sorted(b)
 
 
-def _visible_failures(scan, projection):
+def _scientific_fields(projection):
+    """Expected source values, independently selected from the saved scientific schema.
+
+    Keys include the owning template, pinned source and leaf path. Derived source spans
+    retain their exact offsets; a statement reference resolves only its pinned version.
+    This is an acceptance expectation, not a second saved projection format.
+    """
+    fields = {
+        "papers": ("scope", "exclusions"),
+        "sources": ("media_type", "limitation"),
+        "anchors": ("locator", "excerpt", "limitation"),
+        "observations": ("result", "note"),
+        "source_issues": ("category", "lifecycle", "description", "resolution"),
+        "source_reviews": ("purpose", "decision", "rationale"),
+        "items": ("kind", "label", "caption", "statement", "uncertainty", "origin", "proof_idea"),
+        "parts": ("label", "statement", "origin"),
+        "scopes": ("binders", "conditions"),
+        "arguments": ("label", "origin", "lifecycle"),
+        "groups": ("kind", "rationale"),
+        "uses": ("type", "reason", "regime", "uncertainty", "needed_form", "substitutions"),
+        "application_details": ("needed_form", "substitutions", "state"),
+        "target_specs": ("statement", "state"),
+        "overview_selections": ("scope", "unresolved"),
+        "connection_refinements": ("state", "note"),
+        "proof_boundaries": ("state",),
+        "coverage": ("classification", "note"),
+        "audits": ("mode",),
+        "checks": ("kind", "state", "outcome", "reasoning", "conditions", "next_action", "extent", "omissions"),
+        "findings": ("category", "lifecycle", "description", "impact_reason", "resolution"),
+        "repairs": ("kind", "description", "added_conditions"),
+        "qualifications": ("qualified", "limitations"),
+        "responses": ("coverage_note", "exposure", "exposure_note", "state"),
+        "reconciliations": ("decision", "rationale"),
+        "reuse_decisions": ("decision", "rationale"),
+        "identity_maps": ("note",),
+    }
+    records = {}
+    latest = {}
+    for row in projection["records"]:
+        ref = row["ref"]
+        pin = f"{ref['collection']}:{ref['id']}:{ref['version']}"
+        records[pin] = row
+        loose = (ref["collection"], ref["id"])
+        if loose not in latest or latest[loose]["ref"]["version"] < ref["version"]:
+            latest[loose] = row
+    expected = {}
+
+    def pin_of(ref):
+        return f"{ref['collection']}:{ref['id']}:{ref['version']}"
+
+    def add(owner, source, value, path, span=None):
+        if value is None or value == "":
+            return
+        if isinstance(value, list):
+            for index, entry in enumerate(value):
+                add(owner, source, entry, path + (index,), span)
+        elif isinstance(value, dict):
+            if path and path[-1] in ("statement", "needed_form"):
+                add(owner, source, value.get("text"), path + ("text",), span)
+            else:
+                for name, entry in value.items():
+                    add(owner, source, entry, path + (name,), span)
+        else:
+            raw = str(value).lower() if isinstance(value, bool) else str(value)
+            expected.setdefault((owner, source, path, span), []).append(raw)
+
+    def passage(owner, anchor, start, end):
+        if anchor is not None:
+            excerpt = anchor["body"].get("excerpt", "")
+            add(owner, pin_of(anchor["ref"]), excerpt[start:end], ("excerpt",), (start, end))
+
+    for row in projection["records"]:
+        ref, body = row["ref"], row["body"]
+        owner, collection = pin_of(ref), ref["collection"]
+        for field in fields.get(collection, ()):
+            add(owner, owner, body.get(field), (field,))
+        if collection == "target_specs" and body.get("statement_ref"):
+            source = records.get(pin_of(body["statement_ref"]))
+            if source:
+                add(owner, pin_of(source["ref"]), source["body"].get("statement"), ("statement",))
+        if collection == "coverage":
+            passage(owner, latest.get(("anchors", body["anchor_id"])), body["start_offset"], body["end_offset"])
+        if collection == "source_reviews":
+            for span in body.get("proof_spans", ()):
+                passage(owner, records.get(pin_of(span["anchor_ref"])), span["start_offset"], span["end_offset"])
+        if collection == "reconciliations":
+            for index, disposition in enumerate(body.get("response_dispositions", ())):
+                add(owner, owner, disposition.get("rationale"), ("response_dispositions", index, "rationale"))
+        if collection == "identity_maps":
+            for index, entry in enumerate(body.get("entries", ())):
+                add(owner, owner, entry.get("rationale"), ("entries", index, "rationale"))
+        if collection == "audits":
+            for index, exclusion in enumerate(body.get("exclusions", ())):
+                for field in ("reason", "consequence"):
+                    add(owner, owner, exclusion.get(field), ("exclusions", index, field))
+    return expected
+
+
+def _scientific_failures(scan, projection):
+    """Verify selected evidence against canonical source values and usable destinations."""
+    from collections import Counter
+    failures, shown = [], Counter()
+    expected = _scientific_fields(projection)
+    templates = [e for e in scan.elements if "data-record-template" in e["attrs"]]
+    record_keys = [f"{r['ref']['collection']}:{r['ref']['id']}:{r['ref']['version']}" for r in projection["records"]]
+    if not _multiset_equal([e["attrs"]["data-record-template"] for e in templates], record_keys) \
+            or any(e["tag"] != "template" for e in templates):
+        failures.append("scientific evidence templates differ from the pinned record inventory")
+    rendered = {}
+
+    def descendants(element):
+        for child in element["children"]:
+            yield child
+            yield from descendants(child)
+
+    def math_signature(element):
+        def tree(node):
+            # Display-delimited mathematics becomes inline in a result label.
+            # The outer display mode is presentation; the full mathematical tree remains exact.
+            attrs = tuple(sorted((name, value) for name, value in node["attrs"].items()
+                                 if not (node["tag"] == "math" and name == "display")))
+            return (node["tag"], attrs,
+                    "".join(node["text"]), tuple(tree(child) for child in node["children"]))
+        return tuple(tree(child) for child in descendants(element) if child["tag"] == "math")
+
+    for template in templates:
+        bodies = [e for e in descendants(template) if "data-record-body" in e["attrs"]]
+        if len(bodies) != 1 or bodies[0]["attrs"]["data-record-body"] != template["attrs"]["data-record-template"]:
+            failures.append("scientific template body does not retain its pinned evidence identity")
+
+    for element in scan.elements:
+        attrs = element["attrs"]
+        if "data-scientific-path" not in attrs:
+            continue
+        owner, current, hidden = None, element, False
+        while current:
+            if "data-record-template" in current["attrs"]:
+                owner = current["attrs"]["data-record-template"]
+                break
+            current_attrs = current["attrs"]
+            hidden = hidden or current["tag"] in ("template", "script", "style") \
+                or "hidden" in current_attrs or current_attrs.get("aria-hidden") == "true" \
+                or "display:none" in current_attrs.get("style", "").replace(" ", "").lower()
+            current = current["parent"]
+        if owner is None:
+            failures.append("scientific evidence field is outside its pinned template")
+            continue
+        try:
+            path = tuple(json.loads(attrs["data-scientific-path"]))
+            span = (int(attrs["data-scientific-start"]), int(attrs["data-scientific-end"])) \
+                if "data-scientific-start" in attrs or "data-scientific-end" in attrs else None
+            key = (owner, attrs.get("data-scientific-ref", ""), path, span)
+            raw = expected[key][0]
+        except (KeyError, TypeError, ValueError):
+            failures.append(f"scientific evidence field does not resolve to selected pinned content: {owner}")
+            continue
+        shown[key] += 1
+        if raw not in rendered:
+            fragment = _Scan()
+            fragment.feed("<div>" + render_text(raw) + "</div>")
+            rendered[raw] = ("".join(fragment.elements[0]["text"]).strip(), math_signature(fragment.elements[0]))
+        text = "".join(element["text"]).strip()
+        if hidden or text not in (raw.strip(), rendered[raw][0]) \
+                or (math_signature(element) and math_signature(element) != rendered[raw][1]):
+            failures.append(f"scientific evidence differs from its pinned text or mathematics: {key}")
+    for key, values in expected.items():
+        if shown[key] != len(values):
+            failures.append(f"scientific evidence field missing or duplicated: {key}")
+    details = {e["attrs"]["data-proof-detail"]: e for e in scan.elements if "data-proof-detail" in e["attrs"]}
+    for detail_key, detail in projection["details"].items():
+        actual = list(descendants(details[detail_key])) if detail_key in details else []
+        sections = [e for e in actual if "data-proof-section" in e["attrs"]]
+        if [e["attrs"]["data-proof-section"] for e in sections] != [s["key"] for s in detail["sections"]]:
+            failures.append(f"scientific evidence sections differ from the saved detail: {detail_key}")
+            continue
+        for element, section in zip(sections, detail["sections"]):
+            refs = [e["attrs"]["data-record-ref"] for e in descendants(element) if "data-record-ref" in e["attrs"]]
+            pins = [f"{r['collection']}:{r['id']}:{r['version']}" for r in section["record_refs"]]
+            if refs != pins:
+                failures.append(f"scientific evidence destinations differ from their pinned section: {section['key']}")
+    return failures
+
+
+def _saved_limitations(projection):
+    """Translate only known generated diagnostics; authored or mixed notes remain exact."""
+    import re
+    records, latest = {}, {}
+    for row in projection["records"]:
+        ref = row["ref"]
+        records[(ref["collection"], ref["id"], ref["version"])] = row
+        loose = (ref["collection"], ref["id"])
+        if loose not in latest or latest[loose]["ref"]["version"] < ref["version"]:
+            latest[loose] = row
+
+    def label(ref):
+        row = records.get((ref["collection"], ref["id"], ref["version"])) if "version" in ref else \
+            latest.get((ref["collection"], ref["id"]))
+        if row is None:
+            return "Referenced material unavailable"
+        body = row["body"]
+        if body.get("label"):
+            return body["label"]
+        if ref["collection"] == "anchors":
+            source = {"collection": "sources", "id": body["source_id"], "version": body["source_version"]}
+            parts, locator = [label(source)], body["locator"]
+            if locator.get("label"):
+                parts.append(locator["label"])
+            if locator.get("page") is not None:
+                parts.append(f"page {locator['page']}")
+            if locator.get("start_line") is not None:
+                parts.append(f"lines {locator['start_line']} to {locator['end_line']}" if
+                             locator.get("end_line") not in (None, locator["start_line"]) else f"line {locator['start_line']}")
+            return ", ".join(parts)
+        return body.get("path") or body.get("title") or "Saved scientific material"
+
+    refs = [row["ref"] for row in projection["records"]] + projection["summary"]["scope"]["target_refs"]
+    translations = {}
+    for ref in refs:
+        key, name = f"{ref['collection']}:{ref['id']}", label(ref)
+        translations[f"register establishment for {key}: no exact registered proof route or local group"] = \
+            name + ": no exact establishing argument is registered."
+        translations[f"audit target {key} is an intermediate result"] = \
+            name + ": the saved examination scope identifies a subsidiary result."
+        translations[f"required target {key} is not live at revision {projection['snapshot_revision']}"] = \
+            name + ": the required statement is unavailable in the current saved material."
+        if ref["collection"] == "arguments":
+            for message in (f"proof boundary for {key} remains unresolved",
+                            f"proof boundary for {ref['id']}: complete current source-boundary review required"):
+                translations[message] = name + ": the examined boundary of the written proof remains unresolved."
+            translations[f"located proof passage for {key} changed"] = \
+                name + ": a located proof passage changed, so its earlier examination is not current."
+            translations[f"written proof for {key} has no located source passages"] = \
+                name + ": the written proof has no located source passages."
+            for anchor in (row for row in projection["records"] if row["ref"]["collection"] == "anchors"):
+                translations[f"written proof for {key} has unavailable source passage {anchor['ref']['id']}"] = \
+                    name + ": the source passage " + label(anchor["ref"]) + " is unavailable."
+    expected = []
+    for note in projection["summary"].get("limitations", []):
+        replacement = translations.get(note)
+        if replacement is None:
+            for ref in refs:
+                for anchor in (row for row in projection["records"] if row["ref"]["collection"] == "anchors"):
+                    prefix = f"proof coverage for {ref['collection']}:{ref['id']}, anchor {anchor['ref']['id']}: uncovered or unchecked spans "
+                    if note.startswith(prefix) and re.fullmatch(r"\[\d+, \d+\)(?:, \[\d+, \d+\))*", note[len(prefix):]):
+                        replacement = label(ref) + ": " + label(anchor["ref"]) + \
+                            " contains proof material without a completed current substantive examination."
+                        break
+                if replacement is not None:
+                    break
+        expected.append(note if replacement is None else replacement)
+    return expected
+
+
+def _visible_failures(scan, projection, *, build=None):
     """Check actual visible classes/text as well as identity metadata."""
     failures = []
     glyphs = {"green": "✓", "red": "✕", "gray": "?", "amber": "!"}
     text = lambda element: "".join(element["text"]).strip() if element else ""
     classes = lambda element: element["attrs"].get("class", "").split() if element else []
 
+    def visible(element, *, allow_disclosure=False):
+        while element:
+            attrs = element["attrs"]
+            if element["tag"] in ("template", "script", "style") or "hidden" in attrs \
+                    or attrs.get("aria-hidden") == "true" \
+                    or (element["tag"] == "details" and "open" not in attrs and not allow_disclosure) \
+                    or "display:none" in attrs.get("style", "").replace(" ", "").lower():
+                return False
+            element = element["parent"]
+        return True
+
     def descendants(element):
         for child in element["children"]:
             yield child
             yield from descendants(child)
+
+    def visible_text(element, value, *, allow_disclosure=False):
+        return element is not None and value in text(element) and visible(element, allow_disclosure=allow_disclosure) \
+            and all(visible(child, allow_disclosure=allow_disclosure) for child in descendants(element))
 
     def field(element, name):
         return next((child for child in descendants(element) if name in classes(child)), None) if element else None
@@ -269,16 +497,15 @@ def _visible_failures(scan, projection):
     factual = projection["summary"].get("factual")
     if factual is not None:
         support, review = factual["statement_support"], factual["independent_review"]
-        outcomes = "; ".join(f"{outcome}: {factual['work']['current_primary_outcomes'][outcome]}"
-                             for outcome in ("supported", "gap", "refuted", "inconclusive"))
+        outcomes = [outcome for outcome in ("supported", "gap", "refuted", "inconclusive")
+                    if factual["work"]["current_primary_outcomes"][outcome]]
         expected = {
-            "snapshot": f"These facts describe snapshot {factual['revision']}. Process completion is separate from the mathematical outcomes.",
-            "primary_outcomes": "Saved check counts include nonqualifying independent work. Current primary mathematical outcomes: " + outcomes + ".",
-            "statement_support": "Statement support at each statement's recorded scope: " + "; ".join(
-                f"{state} {support['counts'][state]}" for state in ("available", "conditional", "unavailable")) + ".",
+            "primary_outcomes": ("Current initial assessment outcomes: " + ", ".join(outcomes) + "." if outcomes else
+                                 "No completed current initial mathematical outcome is recorded.") +
+                                " Completion of the examination does not establish that every statement is supported.",
+            "statement_support": "Read each result and application for its exact support conditions.",
             "independent_review": review.get("explanation", "Independent review: " + review["state"].replace("_", " ") + "."),
             **({"scope_explanation": factual["scope"]["explanation"]} if factual["scope"].get("explanation") else {}),
-            **{f"checks.{key}": str(value) for key, value in factual["work"]["checks"].items()},
             **{f"unresolved.{index}": f"{row['label']}: {row['availability']}" +
                (f" (declared {row['kind']}; scope-dependent premise)" if row.get("kind") in ("assumption", "definition") else "")
                for index, row in enumerate(support["unresolved"])},
@@ -290,23 +517,66 @@ def _visible_failures(scan, projection):
             **{f"exclusion.{index}": f"{row['label']}: {row['reason']} Consequence: {row['consequence']}"
                for index, row in enumerate(factual["scope"]["exclusions"])},
         }
-        groups = factual["work"].get("obligation_groups") or []
-        if groups:
-            expected["obligations.caption"] = ("Completed examinations do not mean verified statements; "
-                                                "other completion requirements still apply.")
-            expected.update({f"obligations.header.{field}": title for field, title in
-                             (("role", "Role"), ("kind", "Examination"), ("required", "Required"),
-                              ("completed", "Completed"), ("unfinished", "Unfinished"))})
-        for index, row in enumerate(groups):
-            labels = {"role": row["role"].capitalize(), "kind": "Source comparison" if
-                      row["kind"] == "source_fidelity" else row["kind"].replace("_", " ").capitalize()}
-            expected.update({f"obligations.{index}.{field}": labels[field] if field in labels else str(row[field])
-                             for field in ("role", "kind", "required", "completed", "unfinished")})
         shown = [(e["attrs"]["data-proof-fact"], text(e)) for e in scan.elements if "data-proof-fact" in e["attrs"]]
-        expected_completion = [(key, value) for key, value in expected.items() if key.startswith("obligations.")]
-        shown_completion = [(key, value) for key, value in shown if key.startswith("obligations.")]
-        if sorted(shown) != sorted(expected.items()) or shown_completion != expected_completion:
+        if sorted(shown) != sorted(expected.items()):
             failures.append("visible scientific summary differs from the assessed snapshot facts")
+    reports = [e for e in scan.elements if "data-reader-report-state" in e["attrs"]]
+    report = reports[0] if len(reports) == 1 else None
+    completion_text = ("Registered examinations complete." if projection["summary"]["progress"]["process_complete"]
+                       else "Registered examinations incomplete.")
+    report_paragraphs = [e for e in report["children"] if e["tag"] == "p"] if report is not None else []
+    process_rows = [e for e in scan.elements if "data-proof-process-complete" in e["attrs"]]
+    process = process_rows[0] if len(process_rows) == 1 else None
+    if not any(visible_text(paragraph, completion_text) for paragraph in report_paragraphs):
+        failures.append("current examination state is missing, hidden or inconsistent")
+    if not visible_text(process, completion_text, allow_disclosure=True):
+        failures.append("summary examination state is missing, hidden or inconsistent")
+    if build is not None and build.get("kind") == "working":
+        working_limit = "This working report does not establish completion of the promised audit scope."
+        if not any(visible_text(paragraph, working_limit) for paragraph in report_paragraphs):
+            failures.append("working report promised-scope limitation is missing, hidden or inconsistent")
+        if not visible_text(process, working_limit, allow_disclosure=True):
+            failures.append("working summary promised-scope limitation is missing, hidden or inconsistent")
+    if report is not None and factual is not None:
+        required_limits = [review.get("explanation", "Independent review: " + review["state"].replace("_", " ") + "."),
+                           *review["qualification_limitations"],
+                           *(f"{row.get('source_path') or row['label']}: {row['description']}" for row in factual["source_limits"])]
+        if any(value not in text(report) for value in required_limits):
+            failures.append("independent review or source limitations are absent from the visible report state")
+    work = {task["id"]: task for task in (projection.get("worklist") or {}).get("tasks", [])
+            if task["required"] and task["state"] != "satisfied"}
+    rows = [e for e in scan.elements if "data-proof-review-limit" in e["attrs"]]
+    if not _multiset_equal([e["attrs"]["data-proof-review-limit"] for e in rows], list(work)):
+        failures.append("current examination limitations differ from the saved required material")
+    for row in rows:
+        task = work.get(row["attrs"]["data-proof-review-limit"])
+        if task is None:
+            continue
+        role = {"independent": "Independent assessment", "coordinator": "Combined assessment"}.get(task["role"], "Initial assessment")
+        if task.get("outcome"):
+            consequence = role + ": " + task["outcome"] + ". Examination remains incomplete for the current material." \
+                if task["freshness"] == "current" else "Earlier " + role.lower() + ": " + task["outcome"] + \
+                ". It does not establish a completed current examination."
+        elif task["kind"] in ("derivation", "application", "composition", "case_coverage", "scope_discharge", "external_source"):
+            consequence = "No completed current " + role.lower() + " is recorded for this material."
+        elif task["kind"] == "source_fidelity" and task["target"]["collection"] in ("items", "parts"):
+            consequence = "Source comparison is incomplete for this statement."
+        elif task["kind"] == "reconciliation":
+            consequence = "The recorded assessments have not been fully reconciled."
+        else:
+            consequence = "A review requirement remains unresolved; this record alone does not identify unexamined mathematics."
+        if task.get("dependency_support") and task["dependency_support"] != "available":
+            consequence += " Premise support: " + task["dependency_support"] + "."
+        target = f"{task['target']['collection']}:{task['target']['id']}"
+        if row["attrs"].get("data-proof-review-kind") != task["kind"] \
+                or row["attrs"].get("data-proof-review-target") != target or not visible(row) \
+                or not text(row).endswith(": " + consequence):
+            failures.append(f"current examination limitation lost its saved consequence: {task['id']}")
+    notes = [e for e in scan.elements if "data-proof-limitation" in e["attrs"]]
+    expected_notes = _saved_limitations(projection)
+    if [(e["attrs"].get("data-proof-limitation-index"), text(e)) for e in notes] != \
+            [(str(index), note) for index, note in enumerate(expected_notes)] or any(not visible(e) for e in notes):
+        failures.append("saved scientific or mixed review limitations were omitted, changed or hidden")
     return failures
 
 
@@ -449,6 +719,34 @@ def _reader_failures(scan, projection):
     def pin(ref):
         return f"{ref['collection']}:{ref['id']}:{ref['version']}" if ref else ""
 
+    def summary_context(element, key):
+        try:
+            kind, index = key[1].split(":")
+            if kind == "finding":
+                identity = projection["summary"]["findings"]["refs"][int(index)]
+                collection, marker, fields = "findings", "data-proof-finding", ("description", "impact_reason")
+            elif kind == "source_limit":
+                identity = projection["summary"]["source_limits"][int(index)]
+                collection, marker, fields = "source_issues", "data-proof-source-limit", ("description",)
+            else:
+                return False
+            version = max(row["ref"]["version"] for row in projection["records"]
+                          if row["ref"]["collection"] == collection and row["ref"]["id"] == identity)
+            if key[2] != f"{collection}:{identity}:{version}" or key[3] not in fields:
+                return False
+        except (IndexError, ValueError):
+            return False
+        current, row_found, summary_found = element, False, False
+        while current:
+            attrs = current["attrs"]
+            if current["tag"] == "template" or "hidden" in attrs or attrs.get("aria-hidden") == "true" \
+                    or "display:none" in attrs.get("style", "").replace(" ", "").lower():
+                return False
+            row_found = row_found or attrs.get(marker) == identity
+            summary_found = summary_found or attrs.get("id") == "proof-summary"
+            current = current["parent"]
+        return row_found and summary_found
+
     for detail_key in reader_keys:
         reader = projection["details"][detail_key]["reader"]
         overview = next((e for e in scan.elements if e["attrs"].get("data-reader-overview") == detail_key), None)
@@ -494,7 +792,8 @@ def _reader_failures(scan, projection):
             fragment_scan.feed("<div>" + render_text(raw) + "</div>")
             rendered_text[raw] = "".join(fragment_scan.elements[0]["text"]).strip()
         text = "".join(element["text"]).strip()
-        if text not in (raw.strip(), rendered_text[raw]) or not inside_overview(element, key[0]):
+        correct_context = summary_context(element, key) if key[0] == "summary" else inside_overview(element, key[0])
+        if text not in (raw.strip(), rendered_text[raw]) or not correct_context:
             failures.append(f"reader field differs from its visible pinned source: {key}")
         if key[0] in reader_keys and key[1].startswith("application:"):
             row = next((e for e in ancestors(element) if "data-reader-application" in e["attrs"]), None)
@@ -515,7 +814,8 @@ def _reader_failures(scan, projection):
         if key[0] in reader_keys and key not in expected:
             failures.append(f"unexpected reader field or context: {key}")
     for key in expected:
-        if shown[key] != 1:
+        optional_administration = key[3] in ("lifecycle", "state")
+        if shown[key] != 1 and not (optional_administration and shown[key] == 0):
             failures.append(f"reader field missing or duplicated in its context: {key}")
 
     explanations = {}
@@ -582,11 +882,12 @@ def _reader_failures(scan, projection):
     for key in explanations:
         if shown_explanations[key] != 1:
             failures.append(f"reader support explanation missing or duplicated: {key}")
+    failures.extend(_scientific_failures(scan, projection))
     return failures
 
 
-def mechanical_acceptance(html_bytes: bytes, projection: dict) -> dict:
-    """Compare embedded IDs, status counts and findings with the fixed projection (handoff 7.4)."""
+def mechanical_acceptance(html_bytes: bytes, projection: dict, *, build=None) -> dict:
+    """Compare rendered scientific evidence, assessments and destinations with the saved projection."""
     scan = _Scan()
     scan.feed(html_bytes.decode("utf-8"))
     scan.close()
@@ -622,31 +923,15 @@ def mechanical_acceptance(html_bytes: bytes, projection: dict) -> dict:
         if scan.edge_states.get(connection["id"]) != expected:
             failures.append(f"connection {connection['id']} shows {scan.edge_states.get(connection['id'])!r}")
     summary = projection["summary"]
-    expected_counts = {}
-    for state in COUNT_NAMES_STATES:
-        expected_counts[f"nodes.{state}"] = sum(1 for n in projection["nodes"] if n["assessment"]["state"] == state)
-        expected_counts[f"connections.{state}"] = sum(1 for c in projection["connections"]
-                                                      if c["assessment"]["state"] == state)
-    for name in ("open", "resolved", "superseded"):
-        expected_counts[f"findings.{name}"] = summary["findings"][name]
-    for name, value in summary["progress"].items():
-        if name != "process_complete":
-            expected_counts[f"progress.{name}"] = value
-    for name, value in expected_counts.items():
-        shown = scan.counts.get(name)
-        if shown is None or shown.strip() != str(value):
-            failures.append(f"count {name} shows {shown!r}, projection has {value}")
     if scan.process != [str(summary["progress"]["process_complete"]).lower()]:
         failures.append(f"process completion marker shows {scan.process!r}")
     if not _multiset_equal(scan.findings, summary["findings"]["refs"]):
         failures.append("listed findings differ from summary.findings.refs")
     if not _multiset_equal(scan.limits, summary["source_limits"]):
         failures.append("listed source limits differ from summary.source_limits")
-    if not _multiset_equal(scan.limitations, summary.get("limitations", [])):
-        failures.append("listed completion limitations differ from summary.limitations")
     if scan.external:
         failures.append(f"page references external resources: {scan.external[:3]}")
-    failures.extend(_visible_failures(scan, projection))
+    failures.extend(_visible_failures(scan, projection, build=build))
     failures.extend(_reader_failures(scan, projection))
     return {"status": "pass" if not failures else "fail", "failures": failures,
             "nodes": len(node_ids), "connections": len(connection_ids), "layout_mode": projection["layout"]["mode"]}
@@ -659,7 +944,7 @@ def render_html(db: Database, projection: dict, *, release: bool, source_identit
 
 
 def render_payload(payload: dict, *, workdir: Path) -> tuple:
-    """Render and accept one already constructed payload without reading a database."""
+    """Render an already frozen presentation input without a scientific database."""
     node = _node_executable()
     if not RENDERER.is_file():
         raise PublicationError(f"renderer missing at {RENDERER}")
@@ -693,256 +978,157 @@ def render_payload(payload: dict, *, workdir: Path) -> tuple:
         raise PublicationError("renderer receipt hash does not match the written page", records=[receipt])
     if receipt.get("input_sha256") != sha256_bytes(input_path.read_bytes()):
         raise PublicationError("renderer receipt hash does not match its input", records=[receipt])
-    acceptance = mechanical_acceptance(html_bytes, payload["projection"])
-    acceptance["failures"].extend(_finalization_failures(html_bytes, payload))
-    if acceptance["failures"]:
+    acceptance = mechanical_acceptance(html_bytes, payload["projection"], build=payload["build"])
+    scan = _Scan()
+    scan.feed(html_bytes.decode("utf-8"))
+    try:
+        embedded = json.loads("".join(scan.scripts["proof-render-input"]))
+    except (KeyError, ValueError):
+        embedded = None
+    if embedded != {"title": payload["title"], "build": payload["build"]}:
+        acceptance["failures"].append("embedded build metadata differs from its frozen input")
         acceptance["status"] = "fail"
     if acceptance["status"] != "pass":
         raise PublicationError("mechanical acceptance failed", records=[acceptance])
     receipt["python_acceptance"] = acceptance
     receipt["input_bytes"] = input_path.stat().st_size
-    receipt["math_diagnostics"] = payload["display"]["math_diagnostics"]
     return html_bytes, receipt
 
 
-def _frozen_delivery(snapshot: dict) -> dict:
-    return {"snapshot_sha256": snapshot.get("snapshot_sha256"),
-            "process_complete": snapshot["process_complete"],
-            "representation_settled": snapshot["representation_settled"],
-            "finalization_blockers": snapshot["finalization_blockers"],
-            "finalization_blocker_count": snapshot["finalization_blocker_count"]}
-
-
 def frozen_render_input(snapshot: dict, *, snapshot_sha256: str) -> dict:
-    """Create display fragments exclusively from validated frozen scientific text."""
-    diagnostics = []
-    fragments = display_fragments(snapshot["projection"], diagnostics)
-    finalization = _frozen_delivery(snapshot)
-    finalization["snapshot_sha256"] = snapshot_sha256
+    """Construct presentation fields solely from saved scientific bytes."""
     return {"render_input_version": 1, "title": snapshot["paper"]["title"],
             "build": {"core_version": CORE_VERSION, "revision": snapshot["revision"],
                       "audit_id": snapshot["audit_id"], "built_at": now_iso(),
                       "source_identity": snapshot["source_identity"], "kind": snapshot["kind"],
-                      "finalization": finalization,
-                      "source_originals": [{**row, "available": Path(row["path"]).is_file()}
-                                           for row in snapshot["source_originals"]]},
-            "projection": snapshot["projection"],
-            "display": {"refs": fragments, "math_diagnostics": summarize_math_diagnostics(diagnostics)}}
+                      "scientific_producer": snapshot["producer"],
+                      "finalization": {"snapshot_sha256": snapshot_sha256,
+                          "process_complete": snapshot["process_complete"],
+                          "representation_settled": snapshot["representation_settled"],
+                          "finalization_blockers": snapshot["finalization_blockers"],
+                          "finalization_blocker_count": snapshot["finalization_blocker_count"]}},
+            "projection": snapshot["projection"], "display": {"refs": display_fragments(snapshot["projection"])}}
 
 
-def _finalization_failures(html_bytes: bytes, payload: dict) -> list:
-    """Check visible delivery disclosures independently of the renderer's receipt."""
-    expected = payload["build"].get("finalization")
-    if expected is None:
-        return []
-    scan = _Scan()
-    scan.feed(html_bytes.decode("utf-8"))
-    scan.close()
-    failures = []
-    try:
-        embedded = json.loads("".join(scan.scripts["proof-render-input"]))
-    except (KeyError, ValueError):
-        return ["frozen render input is missing or unreadable"]
-    if embedded != {"title": payload["title"], "build": payload["build"]}:
-        failures.append("embedded render input differs from its frozen build payload")
-    disclosure = [e for e in scan.elements if "data-proof-finalization" in e["attrs"]]
-    label = "Finalized release snapshot." if payload["build"]["kind"] == "release" else "Working report; delivery has not been finalized."
-    if len(disclosure) != 1 or "".join(disclosure[0]["text"]).strip() != label:
-        failures.append("visible frozen finalization label is missing or differs")
-    blockers = [e for e in scan.elements if "data-proof-finalization-blocker" in e["attrs"]]
-    for index, expected_blocker in enumerate(expected["finalization_blockers"]):
-        rows = [e for e in blockers if e["attrs"]["data-proof-finalization-blocker"] == str(index)]
-        if len(rows) != 1 or expected_blocker["message"] not in "".join(rows[0]["text"]):
-            failures.append(f"visible finalization blocker {index} is missing or differs")
-    if len(blockers) != len(expected["finalization_blockers"]):
-        failures.append("visible finalization blocker count differs")
-    if not expected["representation_settled"]:
-        notices = [e for e in scan.elements if "data-proof-representation-unsettled" in e["attrs"]]
-        if len(notices) != 1 or "Source representation remains unresolved." not in "".join(notices[0]["text"]):
-            failures.append("unresolved source representation is not visibly disclosed")
-    return failures
-
-
-def presentation_identity() -> dict:
-    """Identify rendering code and bundled assets separately from scientific freshness."""
-    from .bundle import bundle_files, content_identity, sha256_file
-    if not RENDERER.is_file():
-        raise PublicationError(f"renderer missing at {RENDERER}")
-    files = bundle_files(RENDERER.parent)
-    return {"renderer_sha256": sha256_file(RENDERER),
-            "math_adapter_sha256": sha256_file(Path(__file__).with_name("math_render.py")),
-            "assets_identity": content_identity(files)}
-
-
-def _frozen_paths(directory: Path, snapshot: dict) -> list:
-    from .finalization import EXPORT_NAME, RECEIPT_NAME, SNAPSHOT_NAME
-    return snapshot["protected_paths"] + [str(directory / name) for name in (SNAPSHOT_NAME, RECEIPT_NAME, EXPORT_NAME)]
-
-
-def _existing_frozen_build(output: Path, receipt_path: Path, snapshot: dict, finalization: dict,
-                           presentation: dict) -> dict | None:
-    if not output.is_file() or not receipt_path.is_file():
-        return None
-    try:
-        build = json.loads(receipt_path.read_text(encoding="utf-8"))
-        publication = build["publication"]
-        if (build.get("build_receipt_version") != 1 or build.get("snapshot_sha256") != finalization["snapshot_sha256"]
-                or build.get("presentation") != presentation or publication["output_path"] != str(output)
-                or publication["artifact_sha256"] != sha256_bytes(output.read_bytes())
-                or any(build.get(field) != snapshot[field] for field in ("revision", "audit_id", "paper_id", "source_identity", "producer"))
-                or publication["revision"] != snapshot["revision"] or publication["kind"] != snapshot["kind"]
-                or publication["state"] != "published" or publication["receipt"].get("state") != "published"
-                or publication["receipt"].get("kind") != snapshot["kind"]
-                or publication["receipt"].get("artifact_sha256") != publication["artifact_sha256"]
-                or publication["receipt"].get("publication_id") != publication["publication_id"]):
-            return None
-        html = output.read_bytes()
-        scan = _Scan()
-        scan.feed(html.decode("utf-8"))
-        payload = json.loads("".join(scan.scripts["proof-render-input"]))
-        frozen = _frozen_delivery(snapshot)
-        frozen["snapshot_sha256"] = finalization["snapshot_sha256"]
-        if (payload["build"].get("finalization") != frozen or payload["title"] != snapshot["paper"]["title"]
-                or payload["build"]["revision"] != snapshot["revision"]
-                or payload["build"]["audit_id"] != snapshot["audit_id"]
-                or payload["build"]["source_identity"] != snapshot["source_identity"]
-                or payload["build"]["kind"] != snapshot["kind"]
-                or build.get("render_input_sha256") != publication["receipt"].get("input_sha256")
-                or build.get("artifact_sha256") != publication["artifact_sha256"]
-                or build.get("acceptance", {}).get("status") != "pass"
-                or mechanical_acceptance(html, snapshot["projection"])["status"] != "pass"
-                or _finalization_failures(html, payload)):
-            return None
-        return {**publication, "snapshot_sha256": finalization["snapshot_sha256"],
-                "build_receipt": build, "build_receipt_path": str(receipt_path), "reused": True}
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        return None
-
-
-def _restore_output(path: Path, backup: Path, existed: bool):
+def _restore_output(path, backup, existed):
     if existed:
-        fd, name = tempfile.mkstemp(dir=path.parent, prefix=".paper-restore-")
-        os.close(fd)
-        staged = Path(name)
-        try:
-            shutil.copy2(backup, staged)
-            os.replace(staged, path)
-        finally:
-            if staged.exists():
-                staged.unlink()
-    elif path.exists():
-        path.unlink()
+        shutil.copy2(backup, path)
+    else:
+        path.unlink(missing_ok=True)
 
 
-def publish_frozen(bundle, *, output, db: Database | None = None, receipt_output=None) -> dict:
-    """Build a frozen bundle without scientific derivation, optionally logging delivery.
-
-    HTML and its build receipt are staged together. Any failed replacement or
-    operational database write restores both prior files. The default receipt
-    is ``<HTML>.receipt.json``; compatibility release can keep it privately.
-    """
-    from .finalization import load_finalization, producer_identity, protected_destination
-
-    directory = Path(bundle).resolve()
-    snapshot, finalization = load_finalization(directory)
-    protected = _frozen_paths(directory, snapshot)
+def publish_frozen(bundle, *, output, receipt_output=None) -> dict:
+    """Build a frozen bundle without reading or writing the live scientific store."""
+    from .finalization import (EXPORT_NAME, RECEIPT_NAME, SNAPSHOT_NAME, SUMMARY_NAME,
+                               load_finalization, protected_destination)
+    directory = resolve_path(bundle)
+    snapshot, frozen = load_finalization(directory)
+    protected = snapshot["protected_paths"] + [str(directory / name) for name in (
+        SNAPSHOT_NAME, RECEIPT_NAME, SUMMARY_NAME, EXPORT_NAME)]
     output = protected_destination(output, protected)
-    receipt_path = Path(receipt_output).resolve() if receipt_output is not None else Path(str(output) + ".receipt.json")
-    receipt_path = protected_destination(receipt_path, protected + [str(output)], what="build receipt output")
-    if db is not None:
-        if not db.write:
-            raise InvalidRequest("publication requires a writable database")
-        if db.conn.in_transaction:
-            raise InvalidRequest("frozen publication requires a connection without an active transaction")
-        paper = db.latest_at("papers", snapshot["paper_id"], snapshot["revision"])
-        audit = db.latest_at("audits", snapshot["audit_id"], snapshot["revision"])
-        if str(db.path.resolve()) != snapshot["database_path"] or paper is None or audit is None:
-            raise InvalidRequest("publication database does not match the frozen audit identity")
-    pub_id = new_id("publication")
-    started = now_iso()
-    kind, revision = snapshot["kind"], snapshot["revision"]
+    receipt_path = Path(receipt_output) if receipt_output is not None else output.with_name(output.name + ".receipt.json")
+    receipt_path = protected_destination(receipt_path, protected + [str(output)], what="build receipt")
     before_html, before_receipt = output.exists(), receipt_path.exists()
-    replaced_html = replaced_receipt = False
+    prior_output_retained, prior_receipt_retained = before_html, before_receipt
+    pub_id, started = new_id("publication"), now_iso()
+    committed = False
+    warnings = []
     try:
-        presentation = presentation_identity()
-        existing = _existing_frozen_build(output, receipt_path, snapshot, finalization, presentation)
-        if existing is not None:
-            if db is None or any(row["id"] == existing["publication_id"] for row in db.publications()):
-                return existing
-        output.parent.mkdir(parents=True, exist_ok=True)
-        receipt_path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=output.parent, prefix=".paper-report-") as tmp:
-            workdir = Path(tmp)
-            payload = frozen_render_input(snapshot, snapshot_sha256=finalization["snapshot_sha256"])
-            html_bytes, receipt = render_payload(payload, workdir=workdir)
+        try:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise PublicationError("could not create local report output directories", code="OUTPUT_PATH_FAILED",
+                                   records=[{"output_directory": str(output.parent),
+                                             "build_receipt_directory": str(receipt_path.parent),
+                                             "details": str(exc)}]) from None
+        with staging_directory(output.parent, ".paper-report-") as workdir:
+            cleanup_path = workdir
+            payload = frozen_render_input(snapshot, snapshot_sha256=frozen["snapshot_sha256"])
+            html_bytes, render_receipt = render_payload(payload, workdir=workdir)
             artifact_sha = sha256_bytes(html_bytes)
-            receipt.update({"publication_id": pub_id, "started_at": started, "output_path": str(output),
-                            "kind": kind, "state": "published"})
-            publication = {"publication_id": pub_id, "revision": revision, "kind": kind, "state": "published",
-                           "output_path": str(output), "artifact_sha256": artifact_sha, "receipt": receipt}
-            build_receipt = {"build_receipt_version": 1, "revision": revision, "audit_id": snapshot["audit_id"],
-                             "paper_id": snapshot["paper_id"], "source_identity": snapshot["source_identity"],
-                             "snapshot_sha256": finalization["snapshot_sha256"],
-                             "producer": snapshot["producer"], "producing_core": producer_identity(),
-                             "presentation": presentation, "render_input_sha256": receipt["input_sha256"],
-                             "artifact_sha256": artifact_sha, "acceptance": receipt["python_acceptance"],
-                             "publication": publication}
+            receipt = {"build_receipt_version": 1, "publication_id": pub_id, "state": "published",
+                       "revision": snapshot["revision"], "audit_id": snapshot["audit_id"],
+                       "paper_id": snapshot["paper_id"], "kind": snapshot["kind"],
+                       "source_identity": snapshot["source_identity"], "producer": snapshot["producer"],
+                       "snapshot_sha256": frozen["snapshot_sha256"], "artifact_sha256": artifact_sha,
+                       "started_at": started, "output_path": str(output), "renderer": render_receipt}
             staged_html = workdir / "staged.html"
             staged_html.write_bytes(html_bytes)
-            # The receipt may live on another filesystem, so stage it beside its destination.
-            fd, staged_name = tempfile.mkstemp(dir=receipt_path.parent, prefix=".paper-build-", suffix=".json")
+            fd, name = tempfile.mkstemp(dir=receipt_path.parent, prefix=".paper-build-", suffix=".json")
             os.close(fd)
-            staged_receipt = Path(staged_name)
-            staged_receipt.write_text(json.dumps(build_receipt, ensure_ascii=False, indent=1, sort_keys=True) + "\n", encoding="utf-8")
-            backup_html, backup_receipt = workdir / "prior.html", workdir / "prior-receipt.json"
+            staged_receipt = Path(name)
+            staged_receipt.write_text(json.dumps(receipt, indent=1, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
+            prior_html, prior_receipt = workdir / "prior.html", workdir / "prior-receipt.json"
             if before_html:
-                shutil.copy2(output, backup_html)
+                shutil.copy2(output, prior_html)
             if before_receipt:
-                shutil.copy2(receipt_path, backup_receipt)
+                shutil.copy2(receipt_path, prior_receipt)
+            replaced_html = replaced_receipt = False
+            commit_error = None
             try:
-                if db is not None:
-                    db.begin_immediate()
-                    db.put_blob(html_bytes)
-                    db.insert_publication(pub_id, revision, kind, "published", str(output), artifact_sha, receipt)
                 protected_destination(output, protected)
-                protected_destination(receipt_path, protected + [str(output)], what="build receipt output")
+                protected_destination(receipt_path, protected + [str(output)], what="build receipt")
                 _replace_file(staged_html, output)
                 replaced_html = True
+                prior_output_retained = False
                 _replace_file(staged_receipt, receipt_path)
                 replaced_receipt = True
-                if db is not None:
-                    db.commit()
-            except BaseException:
-                if db is not None:
-                    db.rollback()
+                prior_receipt_retained = False
+                committed = True
+            except BaseException as primary:
+                commit_error = primary
                 if replaced_receipt:
-                    _restore_output(receipt_path, backup_receipt, before_receipt)
+                    try:
+                        _restore_output(receipt_path, prior_receipt, before_receipt)
+                    except Exception as restore:
+                        primary.add_note(f"Prior build receipt restoration failed at {receipt_path}: {restore}")
+                    else:
+                        prior_receipt_retained = before_receipt
                 if replaced_html:
-                    _restore_output(output, backup_html, before_html)
+                    try:
+                        _restore_output(output, prior_html, before_html)
+                    except Exception as restore:
+                        primary.add_note(f"Prior report restoration failed at {output}: {restore}")
+                    else:
+                        prior_output_retained = before_html
                 raise
             finally:
-                if staged_receipt.exists():
-                    staged_receipt.unlink()
+                cleanup_path = staged_receipt
+                try:
+                    staged_receipt.unlink(missing_ok=True)
+                except Exception as cleanup:
+                    if commit_error is None:
+                        raise
+                    commit_error.add_note(f"Build receipt staging cleanup also failed at {staged_receipt}: {cleanup}")
+                cleanup_path = workdir
     except Exception as exc:
-        if not isinstance(exc, PublicationError):
-            exc = PublicationError(f"frozen report delivery failed: {exc}")
-        failure = {"publication_id": pub_id, "started_at": started, "output_path": str(output), "kind": kind,
-                   "state": "failed", "snapshot_sha256": finalization["snapshot_sha256"],
-                   "error": exc.to_json()["error"]}
-        if db is not None:
-            try:
-                db.begin_immediate()
-                db.insert_publication(pub_id, revision, kind, "failed", str(output), None, failure)
-                db.commit()
-            except Exception as record_exc:  # pragma: no cover - secondary diagnostic
-                db.rollback()
-                print(f"could not record failed publication: {record_exc}", file=sys.stderr)
-        exc.records.append({"publication_id": pub_id, "snapshot_sha256": finalization["snapshot_sha256"],
-                            "bundle": str(directory), "prior_output_retained": before_html and output.exists(),
-                            "prior_receipt_retained": before_receipt and receipt_path.exists()})
-        raise exc
-    return {**publication, "snapshot_sha256": finalization["snapshot_sha256"], "build_receipt": build_receipt,
-            "build_receipt_path": str(receipt_path), "reused": False}
+        failure_notes = list(getattr(exc, "__notes__", ()))
+        if committed:
+            warnings.append({"code": "REPORT_CLEANUP_FAILED",
+                             "message": "The report and build receipt were published, but temporary-file cleanup failed.",
+                             "details": " ".join([str(exc), *failure_notes]), "path": str(cleanup_path)})
+        else:
+            if not isinstance(exc, PublicationError):
+                exc = PublicationError(f"frozen report delivery failed: {exc}")
+                for note in failure_notes:
+                    exc.add_note(note)
+            if failure_notes:
+                exc.records.append({"failure_notes": failure_notes})
+            next_step = ("Choose valid, writable output and receipt directories, then rerun stage3 build with the same frozen bundle."
+                         if exc.code == "OUTPUT_PATH_FAILED" else
+                         "Fix the Phase 3 rendering or local delivery issue, then rerun stage3 build with the same frozen bundle.")
+            exc.records.append({"publication_id": pub_id, "snapshot_sha256": frozen["snapshot_sha256"],
+                                "bundle": str(directory), "prior_output_retained": prior_output_retained,
+                                "prior_receipt_retained": prior_receipt_retained, "next_step": next_step})
+            raise exc
+    result = {"publication_id": pub_id, "state": "published", "kind": snapshot["kind"],
+              "revision": snapshot["revision"], "snapshot_sha256": frozen["snapshot_sha256"],
+              "artifact_sha256": artifact_sha, "output_path": str(output),
+              "build_receipt_path": str(receipt_path), "receipt": receipt}
+    if warnings:
+        result["warnings"] = warnings
+    return result
 
 
 def _replace_file(staged: Path, destination: Path):
@@ -951,7 +1137,7 @@ def _replace_file(staged: Path, destination: Path):
 
 def _report_destination(db: Database, output) -> Path:
     """Reject aliases of the database and registered manuscript files before rendering."""
-    destination = Path(output).resolve()
+    destination = resolve_path(output)
     paper = paper_record(db)
     root = Path(paper.body["source_root"])
     protected = [db.path.resolve()]
@@ -1027,4 +1213,4 @@ def publish_report(db: Database, *, projection: dict, output, release: bool = Fa
 
 
 __all__ = ["FRAGMENT_FIELDS", "RENDERER", "display_fragments", "mechanical_acceptance", "publish_report",
-           "render_html", "render_input", "render_payload", "frozen_render_input", "publish_frozen", "presentation_identity"]
+           "render_html", "render_input", "render_payload", "frozen_render_input", "publish_frozen"]

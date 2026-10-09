@@ -175,7 +175,7 @@ def _draft_signature(snap, info):
                    "records": mathematical, "memberships": memberships})
 
 
-def build_work(derivation, assessment, *, focus=None, diagnostic_limit=100):
+def build_work(derivation, assessment, *, focus=None):
     """Reuse an already assessed snapshot, including for projection and status."""
     snap, audit = derivation.snap, derivation.audit
     if audit is None:
@@ -183,11 +183,23 @@ def build_work(derivation, assessment, *, focus=None, diagnostic_limit=100):
     focus = _focus(focus)
     if focus is not None and snap.get(focus) is None:
         raise InvalidRequest(f"focus {key_of(focus)} is not live", code="WORK_FOCUS")
+    exact_focus_arguments = []
+    if focus is not None and focus["collection"] == "items" and snap.kind_of(focus) in INTERMEDIATE_KINDS:
+        exact_focus_arguments = [ref_of(argument) for argument in snap.member_records("arguments_for_target", focus)
+                                 if argument.body["lifecycle"] == "registered" and argument.body["origin"] == "source"]
     tasks, diagnostics, prerequisites = {}, {}, defaultdict(set)
     task_contexts, task_order = defaultdict(set), {}
     draft_index, tasks_by_target, tasks_by_anchor = defaultdict(list), defaultdict(list), defaultdict(list)
     preserved_by_argument = defaultdict(list)
+    compromised, usable_independent = set(), set()
     for judgment in assessment["judgments"].values():
+        if audit.body["protocol_version"] == "coherent-proof-audit/1" \
+                and judgment["role"] == "independent" and judgment["exposure"] == "compromised" \
+                and judgment["freshness"] == "current" and not judgment["superseded"]:
+            compromised.add((key_of(judgment["target"]), judgment["kind"]))
+        if judgment["role"] == "independent" and judgment["freshness"] == "current" \
+                and not judgment["superseded"] and derivation.independent_usable(judgment):
+            usable_independent.add((key_of(judgment["target"]), judgment["kind"]))
         if judgment["state"] == "draft" and not judgment["superseded"]:
             draft_index[(key_of(judgment["target"]), judgment["kind"], judgment["role"])].append(judgment)
         elif judgment["state"] == "complete" and judgment["freshness"] == "current" \
@@ -235,6 +247,14 @@ def build_work(derivation, assessment, *, focus=None, diagnostic_limit=100):
             "judgment_refs": obligation["check_refs"], "draft_refs": [d["ref"] for d in drafts],
             "next_action": next_action, "outcome": obligation["outcome"], "freshness": obligation["freshness"],
             "dependency_support": support}
+        if obligation["role"] == "independent" and not obligation["satisfied"] \
+                and (key_of(target), obligation["kind"]) in compromised - usable_independent:
+            message = ("The saved review declares compromised exposure; independent examination remains unfinished. "
+                f"Arrange a fresh independent context, then explicitly prepare this task with --task {oid}. "
+                "If no usable reviewer is available, finish other useful work and disclose the missing review.")
+            diagnostic("independent_context_required", [target], message, [oid])
+            tasks[oid]["next_action"] = message
+            tasks[oid]["requires_independent_context"] = True
         recovery = _recovery(derivation, obligation["check_refs"],
                              preserved_by_argument.get(key_of(argument), []) if argument else [])
         if recovery:
@@ -350,6 +370,8 @@ def build_work(derivation, assessment, *, focus=None, diagnostic_limit=100):
                 task["blocker_ids"].append(diagnostic("missing_source", [target],
                     f"Required source anchor {aid} or its source is unavailable.", [oid]))
         if task["role"] == "independent":
+            if audit.body["protocol_version"] == "coherent-proof-audit/1":
+                continue
             qualification = snap.live("qualifications", audit.body["qualification_id"]) \
                 if audit.body["qualification_id"] else None
             if qualification is None or not qualification.body["qualified"] \
@@ -391,8 +413,14 @@ def build_work(derivation, assessment, *, focus=None, diagnostic_limit=100):
         elif kind == "external_source":
             fidelity(oid, target)
         elif kind == "composition" and target["collection"] in ("items", "parts"):
-            task["blocker_ids"].append(diagnostic("register_establishment", [target],
-                f"Register a proof route for {key_of(target)} before checking composition.", [oid]))
+            if audit.body["protocol_version"] == "coherent-proof-audit/1":
+                fidelity(oid, target)
+                scope_fidelity(oid, snap.exact_scope(target))
+                task["next_action"] = ("Examine the supplied statement and whether its proof is omitted or unavailable. "
+                    "Record the judgment and limitation; do not construct a missing proof.")
+            else:
+                task["blocker_ids"].append(diagnostic("register_establishment", [target],
+                    f"Register a proof route for {key_of(target)} before checking composition.", [oid]))
 
     for item in getattr(derivation, "scope_diagnostics", ()):
         related = [oid for oid, task in tasks.items() if task["target"] in item["target_refs"]]
@@ -483,7 +511,7 @@ def build_work(derivation, assessment, *, focus=None, diagnostic_limit=100):
 
     if focus is not None:
         seeds = {oid for oid, task in tasks.items() if task["target"] == focus or task["owner"] == focus
-                 or task["argument"] == focus}
+                 or task["argument"] == focus or task["argument"] in exact_focus_arguments}
         # Source-focused requests can still identify the argument consuming the source task.
         wanted, pending = set(), list(seeds)
         while pending:
@@ -508,7 +536,7 @@ def build_work(derivation, assessment, *, focus=None, diagnostic_limit=100):
     owners = {key_of(task["owner"]) for task in tasks.values() if task["owner"]}
     coverage_facts = [row for row in derivation.coverage_diagnostics if focus is None or
                       arguments.intersection(row["argument_ids"]) or row.get("owner") in owners or
-                      (focus["collection"] == "anchors" and row.get("anchor_id") == focus["id"]) or
+                      (focus["collection"] == "anchors" and row["anchor_id"] == focus["id"]) or
                       (focus["collection"] == "coverage" and row.get("coverage_ref", {}).get("id") == focus["id"])]
     # Keep prerequisite causes, but show the requested argument before them in
     # bounded examples so a long prerequisite cannot hide the focused repair.
@@ -536,12 +564,11 @@ def build_work(derivation, assessment, *, focus=None, diagnostic_limit=100):
             "related_task_count": len(related), "related_tasks_truncated": len(related) > 20})
     actions = sorted(diagnostics.values(), key=lambda row: (row["code"], row["id"]))
     return {"revision": assessment["revision"], "audit_id": audit.id, "analysis_complete": True,
-            "focus": focus, "progress": assessment["progress"],
+            "focus": focus, "focus_argument_refs": exact_focus_arguments, "progress": assessment["progress"],
             "tasks": sorted(tasks.values(), key=lambda task: (task_order[task["id"]], task["id"])),
             "units": sorted(units.values(), key=lambda unit: (min(task_order[t] for t in unit["obligation_ids"]), unit["id"])),
-            "coordinator_actions": actions if diagnostic_limit is None else actions[:diagnostic_limit],
-            "diagnostic_count": len(actions),
-            "diagnostics_truncated": diagnostic_limit is not None and len(actions) > diagnostic_limit,
+            "coordinator_actions": actions[:100], "diagnostic_count": len(actions),
+            "diagnostics_truncated": len(actions) > 100,
             "task_contexts": {oid: sorted(contexts) for oid, contexts in task_contexts.items() if oid in tasks}}
 
 
@@ -590,35 +617,6 @@ def list_work(db, *, audit_id, focus=None, revision=None, limit=20, cursor=None,
     return result
 
 
-def selection_guidance(work, requested_task_ids, assigned_task_ids):
-    """Explain explicit requests against the actual packet, without changing selection."""
-    tasks = {task["id"]: task for task in work["tasks"]}
-    assigned = set(assigned_task_ids)
-    rows = []
-    for task_id in sorted(set(requested_task_ids)):
-        task = tasks[task_id]
-        if not task["required"]:
-            rows.append({"requested_task_id": task_id, "state": "not_required", "required": False,
-                         "assigned": False, "assigned_prerequisite_task_ids": [],
-                         "remaining_prerequisite_task_ids": [],
-                         "message": "This task is not required for the declared audit scope."})
-            continue
-        predecessors, pending = set(), list(task["prerequisite_ids"])
-        while pending:
-            predecessor = pending.pop()
-            if predecessor in predecessors or predecessor == task_id or predecessor not in tasks:
-                continue
-            predecessors.add(predecessor)
-            pending.extend(tasks[predecessor]["prerequisite_ids"])
-        rows.append({"requested_task_id": task_id, "state": task["state"], "required": True,
-                     "assigned": task_id in assigned,
-                     "assigned_prerequisite_task_ids": sorted(predecessors & assigned),
-                     "remaining_prerequisite_task_ids": sorted(
-                         p for p in predecessors - assigned if tasks[p]["state"] != "satisfied")})
-    return {"requested_task_ids": sorted(set(requested_task_ids)),
-            "assigned_task_ids": list(assigned_task_ids), "requests": rows}
-
-
 def select_assignment(work, request, limits=None):
     """Choose a ready seed, then grow through compatible local successors.
 
@@ -639,30 +637,23 @@ def select_assignment(work, request, limits=None):
     tasks = {task["id"]: task for task in work["tasks"]}
     units = {unit["id"]: unit for unit in work["units"]}
     requested, excluded = set(request.get("task_ids", ())), set(request.get("exclude_task_ids", ()))
-    # Requested IDs are starting tasks whose prerequisites may be selected.
-    # A stage allowlist is instead a strict constraint on complete work units.
-    supplied_candidates = request.get("candidate_task_ids")
-    stage_candidates = None if supplied_candidates is None else set(supplied_candidates)
     unknown = (requested | excluded) - tasks.keys()
     if unknown:
         raise InvalidRequest("unknown or out-of-focus task IDs", code="WORK_TASK", records=sorted(unknown))
     if any(tasks[oid]["role"] != role for oid in requested):
         raise InvalidRequest("requested tasks belong to another role", code="WORK_ROLE")
     unit_of = {oid: unit["id"] for unit in units.values() for oid in unit["obligation_ids"]}
+    fresh_context = {oid for oid, task in tasks.items() if task.get("requires_independent_context")}
     deferred, candidates = [], []
     for unit in work["units"]:
         if unit["role"] != role or not unit["pending_obligation_ids"]:
-            continue
-        members = set(unit["obligation_ids"])
-        if stage_candidates is not None and not members <= stage_candidates:
-            if members & stage_candidates:
-                deferred.append({"unit_id": unit["id"], "reason": "outside_stage_unit",
-                                 "outside_candidate_task_ids": sorted(members - stage_candidates)})
             continue
         if set(unit["pending_obligation_ids"]) & excluded:
             deferred.append({"unit_id": unit["id"], "reason": "already_assigned"})
         elif unit["blocker_ids"]:
             deferred.append({"unit_id": unit["id"], "reason": "needs_coordinator"})
+        elif (set(unit["pending_obligation_ids"]) & fresh_context) - requested:
+            deferred.append({"unit_id": unit["id"], "reason": "fresh_independent_context"})
         else:
             candidates.append(unit)
     base = {"prepared": False, "revision": work["revision"], "audit_id": work["audit_id"], "mode": mode,
@@ -670,11 +661,9 @@ def select_assignment(work, request, limits=None):
             "deferred": deferred, "coordinator_actions": work["coordinator_actions"],
             "units": [], "tasks": [], "context": {"owner": None, "argument": None}}
     if not work["analysis_complete"]:
-        if requested:
-            base["task_selection"] = selection_guidance(work, requested, ())
         return base
     if requested:
-        allowed = {unit_of[oid] for oid in requested if tasks[oid]["required"]}
+        allowed = {unit_of[oid] for oid in requested}
         pending = list(allowed)
         # Explicitly requested work may recommend prerequisites, never unrelated filler.
         while pending:
@@ -691,13 +680,16 @@ def select_assignment(work, request, limits=None):
             candidates.sort(key=lambda unit: unit["id"] not in requested_units)
     focus = _focus(request.get("focus", work.get("focus")))
     preferred_contexts = {key_of(focus)} if focus else set()
+    exact_focus_arguments = work.get("focus_argument_refs", []) if focus == work.get("focus") else []
     if focus is not None:
         # A statement's shared prerequisites can also serve another result.
         # Prefer the focused result's argument before falling back to ID order.
         preferred_contexts.update(key_of(unit["argument"]) for unit in candidates
                                   if unit["argument"] and (unit["owner"] == focus or
+                                  unit["argument"] in exact_focus_arguments or
                                   any(tasks[oid]["target"] == focus for oid in unit["obligation_ids"])))
         focused = {unit["id"] for unit in candidates if unit["owner"] == focus or unit["argument"] == focus
+                   or unit["argument"] in exact_focus_arguments
                    or any(tasks[oid]["target"] == focus for oid in unit["obligation_ids"])}
         pending = list(focused)
         while pending:
@@ -707,6 +699,12 @@ def select_assignment(work, request, limits=None):
                     focused.add(predecessor)
                     pending.append(predecessor)
         candidates = [unit for unit in candidates if unit["id"] in focused]
+        pending_routes = {key_of(unit["argument"]) for unit in candidates
+                          if unit["argument"] in exact_focus_arguments}
+        if len(pending_routes) > 1 and not requested:
+            raise InvalidRequest("the selected item has multiple exact proof routes; choose an arguments:ID focus or task",
+                                 code="WORK_FOCUS", records=[ref for ref in exact_focus_arguments
+                                                            if key_of(ref) in pending_routes])
     selected, selected_ids, conditional = [], set(), set()
     context = None
 
@@ -774,8 +772,6 @@ def select_assignment(work, request, limits=None):
         task["prerequisite_judgment_refs"] = [ref for pid in task["prerequisite_ids"]
             for ref in tasks[pid]["judgment_refs"] if tasks[pid]["state"] == "satisfied"]
         base["tasks"].append(task)
-    if requested:
-        base["task_selection"] = selection_guidance(work, requested, assigned)
     return base
 
 

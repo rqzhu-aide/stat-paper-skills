@@ -25,6 +25,7 @@ from .validation import Planned, State, validate_plan
 
 PACKETLESS_COMMANDS = ("import", "source_capture", "qualification", "overview")
 COMMAND_MODES = {
+    "unit": ("author", "primary"),
     "apply": ("author", "primary"),
     "compare": ("author", "primary"),
     "work_primary": ("primary",),
@@ -106,70 +107,6 @@ def _guard_changes(db: Database, manifest: dict) -> list:
             changed.append({"relation": guard["relation"], "key": guard["key"], "expected_digest": guard["digest"],
                             "actual_digest": actual})
     return changed
-
-
-def _authored_work_errors(plan: list) -> list:
-    """New authoring rules, deliberately absent from historical shape validation."""
-    errors = []
-    for p in plan:
-        if p.body is None:
-            continue
-        body = p.body
-        where = f"edits/{p.index} {p.collection}:{p.id}"
-        if p.collection == "checks" and body["state"] == "draft":
-            if not body["reasoning"].strip():
-                errors.append(f"{where}: a draft needs authored reasoning about the investigation")
-            if not (body["next_action"] or "").strip():
-                errors.append(f"{where}: a draft needs a concrete remaining question or next_action")
-        elif p.collection == "observations" and not body["note"].strip() and not body["evidence_refs"]:
-            errors.append(f"{where}: a source comparison needs an authored note or source evidence")
-    return errors
-
-
-def _validate_successors(db: Database, plan: list):
-    """Authorize only new branches from current predecessors under the writer lock."""
-    checks = [p for p in plan if p.collection == "checks" and p.body is not None and p.body["supersedes"]]
-    if not checks:
-        return
-    stored = db.heads("checks")
-    existing = {}
-    for record in stored:
-        if record.body["supersedes"] is not None:
-            existing.setdefault(record.body["supersedes"]["id"], []).append(record.pinned)
-    new_branches = {}
-    for p in checks:
-        pin = p.body["supersedes"]
-        inherited = (p.op == "replace" and p.prev is not None and p.prev.body["state"] == "draft"
-                     and p.prev.body["supersedes"] == pin and p.id not in existing
-                     and all(p.prev.body[field] == p.body[field]
-                             for field in ("reviewer", "audit_id", "role", "kind", "target")))
-        if not inherited:
-            new_branches.setdefault(pin["id"], []).append(p)
-    state = State(db, plan)
-    for predecessor, branches in new_branches.items():
-        current = state.live("checks", predecessor)
-        if predecessor in existing:
-            reason = "PREDECESSOR_SUPERSEDED"
-        elif len(branches) != 1:
-            reason = "DUPLICATE_SUCCESSORS"
-        elif current is None or branches[0].body["supersedes"] != current.pinned:
-            reason = "PREDECESSOR_NOT_CURRENT"
-        else:
-            continue
-        body = branches[0].body
-        candidates = [r.pinned for r in stored if r.id not in existing
-                      and all(r.body[field] == body[field]
-                              for field in ("audit_id", "role", "kind", "target"))]
-        raise InvalidRequest("new successors must use a current predecessor once", code=reason,
-            records=[{"predecessor": branches[0].body["supersedes"], "target": body["target"],
-                      "current_predecessor": current.pinned if current is not None else None,
-                      "current_candidates": candidates,
-                      "proposed_successors": [p.record.pinned for p in branches],
-                      "existing_successors": existing.get(predecessor, [])}],
-            retry={"operation": "inspect_current_candidates", "reason_code": reason,
-                   "target": body["target"], "current_candidates": candidates,
-                   "message": "Inspect the current candidates for this target and reexamine only the affected "
-                              "terminal work; preserve predecessor reasoning and distinct reviewer opinions."})
 
 
 def accept(db: Database, *, request_id: str, request_digest: str, packet_id, edits: list, command: str,
@@ -259,9 +196,16 @@ def accept_in_transaction(db: Database, *, request_id: str, request_digest: str,
                     or command not in ("work_primary", "review_submit", "reconcile")):
                 raise InvalidRequest("task freshness validation requires a version-2 work submission")
             validated = freshness_validator(db, json.loads(json.dumps(manifest)), plan)
+            from . import PROTOCOL_VERSION
+            audit = db.head("audits", manifest["work"]["audit_id"])
+            refreshed = {"read_set", "membership_guards"}
+            if audit is not None and audit.body["protocol_version"] == PROTOCOL_VERSION:
+                # The v3 controller verifies the consumed scientific inputs;
+                # unrelated source captures do not renew a whole examination.
+                refreshed.add("source_context_digest")
             if not isinstance(validated, dict) or {k: v for k, v in validated.items()
-                                                  if k not in ("read_set", "membership_guards")} != {
-                    k: v for k, v in manifest.items() if k not in ("read_set", "membership_guards")}:
+                                                  if k not in refreshed} != {
+                    k: v for k, v in manifest.items() if k not in refreshed}:
                 raise InvalidRequest("task freshness validator changed packet identity or permissions")
             if not isinstance(validated.get("read_set"), list) or not isinstance(validated.get("membership_guards"), list):
                 raise InvalidRequest("task freshness validator omitted read set or membership guards")
@@ -270,9 +214,7 @@ def accept_in_transaction(db: Database, *, request_id: str, request_digest: str,
         outside = [f"edits/{p.index}: {p.collection}:{p.id} is not in the packet's write scope"
                    for p in plan if p.op != "create" and p.key not in scope and p.key not in scope_exempt]
         if outside:
-            raise InvalidRequest("writes outside the packet's write scope", code="WRITE_SCOPE", records=outside,
-                retry="Use a packet authorizing the named edits. Reading a record does not authorize replacing "
-                      "it; preserve unaffected work. work extend supplies independent source context only.")
+            raise InvalidRequest("writes outside the packet's write scope", code="WRITE_SCOPE", records=outside)
         _read_set_conflicts(db, manifest, conflicts)
         # Work submissions never gain a raw guard bypass; the validator must explicitly
         # validate task semantics and supply the remaining current guard expectations.
@@ -311,14 +253,9 @@ def accept_in_transaction(db: Database, *, request_id: str, request_digest: str,
                            context_refs=packet["manifest"]["read_set"] if manifest else None)
     if errors:
         raise InvalidRequest("batch failed validation", code="INVALID_BATCH", records=errors)
-    if command != "import":
-        authored_errors = _authored_work_errors(plan)
-        if authored_errors:
-            raise InvalidRequest("batch has unfinished authoring", code="NO_AUTHORED_WORK", records=authored_errors)
-        _validate_successors(db, plan)
     if any(p.collection == "source_reviews" and p.body is not None and "proof_spans" in p.body for p in plan):
         from . import PROOF_SPANS_FEATURE
-        features = set(json.loads(metadata.get("features", "[]")))
+        features = set(json.loads(db.conn.execute("SELECT value FROM metadata WHERE key='features'").fetchone()[0]))
         features.add(PROOF_SPANS_FEATURE)
         db.set_metadata("features", json.dumps(sorted(features)))
     parent = db.max_revision()

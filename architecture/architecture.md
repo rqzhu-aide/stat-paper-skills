@@ -1,4 +1,6 @@
-# Current proof-check architecture
+# Historical v2 proof-check architecture
+
+This document retains the shared-backend design before the v3 rebuild. Current source ownership and workflow are defined in the formal package's [implementation boundary](../stat-proof-check/IMPLEMENTATION.md) and [skill instructions](../stat-proof-check/SKILL.md). The shared builder described below no longer targets proof-check.
 
 ## Purpose and scope
 

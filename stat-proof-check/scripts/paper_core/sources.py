@@ -19,6 +19,7 @@ from .canonical import digest, sha256_bytes
 from .contract import ANCHOR_REQUEST, BATCH, validate_shape
 from .errors import InvalidRequest, SourceUnavailable
 from .ids import new_id
+from .paths import resolve_path
 from .storage import Database, paper_record
 
 MEDIA_BY_SUFFIX = {".tex": "tex", ".ltx": "tex", ".sty": "tex", ".cls": "tex", ".bib": "bib", ".bbl": "bib",
@@ -88,7 +89,7 @@ def discover(root, files: list) -> tuple[list, list]:
     explicit registrations; outside the root they keep their absolute path and
     a limitation note. Discovered inputs are captured only inside the root.
     """
-    root = Path(root).resolve()
+    root = resolve_path(root)
     if not root.is_dir():
         raise SourceUnavailable(f"registered source root is not a directory: {root}")
     if not isinstance(files, list) or not files or not all(isinstance(f, str) and f.strip() for f in files):
@@ -483,55 +484,29 @@ def review_sources(db: Database, *, batch: dict) -> dict:
     for index, edit in enumerate(batch["edits"]):
         body = edit.get("body")
         if edit["collection"] == "source_reviews" and isinstance(body, dict):
-            pins = [(field, ref) for field in ("source_refs", "anchor_refs")
-                    for ref in (body.get(field, []) if isinstance(body.get(field), list) else [])]
-            pins.extend((f"proof_spans/{position}/argument_ref", span["argument_ref"])
-                        for position, span in enumerate(body.get("proof_spans", [])
-                                                       if isinstance(body.get("proof_spans"), list) else [])
-                        if isinstance(span, dict) and "argument_ref" in span)
-            for field, ref in pins:
-                if not isinstance(ref, dict) or not {"collection", "id", "version"} <= set(ref):
+            for field in ("source_refs", "anchor_refs"):
+                for ref in body.get(field, []) if isinstance(body.get(field), list) else []:
+                    if not isinstance(ref, dict) or not {"collection", "id", "version"} <= set(ref):
+                        continue
+                    head = db.head(ref["collection"], ref["id"]) if ref["collection"] in ("sources", "anchors") \
+                        else None
+                    if head is None or head.retired or head.version != ref["version"]:
+                        errors.append(f"edits/{index}: {field} entry {ref['id']} must pin the live version")
+            for position, span in enumerate(body.get("proof_spans", [])):
+                if not isinstance(span, dict):
                     continue
-                head = db.head(ref["collection"], ref["id"]) if ref["collection"] in ("sources", "anchors", "arguments") \
-                    else None
-                if head is None or head.retired or head.version != ref["version"]:
-                    errors.append(f"edits/{index}: {field} entry {ref['id']} must pin the live version")
+                for field in ("argument_ref", "anchor_ref"):
+                    ref = span.get(field)
+                    if not isinstance(ref, dict) or not {"collection", "id", "version"} <= set(ref):
+                        continue
+                    head = db.head(ref["collection"], ref["id"])
+                    if head is None or head.retired or head.version != ref["version"]:
+                        errors.append(f"edits/{index}: proof_spans/{position}/{field} must pin the live version")
     if errors:
         raise InvalidRequest("source review rejected", records=errors)
     return accept(db, request_id=batch["request_id"], request_digest=digest(batch), packet_id=batch["packet_id"],
                   edits=batch["edits"], command="source_review")
 
 
-def source_diagnostics(db: Database, *, degraded=False) -> dict:
-    """Locate detected glyph loss in current PDF anchors without changing evidence."""
-    rows, damaged_count = [], 0
-    for anchor in db.heads("anchors"):
-        body = anchor.body
-        if body["locator"]["page"] is None:
-            continue
-        source = db.version("sources", body["source_id"], body["source_version"])
-        if source is None or source.body is None or source.body["media_type"] != "pdf":
-            continue
-        replacements = body["excerpt"].count("\ufffd")
-        damaged_count += bool(replacements)
-        targets = {}
-        for entry in db.live_referrers("anchors", anchor.id):
-            # A pinned historical anchor is not this current anchor version.
-            if entry["target_version"] not in (None, anchor.version):
-                continue
-            key = (entry["owner_collection"], entry["owner_id"], entry["owner_version"])
-            targets[key] = {"collection": key[0], "id": key[1], "version": key[2]}
-        rows.append({"ref": anchor.pinned, "source_ref": source.pinned,
-                     "file": source.body["path"], "locator": dict(body["locator"]),
-                     "replacement_count": replacements, "extraction_note": body["limitation"],
-                     "targets": list(targets.values())})
-    selected = [row for row in rows if row["replacement_count"]] if degraded else rows
-    return {"revision": db.max_revision(), "pdf_anchor_count": len(rows),
-            "degraded_anchor_count": damaged_count, "returned_anchor_count": len(selected), "anchors": selected,
-            "scope": "Current PDF anchors and their direct live referrers; coordinator retrieval only.",
-            "note": "Replacement characters detect known extraction damage, not formula fidelity. "
-                    "These diagnostics do not change source comparisons or mathematical judgments."}
-
-
-__all__ = ["anchor_sources", "capture_sources", "citations", "declarations", "discover", "media_type", "source_diagnostics",
+__all__ = ["anchor_sources", "capture_sources", "citations", "declarations", "discover", "media_type",
            "resolve_anchor", "review_sources", "uncomment"]

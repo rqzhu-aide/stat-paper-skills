@@ -1,346 +1,119 @@
-# Authoring graph records (contract 4)
+# Coherent graph authoring
 
-Use this reference when the coordinator registers or refines the graph. Generate the selected collection's shape from the enforced contract with `template`; no code inspection is needed. All object fields below are required unless marked optional. Unknown fields are rejected.
-`?` means JSON null is permitted, not that the field may be omitted. `[]` means an array, which may
-be empty unless a stated rule requires members. IDs are stable strings; item labels and theorem
-numbers are display text. Generate collection IDs with `ids --kind COLLECTION --count N`;
-use the singular `--kind request` for request IDs.
+Keep exact claims, meaningful prerequisites, routes and local conditions. Routine algebra need not become nodes. Jointly required suppliers belong to one inference; alternative sufficient routes remain distinct. Add explicit cases or nested scopes when their scientific meaning requires them.
 
-Mint IDs in batches per kind, including request IDs, rather than launching a command per record.
-Unused minted IDs need no database entry. Controller responses generate their own check,
-observation, coverage and finding IDs; do not pre-mint those IDs for `work submit`.
+The coordinator owns shared records. Phase 1 workers can propose local items and links before database identities exist; consolidate those drafts using [phase1-drafts.md](phase1-drafts.md) before registering them here. A repeated source claim becomes one shared node when its statement and context agree; each consuming use remains distinct.
 
-Follow [mathematical text and JSON](mathematical-checking.md#mathematical-text-and-json)
-for formula delimiters, backslash escaping, and unchanged source excerpts.
+## Ordinary written proof
 
-Run these examples from the [chosen work folder](database-audit.md#choose-the-work-folder);
-`AUDIT.db` means its `audit.db`. The manuscript's registered source root is separate from
-this working directory.
+stage1 add-unit consumes a JSON object and generates the claim, exact specification, context, argument, final inference, source review/boundary and source comparison together. It generates IDs, pins and paired application records. Example:
 
-## Shared values
-
-| Name | Exact shape or allowed values |
-|---|---|
-| Ref | `{collection, id}`; collection names the referenced record collection |
-| Target | Ref restricted to `items` or `parts` |
-| PinnedRef | `{collection, id, version}` with a positive integer version |
-| Statement | `{form: "verbatim"|"transcription"|"synopsis", text: nonempty string}` |
-| Passage | `{role: "statement"|"proof"|"definition"|"evidence", anchor_id: anchors ID}` |
-| Origin | `"source"|"reconstruction"|"proposed_repair"` |
-| Binder | `{symbol: nonempty string, domain: nonempty string, quantifier: "fixed"|"forall"|"exists"}` |
-| Substitution | `{symbol: nonempty string, value: nonempty string}` |
-| Locator | `{start_line: positive integer?, end_line: positive integer?, page: positive integer?, label: nonempty string?}` |
-| Exclusion | `{target: Ref?, source_anchor_ids: [anchors ID], reason: nonempty string, consequence: nonempty string}` |
-| Global task | `{kind: "global_consistency"|"adversarial"|"method_interface", applicability: "required"|"not_applicable", reason: string}` |
-
-A locator supplies both start/end lines together with start no greater than end, or another location
-method. Page locators require PDF source. An exclusion supplies a target or at least one source
-anchor. Excluding an item removes that result and its parts from required audit work. Keep a missing
-proof of a requested result in scope as a source limitation or unresolved examination.
-A `not_applicable` global task needs a nonempty reason.
-
-For non-PDF sources, `Locator.label` is a LaTeX source label key, not a descriptive caption.
-With line numbers, its uncommented `\label{KEY}` must occur inside that range. Use null for
-an unlabeled passage.
-
-Capture source before anchoring. Submit the dedicated anchor request below with
-`paper_audit.py source anchor AUDIT.db --request work/authoring/anchors.json`, replacing its example IDs
-and line range with captured source and current packet identities:
-
-```json
+~~~json
 {
-  "contract_version": 4,
-  "request_id": "req_anchor_example",
-  "packet_id": "pkt_author",
-  "anchors": [{
-    "id": "anc_statement",
-    "expected_version": null,
-    "source_id": "src_paper",
-    "locator": {"start_line": 10, "end_line": 14, "page": null, "label": null}
-  }]
+  "key": "theorem_1",
+  "kind": "theorem",
+  "label": "Theorem 1",
+  "statement": "The exact statement including all hypotheses.",
+  "statement_anchors": ["anc_statement"],
+  "proof_anchors": ["anc_main_proof", "anc_supplement_continuation"],
+  "source_matched": true,
+  "proof_complete": true,
+  "source_note": "The exact statement and setup match the source. The proof continues in the supplement.",
+  "aliases": ["Supplement Theorem A"],
+  "suppliers": []
 }
-```
+~~~
 
-Keep all four locator keys. This request asks the source command to capture the actual excerpt
-and hashes; it is not an ordinary `apply` batch. Rebinding an existing anchor requires its current
-`expected_version` rather than null.
+Both booleans describe actual source judgments. The coordinator can record its own comparison or a primary worker's saved comparison under that examiner's `reviewer` identity. If the representation is unsettled or a continuation is missing, use false and explain it. This operation saves no proof check and makes no mathematical support claim.
 
-One statement can continue across physical PDF pages while remaining one item. For already
-captured anchors on pages 18, 19 and standing context on page 4, its existing `passages` can be:
+Keep hypotheses and quantifiers in the exact statement, including references such as "Under Assumption A1." Supply A1's captured content as source/setup context and reuse its named-assumption record when needed. A clearly identical restatement can share that record with both source locations retained; materially different conditions stay explicit. No separate equivalence proof or node for each clause is required. An assumption is not a lemma to prove. A formal proof-supplier edge is not required merely to display its reference. Do not add private conditions or proof work just to change a conditional support status.
 
-```json
-[{"role": "statement", "anchor_id": "anc_p18"},
- {"role": "statement", "anchor_id": "anc_p19"},
- {"role": "evidence", "anchor_id": "anc_p04"}]
-```
+When the supplied manuscript provides no proof, use `proof_anchors: []`, `proof_complete: true`, and explain the omission in `source_note`. Here true means the supplied material has been accounted for; it does not assert that a proof exists or is valid. This saves the statement without an invented argument. Its primary and independent assessments can record a gap or uncertainty. Do not use this path for a missing supplied continuation.
 
-A use supported by discontiguous passages can have `evidence_refs: ["anc_p08", "anc_p12"]`.
-Target specifications likewise use `evidence_refs`; proof boundaries use pinned `anchor_refs`.
-Keep separately audited conclusions as parts of that item. Existing report links show captured
-files/pages or inclusive text lines; no duplicate nodes, location fields or comparisons are needed.
+When the entire referenced proof is unavailable, use `proof_anchors: []`, `proof_complete: false`, and explain what is missing in `source_note`. The helper saves the known statement and an open source issue, without a dummy argument. The missing evidence keeps delivery working; unrelated proofs can proceed. When the material becomes available, capture it, add the actual route to the existing claim through affected-record edits, and resolve the source issue. Do not register a duplicate claim or re-examine unrelated proofs.
 
-## Generate one record shape
+The suppliers list is optional. Each supplier entry requires target, reason and needed_form. Register the supplier's claim first, then use its returned item ID at `unit.item` in the add-unit receipt (not `item_id`). For example:
 
-```text
-python "<skill-root>/scripts/paper_audit.py" template AUDIT.db --packet pkt_AUTHOR --collection items --out work/authoring/item-template.json
-```
+~~~json
+{"target":{"collection":"items","id":"itm_lemma_1"},"reason":"The proof applies Lemma 1 at the fixed parameter.","needed_form":{"form":"transcription","text":"The exact consequence needed at this application."}}
+~~~
 
-The output contains an uncommitted `template` batch and its contract-derived shape. Author
-the scientific fields, then submit only the `template` member with `apply`. Blank placeholders
-are not judgments. For a same-ID extension such as `application_details`, pass `--id use_ID`.
-Generate only the needed collection. Keep coherent edits in one batch; do not launch one call
-per field. Existing schema help remains available through the same command for every collection.
+Optional entry fields are substitutions [{symbol,value}], evidence_refs and type. Type is dependency for using a result, definition for definition context, or proof_argument for borrowing an actual argument. Supplying a theorem statement is usually enough for a result application; actual proof borrowing needs its passages. add-unit generates the corresponding application_details; its low-level template requires an existing use and is only needed for advanced edits.
 
-Major item kinds are `assumption`, `definition`, `lemma`, `proposition`, `theorem`, `corollary`,
-and `external_result`. Intermediate kinds are `equation`, `claim`, `derivation`, and
-`intermediate_result`, each with exactly one major `owner_id`. Other kinds have `owner_id: null`;
-parts belong to major items. Preserve the manuscript declaration kind independently of origin.
-A locally declared lemma remains a lemma even when attributed elsewhere; `external_result`
-represents a result introduced only by citation.
+Routine external facts need no separate node. For a non-trivial external use, create an `items` record of kind `external_result` using the existing template/authoring path, then reference it as a supplier. Save the cited result, source location and relevant captured evidence; reuse the node across applications. If retrieval is unavailable, anchor the attributed statement to the supplied manuscript and disclose that its external source was not inspected. The `external_source` assessment can finish as inconclusive. Record this uncertainty in the assessment or findings; `source_issues` is for defects in supplied or captured evidence, not a queue of inaccessible citations. See [external-result-verification.md](external-result-verification.md).
 
-Declaration kind, document provenance and availability are separate. A theorem belonging to
-this paper's unavailable supplement remains a theorem with a source limitation. Locate its
-bounded description in the supplied manuscript; do not invent its missing statement or proof.
-Load-bearing outside results still need exact supplier inspection and application checking.
+Use an exact `transcription` or `verbatim` statement for that supplier. Its current matched source comparison and supported external-source examination can establish source support without a separate target specification. A synopsis or uninspected citation cannot. Reuse the saved inspection while its source and meaning are unchanged; do not repeat it merely to add bookkeeping.
 
-Supplements can use numbering from an earlier manuscript version. Match corresponding
-statements and proof headings by content, hypotheses and cross-references, not a numerical
-offset. If main Theorem 3.1 is proved as supplementary Theorem 1, keep one item with the main
-label, retain the alternate name in `aliases`, and attach each passage to its actual file/page.
-If hypotheses or conclusions differ, preserve the distinct exact targets or routes and explain
-the mismatch; a matching heading does not establish coverage of the requested claim.
+Use aliases only after comparing the actual statement, hypotheses and context. Different numbering alone neither identifies nor distinguishes results.
 
-Use `equation` for a meaningful displayed relation or bound, `claim` for an assertion, and
-`derivation` for a multi-step argument whose conclusion is not separately declared. Give
-unnumbered content an honest descriptive label. Ownership locates material; it is not an inference
-from the owner to the intermediate.
+A proof may span files and pages. proof_anchors includes every segment. For two proofs sharing a captured page, optional proof_spans contains {anchor_id,start_offset,end_offset} selections using zero-based offsets into the unchanged excerpt. Preserve every continuation. Invalid selections are errors, not permission to silently shrink the evidence.
 
-A scope's parent chain is acyclic. Argument/group scopes are global (`argument_id: null`) or local
-to that same argument. Conditions are explicit mathematical restrictions, not commentary. Do not
-put a needed local result in `assumptions` merely to avoid checking its proof.
-List authorized setup premises explicitly, including a definition when its stipulated notation
-or defining relation is used as context. This authorizes that definition in the scope, not any
-unproved existence, measurability, boundedness, or other property of the defined object. Examine
-those properties through their own supplier or inference. A verified external result instead
-uses its exact target, source verification, and application; do not turn it into an assumption
-to bypass missing support.
+A repeat of the identical definition reuses the recorded unit. A changed definition with the same key requires an explicit correction to the existing graph, preserving its history.
 
-A target specification supplies exactly one of `statement_ref` and `statement`. Reference an
-already exact shared statement by its version rather than duplicating its text. A synopsis instead
-needs an exact, source-grounded statement and applicable scope. Use a separate target for a restricted
-repair. `fidelity_ref` explicitly reuses a comparison of the same exact text, setup, and source versions.
+## Setup and shared intermediate results
 
-`scope_id: null` on a target specification inherits no named scope. A scope with
-`argument_id: null` is shared, but its premises apply only through the recorded scope context.
-A proof using a premise in `scp_setup` can therefore leave a target outside that context
-conditional even with all examinations complete. Choose the intended setup before broad
-examination; null is valid when no named premise context is intended. Scope changes can reopen
-source comparison and dependent checks; investigate unexpected support using current status.
+Use `stage1 add-record audit.db --input record.json` for an ordinary assumption, definition, intermediate result, equation, claim or derivation. It also accepts the major proof-unit definition above. The returned IDs use the same `unit` member as `add-unit`.
 
-Distinguish a reusable conditional result from a temporary proof premise:
+For example, a named assumption needs its source comparison, not a proof-completeness judgment:
 
-- A lemma asserting \(H(X)\Rightarrow C(X)\) for every \(X\) carries its hypotheses in the assertion.
-  Each application establishes \(H\) for its chosen \(X\). Do not confine the reusable lemma to a
-  sibling proof's temporary assumptions.
-- A fact established under a temporary premise remains local until the applicable discharge.
-  For example, a denominator bound proved under \(\omega\in E\) does not become an unconditional
-  bound for every outcome when the event implication is discharged.
+~~~json
+{
+  "key": "assumption_a1",
+  "kind": "assumption",
+  "label": "Assumption A1",
+  "statement": "The exact named assumption.",
+  "statement_anchors": ["anc_a1"],
+  "source_matched": true,
+  "source_note": "Compared the named setup with its captured source."
+}
+~~~
 
-Preserve the source's exact hypotheses and check scope and applicability at each use. Do not clear
-scope IDs or add an absent manuscript hypothesis to make support available.
+An intermediate uses its actual kind and `owner_id`. Register the owner first. An item with proof passages alone creates no separate proof assignment and receives no automatic favorable verdict. To represent a derivation actually examined inside the owner, also provide its existing `argument_id`, the selected `proof_anchors`, and any `suppliers` used to derive this result:
 
-For a new target, the simplest sequence is to save its final item/part and registered exact
-specification with `fidelity_ref: null`, then compare that specification through its prepared
-source-fidelity task. This directly checks the statement, setup, and captured source together;
-there is no need to add a fidelity reuse reference afterward.
+~~~json
+{
+  "key": "equation_12",
+  "kind": "equation",
+  "label": "Equation (12)",
+  "statement": "The exact intermediate equality including its conditions.",
+  "statement_anchors": ["anc_eq12"],
+  "proof_anchors": ["anc_eq12_derivation"],
+  "owner_id": "itm_theorem_1",
+  "argument_id": "arg_theorem_1",
+  "source_matched": true,
+  "source_note": "This passage derives Equation (12) within the written proof of Theorem 1.",
+  "suppliers": []
+}
+~~~
 
-When explicitly reusing an item/part comparison, create the final specification before making
-that comparison. For example, compare exact `items:itm_T@1` after its specification is registered,
-obtaining `observations:obs_T@1`. In a fresh replacement of that specification, keep
-`statement_ref: {collection: "items", id: "itm_T", version: 1}`, `statement: null`, and
-set `fidelity_ref: {collection: "observations", id: "obs_T", version: 1}`. Keep the same `scope_id`.
-Do not add or change the exact specification between comparison and reuse. Reuse only a current
-observation whose source bindings cover
-every `evidence_refs` anchor; identical display text is insufficient. Setup absent from that
-examination, changed consumed source, or a synopsis needs a new exact-target comparison.
-Older comparisons with strict relation bindings may require one fresh comparison even for
-this metadata attachment. Preserve their original observations and bindings.
+This creates a local inference concluding Equation (12) inside the owner's argument. The selected statement, setup and derivation belong to that ordinary examination; ownership, a shared page or an application alone does not establish the equation. Keep its premises and material conditions accurate. A private `scope_id` remains private when another proof consumes the result. Separate local outcomes can preserve an established intermediate when the owner's final step fails; do not infer that local outcome from the owner's overall label.
 
-A packet may include `historical_records` containing the immutable statement version named by a
-specification. These are read-only provenance outside the live record map and write scope.
-To correct the saved representation of the same target:
+Then attach each consuming use, including the owner's own use if needed, through existing record/link edits before preparing the affected examination. The sequence is owner, owned result, consuming link. Another proof reuses the same item and examines its own application. The consolidation helper exposes any deferred links for this sequence.
 
-1. Get a fresh author packet covering the item/part and existing specification.
-2. Replace both in one batch, using complete bodies and current `expected_version` values.
-   For example, replace `items:itm_T@2` and have the same specification pin `items:itm_T@3`.
-   Set `fidelity_ref: null` when the old comparison no longer covers the text or setup; provide
-   located `evidence_refs` covering both for direct comparison.
-3. Commit, then use `work prepare` focused on that specification for a new source comparison.
-   Compare the new statement and setup with source and submit through the comparison path;
-   never create observations via `apply`.
-4. Follow current work/status to renew affected mathematical and independent examinations.
-   An edit or comparison alone does not complete this work.
+For a meaningful subsection deliberately selected for its own examination, use `separate_examination: true` with the ordinary proof-unit fields and its required `owner_id`. This creates a separate proof-unit route; select the subsection in the existing audit scope when it needs its own assignment. Omit `argument_id` for that path. Separate assignment is a scope choice, not a consequence of registering an equation.
 
-Every `application_details` record uses the **same ID as its use**, with `use_id` equal to it.
-Its optional `scope_id` defaults to the group's scope; use an explicit branch scope for branch
-inputs. A registered application needs its group and exact `needed_form`. Draft extensions supply
-no mathematical credit. Application checks target `uses`, consuming their extension; summary
-connections without application details are not extra checked implications.
+## Advanced or corrected structure
 
-A registered argument has a final group belonging to that argument whose conclusion is its exact
-target. Other groups conclude that target, an allowed target part, or an intermediate owned by its
-major result. Each grouped use has `to` equal to its group's conclusion. Put all jointly required
-inputs in the same group through separate use records. `proof_argument` means the consumer borrows
-an internal argument; ordinary use of a result's statement is `dependency`. A `joint` group has
-empty `case_scope_ids`; a `cases` group has a nonempty distinct list. Case scopes are local to the
-argument, and discharged scopes must be permitted local/case scopes. Exhaustive cases require every
-branch and checked coverage/discharge. Distinct sufficient proofs use separate arguments; they are
-alternatives, not a cases group. Imported provenance-only groups with null argument and scope remain
-annotations until refined into actual inferences. Use a retire edit to retire an
-argument, rather than writing a live body with `lifecycle: "retired"`.
+Use get in author/primary mode, template for the needed collection, and apply a coherent batch. The template command exposes the enforced shape. Do not inspect runtime source to discover fields.
 
-Focused audits name requested targets; the core derives their recorded prerequisites. Full audits
-also reconcile the registered proof inventory. Both modes list exactly the three global task kinds
-once each. Use `protocol_version: "item-audit/1"`. Qualification records are created through
-`qualification record`, never fabricated in a graph batch.
+For a live record, `template ... --collection COLLECTION --packet AUTHOR_PACKET --id RECORD_ID --out edit.json` returns `replace`, the full current body and its expected version. Edit the intended fields and submit the `template` member through `apply`. With an ID absent from that collection, the command still prepares a named create. Refresh the author packet if requested; do not mint new IDs or rebuild the database to correct a record.
 
-The selection/refinement rules below apply to the audit's own result view or overview records
-already embedded in a resumed proof-check audit, subject to the
-[work-folder separation rule](database-audit.md#choose-the-work-folder).
-Preserve a selected summary arrow `A -> T` when detail expands it through `A -> C -> T`.
-A `connection_refinements` record links that summary use to the relevant detailed uses and argument.
-For borrowed proof reasoning, the actual supplier can instead be an intermediate owned by A:
-map the summary to `C -> T` without inventing `A -> C`. Ownership alone provides no support.
-The refinement must explain the original source-backed contribution, and shared detailed applications
-are checked once. Distinct uses, parallel contributions, and mixed outcomes retain their identities.
+For an ordinary exact claim created by `add-unit`, use the paired correction helper:
 
-Such overview selections record their items, connections, main results, and source context independently
-of audit scope. Adding audit-only detail does not silently enlarge that selection or its comparison
-context. Ordinary overview edits preserve extensions; changing consumed mathematics reopens affected
-work. A changed summary needs its own renewed comparison even when an unchanged exact target retains
-current mathematics.
+~~~text
+AUDIT stage1 correct-claim audit.db --item itm_theorem_1 --expected-version 1 --correction correction.json
+~~~
 
-Coverage offsets are half-open character intervals into the anchor excerpt. Structural spans have
-empty `claim_refs` and `check_ids`; substantive spans need both. Every linked check must be primary,
-belong to the same audit and argument, and have its corresponding obligation satisfied. It must be
-current and complete, or lead to such an examination through explicit `supersedes` successors.
-Together, these examinations must have consumed every claimed item/part statement; citing its
-source passage alone is insufficient. An extra unusable linked check prevents coverage credit.
-For a reviewed subpage proof selection, coverage accounts for its selected intervals, including
-every continuation. Unrelated material elsewhere on a PDF page needs no coverage row and must
-not be labeled structural merely to close the audit. The complete page excerpt remains evidence.
+The correction is an object containing `statement` and/or `statement_anchors`, for example `{"statement":"The corrected exact claim including its hypotheses."}`. It updates the item and direct exact specification together, preserving other content. If a generic edit already corrected the item, use `--sync-current` instead of `--correction` to align its direct specification with the saved current statement and statement anchors. Do not reconstruct an old item body. The receipt shows the saved before/after change; a long statement uses a marked excerpt near the first difference.
 
-Graph registration can precede complete coverage. Save controller coverage with its checks using
-`check_task_ids`, pinned `existing_check_refs`, and `replaces` (null for new rows) from the generated
-scaffold/guidance. Direct stored coverage instead uses `check_ids`; its enclosing create/replace
-edit supplies identity and version. Generate the `coverage` template for that interface rather
-than submitting a controller coverage row through `apply`.
-Before asserting completeness, link the target and arguments to a `proof_boundaries`
-record pinning all complete source segments and an accepted `source_reviews` record with
-`purpose: "proof_boundary"`. Reuse the basis for routes sharing a written proof. Source/segment
-changes require renewed review; an unresolved boundary cannot certify full coverage. Registration
-never grants source-fidelity or proof credit.
+Neither operation creates a favorable source comparison or proof verdict. An unchanged replay describes the original saved change. Advanced pairings receive a local explanation and use ordinary affected-record edits. Use stage status to identify affected work when needed; do not rebuild or repeat unrelated examinations.
 
-## Reader explanations
+The optional `conditions`, `assumptions` and `binders` fields describe genuinely private assumptions, bound variables or case contexts. Ordinary theorem hypotheses already in the statement need none of these fields. Keep existing meaningful scopes; no migration or separate scope audit is required.
 
-While the written proof is already in context, ordinarily save two to four sentences in the
-major item's optional `proof_idea`: the central mechanism, how important inputs combine, and
-the decisive transition or restriction. A list of lemma labels or a restatement of the conclusion
-does not explain the strategy. Reuse inspected sources and useful worker reasoning, checking the
-summary against the written argument. Existing proof/source anchors should locate its basis;
-add an anchor only when needed. Several written routes can share a summary that distinguishes
-their recorded labels. Identify reconstructions and proposed repairs explicitly.
+Use existing items/parts, arguments, groups, scopes and uses when an extra route, meaningful subsection, case branch or material local outcome requires them. application_details and target_specs preserve exact usage and target meanings; scripts handle paired fields where available.
 
-Write each `uses.reason` as the contribution of that supplier to its recorded recipient or step.
-Save restrictions in `uses.regime`, uncertainty where applicable, and exact scope/application
-records rather than merging branch conditions into theorem-wide assumptions. Keep distinct
-applications and routes distinct even when they use the same supplier.
+A manuscript proof omission is represented as its exact claim without a fabricated argument or dummy evidence. Keep it in requested scope and assess the omission using the statement's generated examination. Unavailable referenced material retains its source limitation until accessed and examined.
 
-Save these explanations during ordinary authoring, preferably before existing source comparisons.
-Later edits retain normal version/freshness rules; do not bypass invalidation to improve the report.
-Do not add a separate summary review, mass backfill, or require strategy text for assumptions,
-definitions or every intermediate. If the proof is unavailable or unclear, retain that limitation
-and leave the summary absent rather than infer it from a verdict or generic composition check.
-Strategy text supplies no proof credit and its absence is not an audit-completion gate. Any
-suggested simulation or numerical validation remains an unperformed follow-up for the user.
+A displayed synopsis differs from an exact claim. Do not reuse source fidelity when hypotheses or conditions differ. Checking a valid implication does not establish its supplier. An internal result can remain valid even if its owning theorem's final composition fails.
 
-## Authoring commands and envelopes
-
-Capture source using `source capture AUDIT.db --files work/authoring/files.json`, where that file is an array of paths
-relative to the source root. Source IDs come from the capture receipt. Obtain an author packet
-covering the paper or affected records before writing:
-
-```text
-python "<skill-root>/scripts/paper_audit.py" get AUDIT.db --target papers:pap_ID --mode author --out work/authoring/author.json
-python "<skill-root>/scripts/paper_audit.py" source anchor AUDIT.db --request work/authoring/anchors.json
-python "<skill-root>/scripts/paper_audit.py" get AUDIT.db --target papers:pap_ID --mode author --out work/authoring/graph-context.json
-python "<skill-root>/scripts/paper_audit.py" apply AUDIT.db --batch work/authoring/graph.json
-```
-
-`work/authoring/anchors.json` is exactly `{contract_version: 4, request_id, packet_id, anchors: [...]}`. Each entry
-is `{id, expected_version: positive integer|null, source_id, locator: Locator}`. Use null for a new
-anchor, the supplied current version to rebind an existing one. The script extracts the excerpt,
-hashes and source version; do not invent those fields or create anchors through `apply`.
-
-`work/authoring/graph.json` is exactly `{contract_version: 4, request_id, packet_id, edits: [...]}`. A create or
-replace edit is `{op: "create"|"replace", collection, id, expected_version, body}`. Create uses null;
-replace uses the packet's current version and the complete new body. A retire edit is
-`{op: "retire", collection, id, expected_version, reason: nonempty string}`, with no body. Records
-created in the same batch may reference one another. Reuse an unchanged successful request only
-to retrieve its receipt; a new edit gets a new request ID.
-
-## Review complete source boundaries
-
-Read the actual source to identify every segment and continuation of the written proof. Establish its
-argument/final group and actual application/group source links before certifying spans; same-batch
-cross-references can register this structure together. Then create a source review using a current author packet:
-
-    python "<skill-root>/scripts/paper_audit.py" source review AUDIT.db --request work/authoring/boundary-review.json
-
-The request is the same `{contract_version: 4, request_id, packet_id, edits}` envelope.
-Each create edit targets `source_reviews` with body
-`{source_refs: [PinnedRef], anchor_refs: [PinnedRef], purpose: "proof_boundary",
-decision: "accepted"|"unresolved", rationale: nonempty string, reviewer: nonempty string}`.
-Pin the captured source versions and all complete proof anchors. The rationale identifies the
-source boundary, continuations inspected, and any limitation. An accepted decision is the author's
-actual source review, not a value to infer from parser output.
-
-When a PDF page contains other material, the review may additionally carry `proof_spans`:
-
-```json
-"proof_spans": [
-  {"argument_ref": {"collection": "arguments", "id": "arg_ID", "version": 1},
-   "anchor_ref": {"collection": "anchors", "id": "anc_ID", "version": 1},
-   "start_offset": 120, "end_offset": 480}
-]
-```
-
-These nonempty `[start_offset, end_offset)` intervals address characters in the stored excerpt,
-not UTF-8 bytes, PDF coordinates, or text copied from another extractor. Inspect the full page
-visually, locate all proof segments and continuations, and retain the full captured excerpt.
-Use separate entries for disjoint segments and for different arguments sharing a page. Each
-anchor pin must appear in `anchor_refs`, with its captured source version in `source_refs`.
-Pin the current argument version when recording the review. Label-only changes preserve the selection.
-Changed proof inputs or source extent require renewed review; only narrowly proven additions linking
-already consumed evidence can retain a new certificate. Older certificates remain conservative.
-Each linked boundary must retain every selected anchor for each of its arguments. An ambiguous
-boundary stays unresolved; do not derive the selection from whichever intervals already have checks.
-
-Omitting `proof_spans` retains the whole-anchor requirement. A stale explicit selection instead requires
-boundary renewal, without turning neighboring page text into new coverage work. Accepted reviews are immutable:
-record changed selections under a new review ID, then update the boundary's review pin. Review
-metadata alone does not change a source-only reviewer's delivered selection. The first span-aware
-write adds the `reviewed-proof-spans/1` database feature; use an updated shared core to reopen it.
-
-Then create or replace `proof_boundaries` through ordinary graph authoring, linking that review
-and its complete segment list to the exact target and all applicable arguments. Use
-`state: "unresolved"` when the source unit's completeness remains uncertain. Registered argument
-excerpts and coverage rows do not substitute for this reviewed basis.
-
-
-## Worked examples
-
-Use [the probability example](probability-example.md) for meaningful intermediate events,
-denominator and ratio bounds, with source coverage and saved reasoning. It is an optional
-authoring reference, not a worker assignment. The older
-[minimal transitivity example](graph-example-transitivity.md) remains an interface illustration.
+New routine explanatory detail within an examined unit creates no mandatory microchecks. Changed assertions, conditions, substantive routes or evidence require attention to the affected examination. A proposed mathematical repair is separate from correcting the database's representation and is not required to finish reporting a gap.

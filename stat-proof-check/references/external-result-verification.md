@@ -1,42 +1,39 @@
 # External result verification
 
-Use this reference when an external theorem, inequality, or technical fact is
-load-bearing, whether or not it has an inline citation. For existing v1.5 folders
-only, use [legacy-external-result-verification.md](legacy-external-result-verification.md).
+Use this reference when a proof makes a non-trivial use of a result outside the supplied papers. Routine mathematical facts and simple applications can be assessed using mathematical knowledge, without a separate lookup or external node. A specialized result whose assumptions determine whether the step works warrants source inspection when tools are available.
+
+This work checks the relevant external statement and its application. It does not create an audit of the external paper or its references. Read external proof passages only when the manuscript actually borrows that reasoning.
 
 ## Identify and inspect the exact source
 
-Retrieve the actual publication or authoritative source containing the result.
-Confirm publication identity, theorem/equation locator, version or edition, and
-relevant corrections. Metadata or a search-result page identifies a paper; it
-does not establish theorem content. Capture the evidence used, with its bytes,
-version, and source anchors or PDF page locators.
+Use available tools to identify and retrieve the actual publication or authoritative
+source containing the result. Confirm the relevant statement, assumptions and location.
+Metadata or a search-result page identifies a paper; it does not establish theorem content.
+Capture the evidence used with source anchors or PDF page locators.
 
-Read the theorem with inherited assumptions, meaning-determining definitions,
-and surrounding conventions. Preserve domains, ordered quantifiers, probability
-model, dependence, finite-sample or asymptotic regime, uniformity, normalization,
-constant dependencies, regularity, and exact conclusion. Read further prerequisites
-when they determine what the result actually says.
+Read enough surrounding setup to understand the theorem's conclusion and the
+conditions relevant to this application. Check consequential distinctions such as
+pointwise versus uniform scope, dependence, regime and constant dependencies.
 
-Unavailable essential text remains an unresolved dependency. Do not infer a
-theorem's hypotheses from its title, familiar name, abstract, or another paper's
-informal description. A bibliography defect alone is an attribution issue when the
-exact result and its use have otherwise been verified.
+If the source cannot be obtained with the available tools, or the application remains
+uncertain, record the attempted inspection or tool limitation and an inconclusive
+judgment. That assessment can finish without resolving the dependency. Do not repeat
+unchanged retrieval attempts or infer hypotheses from a title or informal citation.
+Record a bibliography defect as an attribution issue when the exact result and its
+use have otherwise been verified.
 
 ## Record one supplier and each actual use
 
-Keep one source-backed supplier identity for the exact external result. Preserve
-the manuscript's declaration kind: a locally stated lemma remains a lemma even
-when attributed elsewhere; a result introduced only as a citation can be an
-`external_result`. Source inspection and each application are separate examinations.
+Create one `external_result` node for the non-trivial external result and reuse it
+across its applications. When the source is unavailable, retain the manuscript's
+citation and attributed statement with that limitation; do not fabricate an inspected
+source. A locally stated lemma keeps its own manuscript identity and can be connected
+to the external result. Source identity and each application are distinct scientific
+questions within a coherent examination; they do not require separate worker assignments.
 
-At every use, identify:
-
-- The exact supplier conclusion used, not merely its theorem number.
-- Substitutions, rescaling, conditioning, and the target's needed form.
-- Each applicable hypothesis and the manuscript evidence satisfying it.
-- The consumer's scope, regime, event, and allowed constant dependencies.
-- The actual contribution to the consumer's inference.
+For a non-trivial use, explain which conclusion supplies the needed form and whether
+the manuscript satisfies its relevant hypotheses, substitutions and scope. A source
+match cannot replace this application judgment.
 
 Save these facts in the assigned response. The coordinator records the exact target,
 application, and scope using [graph-records.md](graph-records.md). Keep external
@@ -45,8 +42,11 @@ hypothesis evidence distinct from manuscript evidence satisfying it.
 Share a current source inspection across uses when its consumed source and meaning
 are unchanged. Batch related applications when their complete context fits, while
 retaining distinct outcomes. A theorem may apply correctly at one use and fail at
-another. A changed hypothesis, needed form, substitution, or source may require
-renewed examination; an unchanged citation key does not prove currentness.
+another. Examine a materially changed application before claiming support for it;
+unchanged evidence does not require another lookup.
+If an earlier source limitation has been resolved by that inspection, update the
+affected conclusion and recorded limitation using the saved evidence. Retrieval
+provenance alone does not mean the evidence is still unavailable.
 
 ## Check contribution and applicability
 
@@ -69,10 +69,11 @@ If \(T\) is finite, a justified union bound can instead use failure allocation
 set needs its own argument and hypotheses. The supplier may be correct while
 the manuscript application has a gap.
 
-Do not import all hypotheses of an external theorem into the manuscript silently,
-or discard an inconvenient requirement because a similar theorem might exist.
-A reformulation needs the actual derivation. If a different verified result
-repairs the argument, record the new route and preserve the original defect.
+Do not silently add an external theorem's hypotheses to the manuscript or discard
+an inconvenient requirement because a similar theorem might exist. If the claimed
+reformulation cannot be justified, record the uncertainty or gap. Searching for a
+replacement theorem or constructing a repair is not required. Preserve the original
+defect if an alternative argument is noted.
 
 For a manuscript result that merely restates an external theorem, check the
 restatement against the exact supplier, its setup, and the actual transformation.
@@ -80,11 +81,11 @@ The manuscript conclusion cannot act as its own premise.
 
 ## Save the conclusion at the correct level
 
-Use `external_source` for exact supplier inspection and `application` for an exact use.
+When recording separate local checks, use `external_source` for the supplier-source assessment and `application` for an exact use. An unavailable source can have a completed inconclusive source assessment; that does not establish its attributed theorem or grant it premise support.
 Follow the assigned packet/scaffold and generated role guidance for targets and response shape.
 Independent workers use source targets for hidden canonical inferences, as in
-[independent-checker.md](independent-checker.md). Joint reasoning and final composition remain
-separate obligations. Explain missing prerequisites or incompatibilities using
+[independent-checker.md](independent-checker.md). Distinguish joint reasoning and final composition
+within the coherent examination. Explain missing prerequisites or incompatibilities using
 [evidence-and-verdicts.md](evidence-and-verdicts.md).
 
 A source match cannot replace application checking. A failed application does not

@@ -1,7 +1,6 @@
 # Evidence and outcomes
 
-This reference governs current database audits. For existing v1.5 ledgers only,
-use [legacy-evidence-and-verdicts.md](legacy-evidence-and-verdicts.md).
+This reference governs current database audits.
 Read [mathematical-checking.md](mathematical-checking.md) for how to examine an inference.
 
 ## What the evidence establishes
@@ -21,6 +20,35 @@ Mechanical validation checks the consistency and currentness of recorded evidenc
 It does not discover an omitted premise, confirm complete proof boundaries, or
 prove the mathematics. This audit has no formal proof-kernel guarantee.
 
+## Examination coverage
+
+`extent` and `omissions` describe examination coverage, not the mathematical outcome.
+Use `whole_unit` when the assigned supplied material has been examined, including
+assessment of a manuscript's omission of proof. An assessed unavailable external
+citation can also finish with a limitation. Put assessed defects and uncertainty
+in reasoning or findings, preserving registered conditions. Assigned supplied
+material still unexamined, including unreadable passages needed to assess the
+question, leaves that part unfinished: use `partial` and name it in `omissions`.
+Never clear omissions or upgrade partial coverage solely to obtain acceptance.
+Unrelated discoveries do not create required assignments.
+
+## Reviewer source navigation and citations
+
+The packet fixes the assigned question and registered citation IDs. The generated
+`source-navigation.json` is an optional index of all its source anchors, including
+prerequisites and continuations. Identify pages by source and version. Matching
+originals remain usable; an index entry does not mean a passage was inspected.
+
+Use only packet-registered IDs in `evidence_refs`. Other inspected material may be
+identified by traceable locators in reasoning or coverage notes, retaining its
+limitations; prose citations do not bind evidence or establish support. Repair
+harmless citation formatting without repeating examination. When support relies
+on newly consumed evidence, the coordinator captures it and prepares the affected
+assignment. For an unchanged independent question, use the existing context
+extension and return an honest response naming that packet. Reuse current reasoning
+and already examined passages; examine only material still unexamined or materially
+changed, or leave support unresolved.
+
 ## Local outcomes and statement availability
 
 A completed examination uses one of these outcomes:
@@ -33,9 +61,10 @@ A completed examination uses one of these outcomes:
 | `inconclusive` | Substantive examination cannot resolve this obligation with the available evidence. |
 
 Report a substantive unresolved examination as **Unable to verify**, with
-`state: complete`, `outcome: inconclusive`. Unexamined or unfinished work remains
-a draft with its next action and no completion credit. Inability to verify
-alone establishes no manuscript defect.
+`state: complete`, `outcome: inconclusive`. A saved completed examination may be
+partial; its named omissions still leave the unit unfinished. Use a draft when
+the returned examination itself is unfinished. Inability to verify alone
+establishes no manuscript defect.
 
 Keep four facts separate: what was examined, its local outcome, whether the exact
 statement is available in the consumer's premise context, and whether the audit's
@@ -61,12 +90,14 @@ is complete. A real extra restriction requires a separately scoped target or rou
 A restricted repair needs a separate target. A new proof of the unchanged statement
 needs a separate route and provenance; keep the original proof's judgment.
 
-## Missing source and restrictions
+## Omitted arguments, unavailable sources and restrictions
 
 A supplied exact theorem statement permits checking its application under that premise even when
-its proof is outside this assignment. An absent exact statement, regime, or borrowed passage needs
-a source request. Unperformed work is a draft; attempted unresolved examination may be inconclusive.
-Call a manuscript gap only when an actual missing or invalid manuscript inference is identified.
+its proof is outside this assignment. If the manuscript omits an argument, assess the supplied material and record the omission as a gap when justified, or as inconclusive when its significance is uncertain. Do not construct a proof route merely to register or finish that finding.
+
+A proof or passage that is present in the supplied material but unavailable to the examiner remains a coverage limitation. An inaccessible external citation is different: use available tools for non-trivial applications, then record what was established and any unresolved source limitation. Follow [external-result-verification.md](external-result-verification.md); routine facts need no separate lookup. Never describe an unavailable source as inspected.
+
+Call a manuscript gap only when an actual missing or invalid manuscript inference is identified. Coverage follows the examination rule above, independently of this outcome.
 
 Adding \(\pi_n\to0\) does not establish a source theorem allowing fixed positive \(\pi_n\).
 Correct the saved assertion or identify a restricted target; an accurate prose note cannot repair it.
@@ -75,10 +106,10 @@ consistency are distinct evidence. Detailed source requirements load with extern
 
 ## Analytical refutations and unresolved examinations
 
-A failed written proof does not show a false theorem. For a statement refutation,
-state the exact assertion contradicted and provide a witness satisfying **all**
-of its hypotheses. Show the actual violation, including domains, parameter regime,
-quantifier dependence, and any probability or asymptotic calculation. Record it as
+A failed written proof does not show a false theorem. Finding a counterexample is not required to finish an examination. If a statement refutation is claimed,
+state the exact assertion and explain the decisive contradiction under its hypotheses.
+When a counterexample is the basis, its witness must satisfy **all** hypotheses and
+show the actual violation in the claimed regime. Record the refutation as
 a `statement_refutation` finding, linked to the supporting examination and evidence.
 
 For example, to refute “for every sequence \(p_n\ge1\), \(p_n/n\to0\),”
@@ -117,6 +148,6 @@ examined and independently reviewed. Checked sufficiency does not mean the
 manuscript was edited or its original defect resolved.
 
 Preserve independent response bytes and original outcomes. Reconcile conflicting
-judgments on the same exact question with explicit reasons and successor checks.
+judgments on the same exact question with explicit reasons, retaining unresolved disagreement when appropriate.
 A statement refutation and a conditional application are different questions;
 do not change the latter's outcome merely to display the former.

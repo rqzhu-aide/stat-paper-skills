@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { esc, textUnits } from './assets/archify/utils.mjs';
 import { scanHtml, textOf, descendants, hasAttr, sameMultiset } from './html_scan.mjs';
 import { archifyPage, mainNavigation } from './archify_adapter.mjs';
+import { createReaderContent } from './reader_content.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TEMPLATE_PATH = path.join(HERE, 'assets', 'archify', 'template.html');
@@ -53,12 +54,6 @@ const LAYOUT_MODES = ['dag', 'cyclic', 'index'];
 const DISPLAY_KEYS = ['label_html', 'statement_html', 'reason_html', 'needed_form_html', 'rationale_html', 'conditions_html', 'reasoning_html', 'description_html', 'proof_idea_html', 'regime_html', 'uncertainty_html', 'impact_reason_html'];
 // Record body field -> display fragment that replaces its raw text.
 const FRAGMENT_FIELDS = { label: 'label_html', statement: 'statement_html', reason: 'reason_html', needed_form: 'needed_form_html', rationale: 'rationale_html', conditions: 'conditions_html', reasoning: 'reasoning_html', description: 'description_html', proof_idea: 'proof_idea_html', regime: 'regime_html', uncertainty: 'uncertainty_html', impact_reason: 'impact_reason_html' };
-const COUNT_NAMES = [
-  ...STATES.map((state) => `nodes.${state}`),
-  ...STATES.map((state) => `connections.${state}`),
-  'findings.open', 'findings.resolved', 'findings.superseded',
-  'progress.required_obligations', 'progress.completed_current_obligations', 'progress.draft_checks', 'progress.major_results', 'progress.source_unbound_items',
-];
 const PROGRESS_FIELDS = ['required_obligations', 'completed_current_obligations', 'draft_checks', 'major_results', 'source_unbound_items'];
 
 const ID_PATTERN = /^[A-Za-z][A-Za-z0-9_.:-]{0,254}$/;
@@ -186,21 +181,6 @@ export function validateInput(input) {
   if (!isObject(projection.summary)) bad('projection.summary must be an object');
   if (!isObject(projection.layout)) bad('projection.layout must be an object');
   done();
-
-  if (build.finalization !== undefined) {
-    const frozen = build.finalization;
-    if (!isObject(frozen) || typeof frozen.process_complete !== 'boolean' || typeof frozen.representation_settled !== 'boolean'
-        || !Array.isArray(frozen.finalization_blockers) || !isCount(frozen.finalization_blocker_count)
-        || !isString(frozen.snapshot_sha256) || !/^[0-9a-f]{64}$/.test(frozen.snapshot_sha256)) {
-      bad('build.finalization must identify the frozen completion and source representation');
-    } else {
-      if (frozen.process_complete !== projection.summary.progress?.process_complete) bad('frozen completion differs from projection');
-      if (build.kind === 'release' && (!frozen.process_complete || !frozen.representation_settled || frozen.finalization_blocker_count)) bad('release requires completed and settled frozen delivery');
-      if (frozen.finalization_blocker_count < frozen.finalization_blockers.length) bad('frozen blocker count is smaller than its displayed blockers');
-      if (!frozen.finalization_blockers.every(row => isObject(row) && isString(row.message))) bad('frozen finalization blockers must contain messages');
-    }
-    done();
-  }
 
   const validateRef = (ref, where, pinned) => {
     if (!isObject(ref)) { bad(`${where} must be an object`); return null; }
@@ -550,18 +530,6 @@ export function validateInput(input) {
       fragments.set(key, value);
     });
   }
-  const mathDiagnostics = display?.math_diagnostics;
-  if (mathDiagnostics !== undefined) {
-    if (!isObject(mathDiagnostics) || !Number.isInteger(mathDiagnostics.count) || mathDiagnostics.count < 0 ||
-        !Array.isArray(mathDiagnostics.groups)) bad('display.math_diagnostics must contain a count and groups');
-    else for (const group of mathDiagnostics.groups) {
-      if (!isObject(group) || !isString(group.reason) || !Number.isInteger(group.count) || !Array.isArray(group.samples))
-        bad('display.math_diagnostics groups must contain reason, count and samples');
-      else for (const sample of group.samples)
-        if (!isObject(sample) || !records.has(refKey(sample.ref || {})) || !isString(sample.field) || !isString(sample.excerpt))
-          bad('display.math_diagnostics samples must name a projected record field and literal excerpt');
-    }
-  }
   done();
 
   return {
@@ -579,7 +547,6 @@ export function validateInput(input) {
     layout,
     summary,
     fragments,
-    mathDiagnostics,
   };
 }
 
@@ -830,6 +797,7 @@ class Renderer {
   constructor(model, graph) {
     this.model = model;
     this.graph = graph;
+    this.content = createReaderContent(model);
     this.detailIndex = new Map([...model.details.keys()].map((key, i) => [key, i + 1]));
     this.locationsByPinned = new Map();
     this.locationsByLoose = new Map();
@@ -862,11 +830,7 @@ class Renderer {
 
   // Link to the first location of a record (pinned or loose), else plain text.
   recordLink(ref, pinned) {
-    const key = pinned ? refKey(ref) : looseKey(ref);
-    const location = pinned ? this.locationsByPinned.get(key) : this.locationsByLoose.get(key);
-    const text = `<code class="proof-ref-text">${esc(key)}</code>`;
-    if (!location) return `<span class="proof-ref">${text}</span>`;
-    return this.jump(location.detail_key, text, { section: location.section_key, record: refKey(location.ref), className: 'proof-ref' });
+    return this.humanLink(ref);
   }
 
   idLink(id, collection) {
@@ -879,23 +843,23 @@ class Renderer {
     if (!ref || depth > 2) return 'Recorded evidence';
     if (isString(ref)) ref = {collection:'items',id:ref};
     const record = Number.isInteger(ref.version) ? this.readerRecord(ref) : this.model.recordsByLoose.get(looseKey(ref));
+    if (!record) return this.content.title(ref);
     const body = record?.body || {};
     if (body.label) return body.label;
     if (ref.collection === 'groups') return `${humanize(body.kind || 'recorded')} inference${isObject(body.conclusion) ? ` for ${this.humanLabel(body.conclusion, depth + 1)}` : ''}`;
     if (ref.collection === 'uses') return `${this.humanLabel(body.from, depth + 1)} applied to ${this.humanLabel(body.to, depth + 1)}`;
-    if (ref.collection === 'checks') return `${humanize(body.kind || 'proof')} examination${body.target ? ` of ${this.humanLabel(body.target, depth + 1)}` : ''}`;
-    return humanize(ref.collection || 'recorded evidence').replace(/s$/, '');
+    return this.content.title(record || ref);
   }
 
   humanLabelHtml(ref, depth = 0) {
     if (!ref || depth > 2) return 'Recorded evidence';
     if (isString(ref)) ref = {collection:'items',id:ref};
     const record = Number.isInteger(ref.version) ? this.readerRecord(ref) : this.model.recordsByLoose.get(looseKey(ref));
+    if (!record) return esc(this.content.title(ref));
     const body = record?.body || {}, fragment = record && this.model.fragments.get(refKey(record.ref))?.label_html;
     if (body.label) return fragment === undefined ? esc(body.label) : prepareLabelFragment(fragment);
     if (ref.collection === 'groups') return `${esc(humanize(body.kind || 'recorded'))} inference${isObject(body.conclusion) ? ` for ${this.humanLabelHtml(body.conclusion, depth + 1)}` : ''}`;
     if (ref.collection === 'uses') return `${this.humanLabelHtml(body.from, depth + 1)} applied to ${this.humanLabelHtml(body.to, depth + 1)}`;
-    if (ref.collection === 'checks') return `${esc(humanize(body.kind || 'proof'))} examination${body.target ? ` of ${this.humanLabelHtml(body.target, depth + 1)}` : ''}`;
     return esc(this.humanLabel(ref, depth));
   }
 
@@ -904,7 +868,7 @@ class Renderer {
     if (isString(ref)) ref = {collection:'items',id:ref};
     const record = Number.isInteger(ref.version) ? this.readerRecord(ref) : this.model.recordsByLoose.get(looseKey(ref));
     const text = label === undefined ? this.humanLabelHtml(ref) : esc(label);
-    const location = record ? this.locationsByPinned.get(refKey(record.ref)) : this.locationsByLoose.get(looseKey(ref));
+    const location = record ? this.locationsByPinned.get(refKey(record.ref)) : Number.isInteger(ref.version) ? null : this.locationsByLoose.get(looseKey(ref));
     return location ? this.jump(location.detail_key, text, {section:location.section_key, record:refKey(location.ref)}) : text;
   }
 
@@ -919,7 +883,7 @@ class Renderer {
       if (entry === null || entry === undefined || entry === '') return '';
       if (Array.isArray(entry)) return entry.map((part, index) => render(part, `${path}.${index}`, Array.isArray(rendered) ? rendered[index] : undefined)).join('');
       if (isObject(entry)) {
-        if (Object.hasOwn(entry, 'text') && ['statement', 'needed_form'].includes(field)) return render(entry.text, `${path}.text`, rendered);
+        if (Object.hasOwn(entry, 'text') && ['statement', 'needed_form'].includes(field)) return (entry.form === 'synopsis' ? '<p class="proof-reader-label">Saved synopsis</p>' : '') + render(entry.text, `${path}.text`, rendered);
         return `<dl class="proof-reader-values">${Object.entries(entry).map(([name, part]) => `<dt>${esc(humanize(name))}</dt><dd>${render(part, `${path}.${name}`)}</dd>`).join('')}</dl>`;
       }
       const tag = ['label', 'origin', 'lifecycle', 'kind', 'category', 'state'].includes(field) ? 'span' : 'div';
@@ -948,35 +912,8 @@ ${contexts.length ? `<p>${contexts.map(([field, label]) => explanation[field + '
 
   readerSources(ref, role) {
     const body = this.readerRecord(ref)?.body || {};
-    const refs = [...(body.evidence_refs || []).map(entry => isString(entry) ? {collection:'anchors', id:entry} : entry),
-      ...(body.passages || []).filter(p => isString(p) || !role || p.role === role || p.role === 'evidence')
-        .map(p => ({collection:'anchors', id:isString(p) ? p : p.anchor_id})), ...(body.anchor_refs || [])];
-    const unique = [...new Map(refs.filter(r => r?.id).map(r => [Number.isInteger(r.version) ? refKey(r) : looseKey(r), r])).values()];
-    return unique.length ? `<p class="proof-reader-sources">${unique.map(anchor => this.humanLink(anchor,
-      `${role === 'proof' ? 'Proof source' : 'Source'}: ${this.sourceLocationLabel(anchor)}`)).join(' · ')}</p>` : '';
-  }
-
-  sourceLocationLabel(ref) {
-    const anchor = Number.isInteger(ref.version) ? this.readerRecord(ref) : this.model.recordsByLoose.get(looseKey(ref));
-    const body = anchor?.body || {}, locator = body.locator || {};
-    const source = this.readerRecord({collection:'sources', id:body.source_id, version:body.source_version});
-    const parts = [source?.body.path || (body.source_id ? `Captured source ${body.source_id}` : 'Source location unavailable')];
-    if (Number.isInteger(locator.page)) parts.push(`physical page ${locator.page}`);
-    if (Number.isInteger(locator.start_line)) parts.push(locator.end_line && locator.end_line !== locator.start_line
-      ? `lines ${locator.start_line} to ${locator.end_line}` : `line ${locator.start_line}`);
-    if (locator.label) parts.push(locator.label);
-    if (Number.isInteger(body.source_version)) parts.push(`captured v${body.source_version}`);
-    return parts.join(', ');
-  }
-
-  mathDisplayNotes() {
-    const notes = this.model.mathDiagnostics;
-    if (!notes?.count) return '';
-    return `<details id="proof-math-notes" class="proof-build-disclosure"><summary>Math display notes (${notes.count} occurrences in saved fields)</summary>
-<p>Display only: the original text is retained. These notes do not change audit completion or request additional audit work.</p>
-<ul>${notes.groups.slice(0, 5).map(group => `<li>${esc(group.reason)} (${group.count})<ul>${group.samples.slice(0, 3).map(sample =>
-      `<li>${this.humanLink(sample.ref)}: ${esc(sample.field)} <code>${esc(sample.excerpt)}</code></li>`).join('')}</ul></li>`).join('')}</ul>
-${notes.groups_truncated ? '<p>Additional causes are omitted from this summary; literal formulas remain visible in their record fields.</p>' : ''}</details>`;
+    const ids = [...new Set([...(body.evidence_refs || []).map(entry => isString(entry) ? entry : entry.id), ...(body.passages || []).filter(p => isString(p) || !role || p.role === role || p.role === 'evidence').map(p => isString(p) ? p : p.anchor_id)].filter(Boolean))];
+    return ids.length ? `<p class="proof-reader-sources">${ids.map((id, i) => this.humanLink({collection:'anchors', id}, `${role === 'proof' ? 'Proof source' : 'Source'}${ids.length > 1 ? ` ${i + 1}` : ''}`)).join(' · ')}</p>` : '';
   }
 
   readerNamedLink(key, context, ref) {
@@ -1024,9 +961,9 @@ ${this.readerSources(entry.scope_ref)}
     if (assessment.local_label) parts.push(`<p class="proof-assessment-meta proof-local-outcome">Recorded local work: <strong>${esc(assessment.local_label)}</strong></p>`);
     parts.push(`<p class="proof-assessment-meta">${reviewNote(assessment.independent_review)}</p>`);
     if (!options.compact) {
-      if (assessment.check_refs.length) parts.push(`<p class="proof-assessment-meta">Checks: ${assessment.check_refs.map((ref) => this.recordLink(ref, true)).join(', ')}</p>`);
+      if (assessment.check_refs.length) parts.push(`<p class="proof-assessment-meta">Examinations: ${assessment.check_refs.map((ref) => this.humanLink(ref)).join(', ')}</p>`);
       if (assessment.finding_refs.length) parts.push(`<p class="proof-assessment-meta">Findings: ${assessment.finding_refs.map((id) => this.idLink(id, 'findings')).join(', ')}</p>`);
-      if (assessment.missing_obligation_ids.length) parts.push(`<p class="proof-assessment-meta">Missing obligations: ${assessment.missing_obligation_ids.map((id) => `<code>${esc(id)}</code>`).join(', ')}</p>`);
+      if (assessment.missing_obligation_ids.length) parts.push('<p class="proof-assessment-meta">Current examination is incomplete for this material.</p>');
     }
     parts.push('</div>');
     return parts.join('');
@@ -1036,22 +973,11 @@ ${this.readerSources(entry.scope_ref)}
 
   factualHtml() {
     const factual = this.model.summary.factual;
-    if (!factual) return '<div class="proof-card"><h3>Required examinations</h3><p class="proof-muted">Completion breakdown unavailable for this snapshot.</p></div>';
-    const checks = factual.work.checks, support = factual.statement_support, independent = factual.independent_review;
+    if (!factual) return '<div class="proof-card"><h3>Scientific status</h3><p class="proof-muted">Read each saved assessment for its support conditions and review limits.</p></div>';
+    const support = factual.statement_support, independent = factual.independent_review;
     const fact = (name, value) => `<span data-proof-fact="${name}">${esc(String(value))}</span>`;
-    const groups = factual.work.obligation_groups;
-    const label = value => humanize(value).replace(/^./, first => first.toUpperCase());
-    const columns = [['role', 'Role'], ['kind', 'Examination'], ['required', 'Required'], ['completed', 'Completed'], ['unfinished', 'Unfinished']];
-    const completion = Array.isArray(groups) ? (groups.length ?
-      `<table class="proof-completion-table"><caption class="proof-muted">${fact('obligations.caption', 'Completed examinations do not mean verified statements; other completion requirements still apply.')}</caption>
-<thead><tr>${columns.map(([field, title]) => `<th scope="col">${fact(`obligations.header.${field}`, title)}</th>`).join('')}</tr></thead>
-<tbody>${groups.map((row, index) => `<tr>${columns.map(([field]) => {
-        const value = field === 'role' ? label(row.role) : field === 'kind' ? (row.kind === 'source_fidelity' ? 'Source comparison' : label(row.kind)) : row[field];
-        return `<td>${fact(`obligations.${index}.${field}`, value)}</td>`;
-      }).join('')}</tr>`).join('')}</tbody></table>` : '<p class="proof-muted">No required obligations are registered.</p>') :
-      `<p class="proof-muted">${groups === undefined ? 'Completion breakdown unavailable for this snapshot.' : this.model.projection.audit_id === null ? 'No audit selected; completion breakdown unavailable.' : 'Assessment unavailable; completion breakdown unavailable.'}</p>`;
     const outcomes = ['supported', 'gap', 'refuted', 'inconclusive'].map(outcome =>
-      `${esc(outcome)}: ${factual.work.current_primary_outcomes[outcome]}`).join('; ');
+      factual.work.current_primary_outcomes[outcome] > 0 ? outcome : null).filter(Boolean);
     const unresolved = support.unresolved.map((row, index) => {
       const premise = ['assumption', 'definition'].includes(row.kind) ? ` (declared ${row.kind}; scope-dependent premise)` : '';
       return `<li>${fact(`unresolved.${index}`, `${row.label}: ${row.availability}${premise}`)}</li>`;
@@ -1060,16 +986,9 @@ ${this.readerSources(entry.scope_ref)}
     const external = factual.unresolved_external_sources.map((row, index) => `<li>${fact(`external.${index}`, `${row.label}: ${row.availability}`)}</li>`);
     return `<div class="proof-card" data-proof-factual>
 <h3>Current scientific status</h3>
-<p data-proof-fact="snapshot">These facts describe snapshot ${factual.revision}. Process completion is separate from the mathematical outcomes.</p>
-<h4>Required examinations</h4>
-${completion}
-<h4>Saved check history</h4>
-<dl class="proof-kv"><dt>Current completed checks</dt><dd>${fact('checks.current_complete', checks.current_complete)}</dd>
-<dt>Unfinished drafts</dt><dd>${fact('checks.draft', checks.draft)}</dd><dt>Checks needing review</dt><dd>${fact('checks.needs_review', checks.needs_review)}</dd>
-<dt>Historical completed checks</dt><dd>${fact('checks.historical_complete', checks.historical_complete)}</dd><dt>Superseded checks</dt><dd>${fact('checks.superseded', checks.superseded)}</dd></dl>
-<p data-proof-fact="primary_outcomes">Saved check counts include nonqualifying independent work. Current primary mathematical outcomes: ${outcomes}.</p>
-<p data-proof-fact="statement_support">Statement support at each statement's recorded scope: available ${support.counts.available}; conditional ${support.counts.conditional}; unavailable ${support.counts.unavailable}.</p>
-${unresolved.length ? `<details><summary>Conditional or unavailable statements (${unresolved.length})</summary><ul>${unresolved.join('')}</ul><p>Declared assumptions and definitions can be available as premises in an explicitly authorizing scope. Their status here does not by itself indicate a proof gap; availability must be checked at each use.</p></details>` : ''}
+<p data-proof-fact="primary_outcomes">${outcomes.length ? `Current initial assessment outcomes: ${outcomes.join(', ')}.` : 'No completed current initial mathematical outcome is recorded.'} Completion of the examination does not establish that every statement is supported.</p>
+<p data-proof-fact="statement_support">Read each result and application for its exact support conditions.</p>
+${unresolved.length ? `<details><summary>Conditional or unavailable statements</summary><ul>${unresolved.join('')}</ul><p>Declared assumptions and definitions can be available as premises in an explicitly authorizing scope. Their status here does not by itself indicate a proof gap; availability must be checked at each use.</p></details>` : ''}
 <p data-proof-fact="independent_review">${esc(independent.explanation ?? `Independent review: ${REVIEW_LABELS[independent.state]}.`)}</p>
 ${independent.qualification_limitations.length ? `<ul>${independent.qualification_limitations.map((note, index) => `<li>${fact(`qualification.${index}`, note)}</li>`).join('')}</ul>` : ''}
 ${sourceLimits.length ? `<h4>Recorded source limitations</h4><ul>${sourceLimits.join('')}</ul>` : ''}
@@ -1080,29 +999,31 @@ ${external.length ? `<h4>Unresolved external suppliers</h4><ul>${external.join('
   summaryHtml() {
     const { model } = this;
     const { summary, projection } = model;
-    const tally = (list) => Object.fromEntries(STATES.map((state) => [state, list.filter((entry) => entry.assessment.state === state).length]));
-    const nodeTally = tally(model.nodeList), connectionTally = tally(model.connectionList);
-    const count = (name, value) => `<span class="proof-count" data-proof-count="${name}">${value}</span>`;
-    const stateList = (prefix, tallies) => `<ul class="proof-state-list">${STATES.map((state) => `<li class="s-${state}">${stateBadge(state)} ${count(`${prefix}.${state}`, tallies[state])}</li>`).join('')}</ul>`;
     const progress = summary.progress;
     const findingItems = summary.findings.refs.map((id, index) => {
       const record = model.recordsByLoose.get(`findings:${id}`);
       const body = record ? record.body : null;
-      const meta = body ? [body.category, body.lifecycle].filter(isString).map((value) => `<span class="proof-pill">${esc(value)}</span>`).join(' ') : '<span class="proof-muted">not in projection records</span>';
-      const text = body && isString(body.description) ? `<span class="proof-finding-text">${esc(body.description.length > 160 ? `${body.description.slice(0, 159)}…` : body.description)}</span>` : '';
+      const meta = body ? [body.category, body.lifecycle].filter(isString).map((value) => `<span class="proof-pill">${esc(humanize(value))}</span>`).join(' ') : '<span class="proof-muted">Saved finding unavailable</span>';
+      const text = body ? this.readerField('summary', `finding:${index}`, record.ref, 'description') + this.readerField('summary', `finding:${index}`, record.ref, 'impact_reason') : '';
       return `<li data-proof-finding="${esc(id)}">${this.humanLink({collection:'findings', id}, `Finding ${index + 1}`)} ${meta} ${text}</li>`;
     });
-    const limitItems = summary.source_limits.map((id) => {
+    const limitItems = summary.source_limits.map((id, index) => {
       const record = model.recordsByLoose.get(`source_issues:${id}`);
       const body = record ? record.body : null;
-      const meta = body ? [body.category, body.lifecycle].filter(isString).map((value) => `<span class="proof-pill">${esc(value)}</span>`).join(' ') : '';
-      const text = body && isString(body.description) ? `<span class="proof-finding-text">${esc(body.description.length > 160 ? `${body.description.slice(0, 159)}…` : body.description)}</span>` : '';
+      const meta = body ? [body.category, body.lifecycle].filter(isString).map((value) => `<span class="proof-pill">${esc(humanize(value))}</span>`).join(' ') : '';
+      const text = body ? this.readerField('summary', `source_limit:${index}`, record.ref, 'description') : '';
       return `<li data-proof-source-limit="${esc(id)}">${this.humanLink({collection:'source_issues', id}, 'Source limitation')} ${meta} ${text}</li>`;
     });
     const scope = summary.scope;
     const exclusionItems = summary.factual ? summary.factual.scope.exclusions.map((entry, index) =>
       `<li data-proof-fact="exclusion.${index}"><strong>${esc(entry.label)}</strong>: ${esc(entry.reason)} Consequence: ${esc(entry.consequence)}</li>`) :
-      scope.exclusions.map((entry) => `<li>${isObject(entry) && isString(entry.collection) && isString(entry.id) ? this.recordLink(entry, false) : `<span class="proof-text">${esc(isString(entry) ? entry : JSON.stringify(entry))}</span>`}</li>`);
+      scope.exclusions.map(entry => {
+        if (isString(entry)) return `<li class="proof-text">${esc(entry)}</li>`;
+        if (isObject(entry) && isString(entry.collection) && isString(entry.id)) return `<li>${this.humanLink(entry)}</li>`;
+        const context = [entry?.target ? this.humanLink(entry.target) : '', ...(entry?.source_anchor_ids || []).map(id => this.humanLink({collection:'anchors',id}))].filter(Boolean).join('; ');
+        const prose = ['label','description','reason','consequence'].filter(field => isString(entry?.[field]) && entry[field]).map(field => `${field === 'consequence' ? 'Consequence: ' : ''}${esc(entry[field])}`).join(' ');
+        return `<li>${context}${context && prose ? ': ' : ''}${prose || (!context ? 'This saved exclusion has no compatible description in this view.' : '')}</li>`;
+      });
     const overviewScope = summary.overview_scope;
     const overviewBoundaries = overviewScope ? `<div data-proof-overview-scope>
 <h4>Original overview boundaries</h4>
@@ -1113,31 +1034,12 @@ ${overviewScope.exclusions.length ? `<h4>Original overview exclusions</h4><ul cl
 <h2 id="proof-summary-heading">Audit summary</h2>
 <div class="proof-summary-grid">
 <div class="proof-card">
-<h3>Process</h3>
-<p class="proof-process ${progress.process_complete ? 'is-complete' : 'is-incomplete'}" data-proof-process-complete="${progress.process_complete ? 'true' : 'false'}">${progress.process_complete ? (model.build.finalization?.representation_settled === false ? 'Canonical examination accounting complete; source representation unresolved' : 'Audit process complete') : 'Audit process incomplete'}</p>
-<dl class="proof-kv">
-<dt>Required obligations</dt><dd>${count('progress.required_obligations', progress.required_obligations)}</dd>
-<dt>Completed current obligations</dt><dd>${count('progress.completed_current_obligations', progress.completed_current_obligations)}</dd>
-<dt>Draft checks</dt><dd>${count('progress.draft_checks', progress.draft_checks)}</dd>
-<dt>Major results</dt><dd>${count('progress.major_results', progress.major_results)}</dd>
-<dt>Source-unbound items</dt><dd>${count('progress.source_unbound_items', progress.source_unbound_items)}</dd>
-</dl>
-${summary.limitations?.length ? `<details><summary>Technical completion diagnostics (${summary.limitations.length})</summary><ul>${summary.limitations.map((note) => `<li data-proof-limitation>${esc(note)}</li>`).join('')}</ul></details>` : ''}
+<h3>Examination status</h3>
+<p class="proof-process ${progress.process_complete ? 'is-complete' : 'is-incomplete'}" data-proof-process-complete="${progress.process_complete ? 'true' : 'false'}">${progress.process_complete ? 'Registered examinations complete.' : 'Registered examinations incomplete.'} Mathematical support is stated separately.${model.build.kind === 'working' ? ' This working report does not establish completion of the promised audit scope.' : ''}</p>
 </div>
 ${this.factualHtml()}
 <div class="proof-card">
-<h3>Nodes by state</h3>
-${stateList('nodes', nodeTally)}
-<h3>Connections by state</h3>
-${stateList('connections', connectionTally)}
-</div>
-<div class="proof-card">
 <h3>Findings</h3>
-<dl class="proof-kv proof-kv-inline">
-<dt>Open</dt><dd>${count('findings.open', summary.findings.open)}</dd>
-<dt>Resolved</dt><dd>${count('findings.resolved', summary.findings.resolved)}</dd>
-<dt>Superseded</dt><dd>${count('findings.superseded', summary.findings.superseded)}</dd>
-</dl>
 ${findingItems.length ? `<ul class="proof-finding-list">${findingItems.join('')}</ul>` : '<p class="proof-muted">No findings listed.</p>'}
 <h3>Source limits</h3>
 ${limitItems.length ? `<ul class="proof-finding-list">${limitItems.join('')}</ul>` : '<p class="proof-muted">No open source issue records listed.</p>'}
@@ -1149,9 +1051,6 @@ ${summary.factual?.scope.explanation ? `<p data-proof-fact="scope_explanation">$
 <dt>Mode</dt><dd data-proof-scope-mode>${esc(scope.mode)}</dd>
 <dt>Audit targets</dt><dd data-proof-scope-targets>${scope.target_refs.length ? scope.target_refs.map((ref) => `<span data-proof-scope-target="${esc(looseKey(ref))}">${this.humanLink(ref, this.humanLabel(ref))}</span>`).join(', ') : `<span class="proof-muted">${projection.audit_id === null ? 'Recorded items; no audit selected' : 'No explicit audit targets recorded'}</span>`}</dd>
 <dt>Audit exclusions</dt><dd data-proof-scope-exclusions>${exclusionItems.length ? `<ul class="proof-plain-list">${exclusionItems.join('')}</ul>` : '<span class="proof-muted">none recorded</span>'}</dd>
-<dt>Snapshot revision</dt><dd>${projection.snapshot_revision}</dd>
-<dt>Published revision</dt><dd>${summary.published_revision === null ? '<span class="proof-muted">not published</span>' : summary.published_revision}</dd>
-<dt>Audit</dt><dd>${projection.audit_id === null ? '<span class="proof-muted">none</span>' : `<code>${esc(projection.audit_id)}</code>`}</dd>
 </dl>
 ${overviewBoundaries}
 </div>
@@ -1317,7 +1216,7 @@ ${node.assessment.explanation ? `<p class="proof-index-text">${esc(node.assessme
       return `<article data-proof-index-connection="${esc(connection.id)}" data-edge-from="${esc(connection.from)}" data-edge-to="${esc(connection.to)}" data-edge-state="${esc(state)}" class="proof-index-card s-${esc(state)}">
 <header class="proof-index-head"><h4>${this.jump(connection.detail_key, `${esc(this.nodeLabel(connection.from))} <span aria-hidden="true">→</span><span class="proof-visually-hidden"> to </span> ${esc(this.nodeLabel(connection.to))}`)}</h4> ${stateBadge(state, `${STATE_LABELS[state]}: ${connection.assessment.label}`)}</header>
 ${connection.assessment.explanation ? `<p class="proof-index-text">${esc(connection.assessment.explanation)}</p>` : ''}
-<p class="proof-index-meta"><code>${esc(connection.id)}</code> ${labels.length ? `<span class="proof-muted">${esc(labels.join(', '))}</span>` : ''} ${reviewNote(connection.assessment.independent_review)}</p>
+<p class="proof-index-meta">${labels.length ? `<span class="proof-muted">${esc(labels.join(', '))}</span>` : ''} ${reviewNote(connection.assessment.independent_review)}</p>
 </article>`;
     });
     return `<section id="proof-major-index" class="proof-panel" aria-labelledby="proof-index-heading">
@@ -1337,7 +1236,7 @@ ${connection.assessment.explanation ? `<p class="proof-index-text">${esc(connect
     return `<section id="proof-details" class="proof-panel" aria-labelledby="proof-details-heading">
 <div class="proof-panel-head"><h2 id="proof-details-heading">Details</h2><label class="proof-check"><input id="proof-show-all" type="checkbox"> Show all details</label></div>
 <p id="proof-detail-empty" class="proof-muted">Select an item or connection above, or use the search, to open its detail here.</p>
-<noscript><p class="proof-reader-notice">The saved overview text is readable below. Full technical records are stored as templates and require JavaScript to open; use the saved database or enable scripting to inspect that evidence.</p></noscript>
+<noscript><p class="proof-reader-notice">The saved overview text is readable below. Enable JavaScript to open the supporting source passages and assessment details.</p></noscript>
 ${articles.join('\n')}
 <div id="proof-record-templates" hidden>${[...this.model.records.values()].map((record) => `<template data-record-template="${esc(refKey(record.ref))}">${this.recordHtml(record).replace('data-record-ref=', 'data-record-body=')}</template>`).join('\n')}</div>
 </section>`;
@@ -1347,7 +1246,6 @@ ${articles.join('\n')}
     const owners = this.owners.get(key) || [];
     const header = owners.length ? owners.map((owner) => (owner.type === 'node' ? this.nodeHeader(owner.node, detail.reader) : this.connectionHeader(owner.connection))).join('\n') : `<div class="proof-detail-owner"><h3 class="proof-detail-heading" tabindex="-1">${key.startsWith('audit:') ? 'Whole-audit examinations' : 'Audit evidence'}</h3></div>`;
     const sections = detail.sections.map((section) => this.sectionHtml(key, section)).join('\n');
-    const recordLinks = detail.record_refs.length ? `<details class="proof-disclosure proof-technical"><summary>Technical record index (${detail.record_refs.length})</summary><p class="proof-detail-key">${esc(key)}</p><p class="proof-detail-records">${detail.record_refs.map((ref) => this.recordLink(ref, true)).join(', ')}</p></details>` : '';
     const outgoing = owners.filter(o => o.type === 'node').flatMap(o => this.model.connectionList.filter(c => c.from === o.node.id));
     return `<article class="proof-detail" data-proof-detail="${esc(key)}" id="${esc(this.detailId(key))}">
 <div class="proof-detail-top"><button type="button" class="proof-back">Back to ${this.graph ? 'graph' : 'index'}</button></div>
@@ -1358,7 +1256,6 @@ ${sections}
 <p>${this.jump(key, 'Return to result overview')}</p>
 </details>
 ${outgoing.length ? `<details class="proof-disclosure"><summary>Used by (${outgoing.length})</summary><ul class="proof-plain-list">${outgoing.map(c => this.connectionLine(c)).join('')}</ul></details>` : ''}
-${recordLinks}
 </article>`;
   }
 
@@ -1371,7 +1268,7 @@ ${recordLinks}
     return `<div class="proof-detail-owner proof-owner-node k-${esc(node.kind)}">
 <p class="proof-owner-kicker">${kindBadge(node.kind)}${this.graph ? ` <button type="button" class="proof-focus-node" data-focus-node="${esc(node.id)}">Show in graph</button>` : ''}</p>
 <h3 class="proof-detail-heading" tabindex="-1">${this.humanLabelHtml(node.item_ref)}</h3>
-${reader ? this.readerHtml(node, reader) : `<div data-reader-overview="${esc(node.detail_key)}"><p class="proof-reader-notice">Structured statement and dependency context is unavailable in this older projection. Regenerate it from the saved database to obtain the reader overview.</p>${this.assessmentBlock(node.assessment, {compact:true})}<h4>Saved statement or synopsis</h4>${this.readerField(node.detail_key, 'legacy', node.item_ref, 'statement')}<p class="proof-muted">This saved text is not asserted to be the exact audited target. Full evidence remains available below.</p></div>`}
+${reader ? this.readerHtml(node, reader) : `<div data-reader-overview="${esc(node.detail_key)}"><p class="proof-reader-notice">This report supplies the saved statement and evidence without a separate contextual overview.</p>${this.assessmentBlock(node.assessment, {compact:true})}<h4>Saved statement or synopsis</h4>${this.readerField(node.detail_key, 'legacy', node.item_ref, 'statement')}<p class="proof-muted">This saved text is not asserted to be the exact examined target. Supporting evidence remains available below.</p></div>`}
 </div>`;
   }
 
@@ -1387,20 +1284,20 @@ ${reader ? this.readerHtml(node, reader) : `<div data-reader-overview="${esc(nod
 <h4>${index ? 'Audited part or target: ' : ''}${this.readerField(key, context, target.target_ref, 'label')}</h4>
 <p class="proof-reader-label">${target.exact_state === 'registered' ? 'Exact audited statement' : 'Saved statement or synopsis'}</p>
 ${this.readerField(key, context, target.statement_ref, target.statement_field)}
+${selected === undefined || selected === null ? '<p class="proof-reader-notice">The pinned statement examined by this assessment is unavailable in this report.</p>' : ''}
 ${target.exact_state !== 'registered' ? `<p class="proof-reader-notice">A registered exact target is unavailable${target.exact_state === 'draft' ? '; the target specification is still a draft' : ''}.</p>` : ''}
 ${this.readerSources(target.spec_ref, 'statement') || this.readerSources(target.statement_ref, 'statement')}
 ${different ? `<details class="proof-reader-context"><summary>Current saved synopsis</summary>${this.readerField(key, `${context}:synopsis`, target.target_ref, 'statement')}</details>` : ''}
 </section>`;
     }).join('');
     const strategy = this.readerRecord(reader.strategy_ref)?.body?.proof_idea;
-    const proofKind = !['assumption', 'definition'].includes(node.kind);
-    const strategyHtml = strategy || proofKind ? `<section class="proof-reader-strategy"><h4>Main proof strategy</h4>${strategy ? `${this.readerField(key, 'strategy', reader.strategy_ref, 'proof_idea')}${this.readerSources(reader.strategy_ref, 'proof')}<p class="proof-muted">Recorded explanation; it supplies no additional proof support.</p>` : '<p class="proof-muted">Proof-strategy summary not recorded.</p>'}</section>` : '';
+    const strategyHtml = strategy ? `<section class="proof-reader-strategy"><h4>Main proof strategy</h4>${this.readerField(key, 'strategy', reader.strategy_ref, 'proof_idea')}${this.readerSources(reader.strategy_ref, 'proof')}<p class="proof-muted">Saved explanation; it supplies no additional proof support.</p></section>` : '';
     const findings = reader.finding_refs.map((ref, index) => {
       const body = this.readerRecord(ref)?.body || {};
       return `<div class="proof-reader-issue"><p class="proof-reader-label">${this.readerField(key, `finding:${index}`, ref, 'category')}${body.target ? ` · Affected material: ${this.humanLink(body.target)}` : ''}</p>${this.readerField(key, `finding:${index}`, ref, 'description')}${this.readerField(key, `finding:${index}`, ref, 'impact_reason')}<p>${this.humanLink(ref, 'Finding and supporting evidence')}</p></div>`;
     }).join('');
     const sourceLimits = reader.source_limit_refs.map((ref, index) => `<div class="proof-reader-issue"><p class="proof-reader-label">Source limitation${this.readerRecord(ref)?.body?.category ? ` · ${this.readerField(key, `source_limit:${index}`, ref, 'category')}` : ''}</p>${this.readerField(key, `source_limit:${index}`, ref, ref.collection === 'sources' ? 'limitation' : 'description')}<p>${this.humanLink(ref, 'Source limitation evidence')}</p></div>`).join('');
-    const setup = reader.targets.map((target, index) => `<section class="proof-reader-setup"><h5>${this.humanLink(target.target_ref)}: ${target.exact_state === 'registered' ? 'applicable assumptions and setup' : 'recorded setup'}</h5>${target.scope_chain.length ? this.readerScopes(key, `target:${index}`, target.scope_chain, {deduplicate:true,seed:true}) : `<p class="proof-muted">${target.exact_state === 'registered' ? 'This specification has no named scope; no inherited assumptions or conditions are supplied here.' : 'No setup was recorded for this target.'}</p>`}</section>`).join('');
+    const setup = reader.targets.map((target, index) => target.scope_chain.length ? `<section class="proof-reader-setup"><h5>${this.humanLink(target.target_ref)}: applicable assumptions and setup</h5>${this.readerScopes(key, `target:${index}`, target.scope_chain, {deduplicate:true,seed:true})}</section>` : '').join('');
     const applications = reader.applications.map((app, index) => ({app, index}));
     const associated = new Set();
     const routes = reader.arguments.map((argument, index) => {
@@ -1415,7 +1312,7 @@ ${different ? `<details class="proof-reader-context"><summary>Current saved syno
     return `<div class="proof-reader-overview" data-reader-overview="${esc(key)}">
 ${targets}
 <section class="proof-reader-audit"><h4>Audit assessment</h4>${primaryTarget >= 0 ? this.readerAssessment(key, `target:${primaryTarget}`, node.assessment) + this.readerSupport(key, `target:${primaryTarget}`, reader.targets[primaryTarget].support_explanation) : this.assessmentBlock(node.assessment, {compact:true})}
-${node.assessment.label === 'stale' && node.assessment.explanation === 'stale' ? '<p class="proof-muted proof-stale-hint">This status summary does not identify which change made the work stale. Inspect the checks and source/version details in the audit evidence.</p>' : ''}
+${node.assessment.label === 'stale' && node.assessment.explanation === 'stale' ? '<p class="proof-muted proof-stale-hint">This status summary does not identify which change made the examination stale. The earlier opinion does not establish a completed current examination.</p>' : ''}
 ${reader.targets.map((target, index) => index === primaryTarget ? '' : `<div class="proof-reader-target-assessment"><p class="proof-reader-label">${this.humanLink(target.target_ref)}: target assessment</p>${this.readerAssessment(key, `target:${index}`, target.assessment)}${this.readerSupport(key, `target:${index}`, target.support_explanation)}</div>`).join('')}
 ${findings || sourceLimits ? `<h5>Material issues and limitations</h5>${findings}${sourceLimits}` : ''}</section>
 ${strategyHtml}
@@ -1435,7 +1332,7 @@ ${!reader.arguments.length && !applications.length ? '<p class="proof-muted">No 
   readerArgument(key, reader, argument, index, rows, body) {
     const context = `argument:${index}`;
     const relation = {target:'Argument for an opening target', linked_intermediate:'Intermediate argument connected to an opening target', subsidiary:'Owned subsidiary material; no recorded inference chain connects it to an opening target', unassociated:'Argument association unavailable'}[argument.relation];
-    const title = `${this.readerField(key, context, argument.argument_ref, 'label')} <span class="proof-muted">(${this.readerField(key, context, argument.argument_ref, 'origin')}; ${this.readerField(key, context, argument.argument_ref, 'lifecycle')})</span>`;
+    const title = `${this.readerField(key, context, argument.argument_ref, 'label')} <span class="proof-muted">(${this.readerField(key, context, argument.argument_ref, 'origin')})</span>`;
     const contents = `<p class="proof-muted">${esc(relation)} · Target: ${this.humanLink(argument.target_ref)}${argument.relation === 'linked_intermediate' && argument.reaches_target_refs.length ? `. Recorded route reaches: ${argument.reaches_target_refs.map(ref => this.humanLink(ref)).join(', ')}` : ''}</p>
 ${this.readerScopes(key, context, argument.scope_chain, {deduplicate:true,seed:body.lifecycle !== 'retired' && ['target','linked_intermediate'].includes(argument.relation)})}
 ${rows.filter(({app}) => app.from_ref.collection !== 'items' || this.readerRecord(app.from_ref)?.body?.owner_id !== reader.item_ref.id).map(({app,index:ai}) => this.readerApplication(key, app, ai)).join('')}
@@ -1458,7 +1355,7 @@ ${rows.filter(({app}) => app.from_ref.collection === 'items' && this.readerRecor
 ${!app.application_ref ? '<p class="proof-muted">Recorded summary connection; this is not an additional checked implication.</p>' : ''}
 ${this.readerField(key, context, app.use_ref, 'reason')}
 ${['regime','uncertainty'].map(field => this.readerRecord(app.use_ref)?.body?.[field] ? `<p class="proof-reader-label">${field === 'regime' ? 'Restriction' : 'Uncertainty'}</p>${this.readerField(key, context, app.use_ref, field)}` : '').join('')}
-${app.application_ref ? `<p class="proof-reader-label">${app.application_ref.collection === 'uses' ? 'Recorded application' : `Application record: ${this.readerField(key, context, app.application_ref, 'state')}`}</p>${this.readerRecord(app.application_ref)?.body?.needed_form ? `<details class="proof-reader-context"><summary>Exact required form</summary>${this.readerField(key, context, app.application_ref, 'needed_form')}</details>` : ''}` : ''}
+${app.application_ref ? `${this.readerRecord(app.application_ref)?.body?.needed_form ? `<details class="proof-reader-context"><summary>Exact required form</summary>${this.readerField(key, context, app.application_ref, 'needed_form')}</details>` : ''}` : ''}
 ${this.readerScopes(key, context, app.scope_chain, {deduplicate:true})}
 ${this.readerAssessment(key, context, app.assessment)}
 ${this.readerSupport(key, context, app.support_explanation)}
@@ -1483,7 +1380,7 @@ ${app.summary_use_refs.length ? `<p>Refines ${app.summary_use_refs.map(ref => th
 <p class="proof-reader-label">Recipient: ${to ? this.readerNamedLink(key, `${context}:to`, to.ref) : esc(this.nodeLabel(connection.to))} · ${this.humanLink(record?.ref || {collection:'uses',id}, 'Application evidence')}</p>
 ${!application ? '<p class="proof-muted">Recorded summary connection; no exact application is registered here.</p>' : ''}
 ${record ? ['reason','regime','uncertainty'].filter(field => body[field]).map(field => `<p class="proof-reader-label">${field === 'reason' ? 'Recorded contribution' : field === 'regime' ? 'Restriction' : 'Uncertainty'}</p>${this.readerField(key, context, record.ref, field)}`).join('') : '<p class="proof-muted">Contribution text is unavailable in this projection.</p>'}
-${application ? `<p class="proof-reader-label">${application.ref.collection === 'uses' ? 'Recorded application' : `Application record: ${this.readerField(key, context, application.ref, 'state')}`}</p>${application.body.needed_form ? `<p class="proof-reader-label">Required form</p>${this.readerField(key, context, application.ref, 'needed_form')}` : ''}` : ''}
+${application ? `${application.body.needed_form ? `<p class="proof-reader-label">Required form</p>${this.readerField(key, context, application.ref, 'needed_form')}` : ''}` : ''}
 ${app ? this.assessmentBlock(app.assessment, {compact:true}) : ''}
 ${app ? this.readerSupport(key, context, app.support_explanation) : ''}
 ${app?.scope_id ? `<p>Applicable context: ${this.humanLink({collection:'scopes',id:app.scope_id}, 'Scope, assumptions and restrictions')}</p>` : ''}
@@ -1500,11 +1397,11 @@ ${groups ? `<details class="proof-reader-context"><summary>Inference contexts</s
   }
 
   sectionHtml(detailKey, section) {
-    const records = section.record_refs.map((ref) => `<div class="proof-record-slot" data-record-ref="${esc(refKey(ref))}" tabindex="-1"><span class="proof-muted">${esc(ref.collection)}:${esc(ref.id)}</span></div>`);
+    const records = section.record_refs.map((ref) => `<div class="proof-record-slot" data-record-ref="${esc(refKey(ref))}" tabindex="-1"><span class="proof-muted">${esc(this.content.title(ref))}</span></div>`);
     const obligations = section.obligation_ids.map((id) => this.obligationHtml(this.model.obligations.get(id)));
     const empty = !records.length && !obligations.length ? '<p class="proof-muted">Nothing recorded in this section.</p>' : '';
     return `<section class="proof-section proof-section-${esc(section.kind)}" data-proof-section="${esc(section.key)}" data-proof-section-kind="${esc(section.kind)}" tabindex="-1">
-<h4 class="proof-section-title">${esc(section.title)} <span class="proof-section-kind">${esc(section.kind)}</span></h4>
+<h4 class="proof-section-title">${esc({statement:'Paper statements',premises:'Assumptions and context',applications:'Applications',derivations:'Intermediate arguments',composition:'Combined argument',coverage:'Examined source passages',findings:'Findings and proposed repairs',sources:'Source passages',review:'Review assessments',limitations:'Source limitations'}[section.kind] || section.title)}</h4>
 ${section.note ? `<p class="proof-section-note">${esc(section.note)}</p>` : ''}
 ${records.join('\n')}
 ${obligations.join('\n')}
@@ -1515,176 +1412,148 @@ ${empty}
   obligationHtml(obligation) {
     const state = obligation.assessment.state;
     return `<div class="proof-obligation s-${esc(state)}" data-obligation-id="${esc(obligation.id)}" tabindex="-1">
-<p class="proof-record-head"><span class="proof-pill">Obligation</span> <code>${esc(obligation.id)}</code> <span class="proof-pill">${esc(obligation.kind)}</span> <span class="proof-pill">${esc(obligation.role)}</span> <span class="proof-muted">target</span> ${this.recordLink(obligation.target, false)}</p>
+<p class="proof-record-head"><strong>${obligation.role === 'primary' ? 'Initial assessment' : obligation.role === 'independent' ? 'Independent review requirement' : 'Combined assessment'}: ${this.humanLink(obligation.target)}</strong></p>
 ${this.assessmentBlock(obligation.assessment)}
-${obligation.check_refs.length ? `<p class="proof-assessment-meta">Recorded checks: ${obligation.check_refs.map((ref) => this.recordLink(ref, true)).join(', ')}</p>` : ''}
 </div>`;
+  }
+
+  scientificValue(value, sourceRef, path, fragment, slice) {
+    if (value === null || value === undefined || value === '') return '';
+    if (Array.isArray(value)) return '<ul class="proof-value-list">' + value.map((entry, index) => '<li>' + this.scientificValue(entry, sourceRef, [...path, index], Array.isArray(fragment) ? fragment[index] : undefined) + '</li>').join('') + '</ul>';
+    if (isObject(value)) {
+      if (isString(value.collection) && isString(value.id)) return this.humanLink(value);
+      if (Object.hasOwn(value, 'text') && Object.hasOwn(value, 'form')) return (value.form === 'synopsis' ? '<p class="proof-reader-label">Saved synopsis</p>' : '') + this.scientificValue(value.text, sourceRef, [...path, 'text'], fragment, slice);
+      return '<dl class="proof-reader-values">' + Object.entries(value).map(([name, entry]) => '<dt>' + esc(humanize(name)) + '</dt><dd>' + this.scientificValue(entry, sourceRef, [...path, name]) + '</dd>').join('') + '</dl>';
+    }
+    const attrs = ' data-scientific-ref="' + esc(refKey(sourceRef)) + '" data-scientific-path="' + esc(JSON.stringify(path)) + '"' + (slice ? ' data-scientific-start="' + slice.start + '" data-scientific-end="' + slice.end + '"' : '');
+    const tag = fragment === undefined ? 'span' : 'div';
+    const html = fragment === undefined ? esc(String(value)) : path[0] === 'label' ? prepareLabelFragment(fragment) : prepareFragment(fragment);
+    return '<' + tag + ' class="proof-text' + (fragment === undefined ? '' : ' proof-fragment') + '"' + attrs + '>' + html + '</' + tag + '>';
   }
 
   recordHtml(record) {
-    const key = refKey(record.ref);
-    const fragments = this.model.fragments.get(key) || {};
-    const body = record.body;
-    const collection = record.ref.collection;
-    const used = new Set();
-    const headline = this.recordHeadline(collection, body, used, fragments);
-    const rows = [];
-    for (const [field, value] of Object.entries(body)) {
-      if (used.has(field)) continue;
-      rows.push(this.fieldHtml(collection, field, value, fragments));
-    }
-    for (const [fragmentKey, fragment] of Object.entries(fragments)) {
-      const field = Object.keys(FRAGMENT_FIELDS).find((name) => FRAGMENT_FIELDS[name] === fragmentKey);
-      if (field && !Object.hasOwn(body, field)) rows.push(this.fragmentRow(field, fragment));
-    }
-    return `<div class="proof-record proof-record-${esc(collection)}" data-record-ref="${esc(key)}" tabindex="-1">
-<p class="proof-record-head"><span class="proof-pill">${esc(collection)}</span> <code>${esc(record.ref.id)}</code> <span class="proof-muted">v${record.ref.version}</span></p>
-${headline}
-<dl class="proof-record-fields">${rows.join('')}</dl>
-</div>`;
+    const selected = this.content.record(record);
+    const rows = selected.fields.map(field => {
+      const sourceRef = field.sourceRef || record.ref;
+      const fragments = this.model.fragments.get(refKey(sourceRef)) || {};
+      const fragment = field.slice ? undefined : fragments[FRAGMENT_FIELDS[field.path[0]]];
+      return '<dt>' + esc(field.label) + '</dt><dd>' + this.scientificValue(field.value, sourceRef, field.path, fragment, field.slice) + '</dd>';
+    });
+    return '<div class="proof-record proof-record-' + esc(record.ref.collection) + '" data-record-ref="' + esc(refKey(record.ref)) + '" tabindex="-1"><p class="proof-record-title"><strong>' + esc(selected.title) + '</strong></p>' + (selected.notices.length ? selected.notices.map(note => '<p class="proof-reader-notice">' + esc(note) + '</p>').join('') : '') + (rows.length ? '<dl class="proof-record-fields">' + rows.join('') + '</dl>' : '') + '</div>';
   }
 
-  recordHeadline(collection, body, used, fragments) {
-    const take = (field) => { used.add(field); return body[field]; };
-    const text = (value) => (isString(value) ? esc(value) : '');
-    switch (collection) {
-      case 'items': {
-        const label = take('label'), kind = take('kind');
-        return `<p class="proof-record-title">${isString(kind) && Object.hasOwn(KINDS, kind) ? kindBadge(kind) : text(kind)} <strong>${fragments.label_html === undefined ? text(label) : prepareLabelFragment(fragments.label_html)}</strong></p>`;
-      }
-      case 'uses': {
-        const from = take('from'), to = take('to'), type = take('type');
-        const link = (ref) => (isObject(ref) ? this.recordLink(ref, false) : isString(ref) ? this.idLink(ref, 'items') : this.valueHtml(ref, 1));
-        return `<p class="proof-record-title">${link(from)} <span aria-hidden="true">→</span><span class="proof-visually-hidden"> to </span> ${link(to)} ${isString(type) ? `<span class="proof-pill">${esc(type)}</span>` : ''}</p>`;
-      }
-      case 'checks': {
-        const kind = take('kind'), role = take('role'), state = take('state'), outcome = take('outcome');
-        return `<p class="proof-record-title">${[kind, role, state, outcome].filter(isString).map((value) => `<span class="proof-pill">${esc(value)}</span>`).join(' ')}</p>`;
-      }
-      case 'findings':
-      case 'source_issues': {
-        const category = take('category'), lifecycle = take('lifecycle');
-        return `<p class="proof-record-title">${[category, lifecycle].filter(isString).map((value) => `<span class="proof-pill">${esc(value)}</span>`).join(' ')}</p>`;
-      }
-      case 'arguments': {
-        const label = take('label');
-        return isString(label) ? `<p class="proof-record-title"><strong>${fragments.label_html === undefined ? esc(label) : prepareLabelFragment(fragments.label_html)}</strong></p>` : '';
-      }
-      case 'target_specs':
-        return '<p class="proof-record-title"><strong>Exact audited target</strong></p>';
-      case 'application_details':
-        return '<p class="proof-record-title"><strong>Exact supplier application</strong></p>';
-      case 'connection_refinements':
-        return '<p class="proof-record-title"><strong>Summary to detailed applications</strong></p>';
-      case 'proof_boundaries':
-        return '<p class="proof-record-title"><strong>Reviewed proof boundaries</strong></p>';
-      case 'anchors': {
-        const source = take('source_id'), locator = take('locator');
-        const parts = [];
-        if (isString(source)) parts.push(this.idLink(source, 'sources'));
-        if (isObject(locator)) {
-          if (isString(locator.label)) parts.push(`<span class="proof-pill">${esc(locator.label)}</span>`);
-          if (locator.page !== undefined && locator.page !== null) parts.push(`<span class="proof-muted">page ${esc(String(locator.page))}</span>`);
-          if (locator.start_line !== undefined && locator.start_line !== null) parts.push(`<span class="proof-muted">lines ${esc(String(locator.start_line))}–${esc(String(locator.end_line ?? locator.start_line))}</span>`);
-        }
-        return parts.length ? `<p class="proof-record-title">${parts.join(' ')}</p>` : '';
-      }
-      default:
-        return '';
-    }
+  // Scientific consequences of saved work facts, without scheduling instructions.
+  reviewLimits() {
+    const tasks = this.model.projection.worklist?.tasks || [];
+    const proofKinds = ['derivation', 'application', 'composition', 'case_coverage', 'scope_discharge', 'external_source'];
+    return tasks.filter(task => task.required && task.state !== 'satisfied').map(task => {
+      const role = task.role === 'independent' ? 'Independent assessment' : task.role === 'coordinator' ? 'Combined assessment' : 'Initial assessment';
+      const statement = ['items', 'parts'].includes(task.target.collection);
+      let consequence;
+      if (task.outcome) consequence = task.freshness === 'current'
+        ? role + ': ' + task.outcome + '. Examination remains incomplete for the current material.'
+        : 'Earlier ' + role.toLowerCase() + ': ' + task.outcome + '. It does not establish a completed current examination.';
+      else if (proofKinds.includes(task.kind)) consequence = 'No completed current ' + role.toLowerCase() + ' is recorded for this material.';
+      else if (task.kind === 'source_fidelity' && statement) consequence = 'Source comparison is incomplete for this statement.';
+      else if (task.kind === 'reconciliation') consequence = 'The recorded assessments have not been fully reconciled.';
+      else consequence = 'A review requirement remains unresolved; this record alone does not identify unexamined mathematics.';
+      if (task.dependency_support && task.dependency_support !== 'available') consequence += ' Premise support: ' + task.dependency_support + '.';
+      return {task, consequence};
+    });
   }
 
-  fragmentRow(field, fragment) {
-    const label = humanize(field);
-    if (Array.isArray(fragment)) {
-      return `<dt>${esc(label)}</dt><dd>${fragment.length ? `<ol class="proof-fragment-list">${fragment.map((entry) => `<li class="proof-fragment">${prepareFragment(entry)}</li>`).join('')}</ol>` : '<span class="proof-muted">none</span>'}</dd>`;
-    }
-    return `<dt>${esc(label)}</dt><dd><div class="proof-fragment">${prepareFragment(fragment)}</div></dd>`;
-  }
-
-  fieldHtml(collection, field, value, fragments) {
-    const fragmentKey = FRAGMENT_FIELDS[field];
-    if (fragmentKey && Object.hasOwn(fragments, fragmentKey)) {
-      if (field === 'statement' && isObject(value)) {
-        return `<dt>statement</dt><dd>${isString(value.form) ? `<span class="proof-pill">${esc(value.form)}</span> ` : ''}<div class="proof-fragment">${prepareFragment(fragments[fragmentKey])}</div></dd>`;
+  savedLimitations() {
+    const records = [...this.model.records.values()], refs = [...records.map(record => record.ref), ...this.model.summary.scope.target_refs];
+    return (this.model.summary.limitations || []).map((note, index) => {
+      // These exact strings are generated by assessment.py. Unknown or mixed
+      // notes remain faithful, including any internal-looking mathematical literal.
+      for (const ref of refs) {
+        const key = looseKey(ref), label = this.humanLabel(ref);
+        if (note === 'register establishment for ' + key + ': no exact registered proof route or local group')
+          return {index, note: label + ': no exact establishing argument is registered.'};
+        if (note === 'audit target ' + key + ' is an intermediate result')
+          return {index, note: label + ': the saved examination scope identifies a subsidiary result.'};
+        if (note === 'required target ' + key + ' is not live at revision ' + this.model.projection.snapshot_revision)
+          return {index, note: label + ': the required statement is unavailable in the current saved material.'};
       }
-      return this.fragmentRow(field, fragments[fragmentKey]);
-    }
-    if (collection === 'anchors' && field === 'excerpt' && isString(value)) {
-      return `<dt>excerpt</dt><dd><pre class="proof-excerpt">${esc(value)}</pre></dd>`;
-    }
-    if (field === 'statement' && isObject(value)) {
-      return `<dt>statement</dt><dd>${isString(value.form) ? `<span class="proof-pill">${esc(value.form)}</span> ` : ''}${isString(value.text) ? `<p class="proof-text proof-statement-text">${esc(value.text)}</p>` : this.valueHtml(value, 1)}</dd>`;
-    }
-    return `<dt>${esc(humanize(field))}</dt><dd>${this.valueHtml(value, 1)}</dd>`;
+      for (const record of records.filter(record => record.ref.collection === 'arguments')) {
+        const id = record.ref.id, key = looseKey(record.ref), label = this.humanLabel(record.ref);
+        if (note === 'proof boundary for ' + key + ' remains unresolved' || note === 'proof boundary for ' + id + ': complete current source-boundary review required')
+          return {index, note: label + ': the examined boundary of the written proof remains unresolved.'};
+        if (note === 'located proof passage for ' + key + ' changed')
+          return {index, note: label + ': a located proof passage changed, so its earlier examination is not current.'};
+        if (note === 'written proof for ' + key + ' has no located source passages')
+          return {index, note: label + ': the written proof has no located source passages.'};
+        for (const anchor of records.filter(record => record.ref.collection === 'anchors'))
+          if (note === 'written proof for ' + key + ' has unavailable source passage ' + anchor.ref.id)
+            return {index, note: label + ': the source passage ' + this.humanLabel(anchor.ref) + ' is unavailable.'};
+        const missingSource = 'written proof for ' + key + ' has unavailable source passage ';
+        if (note.startsWith(missingSource) && ID_PATTERN.test(note.slice(missingSource.length)))
+          return {index, note: label + ': a supporting source passage is unavailable.'};
+      }
+      for (const ref of refs) {
+        const prefix = 'proof coverage for ' + looseKey(ref) + ': anchor ', suffix = ' is missing';
+        if (note.startsWith(prefix) && note.endsWith(suffix) && ID_PATTERN.test(note.slice(prefix.length,-suffix.length)))
+          return {index, note:this.humanLabel(ref) + ': a supporting source passage is missing.'};
+      }
+      // Coverage diagnostics have a generated numeric span suffix. Replace the
+      // whole diagnostic with its source-aware consequence, never edit prose.
+      for (const ref of refs) for (const anchor of records.filter(record => record.ref.collection === 'anchors')) {
+        const prefix = 'proof coverage for ' + looseKey(ref) + ', anchor ' + anchor.ref.id + ': uncovered or unchecked spans ';
+        if (note.startsWith(prefix) && /^\[\d+, \d+\)(?:, \[\d+, \d+\))*$/.test(note.slice(prefix.length)))
+          return {index, note: this.humanLabel(ref) + ': ' + this.humanLabel(anchor.ref) + ' contains proof material without a completed current substantive examination.'};
+      }
+      return {index, note};
+    });
   }
 
-  valueHtml(value, depth) {
-    if (value === null || value === undefined) return '<span class="proof-muted">none</span>';
-    if (typeof value === 'boolean' || typeof value === 'number') return `<code>${esc(String(value))}</code>`;
-    if (isString(value)) {
-      if (!value) return '<span class="proof-muted">empty</span>';
-      return value.length > 120 || value.includes('\n') ? `<p class="proof-text">${esc(value)}</p>` : `<span class="proof-text">${esc(value)}</span>`;
-    }
-    if (depth > 6) return `<code>${esc(JSON.stringify(value))}</code>`;
-    if (Array.isArray(value)) {
-      if (!value.length) return '<span class="proof-muted">none</span>';
-      return `<ul class="proof-value-list">${value.map((entry) => `<li>${this.valueHtml(entry, depth + 1)}</li>`).join('')}</ul>`;
-    }
-    if (isString(value.collection) && isString(value.id) && Object.keys(value).every((key) => ['collection', 'id', 'version'].includes(key))) {
-      return Number.isInteger(value.version) ? this.recordLink(value, true) : this.recordLink({ collection: value.collection, id: value.id }, false);
-    }
-    const entries = Object.entries(value);
-    if (!entries.length) return '<span class="proof-muted">empty</span>';
-    return `<dl class="proof-record-fields proof-nested">${entries.map(([key, entry]) => `<dt>${esc(humanize(key))}</dt><dd>${this.valueHtml(entry, depth + 1)}</dd>`).join('')}</dl>`;
+  reviewLimitsHtml() {
+    const limits = this.reviewLimits(), notes = this.savedLimitations();
+    if (!limits.length && !notes.length) return '';
+    return '<details class="proof-reader-context" open data-reader-review-limits><summary>Current examination limits</summary><ul>' + limits.map(({task,consequence}) => {
+      const location = task.location;
+      const link = location ? this.jump(location.detail_key, this.humanLabelHtml(location.ref), {section:location.section_key,record:refKey(location.ref)}) : this.humanLink(task.target);
+      return '<li data-proof-review-limit="' + esc(task.id) + '" data-proof-review-kind="' + esc(task.kind || '') + '" data-proof-review-target="' + esc(looseKey(task.target)) + '"><strong>' + link + '</strong>: ' + esc(consequence) + '</li>';
+    }).join('') + notes.map(({index,note}) => '<li data-proof-limitation data-proof-limitation-index="' + index + '">' + esc(note) + '</li>').join('') + '</ul></details>';
   }
 
-  // ----- page --------------------------------------------------------------
-
-  buildLine() {
-    const { build, projection } = this.model;
-    const parts = [
-      `Revision ${build.revision}`,
-      `core ${build.core_version}`,
-      `${build.kind} build`,
-      `built ${build.built_at}`,
-      build.audit_id ? `audit ${build.audit_id}` : 'no audit',
-      `snapshot revision ${projection.snapshot_revision}`,
-      `source identity ${build.source_identity}`,
-    ];
-    return parts.map((part) => `<span>${esc(part)}</span>`).join('<span class="proof-dot" aria-hidden="true"> · </span>');
+  searchEntries() {
+    const seen = new Set();
+    return this.model.projection.record_locations.flatMap(location => {
+      const key = refKey(location.ref), record = this.model.records.get(key);
+      const identity = JSON.stringify([key,location.detail_key,location.section_key]);
+      if (!record || seen.has(identity)) return [];
+      seen.add(identity);
+      const owners = this.owners.get(location.detail_key) || [];
+      const owner = owners.map(row => row.type === 'node' ? row.node.label : this.nodeLabel(row.connection.from) + ' applied to ' + this.nodeLabel(row.connection.to)).join('; ') || 'Paper evidence';
+      const text = this.content.text(record);
+      if (!text) return [];
+      return [{key, aliases:[key, record.ref.id], label:this.content.title(record), detail:location.detail_key, section:location.section_key, owner, text}];
+    });
   }
 
   readerReportState() {
     const summary = this.model.summary;
-    // Completion diagnostics remain in the summary disclosure. Their raw record
-    // IDs can otherwise fill several screens before a reader reaches the graph.
     const limits = [...(summary.factual?.source_limits || []).map(row => `${row.source_path || row.label}: ${row.description}`), ...(summary.factual?.independent_review?.qualification_limitations || [])];
+    const independent = summary.factual?.independent_review;
     const nodes = this.model.nodeList.length, connections = this.model.connectionList.length;
     const mapState = !nodes ? 'No results have been recorded in this report.' : !connections
       ? `${nodes} results are recorded, but no connections between them are recorded. This does not establish that the results are independent.`
       : `${nodes} results and ${connections} connections are shown in the recorded map.`;
-    const frozen = this.model.build.finalization;
-    const completion = summary.progress.process_complete ? (frozen?.representation_settled === false ? 'Canonical examination accounting is complete; delivery remains unfinished.' : 'Required audit process complete.') : 'Audit process incomplete.';
-    const finalization = frozen ? `<p data-proof-finalization>${this.model.build.kind === 'release' ? 'Finalized release snapshot.' : 'Working report; delivery has not been finalized.'}</p>${!frozen.representation_settled ? '<p data-proof-representation-unsettled>Source representation remains unresolved.</p>' : ''}${frozen.finalization_blockers.length ? `<ul>${frozen.finalization_blockers.map((row, index) => `<li data-proof-finalization-blocker="${index}">${esc(row.message)} ${row.target_ref ? this.humanLink(row.target_ref, 'Affected record') : ''}${row.comparison_ref ? ` ${this.humanLink(row.comparison_ref, 'Source comparison')}` : ''}</li>`).join('')}</ul>` : ''}${frozen.finalization_blocker_count > frozen.finalization_blockers.length ? `<p>Additional finalization blockers are omitted from this display (${frozen.finalization_blocker_count} total).</p>` : ''}` : '';
-    const unavailable = (this.model.build.source_originals || []).filter(row => !row.available);
-    const originals = unavailable.length ? `<p class="proof-muted" data-proof-originals-unavailable>External original source files are unavailable from this report location. Captured source excerpts remain embedded.</p><ul>${unavailable.map(row => `<li>${esc(row.label)}</li>`).join('')}</ul>` : '';
-    return `<section class="proof-report-state" data-reader-report-state><p><strong>${this.model.build.kind === 'release' ? 'Release report' : 'Working report'}</strong> · ${completion} Mathematical support is stated separately for each result and application.</p>${finalization}${originals}<p class="proof-muted">${mapState}</p>${summary.limitations?.length ? '<p class="proof-muted">Unresolved audit requirements are listed in the audit progress below.</p>' : ''}${limits.length ? `<ul>${[...new Set(limits)].map(note => `<li>${esc(note)}</li>`).join('')}</ul>` : ''}</section>`;
+    return `<section class="proof-report-state" data-reader-report-state><p><strong>${this.model.build.kind === 'release' ? 'Release report' : 'Working report'}</strong> · ${summary.progress.process_complete ? 'Registered examinations complete.' : 'Registered examinations incomplete.'} Mathematical support is stated separately for each result and application.${this.model.build.kind === 'working' ? ' This working report does not establish completion of the promised audit scope.' : ''}</p><p class="proof-muted">${mapState}</p>${independent ? `<p data-reader-review-level>${esc(independent.explanation ?? `Independent review: ${REVIEW_LABELS[independent.state]}.`)}</p>` : ''}${limits.length ? `<ul>${[...new Set(limits)].map(note => `<li>${esc(note)}</li>`).join('')}</ul>` : ''}${this.reviewLimitsHtml()}</section>`;
   }
 
   page(fontStyle) {
     const { model } = this;
     const requested = model.summary.scope.target_refs.filter((ref) => ref.collection === 'items').map((ref) => ref.id);
-    const beforeGraph = `<div id="proof-main" class="proof-reader"><p class="proof-kicker">Proof audit${model.build.kind === 'release' ? ' · release' : ' · working copy'}</p>${this.readerReportState()}<details class="proof-build-disclosure"><summary>Audit progress, findings and source version</summary><p class="proof-build">${this.buildLine()}</p>${this.summaryHtml()}</details>${this.mathDisplayNotes()}${this.graph && model.layout.reasons.length ? `<ul class="proof-reasons">${model.layout.reasons.map((reason) => `<li>${esc(reason)}</li>`).join('')}</ul>` : ''}</div>
+    const beforeGraph = `<div id="proof-main" class="proof-reader"><p class="proof-kicker">Proof audit</p>${this.readerReportState()}<details class="proof-build-disclosure"><summary>Scientific findings, scope and review limits</summary>${this.summaryHtml()}</details>${this.graph && model.layout.reasons.length ? `<ul class="proof-reasons">${model.layout.reasons.map((reason) => `<li>${esc(reason)}</li>`).join('')}</ul>` : ''}</div>
 ${mainNavigation(model.nodeList, model.connectionList, requested)}
 <h2 id="proof-graph-heading" class="proof-visually-hidden">Dependency graph</h2><p id="proof-graph-desc" class="proof-visually-hidden">Major results and their recorded uses. Connection colors describe the represented assessments under declared premises.</p>`;
-    const pendingWork = model.projection.worklist?.tasks.filter(task => task.required && task.state !== 'satisfied').length;
     const afterGraph = `<div class="proof-reader">${this.graph ? this.legendHtml() : this.indexHtml()}
-${model.projection.worklist ? `<details id="proof-work-panel" class="proof-panel proof-disclosure" aria-labelledby="proof-work-heading"><summary id="proof-work-heading">Remaining audit work${pendingWork ? ` (${pendingWork} examinations)` : ''}</summary><p>These are examination states, separate from the proof support colors.</p><p id="proof-work-status" role="status"></p><ol id="proof-work-list"></ol><button id="proof-work-more" type="button">Show more</button><ul id="proof-work-actions"></ul></details>` : ''}
 <section id="proof-search-panel" class="proof-panel" aria-labelledby="proof-search-heading">
-<h2 id="proof-search-heading">Search the audit record</h2>
-<div class="proof-search-row"><label for="proof-search">Search every record body in this projection</label><input id="proof-search" type="search" autocomplete="off" spellcheck="false" placeholder="Search records, e.g. lemma or an identifier"></div>
-<p id="proof-search-status" class="proof-muted" role="status" aria-live="polite">Search runs entirely in this page over the embedded projection.</p>
+<h2 id="proof-search-heading">Search the paper and examination</h2>
+<div class="proof-search-row"><label for="proof-search">Search statements, source passages, assumptions and assessments</label><input id="proof-search" type="search" autocomplete="off" spellcheck="false" placeholder="Search a result, condition or explanation"></div>
+<p id="proof-search-status" class="proof-muted" role="status" aria-live="polite">Search runs entirely in this page over the saved scientific content.</p>
 <ol id="proof-search-results" class="proof-search-results" aria-label="Search results"></ol>
 </section>
 ${this.detailsHtml()}
@@ -1694,6 +1563,7 @@ ${this.detailsHtml()}
     const data = `
 <script id="proof-projection" type="application/json">${jsonForScript(model.projection)}</script>
 <script id="proof-render-input" type="application/json">${jsonForScript({ title: model.title, build: model.build })}</script>
+<script id="proof-reader-search" type="application/json">${jsonForScript(this.searchEntries())}</script>
 `;
     // An empty, hidden camera lets the unchanged native shell initialize in index mode.
     // It has no identity-bearing elements and is never presented as a graph.
@@ -1882,10 +1752,54 @@ export function representationReceipt(model, scan) {
   check('section_obligation_ids', obligationsOk && byAttr('data-obligation-id').every((element) => obligationElementsSeen.has(element)), 'obligation elements do not match section obligation_ids, or appear outside sections');
   const templates = byAttr('data-record-template');
   const canonicalRenderer = new Renderer(model, null);
-  check('canonical_record_templates', sameMultiset(templates.map((element) => element.attrs['data-record-template']), [...model.records.keys()])
-    && templates.every((element) => element.tag === 'template' && scan.html.slice(element.openEnd, element.closeStart)
-      === canonicalRenderer.recordHtml(model.records.get(element.attrs['data-record-template'])).replace('data-record-ref=', 'data-record-body=')),
-  'record bodies must have exactly one canonical template with faithful text and mathematics');
+  const scientificLeaves = (value, path, sourceRef, fragment, slice) => {
+    if (value === null || value === undefined || value === '') return [];
+    if (Array.isArray(value)) return value.flatMap((entry, index) => scientificLeaves(entry, [...path,index], sourceRef, Array.isArray(fragment) ? fragment[index] : undefined));
+    if (isObject(value)) {
+      if (isString(value.collection) && isString(value.id)) return [];
+      if (Object.hasOwn(value,'text') && Object.hasOwn(value,'form')) return scientificLeaves(value.text,[...path,'text'],sourceRef,fragment,slice);
+      return Object.entries(value).flatMap(([key, entry]) => scientificLeaves(entry,[...path,key],sourceRef));
+    }
+    return [{value,path,sourceRef,fragment,slice}];
+  };
+  const scientificIdentity = row => JSON.stringify([refKey(row.sourceRef),row.path,row.slice?.start ?? null,row.slice?.end ?? null]);
+  const fieldMatches = (element, field) => {
+    const source = model.records.get(refKey(field.sourceRef));
+    let original = source?.body;
+    for (const key of field.path) original = original?.[key];
+    if (field.slice && isString(original)) original = [...original].slice(field.slice.start,field.slice.end).join('');
+    if (original !== field.value) return false;
+    return field.fragment === undefined ? textOf(scan,element) === String(original)
+      : scan.html.slice(element.openEnd,element.closeStart) === (field.path[0] === 'label' ? prepareLabelFragment(field.fragment) : prepareFragment(field.fragment));
+  };
+  check('scientific_record_templates', sameMultiset(templates.map((element) => element.attrs['data-record-template']), [...model.records.keys()])
+    && templates.every(element => {
+      const record = model.records.get(element.attrs['data-record-template']);
+      if (element.tag !== 'template' || !record) return false;
+      const expected = canonicalRenderer.content.record(record).fields.flatMap(field => {
+        const sourceRef = field.sourceRef || record.ref;
+        const fragment = field.slice ? undefined : (model.fragments.get(refKey(sourceRef)) || {})[FRAGMENT_FIELDS[field.path[0]]];
+        return scientificLeaves(field.value,field.path,sourceRef,fragment,field.slice);
+      });
+      const marked = [...descendants(element)].filter(child => hasAttr(child,'data-scientific-ref'));
+      const identity = child => {
+        try { return JSON.stringify([child.attrs['data-scientific-ref'],JSON.parse(child.attrs['data-scientific-path']),
+          hasAttr(child,'data-scientific-start') ? Number(child.attrs['data-scientific-start']) : null,
+          hasAttr(child,'data-scientific-end') ? Number(child.attrs['data-scientific-end']) : null]); }
+        catch { return null; }
+      };
+      if (!sameMultiset(marked.map(identity),expected.map(scientificIdentity))) {
+        diagnostics.push(`scientific field paths differ in ${refKey(record.ref)}`); return false;
+      }
+      const pending = [...expected];
+      return marked.every(child => {
+        const at = pending.findIndex(field => scientificIdentity(field) === identity(child));
+        if (at < 0) return false;
+        const field = pending.splice(at,1)[0], matches = fieldMatches(child,field);
+        if (!matches) diagnostics.push(`scientific field differs in ${refKey(record.ref)}: ${JSON.stringify(field.path)}`);
+        return matches;
+      });
+    }), 'selected scientific statements, conditions, reasoning or mathematics are absent or changed in their pinned evidence destination');
   const expectedOverviews = [...model.details.entries()].flatMap(([key, detail]) => {
     const html = canonicalRenderer.detailHtml(key, detail), parsed = scanHtml(html);
     return parsed.elements.filter(element => hasAttr(element, 'data-reader-overview')).map(element => html.slice(element.start, element.closeEnd));
@@ -1944,21 +1858,22 @@ export function representationReceipt(model, scan) {
   check('visible_scope', summaryElement && textOf(scan, summaryElement) === textOf(summaryScan, expectedSummary),
     'the visible audit scope, exclusions or completion text differs from the saved summary');
 
-  const tally = (list) => Object.fromEntries(STATES.map((state) => [state, list.filter((entry) => entry.assessment.state === state).length]));
-  const nodeTally = tally(model.nodeList), connectionTally = tally(model.connectionList);
-  const expectedCounts = {};
-  for (const state of STATES) { expectedCounts[`nodes.${state}`] = nodeTally[state]; expectedCounts[`connections.${state}`] = connectionTally[state]; }
-  for (const field of ['open', 'resolved', 'superseded']) expectedCounts[`findings.${field}`] = model.summary.findings[field];
-  for (const field of PROGRESS_FIELDS) expectedCounts[`progress.${field}`] = model.summary.progress[field];
-  const countElements = byAttr('data-proof-count');
-  check('summary_counts', sameMultiset(countElements.map((element) => element.attrs['data-proof-count']), COUNT_NAMES)
-    && countElements.every((element) => element.tag === 'span' && textOf(scan, element).trim() === String(expectedCounts[element.attrs['data-proof-count']])),
-  'summary count spans are missing, duplicated or show the wrong number');
+  check('reader_administration_removed', !byAttr('data-proof-count').length
+    && !all.some(element => element.attrs.id === 'proof-work-panel' || classList(element).includes('proof-technical') || classList(element).includes('proof-build')),
+    'administrative counters, revision details or the coordinator work queue entered the scientific reader');
   const processElements = byAttr('data-proof-process-complete');
   check('process_complete', processElements.length === 1 && processElements[0].attrs['data-proof-process-complete'] === String(model.summary.progress.process_complete), 'data-proof-process-complete must appear exactly once with the summary value');
   check('summary_findings', sameMultiset(byAttr('data-proof-finding').map((element) => element.attrs['data-proof-finding']), model.summary.findings.refs), 'data-proof-finding elements do not match summary.findings.refs exactly once');
   check('summary_source_limits', sameMultiset(byAttr('data-proof-source-limit').map((element) => element.attrs['data-proof-source-limit']), model.summary.source_limits), 'data-proof-source-limit elements do not match summary.source_limits exactly once');
-  check('summary_limitations', sameMultiset(byAttr('data-proof-limitation').map((element) => textOf(scan, element)), model.summary.limitations || []), 'visible completion limitations do not match summary.limitations');
+  check('summary_limitations', sameMultiset(byAttr('data-proof-limitation').map((element) => textOf(scan, element)), canonicalRenderer.savedLimitations().map(row => row.note)), 'scientific or unresolved mixed review qualifications were omitted or changed');
+  const reviewLimits = canonicalRenderer.reviewLimits();
+  check('current_examination_limits', sameMultiset(byAttr('data-proof-review-limit').map(element => element.attrs['data-proof-review-limit']), reviewLimits.map(row => row.task.id))
+    && byAttr('data-proof-review-limit').every(element => textOf(scan,element).endsWith(reviewLimits.find(row => row.task.id === element.attrs['data-proof-review-limit'])?.consequence)),
+    'unfinished, partial or stale saved opinions lost their current-examination limitation');
+  const searchData = all.filter(element => element.attrs.id === 'proof-reader-search');
+  let searchOk = false;
+  try { searchOk = searchData.length === 1 && JSON.stringify(JSON.parse(searchData[0].text)) === JSON.stringify(canonicalRenderer.searchEntries()); } catch { /* invalid data fails below */ }
+  check('scientific_search_content', searchOk, 'search differs from the selected scientific evidence or its destinations');
   const searchInputs = all.filter((element) => element.tag === 'input' && element.attrs.id === 'proof-search');
   check('search_input', searchInputs.length === 1, 'input#proof-search must appear exactly once');
 
@@ -2191,7 +2106,7 @@ html:not([data-js]) #proof-detail-empty,html.show-all-details #proof-detail-empt
 .proof-reader-overview .proof-reader-value{white-space:pre-wrap;overflow-wrap:anywhere}
 .proof-reader-overview .proof-fragment{font-size:1rem}
 .proof-reader-label{font-size:.88rem;font-weight:600;margin:.65em 0 .25em;color:var(--ink)}
-.proof-reader-sources{font-size:.85rem;margin:.5em 0;color:var(--muted);overflow-wrap:anywhere}
+.proof-reader-sources{font-size:.85rem;margin:.5em 0;color:var(--muted)}
 .proof-reader-strategy{border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:0 0 1em}
 .proof-reader-route{border-top:1px solid var(--line);margin-top:1.2em;padding-top:.25em}
 .proof-reader-application{padding:.7em 0;border-bottom:1px solid var(--line)}
@@ -2531,60 +2446,12 @@ const RUNTIME_JS = `(function () {
     });
   }
 
-  // Full-dataset search over record_locations using the embedded projection.
+  // The server-side adapter supplies exactly the same scientific content used
+  // by evidence views. Navigation keys remain hidden lookup aliases.
   var searchInput = doc.getElementById('proof-search'), results = doc.getElementById('proof-search-results'), status = doc.getElementById('proof-search-status');
-  function refKey(ref) { return ref.collection + ':' + ref.id + ':' + ref.version; }
-  function flatten(value, out) {
-    if (value === null || value === undefined) return;
-    if (typeof value === 'string') { out.push(value); return; }
-    if (typeof value === 'number' || typeof value === 'boolean') { out.push(String(value)); return; }
-    if (Array.isArray(value)) { for (var i = 0; i < value.length; i++) flatten(value[i], out); return; }
-    for (var key in value) if (Object.prototype.hasOwnProperty.call(value, key)) { out.push(key.split('_').join(' ')); flatten(value[key], out); }
-  }
-  function recordElement(detailKey, sectionKey, key) {
-    var article = detailFor(detailKey);
-    if (!article) return null;
-    var section = query(article, 'data-proof-section', sectionKey);
-    return section ? query(section, 'data-record-ref', key) : null;
-  }
-  function buildIndex() {
-    var entries = [];
-    if (!projection || !Array.isArray(projection.record_locations)) return entries;
-    var records = {}, owners = {}, titles = {}, seen = {}, i;
-    for (i = 0; i < (projection.records || []).length; i++) records[refKey(projection.records[i].ref)] = projection.records[i];
-    for (i = 0; i < (projection.nodes || []).length; i++) owners[projection.nodes[i].detail_key] = projection.nodes[i].label;
-    for (i = 0; i < (projection.connections || []).length; i++) if (!owners[projection.connections[i].detail_key]) owners[projection.connections[i].detail_key] = 'Connection ' + projection.connections[i].id;
-    var detailKeys = Object.keys(projection.details || {});
-    for (i = 0; i < detailKeys.length; i++) {
-      var sections = projection.details[detailKeys[i]].sections || [];
-      for (var s = 0; s < sections.length; s++) titles[detailKeys[i] + '\\u0000' + sections[s].key] = sections[s].title;
-    }
-    for (i = 0; i < projection.record_locations.length; i++) {
-      var location = projection.record_locations[i];
-      var key = refKey(location.ref), record = records[key];
-      if (!record) continue;
-      var dedupe = key + '\\u0000' + location.detail_key + '\\u0000' + location.section_key;
-      if (seen[dedupe]) continue;
-      seen[dedupe] = true;
-      var parts = [key, location.ref.collection];
-      flatten(record.body, parts);
-      var element = recordElement(location.detail_key, location.section_key, key);
-      var text = parts.join(' ') + (element ? ' ' + element.textContent.replace(/\\s+/g, ' ') : '');
-      entries.push({ key: key, label:record.body.label || humanRecordLabel(location.ref.collection), detail: location.detail_key, section: location.section_key, owner: owners[location.detail_key] || location.detail_key, title: titles[location.detail_key + '\\u0000' + location.section_key] || location.section_key, text: text, lower: text.toLowerCase() });
-    }
-    var workTasks = projection.worklist ? projection.worklist.tasks : [];
-    for (i = 0; i < workTasks.length; i++) {
-      var task = workTasks[i], taskLocation = task.location;
-      if (!taskLocation || !taskLocation.obligation_id) continue;
-      var taskText = [task.id, task.label, task.role, task.state, task.next_action || ''].join(' ');
-      entries.push({key:task.id, detail:taskLocation.detail_key, section:taskLocation.section_key,
-        owner:owners[taskLocation.detail_key] || 'Audit', title:task.label, text:taskText,
-        lower:taskText.toLowerCase(), obligationId:task.id});
-    }
-    return entries;
-  }
-  var index = buildIndex();
-  function humanRecordLabel(collection) { return {uses:'Supplier application', application_details:'Exact application', target_specs:'Exact audited target', groups:'Inference evidence', scopes:'Assumptions and local context', checks:'Proof examination', findings:'Audit finding', anchors:'Source passage'}[collection] || collection.split('_').join(' '); }
+  var index = [];
+  try { index = JSON.parse(doc.getElementById('proof-reader-search').textContent); } catch (error) { index = []; }
+  index.forEach(function (entry) { entry.lower = entry.text.toLowerCase(); entry.lookup = entry.lower + ' ' + (entry.aliases || []).join(' ').toLowerCase(); });
   function element(tag, className, text) {
     var node = doc.createElement(tag);
     if (className) node.className = className;
@@ -2595,23 +2462,23 @@ const RUNTIME_JS = `(function () {
     if (!searchInput || !results || !status) return;
     var raw = (searchInput.value || '').trim().toLowerCase();
     results.textContent = '';
-    if (!raw) { status.textContent = index.length ? 'Type to search ' + index.length + ' record locations.' : 'No searchable record locations in this projection.'; return; }
+    if (!raw) { status.textContent = index.length ? 'Type to search the saved scientific content.' : 'No searchable scientific content is available.'; return; }
     var terms = raw.split(/\\s+/), matches = [], i, t;
     for (i = 0; i < index.length && matches.length < 40; i++) {
       var entry = index[i], ok = true;
-      for (t = 0; t < terms.length; t++) if (entry.lower.indexOf(terms[t]) < 0) { ok = false; break; }
+      for (t = 0; t < terms.length; t++) if (entry.lookup.indexOf(terms[t]) < 0) { ok = false; break; }
       if (ok) matches.push(entry);
     }
-    status.textContent = matches.length ? matches.length + (matches.length === 40 ? '+' : '') + ' matching record location' + (matches.length === 1 ? '' : 's') : 'No matches.';
+    status.textContent = matches.length ? matches.length === 40 ? 'Showing the first 40 matching passages and assessments; further matches may exist.' : matches.length + ' matching passage' + (matches.length === 1 ? '' : 's') + ' or assessment' + (matches.length === 1 ? '' : 's') + '.' : 'No matches.';
     for (i = 0; i < matches.length; i++) {
       (function (entry) {
         var li = doc.createElement('li');
         var button = element('button', 'proof-search-hit');
         button.type = 'button';
-        var where = entry.lower.indexOf(terms[0]);
+        var where = Math.max(0, entry.lower.indexOf(terms[0]));
         var start = Math.max(0, where - 60), end = Math.min(entry.text.length, where + terms[0].length + 90);
-        button.appendChild(element('strong', '', entry.label || entry.title || entry.key));
-        button.appendChild(element('span', 'proof-search-where', 'in ' + entry.owner + ' \\u203a ' + entry.title));
+        button.appendChild(element('strong', '', entry.label || 'Scientific evidence'));
+        button.appendChild(element('span', 'proof-search-where', 'in ' + entry.owner));
         var snippet = element('span', 'proof-search-snippet');
         snippet.appendChild(doc.createTextNode((start > 0 ? '\\u2026' : '') + entry.text.slice(start, where)));
         var mark = doc.createElement('mark');
@@ -2619,8 +2486,7 @@ const RUNTIME_JS = `(function () {
         snippet.appendChild(mark);
         snippet.appendChild(doc.createTextNode(entry.text.slice(where + terms[0].length, end) + (end < entry.text.length ? '\\u2026' : '')));
         button.appendChild(snippet);
-        button.addEventListener('click', function () { showDetail(entry.detail, entry.section, entry.obligationId ? null : entry.key,
-          entry.obligationId ? {obligationId:entry.obligationId} : null); });
+        button.addEventListener('click', function () { showDetail(entry.detail, entry.section, entry.key); });
         li.appendChild(button);
         results.appendChild(li);
       })(matches[i]);
@@ -2633,61 +2499,6 @@ const RUNTIME_JS = `(function () {
       if (event.key === 'Enter') { runSearch(); var first = results.querySelector('button'); if (first) first.click(); }
     });
     runSearch();
-  }
-
-  // Read-only work links use the same exact reader locations as search.
-  var work = projection.worklist, workList = doc.getElementById('proof-work-list');
-  if (work && workList) {
-    var unfinished = work.tasks.filter(function (task) { return task.required && task.state !== 'satisfied'; });
-    var taskById = {}; work.tasks.forEach(function (task) { taskById[task.id] = task; });
-    var workShown = 0, moreWork = doc.getElementById('proof-work-more');
-    function showWork() {
-      var end = Math.min(workShown + 20, unfinished.length);
-      for (; workShown < end; workShown++) {
-        (function (task) {
-          var li = doc.createElement('li'), button = doc.createElement('button');
-          button.type = 'button'; button.textContent = task.label + ' (' + humanWorkState(task.state) + ')';
-          button.disabled = !task.location;
-          button.setAttribute('data-work-task', task.id);
-          if (task.location) button.addEventListener('click', function () {
-            showDetail(task.location.detail_key, task.location.section_key, null, {obligationId:task.location.obligation_id});
-          });
-          li.appendChild(button);
-          var explanation = element('p', 'proof-muted',
-            {primary:'Primary checker', independent:'Independent checker', coordinator:'Coordinator'}[task.role]);
-          if (task.waiting_on && task.waiting_on.length) {
-            var waitingLabels = task.waiting_on.map(function (id) { return taskById[id] ? taskById[id].label : id; });
-            explanation.textContent += '. Waiting for: ' + waitingLabels.slice(0, 3).join('; ') +
-              (waitingLabels.length > 3 ? '; and ' + (waitingLabels.length - 3) + ' more' : '') + '.';
-          }
-          if (task.outcome) explanation.textContent += ' Local outcome: ' + task.outcome +
-            (task.freshness ? ' (' + task.freshness.split('_').join(' ') + ')' : '') + '.';
-          if (task.dependency_support) explanation.textContent += ' Premise support: ' + task.dependency_support + '.';
-          li.appendChild(explanation);
-          if (task.support_explanation) li.appendChild(element('p', 'proof-muted',
-            task.support_explanation.label + ': ' + task.support_explanation.message));
-          if (task.recovery) {
-            var changed = task.recovery.changes.map(function (change) { return change.label +
-              ' (' + (change.facet || change.relation).split('_').join(' ') + ')'; });
-            li.appendChild(element('p', 'proof-muted', 'Changed inputs: ' + changed.join('; ') +
-              (task.recovery.changes_truncated ? '; further changes are available in the work query' : '') + '. ' +
-              task.recovery.preserved_local_count + ' local checks remain current. ' + task.recovery.next_action));
-          }
-          if (task.next_action) { var note = doc.createElement('p'); note.textContent = task.next_action; li.appendChild(note); }
-          workList.appendChild(li);
-        })(unfinished[workShown]);
-      }
-      doc.getElementById('proof-work-status').textContent = unfinished.length ?
-        'Snapshot ' + work.revision + ': showing ' + workShown + ' of ' + unfinished.length + ' unfinished examinations.' :
-        (work.analysis_complete ? 'Snapshot ' + work.revision + ': no unfinished examinations. Review the audit summary for remaining limits.' : 'Work analysis is incomplete.');
-      moreWork.hidden = workShown >= unfinished.length;
-    }
-    function humanWorkState(state) { return {ready:'ready', waiting:'waiting for prerequisites', needs_coordinator:'coordinator action needed'}[state] || state; }
-    moreWork.addEventListener('click', showWork); showWork();
-    var actions = doc.getElementById('proof-work-actions');
-    work.coordinator_actions.forEach(function (action) { var li = doc.createElement('li'); li.textContent = action.message; actions.appendChild(li); });
-    if (work.diagnostics_truncated) { var moreActions = doc.createElement('li'); moreActions.textContent =
-      'Showing the first ' + work.coordinator_actions.length + ' of ' + work.diagnostic_count + ' coordinator actions.'; actions.appendChild(moreActions); }
   }
 
   // Deep link: #proof-detail-N opens that detail.
