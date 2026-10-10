@@ -138,7 +138,7 @@ def accept(db: Database, *, request_id: str, request_digest: str, packet_id, edi
 def accept_in_transaction(db: Database, *, request_id: str, request_digest: str, packet_id,
                           edits: list, command: str, blobs=(), annotations=None, warnings=(),
                           check_guards: bool = True, scope_exempt=frozenset(), required_packet_ids=(),
-                          freshness_validator=None, receipt_context=None) -> dict:
+                          freshness_validator=None, receipt_context=None, overview_refresh_root=None) -> dict:
     """Accept within the caller's writer transaction, without committing or rolling back.
 
     The optional trusted task validator returns a manifest with a validated task-specific
@@ -151,6 +151,14 @@ def accept_in_transaction(db: Database, *, request_id: str, request_digest: str,
     if metadata.get('generation') != db.metadata.get('generation'):
         from .errors import IncompatibleError
         raise IncompatibleError('database generation changed; reopen before writing')
+    from .overview_write import native_import_active, validate_native_import_plan, validate_overview_plan
+    native_import = native_import_active(db)
+    if db.write_scope == "overview" and command != "overview" and not (command == "import" and native_import):
+        raise InvalidRequest(f"command {command} is unavailable in overview write scope", code="WRITE_SCOPE")
+    if native_import and command != "import":
+        raise InvalidRequest("the private native overview import accepts only its import command", code="WRITE_SCOPE")
+    if overview_refresh_root is not None and command != "overview":
+        raise InvalidRequest("an explicit overview refresh root is available only to the overview command")
     annotations = annotations or {}
     receipt_context = receipt_context or {}
     if set(receipt_context) - {"packet_id", "acceptance_packet_id"}:
@@ -190,6 +198,10 @@ def accept_in_transaction(db: Database, *, request_id: str, request_digest: str,
         targets = manifest["targets"]
     conflicts = []
     plan = _plan(db, normalize_edits(db, edits), base_revision, conflicts)
+    boundary_errors = (validate_native_import_plan(db, plan) if native_import else
+                       validate_overview_plan(db, plan, refresh_root=overview_refresh_root) if command == "overview" else [])
+    if boundary_errors:
+        raise InvalidRequest("writes outside the overview field boundary", code="WRITE_SCOPE", records=boundary_errors)
     if manifest is not None:
         if freshness_validator is not None:
             if (packet["packet_version"] != 2 or not manifest.get("work")

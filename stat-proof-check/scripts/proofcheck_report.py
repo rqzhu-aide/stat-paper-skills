@@ -1217,8 +1217,8 @@ def build_report_projection(
             result["display_pdf_page"] = reviewed["pdf_page"]
         reading = [sources[key] for key in result.get("conclusion_source_ids", [])
                    if key in sources and sources[key]["status"] == "locked"
-                   and math_renderer().has_math(sources[key].get("quote") or "")]
-        if reading and not math_renderer().has_math(_text(result.get("claim"))):
+                   and math_renderer().legacy_reading_has_math(sources[key].get("quote") or "")]
+        if reading and not math_renderer().legacy_reading_has_math(_text(result.get("claim"))):
             result["graph_reading_claim"] = "\n\n".join(_reading_source(s["quote"]) for s in reading)
     proof_graph = _proof_graph(pc, results, ledgers, summaries, registry, source_span, issues, dependency_edges)
     for node in proof_graph["nodes"]:
@@ -1641,8 +1641,8 @@ def _claim_reading(claim: Any, ids: list[str], sources: dict, *, label: str = "E
                    prefer_source: bool = False) -> str:
     reading = [sources[key] for key in ids if key in sources and sources[key].get("status") == "locked"
                and isinstance(sources[key].get("quote"), str) and sources[key]["quote"].strip()
-               and (prefer_source or math_renderer().has_math(sources[key]["quote"]))]
-    if not reading or (not prefer_source and math_renderer().has_math(_text(claim))):
+               and (prefer_source or math_renderer().legacy_reading_has_math(sources[key]["quote"]))]
+    if not reading or (not prefer_source and math_renderer().legacy_reading_has_math(_text(claim))):
         return '<div class="claim-text">' + _rich(claim) + '</div>'
     return ('<p class="source-label">' + _e(label) + ':</p>'
             + ''.join('<div class="claim-text source-reading">' + _rich(_reading_source(row["quote"])) + '</div>' for row in reading)
@@ -1806,8 +1806,8 @@ def render_report(projection: dict) -> str:
             parts.append('<p class="source-label">Exact transcription location: ' + _e(result["location"]) + '.</p>')
         reading_sources = [sources_by_id[key] for key in result.get("conclusion_source_ids", [])
                            if key in sources_by_id and sources_by_id[key]["status"] == "locked"
-                           and math_renderer().has_math(sources_by_id[key].get("quote") or "")]
-        if reading_sources and not math_renderer().has_math(_text(result["claim"])):
+                           and math_renderer().legacy_reading_has_math(sources_by_id[key].get("quote") or "")]
+        if reading_sources and not math_renderer().legacy_reading_has_math(_text(result["claim"])):
             parts.append('<p class="source-label">Stated conclusion, typeset from the linked manuscript excerpt:</p>')
             for source in reading_sources:
                 parts.append('<div class="claim-text source-reading">' + _source_reading(source) + '</div>')
@@ -1979,7 +1979,7 @@ def render_report(projection: dict) -> str:
         excerpt = source["quote"]
         numbered = "\n".join(f"{start + i:>4}  {line}" for i, line in enumerate(excerpt.splitlines())) if excerpt is not None and start is not None else excerpt
         parts.append(f'<details id="{_e(source["id"])}"><summary>{_e(location)}</summary><div class="detail-content"><p class="source-label">Evidence status: {_e(source["status"])}.</p>')
-        if isinstance(excerpt, str) and math_renderer().has_math(excerpt):
+        if isinstance(excerpt, str) and math_renderer().legacy_reading_has_math(excerpt):
             parts.append('<div class="source-reading typeset-source" aria-label="Source reading view">' + _source_reading(source) + '</div><p class="source-label">Exact source with line numbers:</p>')
         parts.append(f'<pre class="source">{_e(numbered if numbered is not None else "The locked source is unavailable or changed. This view does not substitute current text.")}</pre>')
         if source.get("bundle_href"):

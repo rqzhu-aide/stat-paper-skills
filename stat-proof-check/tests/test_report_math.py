@@ -125,10 +125,44 @@ class MathRenderingTests(unittest.TestCase):
                 self.assertIn("$" + ORIGINAL_C001 + "$", "".join(document.itertext()))
 
     def test_plain_pseudo_math_and_escaped_delimiters_are_not_reinterpreted(self):
-        text = r"max_{j <= m_n} X_n -> 0; price \$5; \\(x\\); <source>"
+        text = r"max_{j <= m_n} X_n -> 0; price \$5; unpaired \\(x; <source>"
         self.assertFalse(math.has_math(text))
         self.assertEqual(text, "".join(self.document(text).itertext()))
         self.assertNotIn("<source>", math.render_text(text))
+
+    def test_paired_doubled_delimiters_are_exact_diagnosed_literal_candidates(self):
+        for literal in (r"\\(x\\)", r"\\[\mathcal H\\]"):
+            with self.subTest(literal=literal):
+                diagnostics = []
+                rendered = math.render_text(literal, diagnostics)
+                document = ET.fromstring("<div>" + rendered + "</div>")
+                self.assertTrue(math.has_math(literal))
+                self.assertFalse(math.legacy_reading_has_math(literal))
+                self.assertEqual(literal, document.find(".//code").text)
+                self.assertFalse(self.formulas(document))
+                self.assertEqual(1, len(diagnostics))
+                self.assertEqual("damaged_escape", diagnostics[0]["kind"])
+                self.assertEqual(literal, diagnostics[0]["excerpt"])
+
+    def test_legacy_wording_selector_retains_supported_openers_and_ordinary_escapes(self):
+        for text in (r"$x$", r"\[x", r"\(x\)", r"\\(price $x$\\)"):
+            self.assertTrue(math.legacy_reading_has_math(text), text)
+        for text in (r"price \$5", r"\\(x\\)", r"unpaired \\(x", "ordinary prose"):
+            self.assertFalse(math.legacy_reading_has_math(text), text)
+
+    def test_mathematical_alphabets_share_the_common_display_and_original_tex(self):
+        tex = r"R\in\mathbb R, H\in\mathcal H"
+        document = self.document("$" + tex + "$")
+        namespace = "{" + math.MATHML_NS + "}"
+        self.assertEqual(["R", "ℝ", "H", "ℋ"],
+                         [node.text for node in document.iter(namespace + "mi")])
+        self.assertEqual(tex, next(document.iter(namespace + "annotation")).text)
+        unsupported = r"$\mathcal{\alpha}$"
+        diagnostics = []
+        literal = ET.fromstring("<div>" + math.render_text(unsupported, diagnostics) + "</div>")
+        self.assertEqual(unsupported, literal.find(".//code").text)
+        self.assertEqual(1, len(diagnostics))
+        self.assertIn("no Unicode", diagnostics[0]["reason"])
 
     def test_unmatched_and_unsupported_math_remain_labeled_and_exact(self):
         for text in (r"before $x_i", r"before \[x", r"$\unknownproofmacro{x}$"):
@@ -211,6 +245,31 @@ class MathRenderingTests(unittest.TestCase):
                 self.assertEqual(before, math.renderer_info())
                 data.write_text("beta", encoding="utf-8")
                 self.assertNotEqual(before["package_sha256"], math.renderer_info()["package_sha256"])
+
+    def test_by_filename_facades_use_their_own_bundled_math_in_one_process(self):
+        import sys
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            loaded = []
+            for name in ("first", "second"):
+                install = root / name
+                install.mkdir()
+                facade = install / "proofcheck_math.py"
+                facade.write_bytes((ROOT / "scripts/proofcheck_math.py").read_bytes())
+                common = install / "paper_core/math_render.py"
+                common.parent.mkdir()
+                common.write_text("def render_text(text, diagnostics=None):\n    return " + repr(name) + "\n",
+                                  encoding="utf-8")
+                spec = importlib.util.spec_from_file_location("math_facade_" + name, facade)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                self.assertEqual(common.resolve(), Path(module._common().__file__).resolve())
+                self.assertEqual(name, module.render_text("probe"))
+                loaded.append(module)
+            self.assertIsNot(loaded[0]._common(), loaded[1]._common())
+            self.assertEqual("first", loaded[0].render_text("probe"))
+            for module in loaded:
+                sys.modules.pop(module._common().__name__, None)
 
 
 if __name__ == "__main__":

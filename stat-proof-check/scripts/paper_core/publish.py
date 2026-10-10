@@ -37,27 +37,74 @@ def _node_executable() -> str:
     return node
 
 
-def display_fragments(projection: dict) -> dict:
+def display_fragments(projection: dict, diagnostics=None) -> dict:
     """Escaped prose plus MathML for the text fields the renderer replaces; keyed by pinned ref."""
     refs = {}
+    seen = set()
     for entry in projection["records"]:
         ref, body = entry["ref"], entry["body"]
+        key = f"{ref['collection']}:{ref['id']}:{ref['version']}"
+        if key in seen:
+            continue
+        seen.add(key)
         fragments = {}
+
+        def render(value, field):
+            local = [] if diagnostics is not None else None
+            markup = render_text(value, diagnostics=local)
+            if local:
+                diagnostics.extend({**row, "ref": dict(ref), "field": field,
+                    "collection": ref["collection"], "record_id": ref["id"],
+                    "record_version": ref["version"], "field_path": field} for row in local)
+            return markup
+
         for field in FRAGMENT_FIELDS:
             value = body.get(field)
+            path = field
             if field in ("statement", "needed_form") and isinstance(value, dict):
                 value = value.get("text")
+                path += ".text"
             if value is None:
                 continue
             if field == "conditions":
                 if isinstance(value, list) and all(isinstance(v, str) for v in value):
-                    fragments["conditions_html"] = [render_text(v) for v in value]
+                    fragments["conditions_html"] = [render(v, f"conditions/{i}") for i, v in enumerate(value)]
                 continue
             if isinstance(value, str):
-                fragments[f"{field}_html"] = render_text(value)
+                fragments[f"{field}_html"] = render(value, path)
         if fragments:
-            refs[f"{ref['collection']}:{ref['id']}:{ref['version']}"] = fragments
+            refs[key] = fragments
     return refs
+
+
+def summarize_math_diagnostics(entries) -> dict:
+    """Count expression occurrences in saved fields, with bounded reading notes."""
+    groups, classifications, reasons = {}, {}, {}
+    for row in entries:
+        kind, reason = row["kind"], row["reason"]
+        classifications[kind] = classifications.get(kind, 0) + 1
+        reasons[reason] = reasons.get(reason, 0) + 1
+        group = groups.setdefault((kind, reason),
+            {"kind": kind, "reason": reason, "count": 0, "samples": []})
+        group["count"] += 1
+        sample = {key: row[key] for key in ("ref", "field", "excerpt")}
+        if len(group["samples"]) < 3 and sample not in group["samples"]:
+            group["samples"].append(sample)
+    visible = list(groups.values())[:5]
+    messages = [f"{group['count']} expression{'s' if group['count'] != 1 else ''} "
+                f"kept as literal LaTeX. {group['reason']}" for group in visible]
+    return {"count": len(entries), "total": len(entries),
+            "count_basis": "expression occurrences in saved record fields", "nonblocking": True,
+            "by_classification": classifications, "by_reason": reasons,
+            "groups": visible, "groups_truncated": len(groups) > 5,
+            "messages": messages, "messages_truncated": len(groups) > 5}
+
+
+def _display_metadata(projection: dict) -> dict:
+    diagnostics = []
+    fragments = display_fragments(projection, diagnostics)
+    return {"refs": fragments, "math_diagnostics": diagnostics,
+            "math_diagnostic_summary": summarize_math_diagnostics(diagnostics)}
 
 
 def render_input(db: Database, projection: dict, *, release: bool, source_identity: str) -> dict:
@@ -74,7 +121,7 @@ def render_input(db: Database, projection: dict, *, release: bool, source_identi
             "kind": "release" if release else "working",
         },
         "projection": projection,
-        "display": {"refs": display_fragments(projection)},
+        "display": _display_metadata(projection),
     }
 
 
@@ -992,6 +1039,10 @@ def render_payload(payload: dict, *, workdir: Path) -> tuple:
         raise PublicationError("mechanical acceptance failed", records=[acceptance])
     receipt["python_acceptance"] = acceptance
     receipt["input_bytes"] = input_path.stat().st_size
+    display = payload.get("display", {})
+    receipt["math_diagnostics"] = display.get("math_diagnostics", [])
+    receipt["math_diagnostic_summary"] = display.get("math_diagnostic_summary",
+                                                           summarize_math_diagnostics([]))
     return html_bytes, receipt
 
 
@@ -1007,7 +1058,7 @@ def frozen_render_input(snapshot: dict, *, snapshot_sha256: str) -> dict:
                           "representation_settled": snapshot["representation_settled"],
                           "finalization_blockers": snapshot["finalization_blockers"],
                           "finalization_blocker_count": snapshot["finalization_blocker_count"]}},
-            "projection": snapshot["projection"], "display": {"refs": display_fragments(snapshot["projection"])}}
+            "projection": snapshot["projection"], "display": _display_metadata(snapshot["projection"])}
 
 
 def _restore_output(path, backup, existed):
@@ -1052,7 +1103,9 @@ def publish_frozen(bundle, *, output, receipt_output=None) -> dict:
                        "paper_id": snapshot["paper_id"], "kind": snapshot["kind"],
                        "source_identity": snapshot["source_identity"], "producer": snapshot["producer"],
                        "snapshot_sha256": frozen["snapshot_sha256"], "artifact_sha256": artifact_sha,
-                       "started_at": started, "output_path": str(output), "renderer": render_receipt}
+                       "started_at": started, "output_path": str(output), "renderer": render_receipt,
+                       "math_diagnostics": payload["display"]["math_diagnostics"],
+                       "math_diagnostic_summary": payload["display"]["math_diagnostic_summary"]}
             staged_html = workdir / "staged.html"
             staged_html.write_bytes(html_bytes)
             fd, name = tempfile.mkstemp(dir=receipt_path.parent, prefix=".paper-build-", suffix=".json")
@@ -1212,5 +1265,5 @@ def publish_report(db: Database, *, projection: dict, output, release: bool = Fa
             "output_path": str(output), "artifact_sha256": artifact_sha, "receipt": receipt}
 
 
-__all__ = ["FRAGMENT_FIELDS", "RENDERER", "display_fragments", "mechanical_acceptance", "publish_report",
+__all__ = ["FRAGMENT_FIELDS", "RENDERER", "display_fragments", "summarize_math_diagnostics", "mechanical_acceptance", "publish_report",
            "render_html", "render_input", "render_payload", "frozen_render_input", "publish_frozen"]

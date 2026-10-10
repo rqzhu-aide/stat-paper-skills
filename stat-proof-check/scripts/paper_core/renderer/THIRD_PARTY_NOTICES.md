@@ -22,9 +22,11 @@ What `render_projection.mjs` takes from these files:
 - `utils.mjs`: the `esc`, `textUnits`, and `applyTemplate` helpers.
 - `i18n.mjs`: localized viewer labels via `applyTemplate`.
 - `template.html`: the actual viewer shell, camera, selection, dependency
-  tracing, presentation, themes, and export runtime. `archify_adapter.mjs`
-  applies the overview's reader placement adaptations and includes audit
-  styles in the existing export pipeline. The vendored source stays unchanged.
+  tracing, presentation, themes, and export runtime. `scientific_reader.mjs`
+  applies the common reader placement, selection and export adaptations;
+  `scientific_reader.css` supplies shared reading and assessment styles.
+  `archify_adapter.mjs` retains the audit's scientific content slots.
+  The vendored source stays unchanged.
   The embedded fonts are checked to contain only data URLs.
 - Layout constants (`kinds` palette, `box` metrics), the longest-path layering,
   orthogonal edge routing, badge placement and `jsonForScript` in

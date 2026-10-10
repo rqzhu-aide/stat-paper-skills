@@ -103,6 +103,49 @@ class HtmlReportTests(unittest.TestCase):
         with patch.object(engine, 'renderer_info', return_value={**info, 'version': 'changed'}):
             self.assertNotEqual(before, release.renderer_identity(pc))
 
+    def test_paired_doubled_source_quote_keeps_the_normalized_claim_primary(self):
+        projection = self.project(final=True)
+        result = projection['results'][0]
+        claim, quote = "The normalized conclusion remains primary.", r"\\(x_n \to 0\\)"
+        result['claim'] = claim
+        sources = {source['id']: source for source in projection['sources']}
+        for key in result['conclusion_source_ids']:
+            sources[key]['quote'] = quote
+        source = sources[result['conclusion_source_ids'][0]]
+        reading = report._claim_reading(claim, [source['id']], sources)
+        self.assertEqual('<div class="claim-text">' + claim + '</div>', reading)
+        value = report.render_report(projection)
+        result_section = value.split('id="' + result['id'] + '">', 1)[1].split(
+            '<p class="source-label">Record availability:', 1)[0]
+        self.assertIn('<div class="claim-text">' + claim + '</div>', result_section)
+        self.assertNotIn('Normalized audit wording', result_section)
+        evidence = value.split('<details id="' + source['id'] + '">', 1)[1].split('</details>', 1)[0]
+        self.assertNotIn('typeset-source', evidence)
+        numbered = '\n'.join(f"{source['start_line'] + i:>4}  {line}"
+                             for i, line in enumerate(quote.splitlines()))
+        self.assertIn('<pre class="source">' + report._e(numbered) + '</pre>', evidence)
+
+    def test_paired_doubled_claim_keeps_manuscript_math_primary_and_claim_disclosed(self):
+        projection = self.project(final=True)
+        result = projection['results'][0]
+        claim = r"\\(normalized_x_n \to 0\\)"
+        result['claim'] = claim
+        sources = {source['id']: source for source in projection['sources']}
+        source = sources[result['conclusion_source_ids'][0]]
+        source['quote'] = r"The manuscript states $x_n \to 0$."
+        reading = report._claim_reading(claim, [source['id']], sources)
+        self.assertIn('class="claim-text source-reading"', reading)
+        self.assertIn('Normalized audit wording', reading)
+        self.assertIn('<code>' + report._e(claim) + '</code>', reading)
+        value = report.render_report(projection)
+        result_section = value.split('id="' + result['id'] + '">', 1)[1].split(
+            '<p class="source-label">Record availability:', 1)[0]
+        self.assertIn('Stated conclusion, typeset from the linked manuscript excerpt:', result_section)
+        self.assertIn('Normalized audit wording</summary><p>' + report._e(claim), result_section)
+        evidence = value.split('<details id="' + source['id'] + '">', 1)[1].split('</details>', 1)[0]
+        self.assertIn('typeset-source', evidence)
+        self.assertIn(report._e(source['quote']), evidence)
+
     def edit(self, relative, change):
         path = self.root / relative
         data = json.loads(path.read_text(encoding="utf-8"))

@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { esc, textUnits } from './assets/archify/utils.mjs';
 import { scanHtml, textOf, descendants, hasAttr, sameMultiset } from './html_scan.mjs';
 import { archifyPage, mainNavigation } from './archify_adapter.mjs';
+import { KINDS, BOX, readerRuntime, scientificSearchPanel, readingSection, sourceDisclosure, mathDisplayNotes, SCIENTIFIC_READER_CSS } from './scientific_reader.mjs';
 import { createReaderContent } from './reader_content.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -32,16 +33,7 @@ const TEMPLATE_PATH = path.join(HERE, 'assets', 'archify', 'template.html');
 // ---------------------------------------------------------------------------
 
 // [display name, dark-theme tone, light-theme tone] - the archify palette.
-export const KINDS = {
-  assumption: ['Assumption', '#60a5fa', '#2563eb'],
-  definition: ['Definition', '#94a3b8', '#475569'],
-  lemma: ['Lemma', '#c4b5fd', '#7c3aed'],
-  proposition: ['Proposition', '#a5b4fc', '#4f46e5'],
-  theorem: ['Theorem', '#e879f9', '#a21caf'],
-  corollary: ['Corollary', '#67e8f9', '#0e7490'],
-  external_result: ['External result', '#cbd5e1', '#64748b'],
-};
-export const BOX = { w: 170, h: 64, column: 275, row: 108, margin: 36 };
+export { KINDS, BOX } from './scientific_reader.mjs';
 export const STATES = ['green', 'red', 'gray', 'amber'];
 const STATE_LABELS = { green: 'Green', red: 'Red', gray: 'Gray', amber: 'Amber' };
 const STATE_GLYPHS = { green: '✓', red: '✕', gray: '?', amber: '!' };
@@ -530,9 +522,22 @@ export function validateInput(input) {
       fragments.set(key, value);
     });
   }
+  const mathDiagnostics = isObject(display) && display.math_diagnostics !== undefined ? display.math_diagnostics : [];
+  const mathDiagnosticSummary = isObject(display) && display.math_diagnostic_summary !== undefined ? display.math_diagnostic_summary : null;
+  if (!Array.isArray(mathDiagnostics)) bad('display.math_diagnostics must be an array');
+  else mathDiagnostics.forEach((entry, index) => {
+    const where = `display.math_diagnostics[${index}]`;
+    if (!isObject(entry)) { bad(`${where} must be an object`); return; }
+    for (const field of ['kind','classification','reason','excerpt','collection','record_id','field_path']) if (!isString(entry[field])) bad(`${where}.${field} must be text`);
+    if (!Number.isInteger(entry.record_version) || entry.record_version < 1) bad(`${where}.record_version must be positive`);
+    if (!['inline','block'].includes(entry.display)) bad(`${where}.display must be inline or block`);
+    if (entry.expression_index !== undefined && !isCount(entry.expression_index)) bad(`${where}.expression_index must be a count`);
+  });
+  if (mathDiagnosticSummary !== null && (!isObject(mathDiagnosticSummary) || !isCount(mathDiagnosticSummary.total) || !Array.isArray(mathDiagnosticSummary.messages) || !mathDiagnosticSummary.messages.every(isString))) bad('display.math_diagnostic_summary needs total and text messages');
   done();
 
   return {
+    mathDiagnostics, mathDiagnosticSummary,
     title: input.title,
     build,
     projection,
@@ -913,7 +918,7 @@ ${contexts.length ? `<p>${contexts.map(([field, label]) => explanation[field + '
   readerSources(ref, role) {
     const body = this.readerRecord(ref)?.body || {};
     const ids = [...new Set([...(body.evidence_refs || []).map(entry => isString(entry) ? entry : entry.id), ...(body.passages || []).filter(p => isString(p) || !role || p.role === role || p.role === 'evidence').map(p => isString(p) ? p : p.anchor_id)].filter(Boolean))];
-    return ids.length ? `<p class="proof-reader-sources">${ids.map((id, i) => this.humanLink({collection:'anchors', id}, `${role === 'proof' ? 'Proof source' : 'Source'}${ids.length > 1 ? ` ${i + 1}` : ''}`)).join(' · ')}</p>` : '';
+    return ids.length ? sourceDisclosure({title:role === 'proof' ? 'Proof sources and locators' : 'Sources and locators',bodyHtml:`<p class="proof-reader-sources">${ids.map((id, i) => this.humanLink({collection:'anchors', id}, `${role === 'proof' ? 'Proof source' : 'Source'}${ids.length > 1 ? ` ${i + 1}` : ''}`)).join(' · ')}</p>`}) : '';
   }
 
   readerNamedLink(key, context, ref) {
@@ -1247,7 +1252,7 @@ ${articles.join('\n')}
     const header = owners.length ? owners.map((owner) => (owner.type === 'node' ? this.nodeHeader(owner.node, detail.reader) : this.connectionHeader(owner.connection))).join('\n') : `<div class="proof-detail-owner"><h3 class="proof-detail-heading" tabindex="-1">${key.startsWith('audit:') ? 'Whole-audit examinations' : 'Audit evidence'}</h3></div>`;
     const sections = detail.sections.map((section) => this.sectionHtml(key, section)).join('\n');
     const outgoing = owners.filter(o => o.type === 'node').flatMap(o => this.model.connectionList.filter(c => c.from === o.node.id));
-    return `<article class="proof-detail" data-proof-detail="${esc(key)}" id="${esc(this.detailId(key))}">
+    return `<article class="proof-detail" data-reader-article="${esc(key)}" data-proof-detail="${esc(key)}" id="${esc(this.detailId(key))}">
 <div class="proof-detail-top"><button type="button" class="proof-back">Back to ${this.graph ? 'graph' : 'index'}</button></div>
 ${header}
 <details class="proof-disclosure proof-evidence" data-proof-evidence><summary>Detailed proof and audit evidence</summary>
@@ -1283,7 +1288,7 @@ ${reader ? this.readerHtml(node, reader) : `<div data-reader-overview="${esc(nod
       return `<section class="proof-reader-target" data-reader-target="${index}" data-reader-exact-state="${esc(target.exact_state)}" data-reader-target-ref="${esc(refKey(target.target_ref))}" data-reader-statement-ref="${esc(refKey(target.statement_ref))}" data-reader-spec-ref="${esc(target.spec_ref ? refKey(target.spec_ref) : '')}">
 <h4>${index ? 'Audited part or target: ' : ''}${this.readerField(key, context, target.target_ref, 'label')}</h4>
 <p class="proof-reader-label">${target.exact_state === 'registered' ? 'Exact audited statement' : 'Saved statement or synopsis'}</p>
-${this.readerField(key, context, target.statement_ref, target.statement_field)}
+${readingSection({role:'statement',bodyHtml:this.readerField(key, context, target.statement_ref, target.statement_field)})}
 ${selected === undefined || selected === null ? '<p class="proof-reader-notice">The pinned statement examined by this assessment is unavailable in this report.</p>' : ''}
 ${target.exact_state !== 'registered' ? `<p class="proof-reader-notice">A registered exact target is unavailable${target.exact_state === 'draft' ? '; the target specification is still a draft' : ''}.</p>` : ''}
 ${this.readerSources(target.spec_ref, 'statement') || this.readerSources(target.statement_ref, 'statement')}
@@ -1291,7 +1296,7 @@ ${different ? `<details class="proof-reader-context"><summary>Current saved syno
 </section>`;
     }).join('');
     const strategy = this.readerRecord(reader.strategy_ref)?.body?.proof_idea;
-    const strategyHtml = strategy ? `<section class="proof-reader-strategy"><h4>Main proof strategy</h4>${this.readerField(key, 'strategy', reader.strategy_ref, 'proof_idea')}${this.readerSources(reader.strategy_ref, 'proof')}<p class="proof-muted">Saved explanation; it supplies no additional proof support.</p></section>` : '';
+    const strategyHtml = strategy ? `<section class="proof-reader-strategy proof-reading-section proof-logic-section"><h4>Main proof strategy</h4>${this.readerField(key, 'strategy', reader.strategy_ref, 'proof_idea')}${this.readerSources(reader.strategy_ref, 'proof')}<p class="proof-muted">Saved explanation; it supplies no additional proof support.</p></section>` : '';
     const findings = reader.finding_refs.map((ref, index) => {
       const body = this.readerRecord(ref)?.body || {};
       return `<div class="proof-reader-issue"><p class="proof-reader-label">${this.readerField(key, `finding:${index}`, ref, 'category')}${body.target ? ` · Affected material: ${this.humanLink(body.target)}` : ''}</p>${this.readerField(key, `finding:${index}`, ref, 'description')}${this.readerField(key, `finding:${index}`, ref, 'impact_reason')}<p>${this.humanLink(ref, 'Finding and supporting evidence')}</p></div>`;
@@ -1349,7 +1354,7 @@ ${rows.filter(({app}) => app.from_ref.collection === 'items' && this.readerRecor
   readerApplication(key, app, index) {
     const context = `application:${index}`;
     const refined = app.refined_use_refs.length > 0;
-    const content = `<div class="proof-reader-application" data-reader-application="${index}" data-reader-relation="${esc(app.relation)}" data-reader-from="${esc(refKey(app.from_ref))}" data-reader-to="${esc(refKey(app.to_ref))}" data-reader-argument="${esc(app.argument_ref ? refKey(app.argument_ref) : '')}" data-reader-group="${esc(app.group_ref ? refKey(app.group_ref) : '')}">
+    const content = `<div class="proof-reader-application proof-reading-section proof-logic-section" data-reader-application="${index}" data-reader-relation="${esc(app.relation)}" data-reader-from="${esc(refKey(app.from_ref))}" data-reader-to="${esc(refKey(app.to_ref))}" data-reader-argument="${esc(app.argument_ref ? refKey(app.argument_ref) : '')}" data-reader-group="${esc(app.group_ref ? refKey(app.group_ref) : '')}">
 <h6>Supplier: ${this.readerNamedLink(key, `${context}:from`, app.from_ref)}</h6>
 <p class="proof-reader-label">Used for: ${this.readerNamedLink(key, `${context}:to`, app.to_ref)}${app.group_ref ? ` · ${this.humanLink(app.group_ref, 'Inference context')}` : ''}</p>
 ${!app.application_ref ? '<p class="proof-muted">Recorded summary connection; this is not an additional checked implication.</p>' : ''}
@@ -1400,7 +1405,7 @@ ${groups ? `<details class="proof-reader-context"><summary>Inference contexts</s
     const records = section.record_refs.map((ref) => `<div class="proof-record-slot" data-record-ref="${esc(refKey(ref))}" tabindex="-1"><span class="proof-muted">${esc(this.content.title(ref))}</span></div>`);
     const obligations = section.obligation_ids.map((id) => this.obligationHtml(this.model.obligations.get(id)));
     const empty = !records.length && !obligations.length ? '<p class="proof-muted">Nothing recorded in this section.</p>' : '';
-    return `<section class="proof-section proof-section-${esc(section.kind)}" data-proof-section="${esc(section.key)}" data-proof-section-kind="${esc(section.kind)}" tabindex="-1">
+    return `<section class="proof-reading-section proof-section proof-section-${esc(section.kind)}" data-proof-section="${esc(section.key)}" data-proof-section-kind="${esc(section.kind)}" tabindex="-1">
 <h4 class="proof-section-title">${esc({statement:'Paper statements',premises:'Assumptions and context',applications:'Applications',derivations:'Intermediate arguments',composition:'Combined argument',coverage:'Examined source passages',findings:'Findings and proposed repairs',sources:'Source passages',review:'Review assessments',limitations:'Source limitations'}[section.kind] || section.title)}</h4>
 ${section.note ? `<p class="proof-section-note">${esc(section.note)}</p>` : ''}
 ${records.join('\n')}
@@ -1546,16 +1551,11 @@ ${this.assessmentBlock(obligation.assessment)}
   page(fontStyle) {
     const { model } = this;
     const requested = model.summary.scope.target_refs.filter((ref) => ref.collection === 'items').map((ref) => ref.id);
-    const beforeGraph = `<div id="proof-main" class="proof-reader"><p class="proof-kicker">Proof audit</p>${this.readerReportState()}<details class="proof-build-disclosure"><summary>Scientific findings, scope and review limits</summary>${this.summaryHtml()}</details>${this.graph && model.layout.reasons.length ? `<ul class="proof-reasons">${model.layout.reasons.map((reason) => `<li>${esc(reason)}</li>`).join('')}</ul>` : ''}</div>
-${mainNavigation(model.nodeList, model.connectionList, requested)}
+    const beforeGraph = `<div id="proof-main" class="proof-reader"><p class="proof-kicker">Proof audit</p>${this.readerReportState()}${mathDisplayNotes(model.mathDiagnosticSummary)}<details class="proof-build-disclosure"><summary>Scientific findings, scope and review limits</summary>${this.summaryHtml()}</details>${this.graph && model.layout.reasons.length ? `<ul class="proof-reasons">${model.layout.reasons.map((reason) => `<li>${esc(reason)}</li>`).join('')}</ul>` : ''}</div>
+${mainNavigation(model.nodeList, model.connectionList, requested, !!this.graph)}
 <h2 id="proof-graph-heading" class="proof-visually-hidden">Dependency graph</h2><p id="proof-graph-desc" class="proof-visually-hidden">Major results and their recorded uses. Connection colors describe the represented assessments under declared premises.</p>`;
     const afterGraph = `<div class="proof-reader">${this.graph ? this.legendHtml() : this.indexHtml()}
-<section id="proof-search-panel" class="proof-panel" aria-labelledby="proof-search-heading">
-<h2 id="proof-search-heading">Search the paper and examination</h2>
-<div class="proof-search-row"><label for="proof-search">Search statements, source passages, assumptions and assessments</label><input id="proof-search" type="search" autocomplete="off" spellcheck="false" placeholder="Search a result, condition or explanation"></div>
-<p id="proof-search-status" class="proof-muted" role="status" aria-live="polite">Search runs entirely in this page over the saved scientific content.</p>
-<ol id="proof-search-results" class="proof-search-results" aria-label="Search results"></ol>
-</section>
+${scientificSearchPanel()}
 ${this.detailsHtml()}
 <footer class="proof-footer">
 <p>Archify viewer (MIT); JetBrains Mono under the SIL Open Font License. Audit evidence and assessments are drawn from the saved paper records.</p>
@@ -1569,7 +1569,7 @@ ${this.detailsHtml()}
     // It has no identity-bearing elements and is never presented as a graph.
     const svg = this.graph ? this.svgHtml() : '<svg class="proof-index-placeholder" viewBox="0 0 100 100" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"></svg>';
     return archifyPage({ templatePath: TEMPLATE_PATH, title: model.title, svg, beforeGraph, afterGraph,
-      css: PAGE_CSS, runtime: RUNTIME_JS, data, fontStyle, index: !this.graph });
+      css: '', runtime: readerRuntime({targets:[...model.details.keys()].map(key => ({key,articleId:this.detailId(key),nodeId:model.nodeList.find(node => node.detail_key === key)?.id,edgeId:model.connectionList.find(edge => edge.detail_key === key)?.id})),searchEntries:this.searchEntries(),graphAvailable:!!this.graph}), data, fontStyle, index: !this.graph });
   }
 }
 
@@ -1850,7 +1850,7 @@ export function representationReceipt(model, scan) {
     return connection && classList(element).includes(`s-${connection.assessment.state}`)
       && element.attrs['marker-end'] === `url(#proof-arrow-${connection.assessment.state})`;
   }), 'visible node or edge colors, glyphs or labels disagree with the saved graph');
-  check('assessment_styles', all.some((element) => element.tag === 'style' && element.text?.includes(PAGE_CSS)),
+  check('assessment_styles', all.some((element) => element.tag === 'style' && element.text?.includes(SCIENTIFIC_READER_CSS)),
     'the assessment display stylesheet was changed');
   const summaryElement = all.find((element) => element.attrs.id === 'proof-summary');
   const expectedSummary = scanHtml(canonicalRenderer.summaryHtml()).root.children[0];
@@ -1957,556 +1957,6 @@ export function main(argv) {
 // ---------------------------------------------------------------------------
 // Page assets (inline CSS and runtime script)
 // ---------------------------------------------------------------------------
-
-const LIGHT_VARS = {
-  bg: '#f4f6f9', panel: '#ffffff', ink: '#111827', muted: '#5b6472', line: '#d5dbe3', 'line-strong': '#9aa5b4', grid: '#e6eaf0', accent: '#2563eb', focus: '#d97706',
-  'state-green': '#15803d', 'state-red': '#b91c1c', 'state-gray': '#6b7280', 'state-amber': '#b45309',
-  'state-green-soft': '#dcfce7', 'state-red-soft': '#fee2e2', 'state-gray-soft': '#e5e7eb', 'state-amber-soft': '#fef3c7',
-  ...Object.fromEntries(Object.entries(KINDS).map(([kind, [, , light]]) => [`kind-${kind}`, light])),
-};
-const DARK_VARS = {
-  bg: '#0f141b', panel: '#171e27', ink: '#e6e9ee', muted: '#9aa5b4', line: '#2a3441', 'line-strong': '#4b5766', grid: '#1b2430', accent: '#60a5fa', focus: '#fbbf24',
-  'state-green': '#4ade80', 'state-red': '#f87171', 'state-gray': '#9ca3af', 'state-amber': '#fbbf24',
-  'state-green-soft': '#14532d', 'state-red-soft': '#7f1d1d', 'state-gray-soft': '#374151', 'state-amber-soft': '#78350f',
-  ...Object.fromEntries(Object.entries(KINDS).map(([kind, [, dark]]) => [`kind-${kind}`, dark])),
-};
-const cssVars = (vars) => Object.entries(vars).map(([name, value]) => `--${name}:${value};`).join('');
-
-const PAGE_CSS = `.proof-reader,.proof-svg,.proof-main-navigation{color-scheme:light;${cssVars(LIGHT_VARS)}--mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,'DejaVu Sans Mono','Liberation Mono',monospace;--serif:Georgia,'Times New Roman',serif;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;}
-[data-theme="dark"] .proof-reader,[data-theme="dark"] .proof-svg,[data-theme="dark"].proof-svg,[data-theme="dark"] .proof-main-navigation{color-scheme:dark;${cssVars(DARK_VARS)}}
-.proof-reader,.proof-reader *{box-sizing:border-box}
-.proof-reader{color:var(--ink);-webkit-text-size-adjust:100%}
-.proof-reader a{color:var(--accent)}
-.proof-reader code,.proof-reader pre,.proof-reader kbd{font-family:var(--mono);font-size:.92em}
-.proof-reader h2,.proof-reader h3,.proof-reader h4{line-height:1.25;margin:0 0 .4em;font-weight:650}
-.proof-reader h2{font-size:1.2rem}.proof-reader h3{font-size:1rem}.proof-reader h4{font-size:.95rem}
-.proof-reader p{margin:.3em 0}
-.proof-reader ul,.proof-reader ol{margin:.3em 0;padding-left:1.3em}
-.proof-reader button{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line-strong);border-radius:6px;padding:4px 10px;cursor:pointer}
-.proof-reader button:hover{border-color:var(--accent)}
-.proof-reader button:focus-visible,.proof-reader a:focus-visible,.proof-reader input:focus-visible,.proof-reader [tabindex]:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
-.proof-skip{position:absolute;left:-999px;top:8px;background:var(--panel);padding:6px 10px;border:1px solid var(--line-strong);border-radius:6px;z-index:10}
-.proof-skip:focus{left:8px}
-.proof-visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-.proof-header{max-width:1400px;margin:0 auto;padding:20px 0 12px;display:flex;flex-wrap:wrap;gap:12px 24px;align-items:flex-start;justify-content:space-between}
-.proof-header-text{min-width:0;flex:1 1 320px}
-.proof-kicker{margin:0;font-family:var(--mono);font-size:.78rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
-.proof-build{margin:.2em 0 0;font-family:var(--mono);font-size:.78rem;color:var(--muted);overflow-wrap:anywhere}
-.proof-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-.proof-panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;min-width:0}
-.proof-panel-head{display:flex;flex-wrap:wrap;gap:6px 16px;align-items:baseline;justify-content:space-between}
-.proof-panel-head p{flex:1 1 300px;margin:0}
-.proof-muted{color:var(--muted)}
-.proof-dot{color:var(--muted)}
-.proof-pill{display:inline-block;font-family:var(--mono);font-size:.74rem;line-height:1.4;padding:0 6px;border:1px solid var(--line-strong);border-radius:999px;color:var(--muted);vertical-align:middle;overflow-wrap:anywhere}
-.proof-summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
-.proof-card{border:1px solid var(--line);border-radius:10px;padding:12px;min-width:0}
-[data-proof-factual]{grid-column:1/-1}
-.proof-completion-table{width:100%;border-collapse:collapse;font-size:.9rem}
-.proof-completion-table caption{text-align:left;margin:.4em 0}
-.proof-completion-table th,.proof-completion-table td{padding:.35em .5em;border-bottom:1px solid var(--line);text-align:left;overflow-wrap:anywhere}
-.proof-completion-table th:nth-child(n+3),.proof-completion-table td:nth-child(n+3){text-align:right;font-variant-numeric:tabular-nums}
-.proof-kv{display:grid;grid-template-columns:minmax(120px,max-content) 1fr;gap:3px 12px;margin:.3em 0}
-.proof-kv dt{color:var(--muted)}
-.proof-kv dd{margin:0;min-width:0;overflow-wrap:anywhere}
-.proof-kv-inline{grid-template-columns:repeat(3,auto);justify-content:start;gap:2px 18px}
-.proof-kv-inline dt{grid-row:1}.proof-kv-inline dd{grid-row:2;font-size:1.3rem;font-weight:650}
-.proof-count{font-variant-numeric:tabular-nums;font-weight:650}
-.proof-process{font-weight:650;padding:6px 10px;border-radius:8px;display:inline-block}
-.proof-process.is-complete{background:var(--state-green-soft);color:var(--state-green)}
-.proof-process.is-incomplete{background:var(--state-amber-soft);color:var(--state-amber)}
-.proof-state-list,.proof-plain-list,.proof-finding-list,.proof-legend-list,.proof-group-list,.proof-value-list,.proof-search-results,.proof-fragment-list{list-style:none;padding:0;margin:.3em 0}
-.proof-state-list li,.proof-finding-list li,.proof-plain-list li{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;padding:2px 0}
-.proof-finding-text{color:var(--muted);flex:1 1 100%}
-.proof-state-badge{display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);font-size:.76rem;line-height:1.5;padding:0 8px 0 5px;border-radius:999px;border:1px solid currentColor;white-space:nowrap}
-.proof-state-glyph{font-weight:700}
-.s-green .proof-state-badge,.proof-state-badge.s-green{color:var(--state-green);background:var(--state-green-soft)}
-.s-red .proof-state-badge,.proof-state-badge.s-red{color:var(--state-red);background:var(--state-red-soft)}
-.s-gray .proof-state-badge,.proof-state-badge.s-gray{color:var(--state-gray);background:var(--state-gray-soft)}
-.s-amber .proof-state-badge,.proof-state-badge.s-amber{color:var(--state-amber);background:var(--state-amber-soft)}
-.proof-kind-badge{display:inline-block;font-family:var(--mono);font-size:.74rem;line-height:1.5;padding:0 7px;border-radius:4px;color:#fff;background:var(--tone,var(--muted));white-space:nowrap}
-${Object.keys(KINDS).map((kind) => `.k-${kind}{--tone:var(--kind-${kind})}`).join('\n')}
-.proof-review{font-family:var(--mono);font-size:.76rem;color:var(--muted)}
-.proof-review.r-complete{color:var(--state-green)}.proof-review.r-pending{color:var(--state-amber)}.proof-review.r-disputed,.proof-review.r-compromised{color:var(--state-red)}
-.proof-ir-sample{font-family:var(--mono);font-size:.72rem;border:1px solid var(--line-strong);border-radius:999px;padding:0 5px}
-.proof-reasons{margin:.4em 0;padding-left:1.2em}
-.proof-canvas{margin-top:10px;overflow-x:auto;overflow-y:hidden;border:1px solid var(--line);border-radius:10px;background:var(--panel);max-width:100%}
-.proof-canvas svg{display:block;max-width:none}
-.proof-canvas.is-fit svg{width:100%;height:auto}
-.proof-svg text{font-family:var(--mono);fill:var(--ink)}
-.proof-grid-line{stroke:var(--grid);fill:none}
-.proof-component path{stroke:var(--line-strong);fill:none}
-.proof-component text{fill:var(--muted)}
-.proof-node{cursor:pointer;outline:none}
-.proof-node-box{fill:var(--panel);stroke:var(--tone,var(--muted));stroke-width:1.5}
-@supports (fill: color-mix(in srgb, red 10%, white)){.proof-node-box{fill:color-mix(in srgb,var(--tone,var(--muted)) 16%,var(--panel))}}
-.proof-node-ring{fill:none;stroke:var(--state,var(--muted));stroke-width:2.5}
-.proof-node.s-green{--state:var(--state-green)}.proof-node.s-red{--state:var(--state-red)}.proof-node.s-gray{--state:var(--state-gray)}.proof-node.s-amber{--state:var(--state-amber)}
-.proof-node.s-red .proof-node-ring{stroke-width:4}
-.proof-node.s-amber .proof-node-ring{stroke-dasharray:7 4}
-.proof-node.s-gray .proof-node-ring{stroke-dasharray:2 4}
-.proof-node:hover .proof-node-box{stroke-width:3}
-.proof-node:focus-visible .proof-node-box{stroke:var(--focus);stroke-width:3.5}
-.proof-node[aria-pressed="true"] .proof-node-box{stroke-width:3}
-.proof-node-caption{fill:var(--muted)}
-.proof-node-state circle{fill:var(--state,var(--muted));stroke:var(--panel);stroke-width:2}
-.proof-node-state text{fill:#fff}
-.proof-node-review rect{fill:var(--panel);stroke:var(--muted);stroke-width:1.2}
-.proof-node-review text{fill:var(--muted);font-weight:700}
-.proof-node-review.r-complete rect{stroke:var(--state-green);fill:var(--state-green)}.proof-node-review.r-complete text{fill:#fff}
-.proof-node-review.r-pending rect{stroke:var(--state-amber)}.proof-node-review.r-pending text{fill:var(--state-amber)}
-.proof-node-review.r-disputed rect{stroke:var(--state-red)}.proof-node-review.r-disputed text{fill:var(--state-red)}
-.proof-node-review.r-compromised rect{stroke:var(--state-red);fill:var(--state-red);stroke-dasharray:3 2}.proof-node-review.r-compromised text{fill:#fff}
-.proof-edge{fill:none;stroke-width:2;stroke:var(--muted)}
-.proof-edge.s-green{stroke:var(--state-green)}.proof-edge.s-red{stroke:var(--state-red);stroke-width:2.6}.proof-edge.s-gray{stroke:var(--state-gray);stroke-dasharray:2 4}.proof-edge.s-amber{stroke:var(--state-amber);stroke-dasharray:7 4}
-.proof-edge-hit{fill:none;stroke:transparent;stroke-width:14;pointer-events:stroke;cursor:pointer}
-.proof-arrowhead{fill:var(--muted)}
-.proof-arrowhead.s-green{fill:var(--state-green)}.proof-arrowhead.s-red{fill:var(--state-red)}.proof-arrowhead.s-gray{fill:var(--state-gray)}.proof-arrowhead.s-amber{fill:var(--state-amber)}
-.proof-edge-badge{cursor:pointer;outline:none}
-.proof-edge-badge rect{fill:var(--panel);stroke:var(--state,var(--muted));stroke-width:1.2}
-.proof-edge-badge.s-green{--state:var(--state-green)}.proof-edge-badge.s-red{--state:var(--state-red)}.proof-edge-badge.s-gray{--state:var(--state-gray)}.proof-edge-badge.s-amber{--state:var(--state-amber)}
-.proof-edge-badge text{font-size:10px;fill:var(--ink)}
-.proof-edge-badge:hover rect,.proof-edge-badge:focus-visible rect{stroke:var(--focus);stroke-width:2.5}
-.proof-badge-leader{stroke:var(--line-strong);stroke-dasharray:2 3;fill:none}
-.proof-badge-anchor{fill:var(--line-strong)}
-.proof-legend{display:flex;flex-wrap:wrap;gap:8px 24px;margin-top:10px;font-size:.88rem}
-.proof-legend-list{display:flex;flex-wrap:wrap;gap:4px 14px}
-.proof-legend-list li{display:flex;align-items:center;gap:6px}
-.proof-legend-swatch{display:inline-block;width:14px;height:14px;border-radius:4px;background:var(--tone,var(--muted))}
-.proof-legend-note{color:var(--muted);flex:1 1 100%;margin:0}
-.proof-index-reasons{border-left:3px solid var(--state-amber);padding:4px 12px;margin:8px 0 12px;background:var(--state-amber-soft)}
-.proof-index-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;margin-bottom:14px}
-.proof-index-card{border:1px solid var(--line);border-left:5px solid var(--state,var(--line-strong));border-radius:10px;padding:10px 12px;min-width:0}
-.proof-index-card.s-green{--state:var(--state-green)}.proof-index-card.s-red{--state:var(--state-red)}.proof-index-card.s-gray{--state:var(--state-gray)}.proof-index-card.s-amber{--state:var(--state-amber)}
-.proof-index-head{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center}
-.proof-index-head h4{margin:0;flex:1 1 auto;overflow-wrap:anywhere}
-.proof-index-caption,.proof-index-text{overflow-wrap:anywhere}
-.proof-index-meta{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;font-size:.85rem}
-.proof-search-row{display:flex;flex-direction:column;gap:4px;max-width:720px}
-#proof-search{font:inherit;padding:8px 10px;border:1px solid var(--line-strong);border-radius:8px;background:var(--bg);color:var(--ink);width:100%}
-.proof-search-results{display:grid;gap:6px;margin-top:8px}
-.proof-search-hit{display:block;width:100%;text-align:left;padding:8px 10px;border-radius:8px}
-.proof-search-hit strong{font-family:var(--mono);font-size:.86rem}
-.proof-search-where{display:block;color:var(--muted);font-size:.84rem}
-.proof-search-snippet{display:block;color:var(--muted);font-size:.86rem;overflow-wrap:anywhere}
-.proof-search-snippet mark{background:var(--state-amber-soft);color:inherit}
-html[data-js]:not(.show-all-details) [data-proof-detail]:not(.is-active){display:none}
-html:not([data-js]) #proof-detail-empty,html.show-all-details #proof-detail-empty,html[data-js] #proof-detail-empty.is-hidden{display:none}
-.proof-check{display:inline-flex;align-items:center;gap:6px}
-.proof-detail{border:1px solid var(--line);border-radius:10px;padding:14px;margin-top:12px;min-width:0}
-.proof-detail-top{display:flex;flex-wrap:wrap;gap:8px;justify-content:space-between;align-items:center;margin-bottom:6px}
-.proof-detail-key{font-size:.8rem;color:var(--muted);overflow-wrap:anywhere}
-.proof-detail-owner{margin-bottom:12px}
-.proof-owner-kicker{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;margin:0 0 4px}
-.proof-detail-heading{outline-offset:4px;overflow-wrap:anywhere}
-.proof-reader-overview{max-width:88ch;margin:0 auto;line-height:1.65}
-.proof-reader-overview h4{font-size:1.2rem;margin:1.35em 0 .45em}
-.proof-reader-overview h5{font-size:1.05rem;margin:1em 0 .4em}
-.proof-reader-overview h6{font-size:1rem;margin:.6em 0 .3em}
-.proof-reader-overview .proof-reader-value{white-space:pre-wrap;overflow-wrap:anywhere}
-.proof-reader-overview .proof-fragment{font-size:1rem}
-.proof-reader-label{font-size:.88rem;font-weight:600;margin:.65em 0 .25em;color:var(--ink)}
-.proof-reader-sources{font-size:.85rem;margin:.5em 0;color:var(--muted)}
-.proof-reader-strategy{border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:0 0 1em}
-.proof-reader-route{border-top:1px solid var(--line);margin-top:1.2em;padding-top:.25em}
-.proof-reader-application{padding:.7em 0;border-bottom:1px solid var(--line)}
-.proof-reader-application:last-child{border-bottom:0}
-.proof-reader-scope{border-left:2px solid var(--line);padding-left:1em;margin:.7em 0}
-.proof-reader-premise{margin:.5em 0}
-.proof-reader-premise p{margin:.3em 0}
-.proof-reader-values{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:.2em .8em;margin:.4em 0}
-.proof-reader-values dt{font-size:.85em;color:var(--muted)}
-.proof-reader-values dd{margin:0}
-.proof-reader-issue,.proof-reader-notice{border-left:3px solid var(--state-amber);padding:.5em .9em;background:var(--state-amber-soft);margin:.8em 0}
-.proof-reader-group,.proof-reader-case{border-left:2px solid var(--line);padding-left:1em;margin:.7em 0}
-.proof-disclosure,.proof-reader-context{border-top:1px solid var(--line);margin:.7em 0;padding:.55em 0}
-.proof-disclosure>summary,.proof-reader-context>summary{cursor:pointer;font-weight:600;line-height:1.5;padding:.2em 0}
-.proof-reader-context>summary{font-size:.9rem;color:var(--muted)}
-.proof-reader summary:focus-visible,.proof-reader a:focus-visible{outline:2px solid var(--focus);outline-offset:4px;border-radius:2px}
-.proof-reader-context[open]>summary,.proof-disclosure[open]>summary{margin-bottom:.7em}
-.proof-report-state{margin:.7em 0 1em;max-width:100ch;line-height:1.55}
-.proof-report-state ul{padding-left:1.3em}
-.proof-technical{font-size:.85rem;color:var(--muted)}
-.proof-owner-caption{color:var(--muted)}
-.proof-owner-links{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;margin-top:8px}
-.proof-owner-links h4{margin-bottom:.2em}
-.proof-assessment{border-left:4px solid var(--state,var(--line-strong));padding:4px 12px;margin:8px 0;background:var(--bg);border-radius:0 8px 8px 0}
-.proof-assessment.s-green{--state:var(--state-green)}.proof-assessment.s-red{--state:var(--state-red)}.proof-assessment.s-gray{--state:var(--state-gray)}.proof-assessment.s-amber{--state:var(--state-amber)}
-.proof-assessment-head{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center}
-.proof-assessment-text{overflow-wrap:anywhere}
-.proof-assessment-meta{font-size:.88rem;color:var(--muted);overflow-wrap:anywhere}
-.proof-group{border:1px dashed var(--line-strong);border-radius:8px;padding:6px 10px;margin:6px 0}
-.proof-group-head{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center}
-.proof-section{border-top:1px solid var(--line);padding-top:10px;margin-top:10px}
-.proof-section-title{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:baseline}
-.proof-section-kind{font-family:var(--mono);font-size:.74rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
-.proof-section-note{color:var(--muted);overflow-wrap:anywhere}
-.proof-record,.proof-obligation{border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin:8px 0;min-width:0;overflow-wrap:anywhere;background:var(--panel)}
-.proof-obligation{border-left:4px solid var(--state,var(--line-strong))}
-.proof-obligation.s-green{--state:var(--state-green)}.proof-obligation.s-red{--state:var(--state-red)}.proof-obligation.s-gray{--state:var(--state-gray)}.proof-obligation.s-amber{--state:var(--state-amber)}
-.proof-record-head{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;margin:0 0 4px;font-size:.9rem}
-.proof-record-title{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;margin:0 0 6px}
-.proof-record-fields{display:grid;grid-template-columns:minmax(110px,max-content) minmax(0,1fr);gap:4px 14px;margin:.3em 0}
-.proof-record-fields dt{color:var(--muted);font-family:var(--mono);font-size:.8rem;padding-top:2px}
-.proof-record-fields dd{margin:0;min-width:0}
-.proof-nested{border-left:2px solid var(--line);padding-left:10px}
-.proof-text{white-space:pre-wrap;overflow-wrap:anywhere;margin:0}
-.proof-statement-text{font-family:var(--serif);font-size:1.05em}
-.proof-fragment{font-family:var(--serif);font-size:1.05em;line-height:1.6;max-width:100%;overflow-wrap:anywhere}
-.proof-fragment p{margin:.3em 0}
-.proof-fragment-list{counter-reset:condition;padding-left:0}
-.proof-fragment-list li{padding:2px 0}
-.proof-formula{display:inline-block;max-width:100%;overflow-x:auto;overflow-y:hidden;vertical-align:middle;padding:2px 0}
-.proof-formula-block{display:block;margin:.3em 0}
-.proof-formula math{max-width:none}
-.proof-excerpt{white-space:pre-wrap;overflow-wrap:anywhere;overflow-x:auto;margin:0;padding:8px 10px;background:var(--bg);border-radius:6px;font-size:.84rem;line-height:1.45}
-.proof-ref-text{overflow-wrap:anywhere}
-.proof-value-list{padding-left:0}
-.proof-value-list li{padding:1px 0}
-.is-target{outline:2px solid var(--focus);outline-offset:3px}
-.proof-footer{max-width:1400px;margin:24px auto 0;color:var(--muted);font-size:.84rem}
-@media (max-width:640px){.proof-kv{grid-template-columns:1fr}.proof-kv dt{margin-top:4px}.proof-record-fields{grid-template-columns:1fr}.proof-record-fields dt{margin-top:4px}.proof-kv-inline{grid-template-columns:repeat(3,auto)}.proof-reader-values{grid-template-columns:1fr}.proof-reader-scope{padding-left:.65em}.proof-detail{padding:10px}}
-@media print{.proof-toolbar,#proof-search-panel,.proof-back,.proof-focus-node,.proof-check,#proof-detail-empty{display:none!important}[data-proof-detail]{display:block!important}.proof-canvas{overflow:visible}.proof-canvas svg{width:100%;height:auto}}`;
-
-const RUNTIME_JS = `(function () {
-  'use strict';
-  var doc = document, root = doc.documentElement;
-  var projection = null;
-  try { projection = JSON.parse(doc.getElementById('proof-projection').textContent); } catch (error) { projection = null; }
-  var svg = doc.querySelector('svg.proof-svg');
-  var nodeList = svg ? Array.prototype.slice.call(svg.querySelectorAll('g[data-node-id]')) : [];
-  var lastGraphTarget = null;
-  var viewer = window.Archify, viewerKey = '';
-  var container = doc.querySelector('.diagram-container'), chip = doc.getElementById('focus-chip');
-  var detailsPanel = doc.getElementById('proof-details');
-  if (svg && chip && container) {
-    container.insertAdjacentElement('afterend', chip);
-    chip.removeAttribute('data-radar-yielded');chip.removeAttribute('aria-hidden');
-    if (detailsPanel) { chip.insertAdjacentElement('afterend', detailsPanel); detailsPanel.classList.add('proof-reader'); }
-    var reachLabel = chip.querySelector('.semantic-passport-reach-label');
-    if (reachLabel) reachLabel.textContent = 'Trace dependencies';
-  }
-
-  function cssEscape(value) {
-    if (window.CSS && typeof CSS.escape === 'function') return CSS.escape(value);
-    return String(value).replace(/["\\\\]/g, '\\\\$&');
-  }
-  function query(scope, attribute, value) {
-    return scope.querySelector('[' + attribute + '="' + cssEscape(value) + '"]');
-  }
-  function detailFor(key) { return query(doc, 'data-proof-detail', key); }
-  function hydrateDetail(article) {
-    if (!article || article.getAttribute('data-hydrated') === 'true') return;
-    article.querySelectorAll('.proof-record-slot[data-record-ref]').forEach(function (slot) {
-      var template = query(doc, 'data-record-template', slot.getAttribute('data-record-ref'));
-      if (template) slot.replaceChildren(template.content.cloneNode(true));
-    });
-    article.setAttribute('data-hydrated', 'true');
-  }
-  function hydrateAll() { doc.querySelectorAll('[data-proof-detail]').forEach(hydrateDetail); }
-
-  // Details: one at a time unless "show all" is checked.
-  var showAll = doc.getElementById('proof-show-all');
-  function applyShowAll() {
-    if (showAll && showAll.checked) hydrateAll();
-    root.classList.toggle('show-all-details', !!(showAll && showAll.checked));
-  }
-  if (showAll) { showAll.addEventListener('change', applyShowAll); applyShowAll(); }
-  var printDisclosureState = null;
-  window.addEventListener('beforeprint', function () {
-    hydrateAll();
-    if (printDisclosureState) return;
-    printDisclosureState = Array.prototype.filter.call(doc.querySelectorAll('details'), function (element) { return element.closest('.proof-reader'); }).map(function (element) {
-      var previous = element.hasAttribute('open'); element.setAttribute('open', '');
-      return [element, previous];
-    });
-  });
-  window.addEventListener('afterprint', function () {
-    (printDisclosureState || []).forEach(function (entry) {
-      if (entry[1]) entry[0].setAttribute('open', ''); else entry[0].removeAttribute('open');
-    });
-    printDisclosureState = null;
-  });
-
-  function revealAncestors(target) {
-    for (var parent = target; parent; parent = parent.parentElement) {
-      if (String(parent.tagName).toLowerCase() === 'details') parent.setAttribute('open', '');
-    }
-  }
-
-  function clearTargets() {
-    var previous = doc.querySelectorAll('.is-target');
-    for (var i = 0; i < previous.length; i++) previous[i].classList.remove('is-target');
-  }
-  function showDetail(key, sectionKey, recordRef, options) {
-    var article = detailFor(key);
-    if (!article) return false;
-    hydrateDetail(article);
-    viewerKey = key;
-    if (svg && viewer && viewer.focus && !(options && options.fromViewer)) {
-      var selected = projection.nodes.find(function (node) { return node.detail_key === key; });
-      var connection = projection.connections.find(function (edge) { return edge.detail_key === key; });
-      if (selected && viewer.focus.active() !== selected.id) viewer.focus.set(selected.id, { toggle: false });
-      else if (connection && (!viewer.focus.relationship() || viewer.focus.relationship().id !== connection.id)) viewer.focus.inspectRelationshipById(connection.id, { toggle: false });
-    }
-    var active = doc.querySelectorAll('[data-proof-detail].is-active');
-    for (var i = 0; i < active.length; i++) active[i].classList.remove('is-active');
-    article.classList.add('is-active');
-    var empty = doc.getElementById('proof-detail-empty');
-    if (empty) empty.classList.add('is-hidden');
-    for (i = 0; i < nodeList.length; i++) nodeList[i].setAttribute('aria-pressed', nodeList[i].getAttribute('data-detail-key') === key ? 'true' : 'false');
-    var target = article;
-    var section = sectionKey ? query(article, 'data-proof-section', sectionKey) : null;
-    if (section) target = section;
-    if (recordRef) {
-      var record = section ? query(section, 'data-record-ref', recordRef) : null;
-      if (!record) record = query(article, 'data-record-ref', recordRef);
-      if (record) target = record;
-    }
-    if (options && options.obligationId) {
-      var obligation = section ? query(section, 'data-obligation-id', options.obligationId) : null;
-      if (!obligation) obligation = query(article, 'data-obligation-id', options.obligationId);
-      if (obligation) target = obligation;
-    }
-    clearTargets();
-    if (target !== article) target.classList.add('is-target');
-    revealAncestors(target);
-    var focusTarget = target === article ? (article.querySelector('.proof-detail-heading') || article) : target;
-    if (!(options && options.silent)) {
-      try { target.scrollIntoView({ block: 'start' }); } catch (error) { target.scrollIntoView(); }
-      try { focusTarget.focus({ preventScroll: true }); } catch (error) { focusTarget.focus(); }
-    }
-    return true;
-  }
-
-  function nodeById(id) {
-    for (var i = 0; i < nodeList.length; i++) if (nodeList[i].getAttribute('data-node-id') === id) return nodeList[i];
-    return null;
-  }
-  function backToGraph() {
-    if (viewer && viewer.focus) viewer.focus.clear();
-    var target = lastGraphTarget || nodeList[0] || doc.getElementById('proof-major-index');
-    if (!target) return;
-    try { target.scrollIntoView({ block: 'center' }); } catch (error) { target.scrollIntoView(); }
-    if (typeof target.focus === 'function') target.focus();
-  }
-  function openTarget(element) {
-    var key = element.getAttribute('data-detail-key');
-    if (!key) return;
-    lastGraphTarget = element;
-    showDetail(key);
-  }
-
-  function readableView(id) {
-    if (!svg || !viewer || !viewer.view) return;
-    var node = nodeById(id) || nodeList[0];
-    if (!node) return;
-    var label = node.querySelector('text[data-node-label]'), vb = svg.viewBox.baseVal;
-    var size = label ? Number(label.getAttribute('font-size')) || 14 : 14;
-    var base = Math.min(svg.clientWidth / vb.width, svg.clientHeight / vb.height);
-    var scale = Math.max(1, Math.min(3, Math.ceil(12 / (size * base) * 4) / 4));
-    viewer.view.centerAt(num(node, 'data-node-x') + 85, num(node, 'data-node-y') + 32,
-      { scale: scale, minimumScale: scale, instant: true });
-    doc.getElementById('proof-view-status').textContent = 'Readable view shows part of the full graph. Drag the background or select another result to navigate.';
-  }
-  function syncViewer() {
-    if (!viewer || !viewer.focus || !svg) return;
-    var relationship = viewer.focus.relationship(), active = viewer.focus.active();
-    var node = projection.nodes.find(function (entry) { return entry.id === active; });
-    var edge = relationship && projection.connections.find(function (entry) { return entry.id === relationship.id; });
-    var key = edge ? edge.detail_key : node ? node.detail_key : '';
-    doc.querySelectorAll('[data-proof-main]').forEach(function (button) { button.setAttribute('aria-pressed', String(button.getAttribute('data-proof-main') === active)); });
-    if (key && key !== viewerKey) showDetail(key, null, null, { fromViewer: true });
-    if (!key && viewerKey) {
-      viewerKey = '';
-      doc.querySelectorAll('[data-proof-detail].is-active').forEach(function (article) { article.classList.remove('is-active'); });
-      var empty = doc.getElementById('proof-detail-empty');
-      if (empty) empty.classList.remove('is-hidden');
-      clearTargets();
-    }
-    svg.querySelectorAll('[data-edge-badge]').forEach(function (badge) {
-      var path = query(svg, 'data-edge-id', badge.getAttribute('data-edge-badge'));
-      var matched = path && (svg.hasAttribute('data-reach-active') ? path.hasAttribute('data-reach-match') : path.hasAttribute('data-focus-match'));
-      if (matched) badge.setAttribute('data-proof-emphasized', ''); else badge.removeAttribute('data-proof-emphasized');
-    });
-  }
-  if (svg && viewer && viewer.focus) {
-    new MutationObserver(syncViewer).observe(svg, { subtree: true, attributes: true,
-      attributeFilter: ['data-focus-active', 'data-focus-selected', 'data-relationship-pin-active', 'data-reach-active', 'data-reach-match'] });
-    doc.getElementById('proof-full-structure').addEventListener('click', function () {
-      viewer.focus.clear();
-      if (viewer.semanticLens) viewer.semanticLens.clear({ preserveView: true });
-      if (viewer.routeProbe) viewer.routeProbe.clear({ restoreFocus: false });
-      viewer.view.reset();
-      doc.getElementById('proof-view-status').textContent = 'Complete structure fitted to the viewer. Select a result or choose Readable view for larger text.';
-    });
-    doc.getElementById('proof-readable-view').addEventListener('click', function () { readableView(viewer.focus.active()); });
-    // Native background handling must not swallow application badges.
-    doc.addEventListener('click', function (event) {
-      var badge = event.target.closest && event.target.closest('[data-edge-badge]');
-      if (!badge) return;
-      event.preventDefault(); event.stopPropagation();
-      viewer.focus.inspectRelationshipById(badge.getAttribute('data-edge-badge'), { toggle: false });syncViewer();
-    }, true);
-    requestAnimationFrame(syncViewer);
-  } else {
-    // The index uses the same shell, but exporting a hidden empty camera would be misleading.
-    var exportButton = doc.getElementById('btn-export');
-    if (exportButton) { exportButton.disabled = true; exportButton.title = 'The graph is unavailable for this cyclic projection; use the complete index below.'; }
-  }
-
-  doc.addEventListener('click', function (event) {
-    var origin = event.target;
-    if (!origin || typeof origin.closest !== 'function') return;
-    var main = origin.closest('[data-proof-main]');
-    if (main) {
-      var mainId = main.getAttribute('data-proof-main');
-      var mainNode = projection.nodes.find(function (node) { return node.id === mainId; });
-      if (mainNode) { showDetail(mainNode.detail_key); readableView(mainId); }
-      return;
-    }
-    var jump = origin.closest('.proof-jump');
-    if (jump) {
-      var key = jump.getAttribute('data-jump-detail');
-      if (key && showDetail(key, jump.getAttribute('data-jump-section'), jump.getAttribute('data-jump-record'))) event.preventDefault();
-      return;
-    }
-    var focusNode = origin.closest('[data-focus-node]');
-    if (focusNode) {
-      var node = nodeById(focusNode.getAttribute('data-focus-node'));
-      if (node) {
-        lastGraphTarget = node;
-        showDetail(node.getAttribute('data-detail-key'), null, null, { silent: true });
-        readableView(node.getAttribute('data-node-id'));
-        try { container.scrollIntoView({ block: 'center' }); } catch (error) { container.scrollIntoView(); }
-        try { node.focus({ preventScroll: true }); } catch (error) { node.focus(); }
-      }
-      return;
-    }
-    if (origin.closest('.proof-back')) backToGraph();
-  });
-  doc.addEventListener('keydown', function (event) {
-    if (event.key === 'Escape' && event.target && typeof event.target.closest === 'function' && event.target.closest('#proof-details')) backToGraph();
-  });
-
-  function num(element, attribute) { return parseFloat(element.getAttribute(attribute)); }
-  function neighbour(element, direction) {
-    var id = element.getAttribute('data-node-id');
-    var y = num(element, 'data-node-y');
-    var best = null, bestDistance = Infinity, i, candidate, distance;
-    var edges = svg.querySelectorAll(direction > 0 ? 'path[data-edge-from="' + cssEscape(id) + '"]' : 'path[data-edge-to="' + cssEscape(id) + '"]');
-    for (i = 0; i < edges.length; i++) {
-      candidate = nodeById(edges[i].getAttribute(direction > 0 ? 'data-edge-to' : 'data-edge-from'));
-      if (!candidate) continue;
-      distance = Math.abs(num(candidate, 'data-node-y') - y);
-      if (distance < bestDistance) { best = candidate; bestDistance = distance; }
-    }
-    if (best) return best;
-    var rank = parseInt(element.getAttribute('data-node-rank'), 10) + direction;
-    for (i = 0; i < nodeList.length; i++) {
-      candidate = nodeList[i];
-      if (parseInt(candidate.getAttribute('data-node-rank'), 10) !== rank) continue;
-      distance = Math.abs(num(candidate, 'data-node-y') - y);
-      if (distance < bestDistance) { best = candidate; bestDistance = distance; }
-    }
-    return best;
-  }
-  function vertical(element, direction) {
-    var rank = element.getAttribute('data-node-rank'), y = num(element, 'data-node-y');
-    var best = null, bestDistance = Infinity;
-    for (var i = 0; i < nodeList.length; i++) {
-      var candidate = nodeList[i];
-      if (candidate === element || candidate.getAttribute('data-node-rank') !== rank) continue;
-      var delta = (num(candidate, 'data-node-y') - y) * direction;
-      if (delta > 0 && delta < bestDistance) { best = candidate; bestDistance = delta; }
-    }
-    return best;
-  }
-  if (svg) {
-    svg.addEventListener('keydown', function (event) {
-      var origin = event.target;
-      if (!origin || typeof origin.closest !== 'function') return;
-      var element = origin.closest('[data-detail-key]');
-      if (!element) return;
-      if ((event.key === 'Enter' || event.key === ' ') && element.hasAttribute('data-edge-badge')) { event.preventDefault(); openTarget(element); return; }
-      if (!element.hasAttribute('data-node-id')) return;
-      var next = null;
-      if (event.key === 'ArrowRight') next = neighbour(element, 1);
-      else if (event.key === 'ArrowLeft') next = neighbour(element, -1);
-      else if (event.key === 'ArrowDown') next = vertical(element, 1);
-      else if (event.key === 'ArrowUp') next = vertical(element, -1);
-      else if (event.key === 'Home') next = nodeList[0];
-      else if (event.key === 'End') next = nodeList[nodeList.length - 1];
-      else return;
-      event.preventDefault();
-      if (next) {
-        readableView(next.getAttribute('data-node-id'));
-        try { next.focus({ preventScroll: true }); } catch (error) { next.focus(); }
-      }
-    });
-  }
-
-  // The server-side adapter supplies exactly the same scientific content used
-  // by evidence views. Navigation keys remain hidden lookup aliases.
-  var searchInput = doc.getElementById('proof-search'), results = doc.getElementById('proof-search-results'), status = doc.getElementById('proof-search-status');
-  var index = [];
-  try { index = JSON.parse(doc.getElementById('proof-reader-search').textContent); } catch (error) { index = []; }
-  index.forEach(function (entry) { entry.lower = entry.text.toLowerCase(); entry.lookup = entry.lower + ' ' + (entry.aliases || []).join(' ').toLowerCase(); });
-  function element(tag, className, text) {
-    var node = doc.createElement(tag);
-    if (className) node.className = className;
-    if (text !== undefined) node.textContent = text;
-    return node;
-  }
-  function runSearch() {
-    if (!searchInput || !results || !status) return;
-    var raw = (searchInput.value || '').trim().toLowerCase();
-    results.textContent = '';
-    if (!raw) { status.textContent = index.length ? 'Type to search the saved scientific content.' : 'No searchable scientific content is available.'; return; }
-    var terms = raw.split(/\\s+/), matches = [], i, t;
-    for (i = 0; i < index.length && matches.length < 40; i++) {
-      var entry = index[i], ok = true;
-      for (t = 0; t < terms.length; t++) if (entry.lookup.indexOf(terms[t]) < 0) { ok = false; break; }
-      if (ok) matches.push(entry);
-    }
-    status.textContent = matches.length ? matches.length === 40 ? 'Showing the first 40 matching passages and assessments; further matches may exist.' : matches.length + ' matching passage' + (matches.length === 1 ? '' : 's') + ' or assessment' + (matches.length === 1 ? '' : 's') + '.' : 'No matches.';
-    for (i = 0; i < matches.length; i++) {
-      (function (entry) {
-        var li = doc.createElement('li');
-        var button = element('button', 'proof-search-hit');
-        button.type = 'button';
-        var where = Math.max(0, entry.lower.indexOf(terms[0]));
-        var start = Math.max(0, where - 60), end = Math.min(entry.text.length, where + terms[0].length + 90);
-        button.appendChild(element('strong', '', entry.label || 'Scientific evidence'));
-        button.appendChild(element('span', 'proof-search-where', 'in ' + entry.owner));
-        var snippet = element('span', 'proof-search-snippet');
-        snippet.appendChild(doc.createTextNode((start > 0 ? '\\u2026' : '') + entry.text.slice(start, where)));
-        var mark = doc.createElement('mark');
-        mark.textContent = entry.text.slice(where, where + terms[0].length);
-        snippet.appendChild(mark);
-        snippet.appendChild(doc.createTextNode(entry.text.slice(where + terms[0].length, end) + (end < entry.text.length ? '\\u2026' : '')));
-        button.appendChild(snippet);
-        button.addEventListener('click', function () { showDetail(entry.detail, entry.section, entry.key); });
-        li.appendChild(button);
-        results.appendChild(li);
-      })(matches[i]);
-    }
-  }
-  var timer = null;
-  if (searchInput) {
-    searchInput.addEventListener('input', function () { if (timer) clearTimeout(timer); timer = setTimeout(runSearch, 120); });
-    searchInput.addEventListener('keydown', function (event) {
-      if (event.key === 'Enter') { runSearch(); var first = results.querySelector('button'); if (first) first.click(); }
-    });
-    runSearch();
-  }
-
-  // Deep link: #proof-detail-N opens that detail.
-  if (location.hash && location.hash.indexOf('#proof-detail-') === 0) {
-    var linked = doc.getElementById(location.hash.slice(1));
-    if (linked && linked.hasAttribute('data-proof-detail')) showDetail(linked.getAttribute('data-proof-detail'), null, null, { silent: true });
-  }
-})();`;
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   process.exitCode = main(process.argv.slice(2));

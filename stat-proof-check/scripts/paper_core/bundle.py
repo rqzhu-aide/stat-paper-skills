@@ -14,7 +14,7 @@ from pathlib import Path
 
 from . import (CONTRACT_NAME, CONTRACT_VERSION, CORE_VERSION, LEGACY_OVERVIEW_FORMAT, PACKET_VERSION,
                PROJECTION_VERSION, PROTOCOL_VERSION, STORAGE_FORMATS_READABLE, STORAGE_FORMATS_WRITABLE,
-               SUPPORTED_FEATURES)
+               SUPPORTED_FEATURES, WRITE_PROTOCOLS)
 
 MANIFEST_NAME = "bundle-manifest.json"
 BUNDLE_NAME = "paper_core"
@@ -65,6 +65,7 @@ def build_manifest(files: dict[str, str]) -> dict:
         "packet_version": PACKET_VERSION,
         "projection_version": PROJECTION_VERSION,
         "protocol_version": PROTOCOL_VERSION,
+        "write_protocols": {scope: list(protocols) for scope, protocols in WRITE_PROTOCOLS.items()},
         "supported_features": list(SUPPORTED_FEATURES),
         "legacy_overview_format": LEGACY_OVERVIEW_FORMAT,
         "source_identity": content_identity(files),
@@ -103,9 +104,10 @@ def verify_bundle(root: Path | None = None) -> dict:
     fresh = build_manifest(actual)
     constants_match = all(manifest.get(key) == fresh[key] for key in fresh if key not in {"files", "file_count", "source_identity"})
     identity_ok = manifest.get("source_identity") == content_identity(expected) == fresh["source_identity"]
+    count_ok = manifest.get("file_count") == len(expected) == len(actual)
     return {
         "present": True,
-        "ok": not missing and not unexpected and not changed and constants_match and identity_ok,
+        "ok": not missing and not unexpected and not changed and constants_match and identity_ok and count_ok,
         "source_identity": manifest.get("source_identity"),
         "file_count": manifest.get("file_count"),
         "missing": missing,

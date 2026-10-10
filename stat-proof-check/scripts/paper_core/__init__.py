@@ -1,17 +1,23 @@
-"""Isolated v3 proofcheck core: storage format 4, record contract 4.
+"""Shared scientific paper core: storage format 4, record contract 4.
 
-This candidate maintains its core locally; build_manifest.py records its identity.
+The maintained source is shared/paper_core. The canonical bundle builder ships
+identical runtime files to Proof Check and Graphify; their workflows differ.
 New-format code never imports the legacy ``proofcheck.py`` monolith.
 """
 from __future__ import annotations
 
-CORE_VERSION = "3.0.11"
+CORE_VERSION = "3.2.3"
 STORAGE_FORMAT = 4
 CONTRACT_VERSION = 4
 CONTRACT_NAME = "proofcheck-records/4"
 PACKET_VERSION = 2
 PROJECTION_VERSION = 2
 PROTOCOL_VERSION = "coherent-proof-audit/1"
+OVERVIEW_PROTOCOL_VERSION = "paper-overview/1"
+WRITE_PROTOCOLS = {
+    "audit": (PROTOCOL_VERSION,),
+    "overview": ("item-audit/1", OVERVIEW_PROTOCOL_VERSION, PROTOCOL_VERSION),
+}
 COHERENT_EXAMINATIONS_FEATURE = "coherent-examinations/1"
 # Feature names a database may require; every open checks the stored list is a
 # subset of what this core supports. Compare names, never bare digits.

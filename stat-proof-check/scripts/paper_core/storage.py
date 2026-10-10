@@ -12,7 +12,8 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import (CONTRACT_VERSION, CORE_VERSION, DEFAULT_FEATURES, LEGACY_OVERVIEW_FORMAT, PACKET_VERSION,
+from . import (COHERENT_EXAMINATIONS_FEATURE, CONTRACT_VERSION, CORE_VERSION, DEFAULT_FEATURES,
+               LEGACY_OVERVIEW_FORMAT, OVERVIEW_PROTOCOL_VERSION, PACKET_VERSION, WRITE_PROTOCOLS,
                PROJECTION_VERSION, PROTOCOL_VERSION, STORAGE_FORMAT, STORAGE_FORMATS_READABLE,
                STORAGE_FORMATS_WRITABLE, SUPPORTED_FEATURES)
 from .canonical import canonical_bytes, digest, sha256_bytes
@@ -79,7 +80,9 @@ def _open(path: Path, *, write: bool) -> sqlite3.Connection:
     return conn
 
 
-def _validate_metadata(meta: dict, path, *, write: bool):
+def _validate_metadata(meta: dict, path, *, write: bool, write_scope="audit"):
+    if write_scope not in WRITE_PROTOCOLS:
+        raise InvalidRequest(f"unknown write_scope {write_scope!r}; choose audit or overview")
     if meta.get("format") == LEGACY_OVERVIEW_FORMAT:
         raise IncompatibleError(
             f"{path} uses the overview database format {LEGACY_OVERVIEW_FORMAT}; "
@@ -106,10 +109,10 @@ def _validate_metadata(meta: dict, path, *, write: bool):
     unsupported = sorted(set(features) - set(SUPPORTED_FEATURES))
     if unsupported:
         raise IncompatibleError(f"database requires unsupported features {unsupported}")
-    if write and meta.get("protocol_version") != PROTOCOL_VERSION:
+    if write and meta.get("protocol_version") not in WRITE_PROTOCOLS[write_scope]:
         raise IncompatibleError(
-            "Version 3 writes fresh coherent-proof-audit/1 stores only. "
-            "Use the compatible historical skill to continue this audit; no automatic recertification is performed.",
+            f"The {write_scope} writer supports protocols {list(WRITE_PROTOCOLS[write_scope])}; "
+            f"this store declares {meta.get('protocol_version')!r}. No automatic recertification is performed.",
             code="LEGACY_PROTOCOL_READ_ONLY")
     return meta
 
@@ -117,11 +120,14 @@ def _validate_metadata(meta: dict, path, *, write: bool):
 class Database:
     """A supported database opened read-only or read-write, never silently migrated."""
 
-    def __init__(self, path, *, write: bool = False):
+    def __init__(self, path, *, write: bool = False, write_scope="audit"):
+        if write_scope not in WRITE_PROTOCOLS:
+            raise InvalidRequest(f"unknown write_scope {write_scope!r}; choose audit or overview")
         self.path = resolve_path(path)
         if not self.path.is_file():
             raise InvalidRequest(f"database not found: {self.path}")
         self.write = write
+        self.write_scope = write_scope
         try:
             self.conn = _open(self.path, write=write)
         except sqlite3.Error as exc:
@@ -148,7 +154,7 @@ class Database:
         except sqlite3.DatabaseError as exc:
             raise IncompatibleError(f"{self.path} is not a proofcheck database: {exc}") from exc
         meta = {row["key"]: row["value"] for row in rows}
-        return _validate_metadata(meta, self.path, write=self.write)
+        return _validate_metadata(meta, self.path, write=self.write, write_scope=self.write_scope)
 
     # -- transactions -----------------------------------------------------
     def begin_immediate(self):
@@ -513,6 +519,14 @@ class Database:
                VALUES (?, ?, ?, ?, ?, ?)""", (id, run_id, stage, started_at, elapsed_ms, body_text(details)))
 
     def set_metadata(self, key: str, value: str):
+        if key.startswith("overview_build:"):
+            raise InvalidRequest("overview build receipts are immutable and use the dedicated receipt helper",
+                                 code="WRITE_SCOPE")
+        if self.write_scope == "overview":
+            from .overview_write import native_import_active, NATIVE_IMPORT_METADATA
+            if not native_import_active(self) or key not in NATIVE_IMPORT_METADATA:
+                raise InvalidRequest("overview metadata is written only by the dedicated build receipt or native migration operation",
+                                     code="WRITE_SCOPE")
         self.conn.execute(
             "INSERT INTO metadata (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (key, value))
@@ -694,8 +708,10 @@ def migrate_database(path, *, backup) -> dict:
         conn.close()
 
 
-def initialize(path, *, source_root, title: str, allow_missing_source_root=False) -> dict:
+def initialize(path, *, source_root, title: str, allow_missing_source_root=False, workflow="audit") -> dict:
     """Create a new database with the initialization commit (revision 1) holding the paper record."""
+    if workflow not in WRITE_PROTOCOLS:
+        raise InvalidRequest(f"unknown workflow {workflow!r}; choose audit or overview")
     # Preserve the final directory entry until exclusive creation. Resolving a
     # dangling destination symlink first would bypass O_EXCL's refusal.
     path = Path(path).absolute()
@@ -714,7 +730,11 @@ def initialize(path, *, source_root, title: str, allow_missing_source_root=False
         conn = _open(path, write=True)
         conn.execute("BEGIN IMMEDIATE")
         conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
-        for key, value in INIT_METADATA.items():
+        metadata = dict(INIT_METADATA)
+        if workflow == "overview":
+            metadata["protocol_version"] = OVERVIEW_PROTOCOL_VERSION
+            metadata["features"] = json.dumps([f for f in DEFAULT_FEATURES if f != COHERENT_EXAMINATIONS_FEATURE])
+        for key, value in metadata.items():
             conn.execute("INSERT INTO metadata (key, value) VALUES (?, ?)", (key, value))
         conn.execute('INSERT INTO metadata(key,value) VALUES (?,?)', ('generation',new_id('request')))
         conn.execute("INSERT INTO metadata (key, value) VALUES (?, ?)", ("created_at", now_iso()))

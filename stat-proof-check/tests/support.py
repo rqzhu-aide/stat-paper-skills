@@ -22,10 +22,10 @@ SHARED = REPO / "scripts"
 CORE = SHARED / "paper_core"
 PROOFCHECK = REPO
 OVERVIEW = REPO.parent / "proof-graphify"
-REFERENCE_AUDIT = REPO / "tests" / "fixtures" / "reference-audit" / "proofcheck-audit"
+REFERENCE_AUDIT = REPO.parent / "tests" / "fixtures" / "reference-audit" / "proofcheck-audit"
 OVERVIEW_EXAMPLE = OVERVIEW / "examples" / "representer-theorem"
-HANDOFF = REPO / "tests" / "new_format" / "fixtures" / "legacy-handoff"
-TOOLS = REPO / "tools"
+HANDOFF = REPO.parent / "tests" / "new_format" / "fixtures" / "legacy-handoff"
+TOOLS = REPO.parent / "tools"
 
 if str(SHARED) not in sys.path:
     sys.path.insert(0, str(SHARED))

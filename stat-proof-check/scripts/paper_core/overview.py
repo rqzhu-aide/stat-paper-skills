@@ -11,9 +11,10 @@ from pathlib import Path
 
 from .acceptance import accept_in_transaction
 from .canonical import digest, sha256_bytes
-from .errors import InvalidRequest
+from .errors import ConflictError, InvalidRequest
 from .ids import new_id
 from .storage import paper_record
+from .overview_write import record_build_receipt, snapshot_digest
 
 SELECTION_ID = "overview-default"
 
@@ -172,8 +173,14 @@ def project(db, revision=None):
         details = observation.body.get("context_data") or {}
         if observation.body.get("context_kind") == "overview" and details.get("selection_id") == selection.id:
             original = details.get("native_observation")
-            if original and not any(o["id"] == original["id"] for o in data["observations"]):
-                data["observations"].append(copy.deepcopy(original))
+            if original:
+                existing = next((i for i, o in enumerate(data["observations"]) if o["id"] == original["id"]), None)
+                if existing is None:
+                    data["observations"].append(copy.deepcopy(original))
+                else:
+                    # Selection archives cannot replace an immutable canonical
+                    # comparison when both name the same native observation.
+                    data["observations"][existing] = copy.deepcopy(original)
     if context.get("main_items_present", bool(body["main_item_ids"])):
         data["main_items"] = list(body["main_item_ids"])
     if context.get("inventory") is not None:
@@ -189,6 +196,13 @@ def update(db, before, after, *, profile, source_root=None):
     """
     edits, blobs = [], []
     paper = paper_record(db)
+    current_selection = db.head("overview_selections", SELECTION_ID)
+    if current_selection:
+        current, _ = project(db)
+        if snapshot_digest(before) != snapshot_digest(current) or before.get("observations", []) != current.get("observations", []):
+            raise ConflictError("the selected overview changed; retrieve its current snapshot before editing")
+        if profile != current_selection.body["authoring_profile"]:
+            raise InvalidRequest("ordinary overview edits preserve the authoring profile", code="WRITE_SCOPE")
 
     def upsert(collection, identifier, fields, *, remove=()):
         head = db.head(collection, identifier)
@@ -224,12 +238,17 @@ def update(db, before, after, *, profile, source_root=None):
             shared_locator["page"] = None
         if not any(shared_locator.get(k) is not None for k in ("start_line", "page", "label")):
             raise InvalidRequest(f"Overview anchor {anchor['id']} needs a line range, page or label in its captured source")
-        upsert("anchors", anchor["id"], {"source_id": anchor["file_id"], "source_version": source_versions[anchor["file_id"]],
+        anchor_fields = {"source_id": anchor["file_id"], "source_version": source_versions[anchor["file_id"]],
             "locator": shared_locator,
             "excerpt": anchor["excerpt"], "excerpt_sha256": anchor["excerpt_hash"],
-            "method": "exact_lines" if "start_line" in loc else "label_match" if "label" in loc else "reviewed_page",
+            "method": "exact_lines" if loc.get("start_line") is not None else "label_match" if loc.get("label") is not None else "reviewed_page",
             "limitation": anchor["verification"].get("note") or (
-                None if anchor["verification"]["status"] == "checked" else "Unverified overview locator")})
+                None if anchor["verification"]["status"] == "checked" else "Unverified overview locator")}
+        previous = db.head("anchors", anchor["id"])
+        if previous and all(previous.body[k] == anchor_fields[k] for k in
+                            ("source_id", "source_version", "locator", "excerpt", "excerpt_sha256")):
+            anchor_fields["method"] = previous.body["method"]
+        upsert("anchors", anchor["id"], anchor_fields)
     for item in after["items"]:
         existing = db.head("items", item["id"])
         defaults = {} if existing else {"origin": "source", "owner_id": item.get("owner"), "scope_id": None}
@@ -247,8 +266,19 @@ def update(db, before, after, *, profile, source_root=None):
         upsert("uses", use["id"], {"from": {"collection": "items", "id": use["from"]}, "to": {"collection": "items", "id": use["to"]},
             "type": use["type"], "reason": use["reason"], "regime": use.get("regime"), "uncertainty": use.get("issue"),
             "evidence_refs": use["evidence_refs"]})
-    selection = db.head("overview_selections", SELECTION_ID)
-    upsert("overview_selections", SELECTION_ID, selection_body(paper.id, after, profile=profile))
+    selected = selection_body(paper.id, after, profile=profile)
+    if current_selection:
+        selected["roots"] = copy.deepcopy(current_selection.body["roots"])
+        archived = selected["native_context"]["archived_observations"]
+        archived_ids = {o["id"] for o in archived}
+        for observation in current_selection.body.get("native_context", {}).get("archived_observations", []):
+            if observation["id"] not in archived_ids:
+                # Native imports may retain the only copy here when their
+                # original target was absent at migration. Reselecting that
+                # target must not discard its immutable comparison history.
+                archived.append(copy.deepcopy(observation))
+                archived_ids.add(observation["id"])
+    upsert("overview_selections", SELECTION_ID, selected)
     old_observations = {o["id"] for o in before.get("observations", [])}
     from .export_import import _applicable_observations
     applicable = _applicable_observations({"payload": after, "observations": after.get("observations", [])})
@@ -273,4 +303,5 @@ def update(db, before, after, *, profile, source_root=None):
     if not edits:
         return None
     return accept_in_transaction(db, request_id=new_id("request"), request_digest=digest(edits), packet_id=None,
-                                 edits=edits, command="overview", blobs=blobs)
+                                 edits=edits, command="overview", blobs=blobs,
+                                 overview_refresh_root=paper_fields.get("source_root"))

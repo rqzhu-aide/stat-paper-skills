@@ -243,7 +243,24 @@ def _unresolved_issue_source(entry: str, payload: dict, file_sources: dict) -> s
 
 
 def _finish_import(db: Database, *, request_id: str, request_digest: str, edits: list, blobs: list,
-                   warnings: list) -> dict:
+                   warnings: list, native_overview_metadata=None) -> dict:
+    if native_overview_metadata is not None:
+        from .acceptance import accept_in_transaction
+        from .overview_write import _native_import, NATIVE_IMPORT_METADATA
+        if set(native_overview_metadata) != NATIVE_IMPORT_METADATA:
+            raise InvalidRequest("native overview migration requires its complete provenance metadata")
+        with _native_import(db):
+            db.begin_immediate()
+            try:
+                receipt = accept_in_transaction(db, request_id=request_id, request_digest=request_digest,
+                    packet_id=None, edits=edits, command="import", blobs=blobs, warnings=warnings)
+                for key, value in native_overview_metadata.items():
+                    db.set_metadata(key, value)
+                db.commit()
+                return receipt
+            except BaseException:
+                db.rollback()
+                raise
     return accept(db, request_id=request_id, request_digest=request_digest, packet_id=None, edits=edits,
                   command="import", blobs=blobs, warnings=warnings)
 
@@ -581,8 +598,8 @@ def migrate_overview(db_path, *, backup) -> dict:
         if not root.is_dir():
             limitations.append(f"Registered source root {source_root!r} is unavailable; captured bytes and the original root remain authoritative")
         title = payload.get("title") or db_path.stem
-        init = initialize(temp, source_root=root, title=title, allow_missing_source_root=True)
-        with Database(temp, write=True) as db:
+        init = initialize(temp, source_root=root, title=title, allow_missing_source_root=True, workflow="overview")
+        with Database(temp, write=True, write_scope="overview") as db:
             paper = paper_record(db)
             mapper = _IdMapper()
             edits, blobs = _overview_edits(paper, legacy, mapper, limitations)
@@ -601,11 +618,11 @@ def migrate_overview(db_path, *, backup) -> dict:
                 db, request_id=new_id("request"),
                 request_digest=digest({"command": "migrate-overview", "snapshot_id": legacy["snapshot_id"],
                                        "source": str(db_path)}),
-                edits=edits, blobs=blobs, warnings=limitations)
-            db.set_metadata("legacy_overview_format", LEGACY_OVERVIEW_FORMAT)
-            db.set_metadata("legacy_overview_current_snapshot", legacy["snapshot_id"])
-            db.set_metadata("legacy_overview_snapshot_ids", json.dumps(legacy["snapshot_ids"]))
-            db.set_metadata("legacy_overview_backup", json.dumps(backup_info))
+                edits=edits, blobs=blobs, warnings=limitations, native_overview_metadata={
+                    "legacy_overview_format": LEGACY_OVERVIEW_FORMAT,
+                    "legacy_overview_current_snapshot": legacy["snapshot_id"],
+                    "legacy_overview_snapshot_ids": json.dumps(legacy["snapshot_ids"]),
+                    "legacy_overview_backup": json.dumps(backup_info)})
             counts = {c: sum(1 for e in edits if e["collection"] == c and e["op"] == "create")
                       for c in ("sources", "anchors", "items", "uses", "groups", "observations")}
             opened = sum(1 for e in edits if e["collection"] == "source_issues" and e["op"] == "create")

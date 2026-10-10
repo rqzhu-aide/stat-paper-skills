@@ -187,6 +187,7 @@ function runFixture(name, withWork = false, withReader = false, buildKind = null
   const notify = attribute => observers.forEach(o => { if (o.options.attributeFilter.includes(attribute)) schedule(o.callback); });
   function dispatch(target, event) {
     event.target = target; event.preventDefault = () => {}; event.stopPropagation = () => { event.stopped = true; };
+    event.stopImmediatePropagation = () => { event.stopped = true; };
     const path = []; for (let e = target; e; e = e.parentElement) path.push(e);
     for (const capture of [true, false]) for (const e of capture ? [...path].reverse() : path) {
       e.listeners.filter(l => l.type === event.type && l.capture === capture).forEach(l => l.callback(event));
@@ -196,7 +197,7 @@ function runFixture(name, withWork = false, withReader = false, buildKind = null
   let active = null, relation = null, reset = 0, centers = 0;
   const focus = {
     active: () => active, relationship: () => relation,
-    set(id) { active = id; relation = null; chip.hidden = false; svg.setAttribute('data-focus-active', id); notify('data-focus-active'); },
+    set(id,options) { if (active === id && options?.toggle !== false) return this.clear(); active = id; relation = null; chip.hidden = false; svg.setAttribute('data-focus-active', id); notify('data-focus-active'); },
     clear() { active = null; relation = null; chip.hidden = true; svg.removeAttribute('data-focus-active'); notify('data-focus-active'); },
     inspectRelationshipById(id) {
       relation = input.projection.connections.find(c => c.id === id); active = relation.from; chip.hidden = false;
@@ -204,6 +205,14 @@ function runFixture(name, withWork = false, withReader = false, buildKind = null
     },
   };
   const Archify = { focus, view: { centerAt(x, y) { assert(Number.isFinite(x) && Number.isFinite(y)); centers++; }, reset() { reset++; } } };
+  if (svg) {
+    const native = scripts.flatMap(script => [...script.text.matchAll(/svg\.addEventListener\('click', function \(event\) \{\s*if \(container\.getAttribute\('data-just-panned'\) === 'true'\) return;[\s\S]*?\n      \}\);/g)]).find(([source]) => source.includes('set(id,'))?.[0];
+    assert(native,'Emitted native node handler is missing.');
+    vm.runInNewContext(native,{svg,container,set:(id,options)=>focus.set(id,options),clear:()=>focus.clear(),get activeIds(){return active?[active]:[];},Archify});
+    const outside = scripts.flatMap(script => [...script.text.matchAll(/document\.addEventListener\('click', function \(event\) \{\s*var target = event\.target;[\s\S]*?\}, true\);/g)]).find(([source])=>source.includes('chip.hidden || !target'))?.[0];
+    assert(outside,'Emitted outside-click handler is missing.');
+    vm.runInNewContext(outside,{document,chip,container,clear:()=>focus.clear()});
+  }
   const windowEvents = new Map();
   const context = vm.createContext({ document, window: { Archify, addEventListener(type,callback) { windowEvents.set(type,callback); } }, location: { hash: '' },
     MutationObserver: class { constructor(callback) { this.callback = callback; } observe(target, options) { observers.push({ callback: this.callback, options }); } },
@@ -238,8 +247,13 @@ function runFixture(name, withWork = false, withReader = false, buildKind = null
   if (svg) {
     assert(!container.contains(chip));
     assert(!container.contains(document.getElementById('proof-details')));
-    focus.set(first.id); flush();
+    const nativeNode = svg.querySelector('[data-node-id]');
+    nativeNode.click(); flush(); nativeNode.click(); flush();
+    assert.equal(active,first.id,'Repeated native activation must retain its scientific selection.');
+    focus.set(first.id,{toggle:false}); flush();
     assert(detail(first.detail_key).classList.contains('is-active'));
+    const sourceSummary = detail(first.detail_key).querySelector('summary');
+    if (sourceSummary) { sourceSummary.click(); flush(); assert.equal(active,first.id,'Source and audit disclosures must preserve the selected result.'); }
     const edge = input.projection.connections[0];
     focus.inspectRelationshipById(edge.id); flush();
     assert(detail(edge.detail_key).classList.contains('is-active'), 'Native edge selection must open its canonical evidence.');

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Command entry for the paper audit database (implementation-handoff 5).
 
-Runs the isolated v3 ``paper_core`` shipped next to this file. Its manifest is
-maintained with ``scripts/build_manifest.py``. This wrapper never imports the legacy monolith, never looks up a
-sibling skill, and never imports from the repository tree.
+Runs the common ``paper_core`` shipped next to this file. Generate it with
+``tools/build_paper_core_bundles.py`` in the proof-graphify repository. This wrapper
+never imports the legacy monolith, never looks up a sibling skill, and never
+imports from the repository tree.
 """
 import os
 import sys
