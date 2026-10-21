@@ -39,7 +39,19 @@ Include:
 - quantifiers, probability level, convergence mode, or uniformity scope;
 - constants and their stated dependencies when relevant.
 
-Exclude extended interpretation, tuning advice, proof-specific notation, and variants that are not part of the central statement.
+Keep extended interpretation, tuning advice, and proof commentary outside the formal statement. Preserve every supplied formal conclusion, including secondary identities and refinements; a local layout edit does not authorize deleting them or moving them into the proof.
+
+### Mathematical prominence
+
+Keep principal results displayed. Introduce short local definitions, conditions, routine identities, and immediate consequences inline when readable, retaining their exact scope. Keep long definitions, substantial rate or supremum conditions, and multiple substantive conclusions displayed when readers need to inspect them. Use connected prose, without a display quota or new abbreviations merely to fit formulas inline.
+
+Keep each condition attached to the conclusion it governs: an extra condition for a refinement must not become a condition for the basic result. Preserve moment orders and finiteness, constant dependencies, conditioning, positivity events, and growing-index uniformity. Reuse established shared setup, but do not move local hypotheses outside a statement solely to shorten it. This presentation choice does not authorize shortening proof calculations or explanations.
+
+### Formulas and their references
+
+Before relocating or removing a displayed formula, inspect its active callers in the requested manuscript, included sources, and actual cross-document links. Check applicable reference commands and hyperlinks, not only `\eqref`; historical snapshots are not active callers. Identify whether each use needs a definition, identity, finite-sample bound, or asymptotic conclusion. If a needed caller is unavailable or outside authorized editing scope, retain a usable target and report the dependency.
+
+Keep principal labels and displays needed for precise navigation. Otherwise, cite the enclosing result with the specific claim named, redirect to an existing formula that supplies the same claim under the needed conditions and normalization, or retire an unused equation label while keeping its content. Preserve separate labels on aligned rows with distinct uses. Do not attach equation labels to ordinary prose or neighboring claims, add empty displays or manual tags to preserve numbers, or add a display solely to keep a number. Repair affected proof-ending wording without adding a new completeness claim. Compilation checks resolution; also check that the cited content supplies the mathematical step actually used. Do not invent an equivalence or missing derivation to justify retargeting.
 
 ## Explain assumptions by declared role
 
@@ -64,7 +76,7 @@ Across the surrounding passage, provide the interpretation needed to understand 
 2. **Consequence:** State what estimator, design choice, or next result the manuscript says it enables.
 3. **Boundary:** State the material scope limits of the written result.
 
-These functions need not form a separate paragraph after every result. Avoid translating a display twice or repeating a locally clear boundary. Make declared dependencies visible. Move technical intermediates and secondary variants to the appendix when that clarifies the main result; keep its governing conditions identifiable in the main text.
+These functions need not form a separate paragraph after every result. Avoid translating a display twice or repeating a locally clear boundary. Make declared dependencies visible. During authorized structural reorganization, technical intermediates and separate variants may move to the appendix with their complete statements, conditions, and references preserved. A local display edit does not trigger that reorganization.
 
 ## Review checklist
 

@@ -151,10 +151,14 @@ class SkillStructureTests(unittest.TestCase):
             # one active section, not every section guide at once.
             "paper_restructuring": 29_000,
             "paper_planning": 20_000,
-            "paper_method_draft": 32_000,
+            # Local and whole-paper routes now carry explicit proof-detail,
+            # template, and new-prose punctuation boundaries. These bounded
+            # whole-file allowances include that guidance; they are not a
+            # claim of lower runtime cost or permission to load more guides.
+            "paper_method_draft": 34_000,
             # Conservative whole-file bounds: drafting only needs the linked
             # prose core, not the rest of the polishing protocol.
-            "method_draft": 19_000,
+            "method_draft": 20_000,
             "high_risk_method_draft": 26_000,
             "proof_polish": 28_000,
             "quick_audit_startup": 18_000,
@@ -242,14 +246,22 @@ class SkillStructureTests(unittest.TestCase):
 
     def test_runtime_metadata_covers_writer_harness(self) -> None:
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        installation = readme.split("## Skill use and installation", 1)[1].split("\n## ", 1)[0]
+        paragraph = next(
+            (block for block in installation.split("\n\n") if block.startswith("`stat-write-style` ")),
+            "",
+        )
+        self.assertRegex(
+            paragraph,
+            r"helpers? and tests require (?:shared )?Python 3\.10(?:\+| or later)",
+        )
         required = {
-            "proofcheck and writing helpers and tests require Python 3.10",
             "pypdf",
             "PyPDF2",
             '--pdf-page-count "SOURCE=N"',
             "python -m unittest discover -s stat-write-style/tests",
         }
-        self.assertEqual([item for item in required if item not in readme], [])
+        self.assertEqual([item for item in required if item not in paragraph], [])
 
     def test_no_platform_paths_or_forbidden_dashes(self) -> None:
         violations: list[tuple[str, str]] = []

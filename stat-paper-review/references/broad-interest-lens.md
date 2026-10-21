@@ -10,9 +10,9 @@ Keep it subordinate to the statistical review. Broad interest cannot compensate 
 
 ### Originality
 
-Ask whether the main scientific or methodological conclusion is genuinely distinct from close work. When originality is part of the requested assessment, apply [novelty-verification.md](novelty-verification.md). Treat novelty as provisional unless the relevant literature and the manuscript's central citations have been checked.
+Ask whether the main scientific or methodological conclusion is genuinely distinct from close work. When originality is part of the requested assessment, apply [novelty-verification.md](novelty-verification.md), including its evidence limits on provisional or unassessed conclusions.
 
-If no external comparison was performed, assess only how clearly the manuscript presents its claimed distinction. Mark actual originality unassessed and do not assign it a numerical score.
+Without the required external verification and search, mark field-level originality unassessed and do not assign it a numerical score. A supported packet-bounded overlap assessment remains possible under the [offline comparison boundary](novelty-verification.md#4-report-a-bounded-conclusion); without substantive comparator content, assess positioning clarity only.
 
 ### Scientific importance
 

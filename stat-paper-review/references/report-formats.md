@@ -31,6 +31,7 @@ Use these components for a full manuscript review. The report should present the
 4. **Literature comparison, when assessed**
    - state the exact novelty claim and compare it with the closest verified work, identifying which was already cited and which was found independently; if no close work was found, state that result within the search boundary;
    - state what the inspected content supports, the material overlap or distinction, and why that distinction matters for the paper's claimed contribution;
+   - when practical usefulness is relevant, identify existing feasible alternatives that provide similar or identical conclusions and explain the demonstrated added benefit, lack of demonstrated benefit, or comparison limit; keep intellectual novelty and practical value distinct in the same discussion;
    - give verification and discovery/citation status, source links or identifiers, and the search boundary near the conclusion; use a compact table or a few sentences rather than a search log.
 5. **Main strengths**
    - up to three manuscript-specific strengths supported by the reviewed material;
@@ -45,7 +46,7 @@ Use these components for a full manuscript review. The report should present the
    - add a separate likely-objections note only if requested and it contributes a distinct concern.
 7. **Assessment boundary and unresolved verification**
    - missing materials;
-   - novelty, proof, citation, or implementation claims not verified; if no external comparison was possible, state that substantive novelty is unassessed here.
+   - novelty, proof, citation, or implementation claims not verified; without the required external verification and search, state that field-level novelty is unassessed, separately from any supported packet-bounded overlap assessment.
 8. **Revision sequence**
    - ordered actions referring to existing finding labels;
    - distinguish rewrites from new scientific work;
@@ -72,7 +73,7 @@ For a request limited to one section or concern, return:
 
 1. scope and question reviewed;
 2. concise diagnosis;
-3. up to five prioritized findings, and fewer when only fewer consequential findings exist;
+3. normally up to five prioritized findings, and fewer when fewer consequential findings exist; retain additional independently consequential scientific findings when necessary, grouping repeated symptoms of the same cause;
 4. concrete edit specifications;
 5. unassessed dependencies.
 
@@ -122,9 +123,9 @@ Use this compact pattern for substantive findings:
 - **Edit specification:** what must change, its intended effect, and any dependency.
 - **Remedy type:** rewrite, reanalysis, new evidence, new theory, verification, or author decision.
 
-Use a compact evidence, consequence, and action paragraph instead of every template field as a separate bullet when the review remains equally precise. The overall assessment may summarize the principal concern once; keep its full evidence and diagnosis in one finding and refer back to that finding elsewhere.
+Use a compact evidence, consequence, and action paragraph instead of every template field as a separate bullet when the review remains equally precise. Explain the repair and its effect on assumptions, conclusions, or scope when these determine severity; distinguish an established repair from a question needing verification. The overall assessment may summarize the principal concern once; keep its full evidence and diagnosis in one finding and refer back to that finding elsewhere.
 
-For a material patterned-prose alarm, use the title "Recurrent patterned prose weakens claim traceability." Give two to four representative locations and follow [ai-writing-alarm.md](ai-writing-alarm.md). Do not title the finding "AI-written prose."
+For a material patterned-prose alarm, use the title "Recurrent patterned prose weakens claim traceability." Give two to four locations supporting that cross-cutting finding and follow [ai-writing-alarm.md](ai-writing-alarm.md). Place this assessment alongside native technical findings; its example cap does not limit the scientific diagnosis. Do not duplicate a technical defect as a second full prose finding or title the finding "AI-written prose."
 
 Do not supply replacement paragraphs, revised abstracts, insert-ready contribution bullets, or other manuscript-ready language. When actionability needs structure, use a diagnostic contribution-support ledger, theorem-role map, evidence-gap table, or evidence-requirement checklist and label it as reviewer analysis.
 

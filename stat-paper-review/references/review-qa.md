@@ -1,5 +1,7 @@
 # Statistical Reviewer QA
 
+Grounding, provenance and support status, severity, mathematical fidelity, role boundaries, and applicable terminal output checks govern every review. Dimension-specific checks apply when that dimension is assessed or needed to support the requested judgment. A focused review does not require unrelated scores, literature claims, writing assessments, or a whole-paper reading record.
+
 ## Grounding
 
 - Trace each substantive judgment to manuscript text, supplied context, a visible figure or result, or a verified source.
@@ -7,6 +9,7 @@
 - Label support separately as established, partially supported, challenged, not established, or unassessed.
 - Do not treat an observed manuscript assertion as established evidence.
 - Mark missing evidence instead of inventing it.
+- Before an absence finding, check likely locations, terminology variants, and relevant references within the assessment scope. Reuse prior searches and limit the claim to the coverage inspected.
 - Keep the manuscript fact base consistent across the report.
 - Do not use nonexistent line numbers, figures, comparisons, citations, or results.
 
@@ -16,6 +19,7 @@
 - Locate a reader problem at its earliest consequential occurrence.
 - If later text resolves it, describe the resolution as delayed rather than pretending it was available earlier.
 - Do not let external literature or a second reading erase the first-pass assessment.
+- When later material resolves the scientific question, retain any consequential presentation delay without treating it as a continuing validity gap; calibrate severity to the remaining defect.
 - Do not include a full reading diary when only a few sequence failures matter.
 
 ## Technical calibration
@@ -31,6 +35,8 @@
 
 - State the main concern early.
 - Rank issues by consequence rather than by manuscript order.
+- Apply [repair and consequence calibration](review-framework.md#6-priority-synthesis) before assigning severity. State the credible remedy and whether it changes assumptions, conclusions, or meaningful scope; a wrong justification for a valid step differs from a wrong derivation. Assess both conventionality and actual restriction when an assumption must be added.
+- Distinguish an established local repair, a demonstrated need for stronger conditions, and an unresolved repair question. Do not infer impossibility from failure to find a repair or call an assumption standard without supplied or verified support.
 - Avoid demanding new theory or experiments when narrowing or clarifying the claim is sufficient.
 - Distinguish required revisions from optional strengthening.
 - Omit isolated style preferences and pure copyediting even when detailed language comments are requested, except through the aggregate editing report and its capped examples defined in [review-framework.md](review-framework.md) section 5 whenever writing is scored or explicitly assessed.
@@ -44,22 +50,24 @@
 - Do not use detector scores, perplexity, sentence rhythm, word lists, phrase inventories, or simulated detector rationales as evidence.
 - Confirm the required number of independent instances, evidence classes, and section spread before reporting a manuscript-wide alarm.
 - Check literal software language, genre conventions, translation, multi-author editing, and required templates as alternative explanations.
-- Cite representative passages and describe the statistical or claim-traceability consequence.
+- Cite representative passages and describe the statistical or claim-traceability consequence. Apply [ai-writing-alarm.md](ai-writing-alarm.md)'s example caps to the prose assessment, not to independently consequential scientific findings.
 - Keep technical S1 or S2 findings under their native headings and avoid duplicating them as separate prose findings.
 - For every explicit provenance question, state that textual evidence does not establish authorship, AI use, intent, or a particular writing tool.
 
 ## Novelty and venue boundaries
 
-- Verify central cited references and search for close external publications for every actual novelty, originality, or priority judgment or score.
-- Without external comparison, assess only the clarity of manuscript positioning and mark substantive novelty unassessed.
+- Verify central cited references and search for close external publications for every field-level novelty, originality, or priority judgment or score.
+- Without the required external verification and search, mark field-level novelty unassessed and its score `N/A`. Keep any supported packet-bounded overlap or practical-usefulness assessment separate, following the [offline comparison boundary](novelty-verification.md#4-report-a-bounded-conclusion).
 - Distinguish citation existence, metadata accuracy, claim support, and contribution overlap.
 - Identify whether each decisive publication was cited by the manuscript or found independently.
 - Distinguish peer-reviewed publications, conference papers, accepted manuscripts, and preprints.
 - Report searched sources, search date, query concepts, and important access limits.
-- Treat novelty as provisional when close literature, full text, or cited support has not been checked.
+- Use a provisional novelty conclusion only when the inspected external comparison supports a bounded judgment; leave it unassessed and its score `N/A` when missing decisive content could reverse that judgment.
 - Treat failure to find closer work as bounded negative search evidence, not proof of firstness.
-- Use `new primitive` only for a contribution not reducible to an assembly of components in the verified comparison set; classify an actual combination only as an enabling combination or convenience assembly.
+- Use `new primitive` only for a contribution not reducible to an assembly of components in the verified comparison set; classify an actual combination as an enabling combination or convenience assembly only when supported. Otherwise leave the classification unassessed and identify the missing decisive comparison or argument.
 - Distinguish field-local importance from broad scientific importance.
+- For a practical-usefulness judgment, check existing feasible alternatives under comparable targets, information, assumptions, guarantees, and operating conditions. Similar conclusions on one dataset are not equivalence; a new construction is not itself a practical gain. Credit supported improvements in precision, robustness, cost, or usability even when the conclusion is unchanged, and distinguish absent comparison evidence from demonstrated lack of benefit.
+- Keep intellectual novelty and practical usefulness distinct, without duplicate score penalties or an automatic empirical-superiority requirement for theoretical work. Apply the same source-verification and evidence limits to a claim that an existing method already solves the practical problem.
 - Do not predict an editorial decision as fact.
 - Do not assign acceptance probabilities by default, and add scores beyond the default category scorecard only on request.
 - If a named venue is in scope, distinguish current verified official criteria from general reviewer judgment.
@@ -101,8 +109,8 @@ Run these checks on the complete response immediately before returning.
 - For every decisive novelty or citation comparator, include an explicit `Verification status:` and an explicit `Discovery/citation status:`, retain the exact supplied DOI, PMID, arXiv ID, or direct official link, and preserve a supplied status of `found independently and uncited`; chronology or the word `uncited` alone does not satisfy the discovery field. Insert either missing field before returning.
 - Inspect every numeric scorecard entry. If the reviewed scope or completed verification cannot support a category or dimension, replace the number with `N/A`; never use 1 or another low score as a missing-evidence penalty. A manuscript assertion about empirical performance does not make the evidence assessable when no numerical evidence is supplied.
 - Delete any purely cosmetic finding or edit specification outside the aggregate editing report and its capped examples for a requested writing assessment. It is acceptable to state once that cosmetic issues were excluded, but do not quote, identify, or discuss the omitted wording. For a focused request containing both a consequential defect and a cosmetic distractor, report only the consequential defect and do not mention the distractor.
-- Do not emit U+2013 or U+2014 except inside a verbatim quotation, title, or identifier that itself contains the character. Elsewhere replace each with a comma, colon, semicolon, parentheses, or an ordinary hyphen according to its grammatical role.
+- Do not emit U+2013 or U+2014 except inside a verbatim quotation, title, or identifier that itself contains the character. Do not introduce sentence-level TeX forms that render as long dashes either. Elsewhere use a comma, colon, semicolon, parentheses, or an ordinary hyphen according to its grammatical role; preserve mathematical notation and ranges.
 - Delete any closing sentence that explains a refusal to draft, rewrite, or edit; end with the report's substantive content.
 - For a mixed review-and-rewrite request, delete any revised, replacement, or rewritten manuscript heading and all manuscript-style prose beneath it. Retain only edit specifications that identify the location, problem, consequence, intended change, claim boundary, and required verification or author judgment. Never introduce notation, estimator definitions, assumptions, algorithms, or claims absent from the supplied manuscript record.
 - For any patterned-prose classification, run the terminal output checks in [ai-writing-alarm.md](ai-writing-alarm.md).
-- For a run governed by [run-portability.md](run-portability.md), apply its finalization gate before labeling the review complete; otherwise report `PARTIAL` or `NONFINAL` with the exact missing stages and affected conclusions.
+- For a bundled run, apply [run-portability.md](run-portability.md)'s finalization gate before labeling the review complete; otherwise report `PARTIAL` or `NONFINAL` with the exact missing stages and affected conclusions. Reading its universal source-map guidance alone does not select the bundled route.

@@ -1,7 +1,7 @@
 ---
 name: stat-write-style
 metadata:
-  version: "1.6.1"
+  version: "1.6.4"
 description: Author-side drafting, restructuring, style revision, and presentation-audit for statistics and machine-learning manuscripts. Use only when the user explicitly invokes $stat-write-style. Covers exposition, notation, supplied citations, cross-references, and main/supplement coordination; does not validate proofs, sources, code, numerical results, novelty, or publication suitability.
 ---
 
@@ -11,7 +11,7 @@ Use this skill only when the user explicitly invokes `$stat-write-style`.
 
 ## Author-side contract
 
-Use supplied research. Preserve mathematical objects, assumptions, relations, scope, evidence strength, numbers, citations, labels, and protected tokens. Equivalent explanations may clarify supplied mathematics; do not invent support, findings, novelty, or consequences. Leave clear text alone.
+Use supplied research. Preserve mathematical objects, assumptions, relations, scope, evidence strength, numbers, citations, and protected tokens. Keep labels by default; deliberate display edits must preserve their claims and repair active callers through [reference repair](references/theoretical-statements.md#formulas-and-their-references). Clarify supplied mathematics without inventing support, findings, novelty, or consequences. Leave clear text alone.
 
 An audit diagnoses without rewriting. A polish or revision checks privately and directly applies supported edits within scope. Combined audit and revision records findings before repairs. Ask only when missing support or competing scientific choices prevent safe text; continue independent work. The detailed decision rule is in [support-and-author-decisions.md](references/support-and-author-decisions.md).
 
@@ -63,4 +63,4 @@ After writing, compare protected scientific and documentary content and recheck 
 
 Deliver the requested text or plan. Keep working notes private unless requested; mention substantive changes and material missing author information. Audits use the reporting guide and prioritize consequential findings.
 
-Keep U+2013 and U+2014 out of assistant-authored commentary and audit fields; preserve them in supplied or revised manuscript text, venue typography, and exact source evidence. Never claim independent scientific validation.
+Do not introduce sentence-level long dashes in newly written or rewritten manuscript prose, including TeX forms that render as long dashes. Preserve unchanged supplied sentences, exact quotations and source evidence, titles, identifiers, mathematical notation, ranges, and required venue typography; do not perform a global punctuation pass without a request. Keep U+2013 and U+2014 out of assistant-authored commentary and audit fields; put exact source text in the permitted literal-evidence fields. Never claim independent scientific validation.

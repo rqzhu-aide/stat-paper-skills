@@ -6,7 +6,7 @@ Report consequential findings by reader impact, independently of inspection orde
 
 Keep visible manuscript evidence distinct from inferred consequences and unresolved scientific choices. Do not describe an unsupported interpretation as an established error. A needed author question should name the unresolved object or relation and the decision required; clarity has no minimum word count. Follow [support-and-author-decisions.md](support-and-author-decisions.md) when the distinction affects an edit.
 
-State the assessment boundary once, including any material unavailable source or rendering. Do not repeat routine verification disclaimers under every finding. If no consequential issue remains after the requested scope was examined, say so; an empty report alone does not establish coverage.
+State the assessment boundary once, including any material unavailable source or rendering. Do not repeat routine verification disclaimers under every finding. If no consequential issue remains after the requested scope was examined, say so; an empty report alone does not establish coverage. Before reporting an omission, check likely locations and terminology variants within the authorized scope. Reuse the source map and prior searches; limit absence claims to the material inspected.
 
 Use [argument-architecture.md](argument-architecture.md) for contribution identity and editorial emphasis. Include a contribution map only when it materially clarifies the narrative or is requested. Private plans have no fixed column contract.
 

@@ -51,7 +51,7 @@ Begin with the finest applicable checks:
 
 Create a compact notation or terminology ledger only when visible variants make it useful.
 
-If editable source and a suitable toolchain are available, compile or render to collect duplicate or unresolved references and inspect equation layout, punctuation, figure or table placement, hyperlinks, and publication-size readability. Inspect supplied rendered pages, figures, and tables directly. Treat build messages and visible layout as documentary evidence, not as validation of the argument.
+If editable source and a suitable toolchain are available, compile or render to collect duplicate or unresolved references and inspect equation layout, punctuation, figure or table placement, hyperlinks, and publication-size readability. Inspect supplied rendered pages, figures, and tables directly. Treat build messages and visible layout as documentary evidence, not as validation of the argument. Check a suspected extraction-derived symbol error against the rendered passage or corresponding supplied TeX before changing notation; extraction alone is not evidence that the manuscript is wrong.
 
 Strict logic may establish that two supplied passages describe different objects or scopes as written. It may not establish which passage is correct or mathematically valid.
 

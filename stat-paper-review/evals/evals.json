@@ -70,7 +70,7 @@
       "id": 5,
       "eval_name": "full-review-offline-novelty-na",
       "prompt": "Give me a full pre-submission review with your standard scorecard. Do not use external search; treat the supplied manuscript as the only available evidence.",
-      "expected_output": "Full review with the default scorecard retained, substantive novelty marked N/A, positioning assessed only within the packet, and no invented external comparison.",
+      "expected_output": "Full review with the default scorecard retained, field-level novelty marked N/A, positioning and any supported supplied overlap assessed within the packet, and no invented external comparison.",
       "files": ["fixtures/combo-paper.md"],
       "assertions": [
         "The review contains the default novelty, theory, computation and evidence, and writing scorecard even though external search is excluded",
@@ -114,7 +114,7 @@
       "assertions": [
         "The response emits exactly one public classification and it is Reportable recurrent pattern",
         "The basis identifies at least six independent instances across at least three substantive sections and at least two evidence classes, including the required S1/S2 or S3 severity subcount",
-        "Exactly two to four representative locations are identified across the complete response; remaining instances are summarized only in aggregate",
+        "Exactly two to four distinct locations support the recurrent-prose finding wherever it appears in the response; additional pattern-only instances are aggregate, while independently consequential scientific findings remain reportable on their own evidence without duplicate full findings",
         "The response states that textual evidence does not establish authorship, AI use, intent, or a particular writing tool"
       ]
     },
@@ -127,7 +127,7 @@
       "assertions": [
         "The response emits exactly one public classification and it is No reportable pattern",
         "The response never exposes the internal state name Private watch or its minima",
-        "The response identifies one to three supplied S1, S2, or S3 defects and states at least one bounded reader-facing consequence",
+        "The prose assessment identifies one to three representative supplied S1, S2, or S3 defects and at least one bounded reader-facing consequence; this summary does not cap independently consequential scientific findings under native headings",
         "The response states that textual evidence does not establish authorship, AI use, intent, or a particular writing tool"
       ]
     },
@@ -142,6 +142,90 @@
         "The computation-and-evidence score is an integer and is consistent with the unresolved scalability, runtime-reporting, and baseline findings",
         "The response does not replace missing evidence with zero or use decimals to imply unsupported precision",
         "Because the request is focused rather than a full or pre-submission review, the response does not force unrelated default scorecard rows"
+      ]
+    },
+    {
+      "id": 11,
+      "eval_name": "local-repair-severity-calibration",
+      "prompt": "Use only the supplied excerpts. Give a focused reviewer assessment of each independent case, including severity, the basis for the repair, and a proportionate edit specification. Discuss whether any case warrants a Major/Critical score cap, but do not assign scores to a complete manuscript or write replacement text.",
+      "expected_output": "Repair-based calibration: local typo and wrong justification are Minor, a repairable calculation is Moderate, ordinary practical tuning is Minor, and a resolved appendix dependency remains a presentation issue.",
+      "files": ["fixtures/repair-calibration-local.md"],
+      "assertions": [
+        "A and B are Minor: A has an unambiguous local index repair, and B needs a justification correction without adding independence",
+        "C is Moderate: a valid bound follows under the existing second-moment assumptions and preserves the stated 4/n conclusion; no new independence assumption is demanded",
+        "D is Minor or an optional bounded empirical strengthening, with numerical or sensitivity justification rather than a demand for a new adaptive theorem by default",
+        "E is treated as a delayed presentation explanation, not a continuing unsupported mathematical claim; no Major or Critical finding is inferred solely from the detour",
+        "No case is automatically given a Major/Critical score cap merely because it concerns a proof or guarantee, and no overall score or proof certificate is invented"
+      ]
+    },
+    {
+      "id": 12,
+      "eval_name": "assumption-burden-and-unresolved-repair",
+      "prompt": "Assess these independent cases using only the supplied material. For each, give calibrated severity or explicit uncertainty, explain how the available repair affects the contribution, and state the needed action. Do not combine the cases into a single paper, search outside the packet, or draft replacement proofs.",
+      "expected_output": "Severity distinguishes a conventional omission from loss of a claimed advantage, unknown repairability from demonstrated necessity, and a fundamental central contradiction from local proof repair.",
+      "files": ["fixtures/repair-calibration-scope.md"],
+      "assertions": [
+        "F receives an explicitly justified lower severity than an unqualified Major: the formal statement narrows but intended settings and contribution survive; the fourth moment is a sufficient repair, not established as necessary",
+        "G remains Major despite the comparison papers using the proposed assumption, because the claimed advantage and motivating use are lost; commonness is not treated as harmlessness",
+        "H states that repairability and the need for any added assumption are unresolved; it does not infer necessity, impossibility, or a Critical/Major substantive defect merely from missing verification",
+        "I is Critical on the supplied exact contradiction and sole-contribution facts; the response does not downgrade it by speculating that changing the rate is a harmless local repair",
+        "Literature conventionality is attributed to supplied comparisons rather than falsely claimed as independently verified; no replacement proof or whole-proof certification is provided"
+      ]
+    },
+    {
+      "id": 13,
+      "eval_name": "practical-value-against-existing-alternatives",
+      "prompt": "Give a focused assessment of the practical usefulness claimed in each independent comparison case. Explain whether the existing alternative provides the same useful answer, what benefit remains, and what evidence or action is needed. Distinguish the intellectual contribution from practical value. Use only the supplied packets, do not invent publications or search externally, and do not assign whole-paper scores.",
+      "expected_output": "Practical value is assessed against viable existing alternatives under matched conditions, with meaningful gains and intellectual contributions preserved and missing evidence explicitly bounded.",
+      "files": ["fixtures/practical-alternatives.md"],
+      "assertions": [
+        "A's claimed new practical capability is challenged because S already gives the same inferential answer under comparable conditions and N adds cost without a demonstrated benefit; the separate conceptual contribution is not automatically erased",
+        "B receives credit for demonstrated practical cost and memory improvements despite unchanged statistical output and use of established components",
+        "C is not called practically equivalent merely from similar curves or one shared rejection; simultaneous versus pointwise inference and clustered versus independent sampling remain consequential",
+        "D's theoretical purpose is respected; practical benefit is prospective or undemonstrated, without demanding experiments or a different practical conclusion as a condition of theoretical value",
+        "E motivates a bounded verification of a potentially relevant alternative from another family, not a conclusion of equivalence, plagiarism, or global absence of novelty from an abstract alone",
+        "F's changed significance decision is not credited as a practical advantage without accounting for the demonstrated coverage loss",
+        "The response uses packet-only evidence limits, no fabricated bibliographic identifiers or independently verified novelty claim, no automatic fifth numerical category, and no blanket demand to benchmark every method"
+      ]
+    },
+    {
+      "id": 14,
+      "eval_name": "offline-overlap-and-unresolved-combination",
+      "prompt": "Answer the three independent requests in the supplied offline comparison packets. Give supported overlap and practical-usefulness judgments, explain the combination assessment where requested, and state the novelty scoring status. Do not search outside the packets or infer missing publication history.",
+      "expected_output": "Substantive packet-bounded comparison where supplied content permits it, no forced combination classification with missing decisive evidence, and field-level novelty left unassessed with N/A scores.",
+      "files": ["fixtures/offline-comparison-boundaries.md"],
+      "assertions": [
+        "A receives a substantive overlap assessment based on its matching assumptions, target, interval, and guarantee; absence of external verification does not suppress this comparison in favor of positioning comments alone",
+        "A's practical capability claim is challenged by the same answer at higher measured cost, without automatically dismissing the separate proof-organization claim or inferring chronological priority",
+        "B's enabling-versus-convenience classification remains unassessed because decisive comparator and development details are missing; it is not conclusively assigned either label",
+        "C does not acquire an invented substantive comparator or practical gain from its own firstness claim; the answer is limited to positioning and missing evidence",
+        "All requested field-level novelty scores are N/A rather than unsupported numbers, and comparator verification limits remain explicit"
+      ]
+    },
+    {
+      "id": 15,
+      "eval_name": "ordinary-writing-review-without-alarm",
+      "prompt": "Answer only request A in the supplied writing-and-readiness packet: assess the clarity, ordering, and editing quality of the paragraph without rewriting it.",
+      "expected_output": "Bounded ordinary writing review without unnecessary AI-prose classification or manuscript replacement text.",
+      "files": ["fixtures/writing-and-readiness.md"],
+      "assertions": [
+        "The response assesses the supplied paragraph's statistical clarity and ordering without inventing missing whole-manuscript content or a consequential defect merely to populate findings",
+        "The response does not add an AI-authorship or patterned-prose classification when no such assessment is requested and no recurrent pattern is present",
+        "When execution traces are available, ai-writing-alarm.md is not loaded solely because a general writing assessment was requested",
+        "Mechanical editing quality is discussed in aggregate, and no replacement paragraph, cosmetic edit list, or unrelated full scorecard is produced"
+      ]
+    },
+    {
+      "id": 16,
+      "eval_name": "requested-judgmental-readiness-estimate",
+      "prompt": "Answer only request B in the supplied writing-and-readiness packet: give a brief pre-submission assessment and address the explicitly requested rough numerical acceptance estimate if supportable.",
+      "expected_output": "Evidence-bounded readiness assessment that treats a requested estimate as permitted but not mandatory, avoids fabricated calibration, and preserves scorecard evidence limits.",
+      "files": ["fixtures/writing-and-readiness.md"],
+      "assertions": [
+        "The response does not refuse the requested estimate on the ground that acceptance probabilities are categorically forbidden",
+        "If an estimate is given, it is identified as judgmental rather than calibrated and its basis and limitations are stated; if withheld, the reason concerns insufficient evidence rather than an unconditional policy ban",
+        "The response does not invent real venue criteria, base rates, editorial outcomes, verified proof status, or independent novelty verification",
+        "The full pre-submission assessment retains the default scorecard, marking unassessable categories N/A and not treating an author-reviewed analysis or unspecified numerical results as independently established evidence"
       ]
     }
   ]

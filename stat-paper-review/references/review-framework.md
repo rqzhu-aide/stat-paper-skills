@@ -1,5 +1,7 @@
 # Statistical Review Framework
 
+For focused review, apply the questions below to the requested judgment and the dependencies needed to support it; whole-paper coverage is required for a full review. Focused theory still includes the plausibility screen for the result being assessed.
+
 ## Contents
 
 - [Contribution and positioning](#1-contribution-identity-and-positioning)
@@ -24,7 +26,9 @@ Check:
 
 Flag a contribution-identity problem when the paper contains several technically valid pieces but no clear organizing statistical principle.
 
-Distinguish clarity of the manuscript's positioning from actual novelty. Use [novelty-verification.md](novelty-verification.md) for any actual novelty, originality, or priority judgment or score. Without external comparison, assess positioning only and label substantive novelty unassessed.
+Distinguish clarity of the manuscript's positioning from actual novelty. Use [novelty-verification.md](novelty-verification.md) for any actual novelty, originality, or priority judgment or score. Without the required external verification and search, mark field-level novelty unassessed and its score `N/A`; a supported packet-bounded overlap assessment remains possible under the [offline comparison boundary](novelty-verification.md#4-report-a-bounded-conclusion).
+
+For a methodological or practical contribution, also ask whether existing feasible methods already deliver the same scientific or decision conclusion, and what consequential benefit remains. Use the [practical-alternative comparison](novelty-verification.md#practical-usefulness-relative-to-existing-alternatives) and its evidence limits; intellectual difference alone does not establish practical usefulness.
 
 ## 2. Statistical target and method
 
@@ -47,7 +51,7 @@ Check whether the paper moves correctly between them. Ask:
 - Are necessary choices distinguished from convenient defaults?
 - Are computation, failure conditions, and tuning guidance adequate for use or reproduction?
 
-Treat a mismatch between the headline target and the evaluated object as a high-priority concern.
+Assess a target or theorem-implementation mismatch by its consequence and remedy, using section 6. An ordinary practical tuning choice outside the formal guarantee is usually Minor: request appropriate numerical or sensitivity justification and a clear statement of theoretical scope, rather than an adaptive guarantee by default. Escalate only when the evidence shows a more consequential problem, such as failure of the central claimed guarantee or evaluation of a materially different target. Numerical robustness can justify a practical choice without extending the formal theorem.
 
 ### Computational cost and practicality
 
@@ -97,6 +101,8 @@ Conclude the internally supported screen with one of: plausible; plausible with 
 
 Separate theorem exposition from proof verification. An unclear proof is not automatically an incorrect proof. A proof-level objection must identify the exact unsupported step or dependency.
 
+A reference can resolve yet point to the wrong claim: an asymptotic conclusion does not supply a finite-sample inequality used by a later step. Identify the mismatch and assess the available repair under section 6. Inline versus displayed mathematics alone is not a scientific defect or an automatic scoring penalty.
+
 ## 4. Numerical evidence and application
 
 Map each central claim to its visible support:
@@ -115,9 +121,11 @@ Evaluate:
 - negative or null results that define the method's boundary;
 - reproducibility details needed to interpret the comparison.
 
+Before reporting inconsistent numbers, check whether the quantities, denominators, units, and settings imply that they should agree. For a consequential discrepancy, use a small calculation from supplied values when it can resolve the question. Allow for rounding and clarify what reported uncertainty means; use a binomial Monte Carlo SE only when the replication design supports the binomial model. A finite-sample slope differing from an asymptotic bound does not by itself establish a theorem error. If resolution needs unavailable data or substantial reruns, identify the missing verification.
+
 For real-data applications, determine whether the analysis is an illustration, prediction study, estimation problem, decision analysis, or scientific investigation. Do not treat agreement on one observed dataset as accuracy validation when truth is unavailable.
 
-Ask what scientific, statistical, or decision conclusion changes because of the method. If nothing consequential changes, the application may demonstrate operation without demonstrating value.
+Ask what scientific, statistical, or decision conclusion changes because of the method, relative to existing feasible alternatives. If the conclusion is unchanged, assess whether it is obtained with meaningfully better precision, reliability, robustness, assumptions, data requirements, cost, or usability. Similar results alone establish neither interchangeability nor lack of value. When comparable alternatives give the same answer and no consequential improvement is demonstrated, describe the practical contribution as limited or unestablished within the evidence reviewed. Keep a theoretical contribution's value distinct from its demonstrated or prospective application value. Follow the [practical-alternative comparison](novelty-verification.md#practical-usefulness-relative-to-existing-alternatives) when this judgment is in scope.
 
 ## 5. Exposition, navigation, and reproducibility
 
@@ -144,14 +152,18 @@ Give an edit specification rather than replacement prose. State the affected loc
 
 ## 6. Priority synthesis
 
-Rank issues in this order unless the manuscript justifies another order:
+Calibrate severity by the repair needed and its scientific consequence. Rank by calibrated severity and importance to the contribution, not by issue type: a local proof error need not outrank a substantive evidence failure. Use these defaults for demonstrated issues:
 
-1. correctness, validity, or target mismatch;
-2. contribution identity and novelty positioning;
-3. assumptions and theorem-method alignment;
-4. evidence for the headline claim;
-5. application meaning and practical calibration;
-6. consequential exposition, navigation, and reproducibility.
+| Severity | Repair and consequence |
+|---|---|
+| Minor | A typo or notation slip with clear intended meaning; an incorrect justification for an otherwise valid step; or a practical tuning choice needing ordinary numerical justification. The correction leaves the scientific argument and intended scope intact. |
+| Moderate | An incorrect derivation with a credible local repair under the existing assumptions, preserving the conclusion and meaningful scope. Also applies to bounded evidence or exposition problems that need substantive clarification or repair without changing the contribution. |
+| Major | Repair requires an additional substantive assumption, a materially changed conclusion or intended scope, or substantial new analysis or evidence to support an important claim. Assess the assumption's burden as below. |
+| Critical | A supported failure of a central claim whose repair would abandon or substantially replace the claimed contribution. An unexplained step, local error, or missing verification alone does not meet this threshold. |
+
+For an added assumption, assess both its conventionality in closely comparable literature and its actual restriction here. A conventional regularity condition omitted from the statement can warrant a lower rating when it does not materially narrow the intended setting. A common assumption can still be Major if it excludes the motivating application or removes the paper's claimed advantage. Support a claim of conventionality with supplied or verified comparable literature; otherwise leave that aspect uncertain. Distinguish a condition already implied by stated assumptions from a genuinely additional restriction, and a shown necessity from one possible sufficient repair.
+
+Describe a credible repair and its basis at the level needed to justify severity, without drafting a replacement proof or starting a proof audit. If repairability has not been established, state the exact uncertainty and needed verification. Failure to find a repair is not evidence that none exists or that a new assumption is necessary. Do not downgrade a demonstrated central failure merely by speculating that it might be fixable. Keep local proof repair distinct from endorsement of the complete proof.
 
 For each high-priority issue, distinguish the remedy:
 

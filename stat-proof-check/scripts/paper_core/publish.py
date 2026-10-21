@@ -30,6 +30,12 @@ FRAGMENT_FIELDS = ("label", "statement", "reason", "needed_form", "rationale", "
                    "proof_idea", "regime", "uncertainty", "impact_reason")
 
 
+def _review_color(assessment):
+    """Display an already-derived policy, never reinterpret the logical state."""
+    return {"severe": "red", "moderate": "orange", "minor": "yellow", "checked": "green"}.get(
+        assessment.get("review_display", {}).get("status"), "gray")
+
+
 def _node_executable() -> str:
     node = shutil.which("node")
     if node is None:
@@ -133,6 +139,7 @@ class _Scan(HTMLParser):
         self.script_id = None
         self.scripts = {}
         self.node_ids, self.edge_ids, self.index_items, self.index_connections = [], [], [], []
+        self.index_hypotheses = []
         self.node_states, self.edge_states = {}, {}
         self.findings, self.limits, self.process = [], [], []
         self.external = []
@@ -163,6 +170,10 @@ class _Scan(HTMLParser):
             self.index_connections.append(a["data-proof-index-connection"])
             self.edge_states[a["data-proof-index-connection"]] = (a.get("data-edge-from"), a.get("data-edge-to"),
                                                                  a.get("data-edge-state"))
+        if "data-proof-index-hypothesis" in a:
+            self.index_hypotheses.append(a["data-proof-index-hypothesis"])
+            self.edge_states[a["data-proof-index-hypothesis"]] = (a.get("data-edge-from"), a.get("data-edge-to"),
+                                                                a.get("data-edge-state"))
         if "data-proof-finding" in a:
             self.findings.append(a["data-proof-finding"])
         if "data-proof-source-limit" in a:
@@ -221,7 +232,7 @@ def _scientific_fields(projection):
         "coverage": ("classification", "note"),
         "audits": ("mode",),
         "checks": ("kind", "state", "outcome", "reasoning", "conditions", "next_action", "extent", "omissions"),
-        "findings": ("category", "lifecycle", "description", "impact_reason", "resolution"),
+        "findings": ("category", "severity", "lifecycle", "description", "impact_reason", "resolution"),
         "repairs": ("kind", "description", "added_conditions"),
         "qualifications": ("qualified", "limitations"),
         "responses": ("coverage_note", "exposure", "exposure_note", "state"),
@@ -449,7 +460,19 @@ def _saved_limitations(projection):
 def _visible_failures(scan, projection, *, build=None):
     """Check actual visible classes/text as well as identity metadata."""
     failures = []
-    glyphs = {"green": "✓", "red": "✕", "gray": "?", "amber": "!"}
+    glyphs = {"green": "✓", "red": "✕", "gray": "?", "orange": "!", "yellow": "i"}
+    display_colors = {"checked": "green", "severe": "red", "moderate": "orange", "minor": "yellow"}
+    display_labels = {"checked": "Checked", "severe": "Severe", "moderate": "Moderate", "minor": "Minor",
+                      "unrated": "Severity not rated", "unresolved": "Unable to assess", "unassessed": "Not assessed",
+                      "dependency": "Depends on unresolved result", "historical": "Saved assessment, not rated"}
+    def display_status(assessment):
+        return assessment.get("review_display", {}).get("status", "historical")
+    def display_state(assessment):
+        return display_colors.get(display_status(assessment), "gray")
+    def display_label(assessment):
+        if display_status(assessment) == "unassessed" and assessment.get("label") == "examined in proof":
+            return "Examined in proof"
+        return display_labels[display_status(assessment)]
     text = lambda element: "".join(element["text"]).strip() if element else ""
     classes = lambda element: element["attrs"].get("class", "").split() if element else []
 
@@ -477,17 +500,24 @@ def _visible_failures(scan, projection, *, build=None):
         return next((child for child in descendants(element) if name in classes(child)), None) if element else None
 
     def assessment_matches(element, expected):
-        return element is not None and f"s-{expected['state']}" in classes(element) \
+        return element is not None and f"s-{display_state(expected)}" in classes(element) \
+            and element["attrs"].get("data-review-status") == display_status(expected) \
+            and text(field(element, "proof-state-badge")) == glyphs[display_state(expected)] + display_label(expected) \
             and text(field(element, "proof-assessment-label")) == expected["label"] \
             and text(field(element, "proof-assessment-text")) == expected["explanation"] \
-            and text(field(element, "proof-state-glyph")) == glyphs[expected["state"]] \
+            and text(field(element, "proof-state-glyph")) == glyphs[display_state(expected)] \
             and (not expected.get("availability") or text(field(element, "proof-availability"))
                  == f"Exact target support: {expected['availability']}")
 
     by_detail = {e["attrs"]["data-proof-detail"]: e for e in scan.elements if "data-proof-detail" in e["attrs"]}
-    for entry in projection["nodes"] + projection["connections"]:
-        if not assessment_matches(field(by_detail.get(entry["detail_key"]), "proof-assessment"), entry["assessment"]):
-            failures.append(f"visible assessment for {entry['id']} disagrees with its canonical state, glyph, label or support")
+    for kind, entries in (("node", projection["nodes"]), ("connection", projection["connections"])):
+        for entry in entries:
+            detail = by_detail.get(entry["detail_key"])
+            owners = [child for child in descendants(detail)
+                      if child["attrs"].get(f"data-proof-owner-{kind}") == entry["id"]] if detail else []
+            block = field(owners[0], "proof-assessment") if len(owners) == 1 else None
+            if not assessment_matches(block, entry["assessment"]):
+                failures.append(f"visible assessment for {entry['id']} disagrees with its canonical state, glyph, label or support")
     for key, detail in projection["details"].items():
         reader = detail.get("reader")
         if not reader or key not in by_detail:
@@ -506,22 +536,119 @@ def _visible_failures(scan, projection, *, build=None):
                 failures.append(f"reader assessment differs from its target or application: {key}/{context}")
     nodes = {entry["id"]: entry for entry in projection["nodes"]}
     connections = {entry["id"]: entry for entry in projection["connections"]}
+    hypotheses = {entry["id"]: entry for entry in projection.get("hypothesis_connections", [])}
     applications = {app["use_id"]: app for edge in projection["connections"] for app in edge.get("applications", ())}
     for element in scan.elements:
         attrs = element["attrs"]
+        if "data-proof-finding" in attrs:
+            identity = attrs["data-proof-finding"]
+            cards = [child for child in descendants(element)
+                     if child["attrs"].get("data-issue-ref") == identity]
+            if len(cards) != 1 or not visible(cards[0], allow_disclosure=True):
+                failures.append(f"summary issue card {identity} is missing, duplicated or hidden")
+        if "data-issue-ref" in attrs:
+            saved = projection.get("finding_displays", {}).get(attrs["data-issue-ref"], {})
+            expected = {"review_display": saved} if saved else {}
+            status, color = display_status(expected), display_state(expected)
+            if attrs.get("data-review-status") != status or f"s-{color}" not in classes(element) \
+                    or text(field(element, "proof-state-badge")) != glyphs[color] + display_labels[status]:
+                failures.append(f"issue card {attrs['data-issue-ref']} has altered severity or status")
         if "data-node-id" in attrs and (node := nodes.get(attrs["data-node-id"])):
-            state = node["assessment"]["state"]
+            state = display_state(node["assessment"])
             if f"s-{state}" not in classes(element) or text(field(element, "proof-node-label")) != node["label"] \
                     or text(field(element, "proof-node-state")) != glyphs[state]:
                 failures.append(f"visible node {node['id']} has altered color, label or glyph")
         if "data-edge-id" in attrs and (edge := connections.get(attrs["data-edge-id"])):
-            state = edge["assessment"]["state"]
+            state = display_state(edge["assessment"])
             if f"s-{state}" not in classes(element) or attrs.get("marker-end") != f"url(#proof-arrow-{state})":
                 failures.append(f"visible connection {edge['id']} has an altered color")
+        hypothesis_id = attrs.get("data-edge-id") or attrs.get("data-proof-index-hypothesis")
+        if hypothesis_id in hypotheses:
+            hypothesis = hypotheses[hypothesis_id]
+            members = [element, *descendants(element)]
+            if "proof-hypothesis" not in classes(element) or any(
+                    any(name.startswith("s-") or name in ("proof-assessment", "proof-state-badge", "proof-state-glyph")
+                        for name in classes(member))
+                    or any(name.startswith("data-review-") or name in ("data-severity", "data-edge-severity", "data-assessment")
+                           for name in member["attrs"]) for member in members):
+                failures.append(f"hypothesis {hypothesis_id} has an assessment or severity display")
+            if "data-edge-id" in attrs:
+                if element["tag"] != "path" or "proof-edge" not in classes(element) \
+                        or attrs.get("marker-end") != "url(#proof-hypothesis-arrow)" \
+                        or attrs.get("data-detail-key") != hypothesis["detail_key"]:
+                    failures.append(f"hypothesis {hypothesis_id} has an altered path or destination")
+            elif not any(member["attrs"].get("data-detail-key") == hypothesis["detail_key"] for member in members):
+                failures.append(f"index hypothesis {hypothesis_id} has an altered destination")
+            if attrs.get("data-edge-kind") != hypothesis["kind"]:
+                failures.append(f"hypothesis {hypothesis_id} shows an altered relation kind")
         if "data-application-id" in attrs:
             app = applications.get(attrs["data-application-id"])
             if app is None or not assessment_matches(field(element, "proof-assessment"), app["assessment"]):
                 failures.append(f"visible application {attrs['data-application-id']} has an altered assessment")
+    def pin(ref):
+        return f"{ref['collection']}:{ref['id']}:{ref['version']}"
+
+    records_by_pin = {pin(row["ref"]) for row in projection["records"]}
+    expected_contexts = []
+    for identity, hypothesis in hypotheses.items():
+        source, target = nodes.get(hypothesis["from"]), nodes.get(hypothesis["to"])
+        proof = connections.get(hypothesis.get("proof_connection_id"))
+        expected_detail = target["detail_key"] if target else None
+        if source is None or target is None or hypothesis["from"] == hypothesis["to"] \
+                or hypothesis["premise_ref"] != source["item_ref"] \
+                or hypothesis["target_ref"] != target["item_ref"] \
+                or hypothesis["detail_key"] != expected_detail or expected_detail not in by_detail \
+                or hypothesis["kind"] not in ("hypothesis", "setup") or "assessment" in hypothesis \
+                or (hypothesis.get("proof_connection_id") is not None and
+                    (proof is None or (proof["from"], proof["to"]) != (hypothesis["from"], hypothesis["to"]))):
+            failures.append(f"hypothesis {identity} has invalid endpoints or destinations")
+        expected_attrs = {
+            "data-hypothesis-context": identity,
+            "data-hypothesis-premise": pin(hypothesis["premise_ref"]),
+            "data-hypothesis-target": pin(hypothesis["target_ref"]),
+            "data-hypothesis-spec": pin(hypothesis["spec_ref"]),
+            "data-hypothesis-statement": pin(hypothesis["statement_ref"]),
+            "data-hypothesis-proof-connection": hypothesis.get("proof_connection_id") or "",
+        }
+        scope_pins = [pin(ref) for ref in hypothesis["scope_refs"]]
+        if any(value not in records_by_pin for key, value in expected_attrs.items()
+               if key not in ("data-hypothesis-context", "data-hypothesis-proof-connection")) \
+                or any(value not in records_by_pin for value in scope_pins):
+            failures.append(f"hypothesis {identity} does not resolve to pinned source records")
+        detail_keys = {hypothesis["detail_key"]}
+        if proof:
+            detail_keys.add(proof["detail_key"])
+        for detail_key in sorted(detail_keys):
+            expected_contexts.append((identity, detail_key))
+            detail = by_detail.get(detail_key)
+            contexts = [member for member in descendants(detail)
+                        if member["attrs"].get("data-hypothesis-context") == identity] if detail else []
+            actual = contexts[0]["attrs"] if len(contexts) == 1 else {}
+            try:
+                actual_scopes = json.loads(actual.get("data-hypothesis-scopes", "null"))
+            except (ValueError, TypeError):
+                actual_scopes = None
+            if any(actual.get(key) != value for key, value in expected_attrs.items()) or actual_scopes != scope_pins:
+                failures.append(f"hypothesis {identity} lost its pinned context in {detail_key}")
+            context = contexts[0] if len(contexts) == 1 else None
+            links = [member for member in descendants(context)
+                     if member["tag"] == "a" and "data-jump-record" in member["attrs"]] if context else []
+            expected_links = [pin(hypothesis["premise_ref"]), pin(hypothesis["target_ref"]), *scope_pins]
+            if not context or not visible(context, allow_disclosure=True) \
+                    or [link["attrs"]["data-jump-record"] for link in links] != expected_links \
+                    or any(not text(link) or not visible(link, allow_disclosure=True) for link in links):
+                failures.append(f"hypothesis {identity} lost its visible context links in {detail_key}")
+    actual_contexts = []
+    for element in scan.elements:
+        if "data-hypothesis-context" not in element["attrs"]:
+            continue
+        current = element["parent"]
+        while current and "data-proof-detail" not in current["attrs"]:
+            current = current["parent"]
+        actual_contexts.append((element["attrs"]["data-hypothesis-context"],
+                                current["attrs"]["data-proof-detail"] if current else ""))
+    if sorted(actual_contexts) != sorted(expected_contexts):
+        failures.append("hypothesis context destinations differ from the saved relations")
     scope = projection["summary"]["scope"]
     mode = [e for e in scan.elements if "data-proof-scope-mode" in e["attrs"]]
     targets = [e for e in scan.elements if "data-proof-scope-targets" in e["attrs"]]
@@ -674,6 +801,9 @@ def _reader_fields(projection):
         reader = detail.get("reader")
         if reader is None:
             continue
+        for node in projection["nodes"]:
+            if node["detail_key"] == key and node["item_ref"] != reader["item_ref"]:
+                add(key, "legacy", node["item_ref"], "statement")
         add(key, "strategy", reader.get("strategy_ref"), "proof_idea")
         for i, target in enumerate(reader["targets"]):
             at = f"target:{i}"
@@ -700,7 +830,7 @@ def _reader_fields(projection):
             add(key, at + ":to", application["to_ref"], "label")
             scopes(key, at, application["scope_chain"])
         for i, ref in enumerate(reader["finding_refs"]):
-            add(key, f"finding:{i}", ref, "category", "description", "impact_reason")
+            add(key, f"finding:{i}", ref, "category", "description", "impact_reason", "resolution")
         for i, ref in enumerate(reader["source_limit_refs"]):
             add(key, f"source_limit:{i}", ref, "category", "description", "limitation")
     latest = {}
@@ -716,7 +846,9 @@ def _reader_fields(projection):
             ref = latest.get(("uses", identity))
             if not ref:
                 continue
-            key, at = connection["detail_key"], f"application:{i}"
+            key = connection["detail_key"]
+            shared = sum(entry["detail_key"] == key for entry in projection["nodes"] + projection["connections"]) > 1
+            at = (f"connection:{connection['id']}:" if shared else "") + f"application:{i}"
             add(key, at, ref, "reason", "regime", "uncertainty")
             body = records[(ref["collection"], ref["id"], ref["version"])]
             for direction in ("from", "to"):
@@ -738,7 +870,8 @@ def _reader_failures(scan, projection):
     records = {f"{r['ref']['collection']}:{r['ref']['id']}:{r['ref']['version']}": r["body"]
                for r in projection["records"]}
     overview_keys = [e["attrs"]["data-reader-overview"] for e in scan.elements
-                     if "data-reader-overview" in e["attrs"]]
+                     if "data-reader-overview" in e["attrs"]
+                     and "proof-reader-overview" in e["attrs"].get("class", "").split()]
     reader_keys = [key for key, detail in projection["details"].items() if detail.get("reader") is not None]
     # Older projections are readable without pretending that structured context was available.
     if any(overview_keys.count(key) != 1 for key in reader_keys):
@@ -771,7 +904,7 @@ def _reader_failures(scan, projection):
             kind, index = key[1].split(":")
             if kind == "finding":
                 identity = projection["summary"]["findings"]["refs"][int(index)]
-                collection, marker, fields = "findings", "data-proof-finding", ("description", "impact_reason")
+                collection, marker, fields = "findings", "data-proof-finding", ("category", "description", "impact_reason", "resolution")
             elif kind == "source_limit":
                 identity = projection["summary"]["source_limits"][int(index)]
                 collection, marker, fields = "source_issues", "data-proof-source-limit", ("description",)
@@ -796,9 +929,14 @@ def _reader_failures(scan, projection):
 
     for detail_key in reader_keys:
         reader = projection["details"][detail_key]["reader"]
-        overview = next((e for e in scan.elements if e["attrs"].get("data-reader-overview") == detail_key), None)
+        overview = next((e for e in scan.elements if e["attrs"].get("data-reader-overview") == detail_key
+                         and "proof-reader-overview" in e["attrs"].get("class", "").split()), None)
         if overview is None:
             continue
+        owner_id = (overview["parent"] or {}).get("attrs", {}).get("data-proof-owner-node")
+        owner = next((node for node in projection["nodes"] if node["id"] == owner_id), None)
+        if owner is None or owner["detail_key"] != detail_key or owner["item_ref"] != reader["item_ref"]:
+            failures.append(f"reader overview is placed under a different owner: {detail_key}")
         # Check contextual rows independently from field text: carrying correct text to the
         # wrong supplier or target row must not pass just because its marker moved with it.
         rows, pending = [], [overview]
@@ -876,7 +1014,10 @@ def _reader_failures(scan, projection):
         identities = list(dict.fromkeys(connection["primary_use_ids"] + list(applications)))
         for index, identity in enumerate(identities):
             if explanation := applications.get(identity, {}).get("support_explanation"):
-                explanations[connection["detail_key"], f"application:{index}"] = explanation
+                key = connection["detail_key"]
+                shared = sum(entry["detail_key"] == key for entry in projection["nodes"] + projection["connections"]) > 1
+                context = (f"connection:{connection['id']}:" if shared else "") + f"application:{index}"
+                explanations[key, context] = explanation
     shown_explanations = Counter()
 
     def support_visible(element, key):
@@ -948,27 +1089,38 @@ def mechanical_acceptance(html_bytes: bytes, projection: dict, *, build=None) ->
         failures.append("embedded projection differs from the built projection")
     node_ids = [n["id"] for n in projection["nodes"]]
     connection_ids = [c["id"] for c in projection["connections"]]
+    hypotheses = projection.get("hypothesis_connections", [])
+    hypothesis_ids = [entry["id"] for entry in hypotheses]
+    visible_hypotheses = [entry for entry in hypotheses if entry.get("proof_connection_id") is None]
+    visible_edge_ids = connection_ids + [entry["id"] for entry in visible_hypotheses]
     if projection["layout"]["mode"] in ("dag", "cyclic"):
         if not _multiset_equal(scan.node_ids, node_ids):
             failures.append("diagram node identities differ from projection nodes")
-        if not _multiset_equal(scan.edge_ids, connection_ids):
+        if not _multiset_equal(scan.edge_ids, visible_edge_ids):
             failures.append("diagram edge identities differ from projection connections")
-        if scan.index_items or scan.index_connections:
+        if scan.index_items or scan.index_connections or scan.index_hypotheses:
             failures.append(f"{projection['layout']['mode']} mode emitted index articles")
     else:
         if not _multiset_equal(scan.index_items, node_ids):
             failures.append("index item identities differ from projection nodes")
         if not _multiset_equal(scan.index_connections, connection_ids):
             failures.append("index connection identities differ from projection connections")
+        if not _multiset_equal(scan.index_hypotheses, hypothesis_ids):
+            failures.append("index hypothesis identities differ from projection hypotheses")
         if scan.node_ids or scan.edge_ids:
             failures.append("index mode emitted diagram elements")
     for node in projection["nodes"]:
-        if scan.node_states.get(node["id"]) != node["assessment"]["state"]:
+        if scan.node_states.get(node["id"]) != _review_color(node["assessment"]):
             failures.append(f"node {node['id']} shows state {scan.node_states.get(node['id'])!r}")
     for connection in projection["connections"]:
-        expected = (connection["from"], connection["to"], connection["assessment"]["state"])
+        expected = (connection["from"], connection["to"], _review_color(connection["assessment"]))
         if scan.edge_states.get(connection["id"]) != expected:
             failures.append(f"connection {connection['id']} shows {scan.edge_states.get(connection['id'])!r}")
+    shown_hypotheses = visible_hypotheses if projection["layout"]["mode"] in ("dag", "cyclic") else hypotheses
+    for hypothesis in shown_hypotheses:
+        expected = (hypothesis["from"], hypothesis["to"], "hypothesis")
+        if scan.edge_states.get(hypothesis["id"]) != expected:
+            failures.append(f"hypothesis {hypothesis['id']} shows {scan.edge_states.get(hypothesis['id'])!r}")
     summary = projection["summary"]
     if scan.process != [str(summary["progress"]["process_complete"]).lower()]:
         failures.append(f"process completion marker shows {scan.process!r}")
@@ -981,7 +1133,8 @@ def mechanical_acceptance(html_bytes: bytes, projection: dict, *, build=None) ->
     failures.extend(_visible_failures(scan, projection, build=build))
     failures.extend(_reader_failures(scan, projection))
     return {"status": "pass" if not failures else "fail", "failures": failures,
-            "nodes": len(node_ids), "connections": len(connection_ids), "layout_mode": projection["layout"]["mode"]}
+            "nodes": len(node_ids), "connections": len(connection_ids), "hypothesis_connections": len(hypothesis_ids),
+            "layout_mode": projection["layout"]["mode"]}
 
 
 def render_html(db: Database, projection: dict, *, release: bool, source_identity: str, workdir: Path) -> tuple:

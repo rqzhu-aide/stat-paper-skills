@@ -18,10 +18,10 @@ Score these four categories on the 1-10 scale below, assigning an integer only w
 |---|---|---|
 | Novelty | Does the claimed contribution survive the combination test and the documented external comparison? | [novelty-verification.md](novelty-verification.md) |
 | Theory | Do the assumptions, formal results, plausibility screen, and interpretation align with the claims? | [review-framework.md](review-framework.md) sections 2 and 3 |
-| Computation and evidence | Does the described computation implement the stated method at the level shown and support its claimed practical scale, and do the experiments support the claims against suitable alternatives in representative settings? | [review-framework.md](review-framework.md) sections 2 and 4 |
-| Writing and presentation | Can a critical reader recover the claim chain, and is the manuscript professionally edited? | [review-framework.md](review-framework.md) section 5 and [ai-writing-alarm.md](ai-writing-alarm.md) |
+| Computation and evidence | Does the implementation and evidence support the claimed practical scale and usefulness relative to existing feasible alternatives, including those giving similar conclusions? | [review-framework.md](review-framework.md) sections 2 and 4 |
+| Writing and presentation | Can a critical reader recover the claim chain, and is the manuscript professionally edited? | [review-framework.md](review-framework.md) section 5; [ai-writing-alarm.md](ai-writing-alarm.md) only when its trigger applies |
 
-Scoring the novelty category requires the external comparison in [novelty-verification.md](novelty-verification.md); perform it whenever a search route in [academic-search-operations.md](academic-search-operations.md) is available. When no external search was possible, mark novelty `N/A`, comment only on positioning clarity, and state why.
+Scoring the novelty category requires the external verification and search in [novelty-verification.md](novelty-verification.md); perform them whenever a search route in [academic-search-operations.md](academic-search-operations.md) is available and external search is within the requested scope. Without that verification and search, mark novelty `N/A` and state why. This does not prevent a supported packet-bounded overlap or practical-usefulness assessment under the [offline comparison boundary](novelty-verification.md#4-report-a-bounded-conclusion).
 If an unresolved detail in a close comparator could reverse the novelty judgment, mark novelty `N/A` even when a search was performed. A limited search can support a provisional numeric score only when the inspected comparison still supports a bounded judgment.
 
 When the user requests finer or additional dimensions, report them the same way and keep them consistent with their parent category: contribution identity and literature-supported novelty belong to novelty; statistical validity and method-theory coherence to theory; evidence, reproducibility, and computational practicality to computation and evidence; reviewer readability and patterned prose to writing and presentation. Interpretation and relevance, broad significance, and venue fit are separate optional dimensions scored only on request.
@@ -53,9 +53,13 @@ For every scored category or dimension, report:
 - one concise manuscript-specific justification;
 - the principal limiting issue or missing verification.
 
-For novelty, also report the contribution form, the combination-test classification when the contribution is a combination, the search-coverage level, and whether the conclusion is bounded or provisional. Never assign a positive novelty score solely from the manuscript's own positioning.
+For novelty, also report the contribution form, the supported combination-test classification or its unassessed status when the contribution is a combination, the search-coverage level, and whether the conclusion is bounded or provisional. Never assign a positive novelty score solely from the manuscript's own positioning.
 
-Check scores against the findings:
+Explain intellectual distinction and incremental practical benefit separately in the existing assessment. Judge a claimed new capability against alternatives that already provide similar conclusions; assess demonstrated practical gains in computation and evidence. Similar practical conclusions do not erase a supported theoretical contribution, and technical novelty alone does not establish usefulness. Let the overall judgment reflect the paper's stated purpose and remaining contribution. Do not add a fifth numerical category or automatic penalty, count the same overlap twice, or demand practical superiority from a paper claiming only a theoretical advance.
+
+Apply the [repair and consequence calibration](review-framework.md#6-priority-synthesis) before using severity to constrain scores. A local typo, wrong justification, or repairable derivation is not by itself a major unresolved gap or a reason to demote the entire theory assessment. Judge the remaining supported contribution, accounting for any substantive restriction needed to repair it. Do not infer a score cap from the words "proof error" or "guarantee mismatch."
+
+Check scores against the calibrated findings:
 
 - an unresolved Critical finding caps every category it directly affects at 4;
 - an unresolved Major finding caps its category at 7 unless the scope distinction is explicit;

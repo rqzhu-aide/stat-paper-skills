@@ -13,9 +13,13 @@
 
 ## Purpose
 
-Use this workflow to verify claim-bearing references and assess whether a manuscript's central novelty claim survives comparison with real publications. Perform it after the sequential first-reader pass so external knowledge does not overwrite the original reading record.
+Use this workflow to verify claim-bearing references and assess whether a manuscript's novelty claim survives comparison with real publications. Perform it after the reading required for the assessment scope so external knowledge does not overwrite the original reader observations.
+
+For a precise citation-support question, verify the named record and inspect the content needed to resolve the attached claim. Section 5 and the novelty comparison and search-saturation requirements in section 7 apply when novelty, priority, originality, or broader related-work coverage is assessed, or when the requested citation judgment requires that comparison. A precise support check stops when the claim is resolved or a stated evidence ceiling is reached.
 
 Treat literature search as evidence collection, not as a substitute for statistical review. A search result establishes neither novelty nor correctness by itself.
+
+For a focused practical-usefulness comparison, verify materially relevant existing alternatives and the content needed to assess the claimed gain. Search by the scientific question or desired conclusion as well as the proposed technique, including simpler procedures and different method families. Stop at a supported comparison or a stated evidence ceiling; do not expand to a full novelty assessment unless the requested judgment requires it. Apply the same evidence ceilings and comparator verification/discovery labels.
 
 ## 1. Define the search boundary
 
@@ -84,6 +88,8 @@ Decompose each novelty claim into the target, statistical regime, construction, 
 
 Search terminology from both the manuscript and the closest verified references. When available, inspect related, cited, and citing publications. Search multiple source families when the claim crosses fields or publication types.
 
+When practical usefulness is claimed, include methods that already answer the same scientific or decision question, even if their constructions and terminology differ. Reuse decisive comparisons already inspected rather than starting a separate search solely for practical value.
+
 Deduplicate by DOI first, then by PMID or arXiv ID, then by normalized title, year, and first author. Treat preprints and later peer-reviewed versions as linked versions, not automatically as separate intellectual contributions.
 
 ## 6. Use the bundled fallback when needed
@@ -106,14 +112,14 @@ Name-based author resolution is heuristic and selects one record without merging
 
 When re-ranking a text query by citation count or publication date, the script first retrieves a relevance-ranked candidate pool. It applies no relevance threshold by default. Use `--relevance-floor` only when a documented, query-specific reason justifies filtering, and record the chosen value because an aggressive threshold can hide close work.
 
-The fallback is for discovery. For every candidate that changes the novelty judgment, verify the DOI, publisher, PubMed, arXiv, or official proceedings record and inspect enough content to support the comparison. If network access is unavailable, report that external verification was not performed and keep the novelty conclusion provisional.
+The fallback is for discovery. For every candidate that changes the novelty judgment, verify the DOI, publisher, PubMed, arXiv, or official proceedings record and inspect enough content to support the comparison. If external verification or search was unavailable or excluded, apply the [offline comparison boundary](novelty-verification.md#4-report-a-bounded-conclusion). If completed external comparison was materially limited but supports a bounded judgment, label that conclusion provisional.
 
 ## 7. Compare and stop responsibly
 
-Build the comparison matrix specified in [novelty-verification.md](novelty-verification.md). Separate peer-reviewed publications, conference papers, and preprints. Record relevant version chronology when priority matters.
+For an actual novelty or related-work comparison, build the matrix specified in [novelty-verification.md](novelty-verification.md). Separate peer-reviewed publications, conference papers, and preprints. Record relevant version chronology when priority matters.
 
 When priority matters, compare the earliest public version that contains the overlapping substance, not merely the later journal or conference date. State the manuscript reference date used for comparison and classify chronology as earlier, concurrent, later, or indeterminate when the record does not resolve it.
 
-Stop only after the applicable decomposed query families have been searched and two materially different query refinements or citation-neighborhood passes add no candidate that changes the comparison. Do not claim an exhaustive search unless database coverage, query breadth, and screening justify it.
+For novelty, priority, originality, or broader related-work coverage, stop only after the applicable decomposed query families have been searched and two materially different query refinements or citation-neighborhood passes add no candidate that changes the comparison. Do not claim an exhaustive search unless database coverage, query breadth, and screening justify it. A precise citation-support check follows the bounded stopping rule in Purpose.
 
 For decisive publications, report a DOI, PMID, arXiv ID, or direct official link. State which publications were already cited, what was verified from full text, and what remains based only on metadata or abstract evidence.

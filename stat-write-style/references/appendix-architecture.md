@@ -35,7 +35,7 @@ Move material when it mainly supports navigation, detailed checking, or reproduc
 - data processing, decision logs, and sensitivity records;
 - specialized extensions that do not alter the main claim.
 
-Do not use page pressure alone as the criterion. Compress prose and remove duplication before moving conceptual links out of the main text.
+Do not use page pressure alone as the criterion. Improve prose structure before moving conceptual links out of the main text. Apply the preservation rule in the cross-reference audit below when handling repeated proof material.
 
 ## Build a claim-to-support map
 
@@ -88,7 +88,7 @@ Example:
 
 Place a lemma immediately before its first declared use when it is local. Group lemmas near the beginning only when several proofs visibly cite them.
 
-Do not create formal lemmas for one-line algebra. Keep method assumptions distinct from proof-only notation and preserve all labels.
+Do not create formal lemmas for one-line algebra. Keep method assumptions distinct from proof-only notation. Preserve labels by default, subject to the reference-repair rule below.
 
 ### Proof openings
 
@@ -175,11 +175,13 @@ Label the status explicitly. Do not let an exploratory extension broaden the tit
 
 ## Multi-file supplements
 
-If the supplement spans several files, use one master outline and one notation source. Keep theorem labels, equation labels, and terminology stable across files.
+If the supplement spans several files, use one master outline and one notation source. Keep labels and terminology stable across files; deliberate equation-label changes require the reference repair below.
 
 Use descriptive file roles such as proofs, algorithms, simulations, and data details. Do not repeat the introduction in every file.
 
 ## Cross-reference audit
+
+For a formula moving inline or to a different location, use [formulas and their references](theoretical-statements.md#formulas-and-their-references). Preserve the claim each active caller uses, not merely a compiling reference. Keep existing lemma statements and proofs together during local edits; no new subsection scheme is required.
 
 Check both directions:
 
@@ -189,11 +191,12 @@ Check both directions:
 - appendix notation does not silently redefine main-text symbols;
 - proof statements and main-text statements use the same labels, objects, rates, and scopes;
 - simulation settings match captions and reported values;
+- Where main and supplement deliberately present corresponding items, match their identities, coverage, duplicates, signs, and shared reported values, allowing for intentional reordering and compatible rounding.
 - implementation descriptions agree across formulas, algorithms, and prose.
 
 Do not infer that source code implements the described algorithm. Treat claims about uninspected code behavior as **Unverified dependency**.
 
-Remove orphan items, duplicated narratives, and extensions with no relation to the paper's contract.
+Identify the role of apparently unconnected appendix material and repair its placement or cross-references. Preserve supplied derivations, calculations, cases, explanations, broader lemmas, examples, and optional refinements with their additional assumptions. A missing main-text citation is not evidence that an item is expendable. Reorganization alone does not authorize shortening or deleting this material. Consolidate repeated proof material only when deduplication is explicitly requested, retaining all distinct content and assumptions. Flag genuinely unrelated material as a scope decision rather than deleting it silently.
 
 ## Final reader test
 

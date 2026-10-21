@@ -85,7 +85,7 @@ After the fine, local, and section passes, compare across the manuscript:
 - discussion and conclusion language against earlier scopes and limitations;
 - main-text claims against appendix or supplement support and cross-references.
 
-The main text should contain the motivation, central objects, formal conclusions, primary evidence, and main boundary needed to stand alone. Use [appendix-architecture.md](appendix-architecture.md) to map omitted detail to support, remove orphan material, and check both directions of cross-reference.
+The main text should contain the motivation, central objects, formal conclusions, primary evidence, and main boundary needed to stand alone. Use [appendix-architecture.md](appendix-architecture.md) to map omitted detail to support, identify the role of apparently unconnected material, repair placement or cross-references without discarding supplied scientific detail, and check both directions of cross-reference.
 
 ## 7. Map contributions to support when needed
 

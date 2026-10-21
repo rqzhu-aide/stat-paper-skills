@@ -76,4 +76,4 @@ Citation density should follow intellectual dependence. Related-work synthesis m
 
 ## Typography
 
-Preserve the manuscript's or stated venue's punctuation and typographic conventions, including supplied U+2013 and U+2014 characters. Correct malformed punctuation, but do not impose the assistant's output house style on manuscript text unless requested.
+Do not introduce sentence-level long dashes in prose you newly write or rewrite, including TeX forms that render as long dashes. Use commas, colons, semicolons, parentheses, or separate sentences. Preserve unchanged supplied sentences, exact quotations and source evidence, titles, identifiers, mathematical notation, ranges, and required venue typography. Moving an unchanged sentence is not rewriting it. Correct malformed punctuation within scope; do not perform a global punctuation pass without a request.

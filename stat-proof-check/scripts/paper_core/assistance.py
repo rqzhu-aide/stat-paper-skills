@@ -12,6 +12,17 @@ from . import contract as c
 from .errors import ConflictError, InvalidRequest
 from .ids import new_id, valid_id
 
+FINDING_CARD_NOTE = (
+    "Use the severity rubric in evidence-and-verdicts.md for established issues; "
+    "omitted severity is unrated. Inconclusive limitations have no inferred defect severity. "
+    "Write description as one short issue sentence with one decisive formula or exact witness when useful. "
+    "Write impact_reason as one short sentence stating what remains valid and what changes, "
+    "including an already apparent correction when useful. "
+    "Use explicit LaTeX delimiters and JSON-escaped backslashes as in mathematical-checking.md. "
+    "Keep longer derivations and inspection-process details in the existing examination reasoning; "
+    "no separate card-writing pass. "
+    "Keep source locators in the existing evidence references.")
+
 
 def describe(spec):
     """A compact, informational shape; the contract remains the only validator."""
@@ -117,7 +128,8 @@ def authoring_template(collection, *, packet_id, record_id=None, db=None):
         target = current.ref if collection in ("papers", "items", "parts", "audits") else current.body.get("target")
         if not isinstance(target, dict) or target.get("collection") not in ("items", "parts"):
             target = current.ref if collection in ("papers", "items", "parts", "audits") else db.heads("papers")[0].ref
-        edit_mode = "reconcile" if collection == "findings" else "author"
+        edit_mode = ("primary" if collection == "audits" else
+                     "reconcile" if collection == "findings" else "author")
         retry = {"command": f"get DB --target {target['collection']}:{target['id']} --mode {edit_mode} --out PACKET.json",
                  "targets": [target], "mode": edit_mode}
         manifest = packet["manifest"] if packet else {}
@@ -152,6 +164,8 @@ def authoring_template(collection, *, packet_id, record_id=None, db=None):
         note += (" Excluding an item removes that result and its parts from required work. "
                  "Keep an unavailable proof of a requested result in scope as a source limitation "
                  "or unresolved examination; missing material alone does not authorize narrowing the request.")
+    if collection == "findings":
+        note += " " + FINDING_CARD_NOTE
     return {"template": batch, "body_shape": describe(c.BODY_SCHEMAS[collection]), "note": note}
 
 
@@ -170,9 +184,15 @@ def worker_guidance(mode, *, composition=False):
             "Extent is coverage, not outcome. After examining all assigned supplied material, including a proof "
             "omission (outcome=gap), use whole_unit and empty omissions. proof_gap is a primary finding category. "
             "Assessed external unavailability may finish inconclusive. For unexamined assigned material, "
-            "including necessary unreadable passages, use partial and name it in omissions. Follow scaffold types. "
-            "Keep conditions, adverse reasoning and limitations; never "
-            "clear omissions for acceptance. "
+            "including necessary unreadable passages, use partial and name it in omissions. "
+            "Populate the generated scaffold rows you return, preserving their fields and types. "
+            "For each returned composition row, set extent to the actual coverage and keep omissions a string, "
+            "empty only when no assigned material remains unexamined. "
+            "Preserve adverse reasoning and limitations. For a new response, leave conditions empty unless "
+            "naming a restriction explicitly listed in the applicable scopes.conditions; copy such entries verbatim. "
+            "This field is not a summary of the supplied setup. "
+            "If support needs an additional restriction, explain it in reasoning and do not mark the unchanged question supported. "
+            "Do not remove a substantive restriction from the reasoning to obtain support. Never clear omissions for acceptance. "
             + ("Put conclusion concerns in judgment reasoning and outcome, others in coverage_note. " if mode == "independent" else
                "Put defects and uncertainty in reasoning or findings. ") +
             "No proof, repair or counterexample construction is required. Unrelated discoveries do not expand "
@@ -231,8 +251,10 @@ def _response_guidance(mode):
     if mode == "primary":
         return {"mode": mode, "response_shape": describe(c.WORK_PRIMARY_RESPONSE),
                 "optional_finding_example": _finding_example(),
+                "finding_card_note": FINDING_CARD_NOTE,
                 "note": "Use assigned task IDs; required nullable fields stay present. "
-                        "Keep each scaffold row's type: source_fidelity uses result, note and evidence_refs; "
+                        "For source_fidelity, compare the exact saved claim and its formulas with the source, "
+                        "using result, note and evidence_refs; "
                         "check uses state, outcome, reasoning and its check fields. Do not fill source rows as checks. "
                         "Return the rows actually examined; leave missing work pending rather than filling defaults. "
                         "Author the judgments. Finding rows create new issues. After an accepted submission, "
@@ -246,8 +268,10 @@ def _response_guidance(mode):
         from .controller import INTEGRATION_RESPONSE
         return {"mode": mode, "response_shape": describe(INTEGRATION_RESPONSE),
                 "optional_finding_example": _finding_example(),
+                "finding_card_note": FINDING_CARD_NOTE,
                 "note": "Use the integration scaffold's unit task IDs; scripts select current opinion references. "
-                         "Match each generated task's exact target to coordinator reconciliation candidates, not label or ID prefixes. "
+                         "Use the coordinator reconciliation candidate whose integration_task_ids contains the scaffold task_id. "
+                         "Return only authored integrations; omit undecided rows. An unresolved decision needs an authored rationale. "
                          "Compare saved reasoning and conditions and author the decision and rationale. "
                          "Adopting a saved finding is integration; disagreement does not require another examination. "
                          "Use adopt_independent to adopt the saved independent conclusion, adopt_primary to "

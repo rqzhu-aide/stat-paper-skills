@@ -82,13 +82,18 @@ class SkillStructureTests(unittest.TestCase):
 
     def test_runtime_metadata_covers_reviewer_tests(self) -> None:
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn(
-            "The reviewer helper and tests also require Python 3.10 or later",
-            readme,
+        installation = readme.split("## Skill use and installation", 1)[1].split("\n## ", 1)[0]
+        paragraph = next(
+            (block for block in installation.split("\n\n") if block.startswith("`stat-paper-review` ")),
+            "",
+        )
+        self.assertRegex(
+            paragraph,
+            r"helpers? and tests require (?:shared )?Python 3\.10(?:\+| or later)",
         )
         self.assertIn(
             "python -m unittest discover -s stat-paper-review/tests",
-            readme,
+            paragraph,
         )
 
     def test_eval_definitions_are_unique_and_fixtures_exist(self) -> None:

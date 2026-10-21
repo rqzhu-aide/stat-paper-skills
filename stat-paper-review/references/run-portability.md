@@ -12,17 +12,19 @@ tamper-proof audit log.
 Use a durable run bundle for:
 
 - every delegated review;
-- every review whose result must be resumed, moved, or independently checked;
-- every multi-file manuscript packet, including a main PDF with supplements;
+- every review requiring durable resumption, moving execution, or independently checked execution records;
 - any review for which the user requests an execution audit trail.
 
-A single-manuscript interactive review, including a full review of one PDF,
-proceeds without a run bundle. In that case still apply section 3's source-map
-discipline directly before substantive reading: verify page mapping, visually
-check claim-bearing equations, symbols, tables, and figures against rendered
-pages, and state any extraction limits in the report's assessment boundary.
-Classify any execution failure with the categories in section 2 and report it
-as an execution limitation, never as manuscript evidence.
+An ordinary interactive review of one or several files proceeds without a
+bundle unless one of these triggers applies. File count, ordinary continuation
+with unchanged context, a scientific report, or working notes do not themselves
+require a bundle. Independently checked execution records means checking how
+the review was performed, not ordinary scientific scrutiny of its conclusions.
+
+Every route uses section 3's source-map discipline. For ordinary PDF or multi-file
+intake, read that section only; sections 1, 2, 4, and 5's helper operations apply
+to bundled routes. Report execution failures as execution limitations, never
+manuscript evidence. Reading source-map guidance does not activate finalization.
 
 ## 1. Resolve helpers independently of the working directory
 
@@ -38,6 +40,13 @@ python "<skill-root>/scripts/academic_search.py" --help
 Use any available Python 3.10 or later launcher. Do not encode an operating
 system username, home directory, drive letter, shell syntax, or installation
 layout in a review instruction or run artifact.
+
+Resume an existing bundle under its frozen instructions and helper, using
+`python "<review-bundle>/protocol/scripts/review_run.py" <command> --root "<review-bundle>"`.
+Do not silently switch it to an installed newer helper, replace its protocol
+snapshot, or change its required-stage list. Schema readability by a newer
+helper does not change the governing protocol. Older bundles retain their
+original workflow, including its original focused first-reader prerequisite.
 
 ## 2. Preflight before substantive reading
 
@@ -69,6 +78,13 @@ settings, rewrite access-control lists, or silently switch to an informal review
 If the retry fails, stop with `NONFINAL`, the failed operation, and the failure
 category. Do not imply that manuscript reading or review stages completed.
 
+If restricted access prevents use of an existing shared runtime or physical
+path resolution, one approved normal-access diagnostic on the same unchanged
+files is appropriate when the host permits it. Inability to verify containment
+is distinct from demonstrated redirection, but neither permits finalization.
+Keep the run `NONFINAL` until actual containment and integrity checks succeed;
+do not change access controls or bypass checks because bytes are readable.
+
 After a passing preflight, initialize the run:
 
 ```text
@@ -79,6 +95,13 @@ Add `--delegated` when any stage will be assigned to another worker. The full
 profile requires a literature-stage outcome by default. For a focused profile,
 add `--require-stage literature` when an actual novelty, priority, related-work,
 or citation-support judgment is required.
+
+In workflow 1.3, focused `literature` and `patterned_prose` require `fact_base`.
+They also require `first_reader` when that stage was explicitly declared with
+`--require-stage first_reader`. Scoped manuscript reading still precedes the
+fact base and external comparison without requiring a separate saved reader
+stage on every focused route. Full-profile analysis keeps its `first_reader`
+prerequisite. Required-stage lists are inventories, not execution order.
 
 Initialization copies, hashes, and locks the supplied files into `inputs/`. It
 also records the skill name and version and copies the exact `SKILL.md`,
@@ -93,8 +116,11 @@ self-contained.
 
 ## 3. Build a first-class source map
 
-Do not begin the first-reader pass until a durable `source_map` artifact exists.
-For every main, supplement, and companion file, record:
+Build a source map on every route. For ordinary interactive review, keep it in
+working context; no saved stage artifact or helper registration is required.
+For a bundled route, save and register it before substantive reading. For every
+main, supplement, and companion file, record the applicable fields below;
+omit PDF-page or OCR fields for source-only packets:
 
 - its role, displayed title, file type, and whether it is the canonical copy;
 - page count or source-file coverage when available;
@@ -114,7 +140,7 @@ source map `limited` when extraction or page alignment is incomplete but a
 bounded review remains supportable. Mark it `not_assessable` and stop when the
 manuscript content cannot be read reliably enough to ground findings.
 
-Register the source map from any working directory:
+For bundled routes, register the source map from any working directory:
 
 ```text
 python "<skill-root>/scripts/review_run.py" stage --root "<review-bundle>" --name source_map --artifact "<source-map-file>"
@@ -176,6 +202,12 @@ Replacing a registered upstream stage invalidates its recorded downstream
 stages, including synthesis and QA. Previously copied artifact files may remain
 for audit history, but they are not current stage evidence until the affected
 stages are rerun and registered again.
+
+Adding optional evidence for the first time also invalidates synthesis and QA.
+For focused runs, adding or replacing optional `first_reader` evidence also
+invalidates recorded `literature` and `patterned_prose`; replacing `fact_base`
+invalidates those analyses and `claim_chain`. This preserves evidence freshness
+without making every optional stage mandatory.
 
 ## 5. Finalize or fail closed
 

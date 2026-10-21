@@ -6,7 +6,7 @@ Distinguish light polish, substantive paragraph development, and section restruc
 
 Before rewriting, identify the passage's job, claim, mathematical objects, evidence level, and boundary. Protect:
 
-- mathematical expressions, symbols, indices, macros, labels, and cross-references;
+- mathematical expressions, symbols, indices, macros, and the claims reached by labels and cross-references;
 - negation, logical direction, quantifiers, conditioning, and sources of randomness;
 - finite-sample, asymptotic, oracle, feasible, empirical, and computational scope;
 - uncertainty, modality, causal status, and novelty claims;
@@ -30,7 +30,9 @@ For drafting, read this subsection; revision-specific checks elsewhere in this g
 
 **Mathematical prominence.** Keep routine notation, short conditions, substitutions, and incidental identities inline when readable. Display central definitions and results, expressions needing visual comparison, or mathematics that would obstruct a sentence; a short central equation can deserve a display. Integrate displays grammatically and explain their role without paraphrasing every symbol. An isolated "Define," "Thus," or "where" may signal fragmentation, not a forbidden word.
 
-**Presentation and preservation.** Within the requested scope, change paragraph breaks, display delimiters, environments, and surrounding prose while preserving mathematical expressions, conditions, scope, protected macros, labels, and reference targets. Respect explicit formatting constraints. Retain referenced displays when they serve navigation or emphasis, and preserve venue numbering requirements. Do not silently drop labels to move a formula inline or normalize mathematical tokens without authorization.
+**Presentation and preservation.** Within scope, revise paragraphs, displays, and prose while preserving mathematics, conditions, scope, and protected macros. Respect formatting constraints and venue numbering. Keep labels by default; use [reference repair](theoretical-statements.md#formulas-and-their-references) before retiring or relocating one. Retain displays needed for navigation or emphasis. Notation normalization requires authorization.
+
+Preserve class and template settings, including font sizes and spacing. Resolve crowding with natural alignment or line/display breaks, retaining supplied detail. Ordinary equation row breaks and mathematical spacing remain available; do not shrink spacing or force page breaks merely to fit a page limit. Local layout repairs must address an observed rendering defect. Change template settings only when explicitly requested.
 
 **Attribution and economy.** Credit inherited ideas at substantive use; explain their relationship to the present argument where consequential. Use supported comparisons, not a citation quota. Remove language that changes neither meaning nor navigation. Preserve authorial voice and clear sentences; use [wording-register.md](wording-register.md) for specialist terminology, evidence verbs, or register choices.
 

@@ -6,6 +6,8 @@ Make the supplied proof exposition navigable and document how the manuscript say
 
 This is a presentation-only review. Preserve hypotheses, quantifiers, domains, conclusions, equations, proof steps, stochastic orders, and logical direction. Do not certify validity, completeness, or correctness or add a missing mathematical justification. If exposition depends on unresolved mathematical content, use [support-and-author-decisions.md](support-and-author-decisions.md).
 
+Preserve the supplied proof route, calculations, case analyses, and explanations, including familiar or repeated reminders. Improve wording and placement directly; shortening this detail, consolidating repeated proof material, or replacing a supplied derivation with a reference requires an explicit simplification or deduplication request.
+
 ## Start with a declared dependency map
 
 For a substantial proof section or appendix, map the results, stated direct dependencies, main devices, and assumptions where this helps maintain the argument. Compact notes suffice; use a table only when useful.
@@ -43,7 +45,7 @@ Keep notation local. State conditioning and randomness explicitly when they are 
 
 Remove rhetorical shortcuts such as "clearly," "obviously," or "it is easy to see" when they replace explanation. Do not compensate by inventing a derivation.
 
-Do not decide whether a proof-ending claim such as "this proves the theorem" or "this completes the proof" is mathematically warranted. Preserve the mathematical force and attributed status of supplied proof-ending language; make only presentation edits that do not require a completeness judgment. Do not add a new proof-completion claim or a standardized replacement. If the user asks whether the proof is correct or complete, direct them to invoke `$stat-proof-check` explicitly; do not start that audit implicitly.
+Do not decide whether a proof-ending claim such as "this proves the theorem" or "this completes the proof" is mathematically warranted. Preserve the mathematical force and attributed status of supplied proof-ending language; make only presentation edits that do not require a completeness judgment. A statement-layout change may require repairing a local reference or self-reference in the proof, while retaining its derivation and existing completion claim. Do not add a new proof-completion claim or a standardized replacement. If the user asks whether the proof is correct or complete, direct them to invoke `$stat-proof-check` explicitly; do not start that audit implicitly.
 
 ## Lemmas
 
@@ -60,7 +62,7 @@ Keep in the main text:
 - the described role of central assumptions;
 - a boundary example when it changes interpretation.
 
-Move routine algebra, repeated bounds, technical concentration details, and auxiliary lemmas to the appendix when the dependency chain and cross-references remain clear. See [appendix-architecture.md](appendix-architecture.md).
+During authorized structural reorganization, routine algebra, repeated bounds, technical concentration details, and auxiliary lemmas may move to the appendix with all content, dependencies, and references preserved. A local statement or reference edit does not trigger relocation. See [appendix-architecture.md](appendix-architecture.md).
 
 ## Presentation checklist
 

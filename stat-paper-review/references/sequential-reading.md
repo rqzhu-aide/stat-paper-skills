@@ -6,7 +6,7 @@ Preserve the experience of a critical reader encountering the manuscript for the
 
 ## Pass 1: Read in manuscript order
 
-Before external search or cross-section reconstruction, move through the paper in its displayed order. Do not jump to a later section to repair an earlier explanation mentally.
+For a full review, move through the manuscript in its displayed order before external search or cross-section reconstruction. For a focused exposition-order review, do this for the requested scope and necessary dependencies. Preserve what was available at each first encounter; later explanations do not erase earlier failures.
 
 Track only consequential events:
 
@@ -30,14 +30,14 @@ Record the earliest point of failure. If Section 4 explains an object needed in 
 
 ## Pass 2: Reconstruct across sections
 
-After the sequential pass, compare the introduction's promises with the method, theory, evidence, discussion, and supplement. At this stage, move across sections to test consistency and support.
+After the sequential pass, compare promises with their support and boundaries within the assessment scope, including directly necessary dependencies. A full review spans the introduction, method, theory, evidence, discussion, and supplement. At this stage, move across the relevant sections to test consistency and support.
 
 Keep the two judgments distinct:
 
 - **Local reader judgment:** Was the argument understandable when first encountered?
 - **Global manuscript judgment:** Is the needed content present and consistent somewhere in the paper?
 
-A paper may pass the global test while failing the local reader test because support arrives too late.
+A paper may pass the global test while failing the local reader test because support arrives too late. Preserve that reading difficulty, but assess scientific severity after considering the relevant material: delayed support that is present and adequate is not an unresolved validity gap. Apply the [repair and consequence calibration](review-framework.md#6-priority-synthesis) to what remains to be fixed.
 
 ## Reporting
 

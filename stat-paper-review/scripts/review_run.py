@@ -24,7 +24,7 @@ import unicodedata
 
 
 SCHEMA_VERSION = 2
-RUNNER_VERSION = "1.2"
+RUNNER_VERSION = "1.3"
 MANIFEST_NAME = "review_run.json"
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 SKILL_NAME = "stat-paper-review"
@@ -566,7 +566,12 @@ def stage_dependencies(manifest: dict, name: str) -> list[str]:
     if name == "claim_chain":
         return ["fact_base"]
     if name in {"literature", "patterned_prose"}:
-        return ["first_reader"]
+        if manifest["profile"] == "full":
+            return ["first_reader"]
+        dependencies = ["fact_base"]
+        if "first_reader" in manifest["required_stages"]:
+            dependencies.append("first_reader")
+        return dependencies
     if name == "synthesis":
         return [
             stage
@@ -579,7 +584,7 @@ def stage_dependencies(manifest: dict, name: str) -> list[str]:
 
 
 def downstream_stages(manifest: dict, changed_stage: str) -> list[str]:
-    """Return recorded stages made stale by replacing one upstream stage."""
+    """Return recorded stages made stale by adding or replacing evidence."""
     stages = manifest["stages"]
     stale = {changed_stage}
     ordered: list[str] = []
@@ -589,10 +594,14 @@ def downstream_stages(manifest: dict, changed_stage: str) -> list[str]:
             if candidate in stale or candidate not in stages:
                 continue
             dependencies = set(stage_dependencies(manifest, candidate))
+            if manifest["profile"] == "focused" and candidate in {
+                "literature", "patterned_prose"
+            }:
+                dependencies.add("first_reader")
             if candidate == "synthesis":
                 dependencies.update(
                     name
-                    for name in stages
+                    for name in set(stages) | {changed_stage}
                     if name not in {"intake", "synthesis", "qa"}
                 )
             if dependencies & stale:
@@ -617,11 +626,16 @@ def verify_record(root: Path, record: dict, label: str) -> list[str]:
     target = root.joinpath(*relative.split("/"))
     if not target.is_file():
         return [f"{label}: missing file: {relative}"]
-    resolved_root = root.resolve()
     try:
+        resolved_root = root.resolve()
         resolved_target = target.resolve(strict=True)
+    except OSError as exc:
+        return [
+            f"{label}: cannot verify physical containment for {relative}: {exc}"
+        ]
+    try:
         resolved_target.relative_to(resolved_root)
-    except (OSError, ValueError):
+    except ValueError:
         return [f"{label}: redirected path leaves the review bundle: {relative}"]
     current = resolved_root
     reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)

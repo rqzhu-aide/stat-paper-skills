@@ -4,7 +4,7 @@ Use this guide only when a passage has an unresolved problem of emphasis or expl
 
 | Reader problem | Useful adjustment | Boundary |
 |---|---|---|
-| Familiar material is buried in setup, recaps, or repetition | Compress the setup and state the operative claim directly | Retain the target, reason for the construction, and material conditions. |
+| Familiar material is buried in setup, recaps, or repetition | Clarify the setup and state the operative claim directly | Retain the target, reason for the construction, and material conditions. Preserve supplied proof detail under [theoretical-proofs.md](theoretical-proofs.md). |
 | An unfamiliar construction or conceptual jump arrives without a reason | Explain the paper-specific obstacle through a supplied contrast, decomposition, or diagnostic regime | Explain the research difficulty without reteaching familiar background. |
 | Assumptions, objects, or dependencies are ambiguous | Clarify definitions, conditioning, scopes, and the stated result chain | Formal detail cannot replace an explanation of what the result means. |
 | Results read as a catalogue or claims lack a visible comparison | Organize evidence around the statistical question, metric, comparison, and observed magnitude | Separate the reported pattern from an unverified explanation; retain the method and documented comparison basis. |

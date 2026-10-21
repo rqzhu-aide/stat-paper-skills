@@ -52,6 +52,8 @@ Both mathematical expressions remain intact, with the label available for later 
 
 ## Preserve theorem scope
 
+For a statement-layout edit, suppose Lemma A states the principal bound $\mathbb E S_n^2\le4/n$ in a display and the shorter identity $\operatorname{Var}(S_n)=\mathbb E S_n^2$ under its stated zero-mean condition. The identity has an equation label used by a later proof. It may become inline within Lemma A, with that caller changed to "the variance identity in Lemma A," while the bound keeps its display and label. The proof's existing calculations stay intact. A citation to a consistency theorem would not supply this exact finite-sample identity. If the label also has callers outside the editable source set, retain a usable target until those dependencies can be addressed.
+
 Source:
 
 > Under Assumptions 1-4, the estimator converges pointwise to the population target.

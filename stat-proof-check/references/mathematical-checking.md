@@ -3,21 +3,38 @@
 Use the assigned packet, role brief, and relevant [domain checks](domain-risk-checks.md).
 Examine the full assigned unit, recording decisive reasoning and material exceptions. Routine lines need no separate node.
 
-Assess the supplied argument using the provided material and mathematical knowledge. Short calculations and routine reasoning may clarify a judgment; constructing a missing proof, repairing the argument or finding a counterexample is not required. When substantive assessment cannot resolve a step, record what needs further verification and continue.
+Assess the supplied argument using the provided material and mathematical knowledge. Short hand-written calculations and routine reasoning may clarify a judgment; constructing a missing proof, repairing the argument or finding a counterexample is not required. An immediately apparent exact witness is allowed. Follow the [computational-tooling standard](evidence-and-verdicts.md#analytical-refutations-and-unresolved-examinations).
+
+## Proportionate attention
+
+Use the [research-severity rubric](evidence-and-verdicts.md#research-severity) to direct additional investigation by potential consequence. This working estimate is provisional, requires no extra field, and changes neither assigned coverage nor required independent review. Each examiner makes it from the evidence available in that examiner's permitted context.
+
+- For a clear minor issue, once the obvious correction or justification and its unchanged consequence are understood, record the concise reason and continue. Do not search for alternative repairs.
+- For a potentially moderate issue, concentrate on the affected derivation or bounded qualification, including loss of an ancillary claim. Explain its consequence using available reasoning and the severity rubric; constructing a repair is not required.
+- Before calling a concern severe, scrutinize the decisive inference, applicable inherited setup and its immediately apparent consequences, and the claimed impact on an important result or intended regime. Use the relevant source context and short mathematical reasoning, reusing what the examination already established rather than performing a second pass.
+
+Judge mathematical effect, not the size of a typographical change. Uncertainty alone implies no severity; uncertainty about impact or repairability does not erase an established gap. If substantive assessment cannot settle the mathematical question, record the exact uncertainty and continue; do not repeat unchanged reasoning or search for a repair to force a rating.
 
 ## Mathematical text and JSON
 
 Use `$...$`/`\(...\)` inline or `$$...$$`/`\[...\]` display.
-Undelimited math stays plain; preserve source excerpts. JSON requires doubled backslashes,
+Undelimited math stays plain. Select complete mathematical statements and needed forms,
+retaining their conditions; do not cut a formula at a line or character limit.
+Preserve captured source excerpts literally. JSON requires doubled backslashes,
 including dollar-delimited commands: `"$\\theta$"`. Prefer a JSON serializer with Python raw strings.
 
 ## Establish the source and exact target
 
 Read the complete statement, applicable setup, definitions, proof, continuations,
 supplement, and relevant macros. For PDF material, verify consequential symbols,
-subscripts, powers, signs, inverses, and domains visually. An available PyMuPDF
-`page.get_pixmap()` can render a page for inspection. State inaccessible or ambiguous
-material before claiming source fidelity or complete coverage.
+subscripts, powers, signs, inverses, domains, and grouping visually, including
+fraction boundaries and the scope of radicals and operators. If grouping is unclear,
+enlarge the relevant typeset formula during this source reading before interpreting
+it or reporting a discrepancy; reuse any adequate view already inspected. An available PyMuPDF
+`page.get_pixmap()` can render a page for inspection. For inaccessible or ambiguous
+material, retain supported content and identify the unresolved expression or passage
+and its source. Do not reconstruct uncertain symbols from mathematical plausibility
+or claim source fidelity or complete coverage beyond the accessible evidence.
 
 Normalize the assertion without strengthening or weakening it. Preserve:
 
@@ -34,9 +51,7 @@ when a bound must be uniform in the specified \(M\). Likewise,
 |R_n(\theta)|\le C_\theta n^{-1}
 \]
 does not supply a single constant uniform over \(\theta\).
-Retain the exact target separately from a short overview synopsis. Compare the
-actual saved target and its setup with source; an accurate review note cannot
-repair an inaccurate assertion.
+Retain the exact target separately from a short overview synopsis.
 
 ## Assess decisive transitions
 
@@ -45,8 +60,13 @@ For
 \Gamma,A_1,\ldots,A_m\Longrightarrow C,
 \]
 examine the decisive written transition using actual inputs, substitutions, scope,
-operation, rule, side conditions, and source location. Explain the basis for the judgment, with a calculation or logical derivation where useful;
-a familiar final formula or “standard algebra” does not justify an invalid transition.
+operation, rule, side conditions, and source location. At that transition, resolve
+consequential symbols to their defined objects, including coordinate order, centering
+and aggregation, without changing the assertion or its dependent definitions.
+Explain the basis for the judgment, with a calculation or logical derivation where useful.
+Retain decisive conditioning, identities or quantitative slack already available in the setup;
+failure of a weaker estimate introduced by the examiner does not by itself establish a defect.
+A familiar final formula or “standard algebra” does not justify an invalid transition.
 
 Separate a consequential change of premise, operation, event, measure, quantifier,
 regime or scope when it needs a distinct judgment. Record useful intermediate bounds
@@ -82,9 +102,10 @@ Distinguish the correct applications from the defective combination in the exami
 
 ## Premises, definitions, and witnesses
 
-A theorem's asserted conclusion is not its own premise. Use its hypotheses,
-meaning-determining definitions, authorized setup, or actually available earlier
-results. Ordinary algebraic and logical rules belong in the justification and need no
+A theorem's asserted conclusion is not its own premise. Before calling a premise
+missing, use its explicit and inherited hypotheses, meaning-determining definitions,
+authorized setup, actually available earlier results and their immediately apparent
+consequences. Ordinary algebraic and logical rules belong in the justification and need no
 separate source investigation. For a non-trivial use of an external result, follow
 [external-result-verification.md](external-result-verification.md).
 
@@ -117,8 +138,6 @@ owner relationship cannot authorize the transfer.
 For a proof of \(A\Rightarrow B\), retain the local assumption \(A\) until the
 implication-introduction step discharges it. For contradiction, use the exact
 negation of the target and identify the contradiction actually reached.
-Do not add a needed restriction only to free-text check conditions and then claim
-the original unconditional target.
 
 Exhaustive cases require all branches under their respective assumptions and an
 argument that the branches cover the target domain. Do not conjoin incompatible
@@ -165,10 +184,6 @@ one route establishes the target or every registered excerpt has coverage.
 
 If the manuscript omits the argument, assess what is actually supplied and record the omission or uncertainty. Do not invent a route to fill it. This is different from leaving an available proof unread.
 
-Use [evidence-and-verdicts.md](evidence-and-verdicts.md) for outcome and
-counterexample standards when a refutation is actually claimed. Repairs are optional; preserve defects when supplying one. A new route
-for the unchanged statement has its own provenance; a restricted statement has
-its own target. A candidate repair remains provisional until the claimed
-mathematics and required independent review are completed.
+Use [evidence-and-verdicts.md](evidence-and-verdicts.md) for outcome, counterexample, repair and research-severity standards.
 
 Record these mathematical distinctions within the coherent proof examination. Use graph-records.md for v3 authoring; the older probability fixture is historical.
