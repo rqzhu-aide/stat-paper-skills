@@ -12,6 +12,14 @@ Proof checking and graphical proof visualization have moved to the [Proof Graphi
 
 Use `$stat-write-style`, `$stat-paper-review`, or `$stat-proof-write` to invoke the corresponding skill. Their `agents/openai.yaml` files disable implicit invocation. Drafting a proof does not provide an independent audit.
 
+## How the skills work
+
+**`stat-write-style`** first reads the requested material and its dependencies to understand the statistical objects, claims, and intended audience. It then drafts or revises the exposition, improving motivation, statement clarity, notation, transitions, and the connection between the main text and supplement while preserving scientific claims and supplied proof details. It checks the revised text for consistent terminology, equations, citations, and cross-references; unsupported scientific choices remain explicit author decisions.
+
+**`stat-paper-review`** first reads the paper in its presented order, then traces its central claims through the method, theory, numerical evidence, and interpretation. It pays particular attention to novelty relative to verified prior work, practical usefulness compared with existing alternatives, assumptions, evidentiary support, and consequential gaps in explanation. The report prioritizes findings by the repair needed and its scientific consequences, distinguishes verified evidence from uncertainty, and gives actionable revision specifications without rewriting the manuscript.
+
+**`stat-proof-write`** first reads the target statement, assumptions, supplied argument, and supporting results to identify the main reduction and intermediate goals. It organizes the proof around an opening overview, develops justified calculations and local explanations, and connects each step to the conclusion while preserving the supplied mathematical claims and proof route. It checks the steps it writes, labels results needed later, and flags unresolved gaps rather than hiding them behind fluent prose; this writing process is not an independent proof audit.
+
 ## Repository layout
 
 ```text
@@ -19,7 +27,6 @@ stat-paper-skills/                this Git repository
   stat-write-style/              manuscript-writing skill
   stat-paper-review/             review skill
   stat-proof-write/              proof-writing skill
-  archived/                     local historical material, ignored by Git
 ```
 
 ## Skill use and installation
