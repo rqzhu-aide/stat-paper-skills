@@ -1,5 +1,1 @@
 * text=auto eol=lf
-
-# Preserve the mirrored runtime bytes used by its bundle manifest.
-stat-proof-check/scripts/paper_core/** -text
-stat-proof-check/scripts/paper_audit.py -text

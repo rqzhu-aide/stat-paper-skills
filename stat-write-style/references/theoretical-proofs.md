@@ -45,7 +45,7 @@ Keep notation local. State conditioning and randomness explicitly when they are 
 
 Remove rhetorical shortcuts such as "clearly," "obviously," or "it is easy to see" when they replace explanation. Do not compensate by inventing a derivation.
 
-Do not decide whether a proof-ending claim such as "this proves the theorem" or "this completes the proof" is mathematically warranted. Preserve the mathematical force and attributed status of supplied proof-ending language; make only presentation edits that do not require a completeness judgment. A statement-layout change may require repairing a local reference or self-reference in the proof, while retaining its derivation and existing completion claim. Do not add a new proof-completion claim or a standardized replacement. If the user asks whether the proof is correct or complete, direct them to invoke `$stat-proof-check` explicitly; do not start that audit implicitly.
+Do not decide whether a proof-ending claim such as "this proves the theorem" or "this completes the proof" is mathematically warranted. Preserve the mathematical force and attributed status of supplied proof-ending language; make only presentation edits that do not require a completeness judgment. A statement-layout change may require repairing a local reference or self-reference in the proof, while retaining its derivation and existing completion claim. Do not add a new proof-completion claim or a standardized replacement. If the user asks whether the proof is correct or complete, identify that as a separate proof-audit request beyond this skill's scope; do not start that audit implicitly.
 
 ## Lemmas
 

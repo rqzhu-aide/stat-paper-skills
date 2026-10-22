@@ -1,7 +1,7 @@
 ---
 name: stat-write-style
 metadata:
-  version: "1.6.4"
+  version: "1.6.5"
 description: Author-side drafting, restructuring, style revision, and presentation-audit for statistics and machine-learning manuscripts. Use only when the user explicitly invokes $stat-write-style. Covers exposition, notation, supplied citations, cross-references, and main/supplement coordination; does not validate proofs, sources, code, numerical results, novelty, or publication suitability.
 ---
 
@@ -15,7 +15,7 @@ Use supplied research. Preserve mathematical objects, assumptions, relations, sc
 
 An audit diagnoses without rewriting. A polish or revision checks privately and directly applies supported edits within scope. Combined audit and revision records findings before repairs. Ask only when missing support or competing scientific choices prevent safe text; continue independent work. The detailed decision rule is in [support-and-author-decisions.md](references/support-and-author-decisions.md).
 
-Check presentation and documentary consistency. For proof correctness or completeness, recommend explicit `$stat-proof-check` invocation; do not start it implicitly.
+Check presentation and documentary consistency. Questions of proof correctness or completeness require a separately requested proof audit; do not start one implicitly.
 
 Write for the intended research audience. Explain the paper-specific obstacle and supplied structural insight relative to closest work when relevant; retain needed definitions without reteaching familiar background. Do not force a comparison into a local edit.
 
