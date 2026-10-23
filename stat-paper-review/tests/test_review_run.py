@@ -212,7 +212,7 @@ class ReviewRunTests(unittest.TestCase):
             self.assertEqual(
                 payload["protocol"]["skill_name"], "stat-paper-review"
             )
-            self.assertEqual(payload["protocol"]["skill_version"], "1.2.7")
+            self.assertEqual(payload["protocol"]["skill_version"], "1.2.8")
             self.assertGreater(payload["protocol"]["file_count"], 2)
             self.assertRegex(payload["protocol"]["sha256"], r"^[0-9a-f]{64}$")
 
@@ -242,7 +242,7 @@ class ReviewRunTests(unittest.TestCase):
             self.assertEqual(
                 manifest["protocol"]["skill_name"], "stat-paper-review"
             )
-            self.assertEqual(manifest["protocol"]["skill_version"], "1.2.7")
+            self.assertEqual(manifest["protocol"]["skill_version"], "1.2.8")
             self.assertTrue(
                 all(
                     item["path"].startswith("protocol/")
@@ -264,7 +264,7 @@ class ReviewRunTests(unittest.TestCase):
                 status_payload["skill"],
                 {
                     "name": "stat-paper-review",
-                    "version": "1.2.7",
+                    "version": "1.2.8",
                     "protocol_sha256": manifest["protocol"]["sha256"],
                 },
             )

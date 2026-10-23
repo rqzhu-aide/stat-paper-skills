@@ -51,7 +51,9 @@ For every scored category or dimension, report:
 - score;
 - support status: established, partially supported, challenged, not established, or unassessed;
 - one concise manuscript-specific justification;
-- the principal limiting issue or missing verification.
+- the principal limiting issue or missing verification, if any.
+
+Across the brief basis and limiting issue, name the concrete claim, result, assumption, experiment, verified comparator, or passage driving the judgment and explain its consequence for that category. Select the decisive evidence and principal limitation; leave supporting calculations, experiment inventories, and secondary concerns in the findings. Generic phrases such as "restrictive conditions" or "useful experiments" are insufficient without the actual restriction or tested capability. A finding reference can carry details but cannot replace the reason. If no material limitation was identified within the reviewed scope, say so rather than inventing one.
 
 For novelty, also report the contribution form, the supported combination-test classification or its unassessed status when the contribution is a combination, the search-coverage level, and whether the conclusion is bounded or provisional. Never assign a positive novelty score solely from the manuscript's own positioning.
 

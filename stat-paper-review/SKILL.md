@@ -1,7 +1,7 @@
 ---
 name: stat-paper-review
 metadata:
-  version: "1.2.7"
+  version: "1.2.8"
 description: "Critical first-time review of statistics and machine-learning manuscripts. Use only when the user explicitly invokes $stat-paper-review. Covers referee reports, readiness, novelty, assumptions, methods, theory, evidence, and prioritized diagnoses. Full reviews include a four-category 1-10 scorecard. Provides edit specifications without rewriting manuscript prose; theorem review is plausibility screening, not proof validation."
 ---
 
@@ -80,7 +80,7 @@ Classify each substantive finding as Critical, Major, Moderate, or Minor using t
 
 ### 9. Produce the requested review
 
-Use the closest format in [report-formats.md](references/report-formats.md). Full or pre-submission reviews include a concise verdict, the four-category scorecard, prioritized findings, supported manuscript-specific strengths, assessment boundaries, and a dependency-ordered revision sequence that ends the report. Focused reviews answer the requested question without an unrelated full scorecard or paper-level verdict. Compact diagnostic artifacts such as contribution-support ledgers, theorem-role maps, or evidence-gap tables organize findings; they are never manuscript drafts. Multiple reviewer lenses only on request, per that file.
+Use the closest format in [report-formats.md](references/report-formats.md). Full or pre-submission reviews open with a compact scientific overview drawn from the existing fact base, followed by a concise verdict, the four-category scorecard, prioritized findings, supported manuscript-specific strengths, assessment boundaries, and a dependency-ordered revision sequence that ends the report. Focused reviews answer the requested question without an unrelated full scorecard or paper-level verdict. Compact diagnostic artifacts such as contribution-support ledgers, theorem-role maps, or evidence-gap tables organize findings; they are never manuscript drafts. Multiple reviewer lenses only on request, per that file.
 
 ### 10. Run reviewer QA
 

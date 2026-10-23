@@ -78,14 +78,15 @@ Grounding, provenance and support status, severity, mathematical fidelity, role 
 - In a full or pre-submission review, keep a user-supplied or verified venue rubric separate from the default scorecard; let it govern only its own dimensions, scale, and overall rule. For a focused review, use the requested rubric and relevant dimensions.
 - For a named venue, use current verified official criteria or leave venue fit `N/A`; do not silently map a venue scale onto the default scale.
 - Use `N/A` for categories or dimensions not assessable from the reviewed scope or completed verification.
-- Give one manuscript-specific basis and one limiting issue for every score.
+- Could a score explanation apply unchanged to an unrelated paper? If so, replace general impressions with the concrete manuscript evidence and its consequence for the judgment. Do not invent a weakness to fill the limiting-issue field.
+- Assess the reviewed version directly; claims of improvement over another version require an explicitly requested comparison supported by the reviewed materials.
 - Do not use decimals or calculate an arithmetic mean by default.
 - Reconcile each score with the Critical and Major caps in the rubric, missing materials, and provisional novelty.
 - Do not let broad interest, presentation, or novelty compensate for an unestablished technical case.
 
 ## Output integrity
 
-- Include the reviewed scope and missing materials.
+- Include the reviewed scope and missing materials. In a full or readiness review, check that the scientific opening makes the data or system, model or design, substantive assumptions, goal, and proposed contribution understandable without technical rate or proof conditions. Identify unspecified essentials without inventing them; a simulation design is not the general model. Keep focused openings proportionate to the question.
 - Include only manuscript-specific strengths supported by the reviewed material; do not manufacture praise to fill a quota.
 - Let the overall assessment name the principal concern once, but keep its full evidence and diagnosis in one finding; elsewhere refer to that finding rather than restating it.
 - Include likely objections only when they add framing not already captured by a finding.
@@ -94,7 +95,7 @@ Grounding, provenance and support status, severity, mathematical fidelity, role 
 - Produce diagnoses and edit specifications only; do not draft, polish, restructure, or modify manuscript artifacts.
 - Do not design missing scientific content while specifying that it is required.
 - Do not mention the skill name or internal workflow rules in the review.
-- Begin with manuscript scope or diagnosis, not a statement about the response type or workflow boundary.
+- Begin with the scientific opening for a full or readiness review, or the relevant scope and diagnosis for a focused question; do not begin with internal workflow rules.
 - Do not recommend a separate or subsequent writing, drafting, editing, or revision pass.
 - State an out-of-scope boundary directly and stop at reviewer diagnosis.
 - For integrated and readiness reports, place assessment boundaries before the dependency-ordered revision sequence and end with that sequence. Focused reports may end with unassessed dependencies.

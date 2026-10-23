@@ -17,10 +17,9 @@ An edit specification states what must change, where, why it matters to the pape
 
 Use these components for a full manuscript review. The report should present the scientific judgment and its evidence, not reproduce the internal reading trace or search log. Combine components when they concern the same finding, and keep a review of partial material proportionate to what can be assessed.
 
-1. **Review setup**
-   - review scope and material reviewed;
-   - intended paper type or venue, if known;
-   - one-sentence manuscript claim.
+1. **Scientific opening**
+   - briefly identify the reviewed scope;
+   - explain the observed data or studied system, targeted data-generating model or design, substantive assumptions, statistical goal, and proposed contribution.
 2. **Overall assessment**
    - concise verdict;
    - strongest defensible aspect, if one is visible;
@@ -52,6 +51,10 @@ Use these components for a full manuscript review. The report should present the
    - distinguish rewrites from new scientific work;
    - end the integrated report here.
 
+Write the scientific opening as a short paragraph or a few compact bullets using facts already collected. Use ordinary statistical language; include an equation only when it clarifies the model or target. Distinguish population assumptions from a working model or simulation design, and the paper's claims from established results. If the supplied material leaves the model or identifying assumptions unspecified, say so briefly rather than completing them. Do not force a full generative model onto a conditional, fixed-design, predictive, or computational paper.
+
+Leave technical rate conditions, tuning sequences, proof regularity, and inventories of missing proof dependencies out of the opening. Retain the scientific meaning of restrictions that define applicability, such as dependence, additivity, sparsity, or overlap, even when stated in a theorem. Assess technical conditions and missing proof support later where relevant.
+
 The category scorecard is part of the full review. Do not add other scores, an acceptance probability, or an editorial decision unless requested. If a recommendation posture is useful, use calibrated categories such as:
 
 - ready for external review;
@@ -71,7 +74,7 @@ Do not calculate an arithmetic mean by default. Keep the qualitative readiness p
 
 For a request limited to one section or concern, return:
 
-1. scope and question reviewed;
+1. scope and question reviewed, with only the scientific setup needed to understand that question;
 2. concise diagnosis;
 3. normally up to five prioritized findings, and fewer when fewer consequential findings exist; retain additional independently consequential scientific findings when necessary, grouping repeated symptoms of the same cause;
 4. concrete edit specifications;
@@ -84,7 +87,7 @@ For a focused AI-writing request, classify only the reviewed scope. If the evide
 
 ## Pre-submission readiness memo
 
-Organize around action:
+Begin with the same compact scientific opening described above, then organize around action:
 
 1. submit now or revise first;
 2. strongest reviewer-facing asset;
