@@ -1,7 +1,7 @@
 ---
 name: stat-paper-review
 metadata:
-  version: "1.2.8"
+  version: "1.2.9"
 description: "Critical first-time review of statistics and machine-learning manuscripts. Use only when the user explicitly invokes $stat-paper-review. Covers referee reports, readiness, novelty, assumptions, methods, theory, evidence, and prioritized diagnoses. Full reviews include a four-category 1-10 scorecard. Provides edit specifications without rewriting manuscript prose; theorem review is plausibility screening, not proof validation."
 ---
 

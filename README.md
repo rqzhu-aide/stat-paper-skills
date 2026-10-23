@@ -8,7 +8,7 @@ Proof checking and graphical proof visualization have moved to the [Proof Graphi
 |---|---|---|
 | `stat-write-style` | v1.6.5 | Draft and revise manuscript exposition and presentation |
 | `stat-proof-write` | v0.3.1 | Draft or clarify a mathematical proof |
-| `stat-paper-review` | v1.2.8 | Give a critical, evidence-backed manuscript review |
+| `stat-paper-review` | v1.2.9 | Give a critical, evidence-backed manuscript review |
 
 Use `$stat-write-style`, `$stat-proof-write`, or `$stat-paper-review` to invoke the corresponding skill. Their `agents/openai.yaml` files disable implicit invocation. Drafting a proof does not provide an independent audit.
 
